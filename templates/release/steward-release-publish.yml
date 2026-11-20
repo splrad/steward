@@ -105,21 +105,19 @@ jobs:
   build:
     name: build/${{ matrix.target }}/${{ matrix.unit }}
     needs: admit
-    runs-on: windows-2025
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - unit: layerscape
-            target: windows-x64
-            assets: [deployer, plugins, fonts]
+        unit: ${{ fromJSON('[]') }}
+        target: ${{ fromJSON('[]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
           path: product
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -176,30 +174,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           UNIT: ${{ matrix.unit }}
         run: node controller/packages/runner/dist/index.js release-pipeline recover --record record.json --unit "$env:UNIT" --source-dir product --controller-dir controller --state-dir state --directory "$env:RUNNER_TEMP/recovered" --home "$env:RUNNER_TEMP/recover-home" --output recover.json
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
-        if: steps.unit.outputs.selected == 'true' && steps.recover.outputs.found != 'true'
-        with:
-          global-json-file: product/global.json
       - name: business-build
-        if: steps.unit.outputs.selected == 'true' && steps.recover.outputs.found != 'true'
         id: build
         shell: pwsh
-        working-directory: product
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $releaseVersion = (Get-Content ./VERSION -Raw).Trim()
-          $releaseAssetsDir = Join-Path $env:RUNNER_TEMP ('layerscape-release-assets-' + [guid]::NewGuid().ToString('N'))
-          New-Item -ItemType Directory -Path $releaseAssetsDir | Out-Null
-          "assets=$releaseAssetsDir" >> $env:GITHUB_OUTPUT
-          dotnet restore tools/UpdateCheck.Tests/UpdateCheck.Tests.csproj --locked-mode
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          dotnet run --project tools/UpdateCheck.Tests/UpdateCheck.Tests.csproj --configuration Release --no-restore
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          dotnet restore CADFontAutoReplace.slnx --locked-mode
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          pwsh -NoProfile -File ./tools/Publish-ReleaseAssets.ps1 -OutputDirectory $releaseAssetsDir -RequestedVersion $releaseVersion
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          Get-ChildItem -LiteralPath $releaseAssetsDir -File | Get-FileHash -Algorithm SHA256
+        run: throw 'Configure a product build before adopting this seed'
       - name: business-upload
         id: upload
         if: steps.unit.outputs.selected == 'true' && steps.recover.outputs.found != 'true'
@@ -233,10 +211,10 @@ jobs:
     outputs:
       result: ${{ steps.signing.outputs.result }}
     steps:
-      - name: Audited LayerScape signing applicability
+      - name: Require a product signing decision
         id: signing
         shell: bash
-        run: echo 'result=NOT_APPLICABLE' >> "$GITHUB_OUTPUT"
+        run: exit 1
   evidence:
     name: evidence/${{ matrix.unit }}
     needs: [admit, build, sign]

@@ -1,9 +1,16 @@
 // @ts-nocheck
 import {it as test,vi} from 'vitest';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import YAML from 'yaml';
 import {validatePlan,boundedClient,digest,executePlan} from '../../../scripts/business-flow-acceptance.mjs';
 const sha='a'.repeat(40),env={GITHUB_REPOSITORY:'splrad/steward',GITHUB_REPOSITORY_ID:'1296724484',GITHUB_REF:'refs/heads/main',GITHUB_EVENT_NAME:'workflow_dispatch',GITHUB_RUN_ATTEMPT:'1',GITHUB_WORKFLOW_REF:'splrad/steward/.github/workflows/business-flow-acceptance.yml@refs/heads/main',GITHUB_SHA:sha,WORKFLOW_SHA:sha};
 const plan={schemaVersion:1,kind:'release',controllerSha:sha,maxRequests:1,repository:{id:1,full_name:'test/product',private:true,default_branch:'main'},baseSha:sha,stateSha:sha};
+test('manual dispatch exposes only active consumers and selects their environments',()=>{
+  const workflow=YAML.parse(readFileSync('.github/workflows/business-flow-acceptance.yml','utf8'));
+  assert.deepEqual(workflow.on.workflow_dispatch.inputs.consumer.options,['quality','release','quality-initialize']);
+  assert.equal(workflow.jobs.acceptance.environment.name,"${{ inputs.consumer == 'release' && 'steward-release' || 'steward-release-notes' }}");
+});
 test('requires exact approved bytes and native main first-attempt provenance',()=>{
   const raw=JSON.stringify(plan);assert.equal(validatePlan(raw,digest(raw),env).maxRequests,1);
   for(const change of [{GITHUB_RUN_ATTEMPT:'2'},{GITHUB_REF:'refs/pull/1/merge'},{WORKFLOW_SHA:'b'.repeat(40)},{GITHUB_REPOSITORY_ID:'2'}])assert.throws(()=>validatePlan(raw,digest(raw),{...env,...change}));
@@ -123,10 +130,11 @@ test('release local call limit preserves the first batch and stops before a seco
   assert.deepEqual(work.input.batches[1].attempts,[]);assert.equal(Object.values(persisted.cache).filter(e=>e.result).length,1);
 });
 
-test('manual content recovery is confined to one private sample and a single approved request',()=>{
+test('manual acceptance rejects a retired private target and recovery grants',()=>{
   const grant=Object.fromEntries(['candidateId','batchId','previousAttemptSha256','authorizationId','outputContractSha256'].map(k=>[k,'a'.repeat(64)]));
   const recovery={...plan,repository:{id:1448797077,full_name:'splrad/steward-e10-lifecycle-20261107',private:true,default_branch:'main'},releaseRecovery:grant};
   const check=p=>{const raw=JSON.stringify(p);return validatePlan(raw,digest(raw),env);};
-  assert.deepEqual(check(recovery).releaseRecovery,grant);
-  for(const change of [{maxRequests:0},{repository:plan.repository},{repository:{...recovery.repository,private:false}},{releaseRecovery:{...grant,extra:true}},{releaseRecovery:{...grant,batchId:'invalid'}}])assert.throws(()=>check({...recovery,...change}),/RELEASE_RECOVERY_PLAN/);
+  assert.throws(()=>check(recovery),/RELEASE_RECOVERY_RETIRED/);
+  assert.throws(()=>check({...recovery,releaseRecovery:undefined}),/RETIRED_REPOSITORY/);
+  for(const change of [{maxRequests:0},{repository:plan.repository},{repository:{...recovery.repository,private:false}},{releaseRecovery:{...grant,extra:true}},{releaseRecovery:{...grant,batchId:'invalid'}}])assert.throws(()=>check({...recovery,...change}),/RELEASE_RECOVERY_RETIRED/);
 });

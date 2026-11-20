@@ -248,9 +248,14 @@ it('keeps human differences paused without reclassifying them as generated', asy
 it('an unaccepted pending write is archived before pausing for editing, with no deadlock or push', async () => {
   const f = await controllerFixture(), N = f.snapshot(f.B, f.notes.replace('原来内容', '自动内容'));
   const prepared = await prepareCandidateWrite(f.repo, f.B, N, await mergeCandidate(f.repo, f.snapshot(), f.B, N, f.root), identity, f.root);
-  f.session.pending = { write: prepared, generated: N }; f.session.repository.candidate!.pendingWrite = { proposedCommit: prepared.proposedCommit };
+  const contributors = { contributors: [], unresolved: 0 };
+  const previousIdentity = { sourceDigest: digest, authorsDigest: digest, actors: [], contributors,
+    units: [{ id: 'app', actors: [], contributors }] };
+  f.session.identity = { ...previousIdentity, units: [{ ...previousIdentity.units[0]!, id: 'ui' }] };
+  f.session.pending = { write: prepared, generated: N, previousIdentity }; f.session.repository.candidate!.pendingWrite = { proposedCommit: prepared.proposedCommit };
   f.pr.editing = true;
   expect(await advanceReleaseCandidate(f.session, f.io)).toMatchObject({ reason: 'EDITING', head: f.B });
+  expect(f.session.identity).toEqual(previousIdentity);
   expect(f.session.pending).toBeNull(); expect(f.session.repository.candidate!.pendingWrite).toBeNull(); expect(f.session.repository.candidate!.editingAckHead).toBeNull();
   expect(f.pushes()).toBe(0); expect(f.generations()).toBe(0);
 });
