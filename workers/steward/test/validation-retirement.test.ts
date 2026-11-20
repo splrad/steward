@@ -105,6 +105,25 @@ describe('exact legacy Gate consumer retirement', () => {
     noGateWrites();
   });
 
+  it.each([
+    [{ title: { from: 'before' } }, ['enqueue-refresh']],
+    [{ body: { from: 'before' } }, ['enqueue-refresh']],
+    [{ base: { ref: { from: 'release' } } }, ['enqueue-refresh', 'pending']],
+  ] as const)('only reopens the pending path for a base change on edit', async (changes, expected) => {
+    const operations: string[] = [];
+    const coordinator = { idFromName: String, get: () => ({
+      fetch: async (_url: string, init: RequestInit) => {
+        operations.push(JSON.parse(String(init.body)).operation);
+        return Response.json({changed:false});
+      },
+    }) } as unknown as DurableObjectNamespace;
+    const response = await handleWebhook(request('pull_request', {
+      action: 'edited', repository: repositories[1], pull_request: pull(), changes,
+    }), {...env(), VALIDATION_COORDINATOR: coordinator});
+    expect(response.status).toBe(202);
+    expect(operations).toEqual(expected);
+  });
+
   it.each(['submitted', 'edited', 'dismissed'])('retires review %s refresh', async action => {
     expect((await handleWebhook(request('pull_request_review', { action, repository: repositories[1], pull_request: pull() }), env())).status).toBe(202);
     noGateWrites();

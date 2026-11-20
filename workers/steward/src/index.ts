@@ -510,7 +510,9 @@ async function handleExistingEvent(env:Env,event:string,payload:any,deliveryId:s
         await enqueueValidationRefresh(env, Number(repository.id), pull.number);
       if (!isManaged(repository)) return response(env.WORKFLOW_EVALUATOR_SHA === undefined ? 204 : 202);
       if (pull.base?.ref !== repository.default_branch) return response(204);
-      await ensureValidationPending(env, repository, pull);
+      if (action !== "edited" || typeof payload.changes?.base?.ref?.from === "string" && payload.changes.base.ref.from !== pull.base.ref) {
+        await ensureValidationPending(env, repository, pull);
+      }
       return response(202);
     }
     if (event === "pull_request" && action === "ready_for_review") {
