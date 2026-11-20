@@ -201,19 +201,22 @@ export async function publishTemplateTag(io,plan,assertCurrent,record) {
   };
   const observed=await readTags();await record({kind:'template-refs-before',observed});
   check(same(observed,plan.tags),'TEMPLATE_REFS_CHANGED');
-  if(plan.status==='UNCHANGED')return {status:'UNCHANGED'};
+  if(plan.status==='UNCHANGED'&&!plan.independentSecurityAdoption)return {status:'UNCHANGED'};
   check(/^v[0-9][A-Za-z0-9.!+-]*$/.test(plan.tag),'TEMPLATE_TAG');
   const path=`${repo}/git/ref/tags/${encodeURIComponent(plan.tag)}`;
   const read=()=>get(io,path,true);
   const matches=r=>r?.ref===`refs/tags/${plan.tag}`&&r.object?.type==='commit'&&r.object.sha===plan.commit;
-  const prior=await read();if(prior){check(matches(prior),'TAG_CONFLICT');return {status:'ALREADY_PUBLISHED',tag:plan.tag};}
+  const result=status=>({status,tag:plan.tag,...(plan.independentSecurityAdoption
+    ? {independentSecurityAdoption:true,commit:plan.commit} : {})});
+  const prior=await read();if(prior){check(matches(prior),'TAG_CONFLICT');return result('ALREADY_PUBLISHED');}
+  check(plan.status==='CREATE','TAG_UNCONFIRMED');
   await assertCurrent();let response='unknown';
   try{response=(await io.request('POST',`${repo}/git/refs`,{ref:`refs/tags/${plan.tag}`,sha:plan.commit})).status;}catch{}
   const after=await read();await record({kind:'template-tag',response,tag:plan.tag,commit:plan.commit,observed:after});
   check(matches(after),'TAG_UNCONFIRMED');
   const refs=await readTags();await record({kind:'template-refs-after',observed:refs});
   check(same(refs,{...plan.tags,[`refs/tags/${plan.tag}`]:plan.commit}),'TEMPLATE_REFS_CHANGED');
-  return {status:'PUBLISHED',tag:plan.tag};
+  return result('PUBLISHED');
 }
 
 export async function withGovernanceCredential(env,operation,transport=fetch) {
@@ -252,6 +255,11 @@ export async function preflight(env=process.env,transport=fetch) {
 }
 
 export async function wakePublishedTemplate(io,published,assertCurrent,record) {
+  if (published.independentSecurityAdoption && ['PUBLISHED','ALREADY_PUBLISHED'].includes(published.status)) {
+    await assertCurrent();
+    await record({kind:'template-wake',status:'INDEPENDENT_SECURITY_ADOPTION',tag:published.tag,commit:published.commit});
+    return;
+  }
   if(published.status!=='PUBLISHED')return;
   await assertCurrent();
   // One fixed event, no private data or caller-selected ref. Unknown responses are
