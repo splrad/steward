@@ -58,6 +58,16 @@ describe('fixed public Pages completion bridge',()=>{
     expect(writes).toEqual([[CENTRAL.id,'/repos/splrad/steward/actions/workflows/'+receiver+'/dispatches','POST',
       {ref:'main',inputs:{repository_id:String(TARGET.id),workflow_id:'8',run_id:'12',attempt:'1',policy_sha:pin}}]]);
   });
+  it.each([['queued',null],['in_progress',null],['completed','failure'],['completed','success']])(
+    'records the same dispatch once when its receiver is %s/%s',async(status,conclusion)=>{
+      const f=fixture();
+      Object.assign(f.receipt,{status,conclusion});
+      await f.forward();
+      await f.forward();
+      expect(f.json.mock.calls.filter(call=>call[2]==='POST')).toHaveLength(1);
+      const row=f.db.database.prepare('SELECT central_run_id FROM pages_completion_dispatches').get();
+      expect(row).toEqual({central_run_id:f.receipt.id});
+    });
   it('atomically reserves once across two concurrent deliveries',async()=>{
     const f=fixture();await Promise.all([f.forward(),f.forward()]);
     expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(1);

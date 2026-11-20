@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker, { handleWebhook, refreshWorkflowContractChecks, ValidationCoordinator, type Env } from '../src/index.js';
 import { legacyValidationRetired } from '../src/validation-retirement.js';
 import { GitHubClient, dispatchWorkflow } from '../support/github/index.js';
-import { PullRequestBodyWriteIntentStore } from '../src/pr-body-write-intents.js';
 
 vi.mock('../support/github/index.js', async importOriginal => ({
   ...await importOriginal<typeof import('../support/github/index.js')>(),
@@ -113,27 +112,6 @@ describe('exact legacy Gate consumer retirement', () => {
     expect((await handleWebhook(request('workflow_run', { action, repository: repositories[1], workflow_run: { id: 10 } }), env())).status).toBe(204);
     noGateWrites();
     expect(GitHubClient.prototype.getWorkflowRun).toHaveBeenCalled();
-  });
-
-  it('keeps scheduled recovery running without known-default Gate writes', async () => {
-    const environment = env();
-    environment.ISSUE_SNAPSHOTS = {} as D1Database;
-    vi.spyOn(PullRequestBodyWriteIntentStore.prototype, 'retireUnsupportedAutomation').mockResolvedValue(0);
-    vi.spyOn(PullRequestBodyWriteIntentStore.prototype, 'blockExpired').mockResolvedValue(0);
-    vi.spyOn(PullRequestBodyWriteIntentStore.prototype, 'listRecoverable').mockResolvedValue([]);
-    vi.spyOn(PullRequestBodyWriteIntentStore.prototype, 'listPendingRedrives').mockResolvedValue([{
-      regionKind: 'managed-pr', repositoryId: 1296724484, pullRequestNumber: 7, writeId: 'intent',
-      redrive: { workflow: 'onboard-repository.yml', inputs: { deliveryId: 'old', policySha: 'old' } },
-    } as any]);
-    vi.spyOn(PullRequestBodyWriteIntentStore.prototype, 'claimRedrive').mockResolvedValue(true);
-    const coordinator = new ValidationCoordinator({} as DurableObjectState, environment);
-    environment.VALIDATION_COORDINATOR = { idFromName: (id: string) => id, get: () => ({ fetch: (url: string, init: RequestInit) => coordinator.fetch(new Request(url, init)) }) } as unknown as DurableObjectNamespace;
-    await worker.scheduled({ scheduledTime: 0 } as ScheduledController, environment);
-    noGateWrites();
-    expect(GitHubClient.prototype.listInstallationRepositories).not.toHaveBeenCalled();
-    expect(dispatchWorkflow).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      workflow: 'onboard-repository.yml', inputs: { deliveryId: 'body-write-recovery:intent', policySha: environment.POLICY_SHA },
-    }));
   });
 
   it('preserves unknown repositories, changed defaults, other branches and absent switch', async () => {

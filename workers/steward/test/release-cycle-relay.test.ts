@@ -47,6 +47,15 @@ describe('release cycle relay',()=>{
   f.state.hits=[receipt];await f.tick();expect(await f.storage.get('releaseCycle')).toMatchObject({stage:'received',runId:12});
   expect(await f.storage.get('__alarm')).toBeUndefined();expect(f.state.posts).toBe(1);
  });
+ it.each([['queued',null],['in_progress',null],['completed','failure'],['completed','success']])(
+  'keeps the receiver run ID across duplicate hints when the run is %s/%s',async(status,conclusion)=>{
+   const f=fixture();f.state.promoted=pin;
+   await f.relay.register(hint);await f.tick();
+   f.state.hits=[{...receipt,status,conclusion}];await f.tick();
+   await f.relay.register(hint);await f.tick();
+   expect(await f.storage.get('releaseCycle')).toMatchObject({stage:'received',runId:receipt.id});
+   expect(f.state.posts).toBe(1);
+ });
  it('closes unknown delivery without repeat POST or idle alarm',async()=>{
   const f=fixture();f.state.promoted=pin;await f.relay.register(hint);
   for(let i=0;i<6;i++)await f.tick();

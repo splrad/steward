@@ -1,6 +1,6 @@
 import { createAppJwt, GitHubClient, GitHubRequestError } from "../support/github/index.js";
 import repositoryCatalog from "../config/repositories.json" with { type: "json" };
-import { confirmPullRequestBodyWriteIntent, PullRequestBodyWriteIntentStore, type PullRequestBodyWriteIntent } from "./pr-body-write-intents.js";
+import { PullRequestBodyWriteIntentStore, type PullRequestBodyWriteIntent } from "./pr-body-write-intents.js";
 export interface BodyWriteRuntimeEnv {
   ORGANIZATION_ID: string;
   ORGANIZATION_LOGIN: string;
@@ -15,7 +15,6 @@ export interface BodyWriteRuntimeEnv {
 
 const internalPrefix = "/internal/issue-snapshots/";
 const maxInternalResponseBytes = 8 * 1024 * 1024;
-const shaPattern = /^[0-9a-f]{40}$/u;
 function positiveInteger(value: string, name: string): number {
   if (!/^[1-9]\d*$/u.test(value)) throw new Error(`${name}无效`);
   const number = Number(value);
@@ -94,14 +93,13 @@ export async function handleBodyWriteInternalRequest(request: Request, env: Body
   try { repositoryId = positiveInteger(parts[0] ?? "", "repositoryId"); }
   catch { return noStoreResponse(400, { error: "invalid-repository-id" }); }
   try {
-    const { repository, client } = await authorizeSingleRepository(request, env, repositoryId);
+    await authorizeSingleRepository(request, env, repositoryId);
     if (parts[1] === "body-write-intents") {
       if (parts.length < 4 || parts.length > 5) return noStoreResponse(404, { error: "internal-route-not-found" });
       let pullRequestNumber: number;
       try { pullRequestNumber = positiveInteger(parts[2]!, "pullRequestNumber"); }
       catch { return noStoreResponse(400, { error: "invalid-pull-request-number" }); }
       const intentStore = new PullRequestBodyWriteIntentStore(env.ISSUE_SNAPSHOTS);
-      const now = new Date().toISOString();
       const requireCleanupIntent = async (): Promise<PullRequestBodyWriteIntent | null> => {
         const current = await intentStore.get(repositoryId, pullRequestNumber);
         if (current && (current.regionKind !== "managed-pr" || !["onboard-repository.yml", "sync-review-instructions.yml"].includes(current.redrive?.workflow ?? ""))) throw new GitHubRequestError(403, "POST", url.pathname, "automation-retired");
@@ -121,52 +119,7 @@ export async function handleBodyWriteInternalRequest(request: Request, env: Body
         return noStoreResponse(200, current);
       }
       if (parts.length === 5 && request.method === "POST") {
-        const writeId = parts[3]!;
-        const current = await requireCleanupIntent();
-        if (!current || current.writeId !== writeId) return noStoreResponse(404, { error: "body-write-intent-not-found" });
-        if (parts[4] === "pull-base") {
-          const body = await readJsonObject(request);
-          if (typeof body.pullBaseSha !== "string" || !shaPattern.test(body.pullBaseSha)) return noStoreResponse(400, { error: "invalid-internal-request" });
-          return noStoreResponse(200, await intentStore.bindPullBaseSha(repositoryId, pullRequestNumber, writeId, body.pullBaseSha, now));
-        }
-        if (parts[4] === "patched") {
-          await requireEmptyBody(request);
-          return noStoreResponse(200, await intentStore.markPatched(repositoryId, pullRequestNumber, writeId, now));
-        }
-        if (parts[4] === "block") {
-          const body = await readJsonObject(request);
-          return noStoreResponse(200, await intentStore.block(repositoryId, pullRequestNumber, writeId, String(body.reason ?? "invalid"), now));
-        }
-        if (parts[4] === "confirm") {
-          await requireEmptyBody(request);
-          const confirmed = await confirmPullRequestBodyWriteIntent({ store: intentStore, client, repository, pullRequestNumber, writeId, now });
-          if (confirmed.writeId !== writeId) return noStoreResponse(404, { error: "body-write-intent-not-found" });
-          return noStoreResponse(200, confirmed);
-        }
-        if (parts[4] === "redrive-completed") {
-          await requireEmptyBody(request);
-          return noStoreResponse(200, await intentStore.completeRedrive(repositoryId, pullRequestNumber, writeId));
-        }
-        if (parts[4] === "wait") {
-          const body = await readJsonObject(request);
-          const attempts = Number(body.attempts);
-          if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > 60) return noStoreResponse(400, { error: "invalid-confirmation-attempts" });
-          let current = await intentStore.get(repositoryId, pullRequestNumber);
-          if (!current || current.writeId !== writeId) return noStoreResponse(404, { error: "body-write-intent-not-found" });
-          for (let attempt = 0; attempt < attempts; attempt += 1) {
-            if (["confirmed", "blocked"].includes(current.status)) return noStoreResponse(200, current);
-            if (current.status === "patched" && current.deliveryProven && (attempt === 0 || (attempt + 1) % 10 === 0 || attempt + 1 === attempts)) {
-              current = await confirmPullRequestBodyWriteIntent({ store: intentStore, client, repository, pullRequestNumber, writeId, now: new Date().toISOString() });
-              if (current.writeId !== writeId) return noStoreResponse(404, { error: "body-write-intent-not-found" });
-              if (["confirmed", "blocked"].includes(current.status)) return noStoreResponse(200, current);
-            }
-            if (attempt + 1 < attempts) await delay(500);
-            const refreshed = await intentStore.get(repositoryId, pullRequestNumber);
-            if (!refreshed || refreshed.writeId !== writeId) return noStoreResponse(404, { error: "body-write-intent-not-found" });
-            current = refreshed;
-          }
-          return noStoreResponse(200, current);
-        }
+        return noStoreResponse(410, { error: "body-write-origin-retired" });
       }
       return noStoreResponse(404, { error: "internal-route-not-found" });
     }
