@@ -11,6 +11,19 @@ const pullUrl=(repo,number)=>'https://github.com/'+repo.full_name+'/pull/'+posit
 const nativePull=(pr,repo)=>pr.user.id===bot && pr.head.repo?.id===repo.id &&
   pr.head.ref.startsWith('steward/repository-configuration-') && pr.base.ref===repo.default_branch;
 
+// The existing string input accepts a single ID or a bounded batch of original IDs.
+export async function processDashboardComments(input,processOne){
+  const ids=[...new Set(String(input).split(','))];
+  must(ids.length<=8 && ids.every(id=>/^[1-9]\d*$/.test(id)&&Number.isSafeInteger(Number(id))),'Invalid dashboard comment IDs');
+  const failures=[];
+  for(const id of ids){
+    try{await processOne(id);}
+    catch(error){failures.push({id,error});}
+  }
+  if(failures.length===1)throw failures[0].error;
+  if(failures.length)throw new AggregateError(failures.map(f=>f.error),'Configuration comments failed: '+failures.map(f=>f.id).join(','));
+}
+
 export async function requestFromComment(api,repo,base,number,id,runId,attempt) {
   // Only the native object locator crosses the webhook boundary. The current base owns all policy and defaults.
   must(await trustedWorkflow(api,requestPath,base,base),'Adopt the dashboard workflow first');

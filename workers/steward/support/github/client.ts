@@ -45,8 +45,20 @@ export const closingIssuesReferencesQuery = `query PullRequestClosingIssues($own
 }`;
 
 export class GitHubRequestError extends Error {
-  constructor(public readonly status: number, public readonly method: string, public readonly path: string, message: string) {
+  constructor(public readonly status: number, public readonly method: string, public readonly path: string, message: string, public readonly retryAt?:number) {
     super(`${method} ${path}: ${status} ${message}`);
+  }
+  static async from(response:Response,method:string,path:string){
+    const text = (await response.text()).slice(0, 1000);
+    const retry=response.headers.get('retry-after'),reset=response.headers.get('x-ratelimit-reset');
+    let retryAt:number|undefined;
+    if(response.status===429 || response.status===403 || response.status===503){
+      const after=retry===null?NaN:/^\d+(?:\.\d+)?$/.test(retry)?Date.now()+Number(retry)*1000:Date.parse(retry);
+      const until=response.headers.get('x-ratelimit-remaining')==='0'&&reset&&/^\d+$/.test(reset)?Number(reset)*1000:NaN;
+      const floor=Math.max(Number.isFinite(after)?after:0,Number.isFinite(until)?until:0);
+      if(Number.isSafeInteger(Math.ceil(floor))&&floor>0)retryAt=Math.ceil(floor);
+    }
+    return new GitHubRequestError(response.status, method, path, text || response.statusText,retryAt);
   }
 }
 
@@ -72,8 +84,7 @@ export class GitHubClient {
     if (body !== undefined) { headers.set("Content-Type", "application/json"); init.body = JSON.stringify(body); }
     const response = await this.transport.call(globalThis, url, init);
     if (!response.ok) {
-      const text = (await response.text()).slice(0, 1000);
-      throw new GitHubRequestError(response.status, method, path, text || response.statusText);
+      throw await GitHubRequestError.from(response,method,path);
     }
     if (response.status === 204) return undefined as T;
     return (await response.json()) as T;
@@ -132,7 +143,7 @@ export class GitHubClient {
     return collectAllPages(path, async url => {
       const absolute = this.absoluteUrl(url);
       const response = await this.transport.call(globalThis, absolute, { headers: githubHeaders(this.token, this.policySha) });
-      if (!response.ok) throw new GitHubRequestError(response.status, "GET", url, await response.text());
+      if (!response.ok) throw await GitHubRequestError.from(response,"GET",url);
       const value = await response.json();
       const next = nextLink(response.headers);
       return next ? { items: select(value), next: this.absoluteUrl(next) } : { items: select(value) };
@@ -143,7 +154,7 @@ export class GitHubClient {
     const absolute = this.absoluteUrl(path);
     const response = await this.transport.call(globalThis, absolute, { method: "GET", headers: githubHeaders(this.token, this.policySha) });
     if (response.status === 404 && allowNotFound) return { items: [], validator: { resource, url: absolute, etag: null, next: null, status: 404 } };
-    if (!response.ok) throw new GitHubRequestError(response.status, "GET", path, (await response.text()).slice(0, 1000) || response.statusText);
+    if (!response.ok) throw await GitHubRequestError.from(response,"GET",path);
     const value = await response.json();
     const next = nextLink(response.headers);
     return {
@@ -199,7 +210,7 @@ export class GitHubClient {
       if (validator.status === 404) {
         if (response.status === 404) continue;
         if (response.ok) return { state: "modified", resource: validator.resource, url: validator.url };
-        throw new GitHubRequestError(response.status, "GET", validator.url, (await response.text()).slice(0, 1000) || response.statusText);
+        throw await GitHubRequestError.from(response,"GET",validator.url);
       }
       if (response.status === 304) {
         const responseNext = nextLink(response.headers);
@@ -208,7 +219,7 @@ export class GitHubClient {
         continue;
       }
       if (response.ok) return { state: "modified", resource: validator.resource, url: validator.url };
-      throw new GitHubRequestError(response.status, "GET", validator.url, (await response.text()).slice(0, 1000) || response.statusText);
+      throw await GitHubRequestError.from(response,"GET",validator.url);
     }
     return { state: "not-modified" };
   }

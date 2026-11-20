@@ -3,7 +3,7 @@ import { createHmac } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker, { handleWebhook, refreshWorkflowContractChecks, ValidationCoordinator, type Env } from '../src/index.js';
 import { legacyValidationRetired } from '../src/validation-retirement.js';
-import { GitHubClient, dispatchWorkflow } from '../support/github/index.js';
+import { GitHubClient, GitHubRequestError, dispatchWorkflow } from '../support/github/index.js';
 
 vi.mock('../support/github/index.js', async importOriginal => ({
   ...await importOriginal<typeof import('../support/github/index.js')>(),
@@ -254,4 +254,24 @@ it('coalesces repeated webhook refreshes and spaces live PR lookups across resta
     await coordinator().alarm();expect(await storage.getAlarm()).toBe(121000);
     clock.mockReturnValue(121000);await coordinator().alarm();expect(await storage.getAlarm()).toBeNull();
   }finally{clock.mockRestore();}
+});
+
+it('keeps the provider floor for the next PR in the same repository after a restart',async()=>{
+ const storage=new SqliteDurableStorage(),repository=repositories[1]!;
+ const coordinator=()=>new ValidationCoordinator({storage} as any,env());
+ const clock=vi.spyOn(Date,'now').mockReturnValue(1000);
+ try{
+   for(const pullNumber of [7,8])await coordinator().fetch(new Request('https://validation.internal/',{
+     method:'POST',body:JSON.stringify({operation:'enqueue-refresh',repositoryId:repository.id,pullNumber})
+   }));
+   const api=vi.mocked(GitHubClient.prototype.getRepositoryById);
+   clock.mockReturnValue(61000);
+   const client=new GitHubClient('offline','https://api.github.com',async()=>new Response('',{status:429,headers:{'Retry-After':'600'}}));
+   const limited=await client.paginate('/repositories/1').catch(error=>error);
+   expect(limited).toBeInstanceOf(GitHubRequestError);api.mockRejectedValueOnce(limited);
+   await coordinator().alarm();
+   expect(await storage.getAlarm()).toBe(661000);const reads=api.mock.calls.length;
+   clock.mockReturnValue(121000);await coordinator().alarm();expect(api.mock.calls).toHaveLength(reads);
+   clock.mockReturnValue(661000);await coordinator().alarm();expect(api.mock.calls.length).toBeGreaterThan(reads);
+ }finally{clock.mockRestore();}
 });

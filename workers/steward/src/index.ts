@@ -591,13 +591,16 @@ export class ValidationCoordinator {
       const now=Date.now(),due=Math.max(row.due,(await store.get<number>('refresh-floor'))??0);
       if(now<due){await store.setAlarm(due);return;}
       // Preserve the repository budget through restarts and re-read the live PR head.
-      const floor=now+refreshInterval;
+      let floor=now+refreshInterval;
       await store.transaction(async t=>{await t.put('refresh-floor',floor);await t.setAlarm(floor);});
       let failed=false;
       try{await refreshWorkflowContractChecks(this.env,row.repositoryId,row.pullNumber);}
-      catch{failed=true;}
+      catch(error){
+        failed=true;
+        if(error instanceof GitHubRequestError && error.retryAt!==undefined)floor=Math.max(floor,error.retryAt);
+      }
       await store.transaction(async t=>{
-        await t.delete(refreshKey(row));
+        await t.put('refresh-floor',floor);await t.delete(refreshKey(row));
         if(failed&&row.failures<3){
           const retry={...row,failures:row.failures+1,due:Date.now()+refreshInterval*2**(row.failures+1)};
           await t.put(refreshKey(retry),retry);

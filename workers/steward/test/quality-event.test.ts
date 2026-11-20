@@ -111,7 +111,10 @@ it.each([['GITHUB_HTTP_422',2],['RETRY_AFTER:3',2],['RETRY_AFTER:unknown',2],['p
    const clock=vi.spyOn(Date,'now').mockReturnValue(next!);
    try{await object.alarm();await object.alarm();}finally{clock.mockRestore();}
  }else if(expected===2)await object.register(record);
- else await expect(object.register(record)).rejects.toThrow('QUALITY_POST_UNCONFIRMED');
+ else {
+   await expect(object.register(record)).rejects.toThrow('QUALITY_POST_UNCONFIRMED');
+   await object.alarm();expect(await storage.get('qualityEvent')).toMatchObject({phase:'unconfirmed'});
+ }
  expect(posts).toBe(expected);
 });
 

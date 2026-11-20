@@ -6,6 +6,7 @@ import {dispatchFixed} from './bounded-recheck-effects.js';
 type Site={repositoryId:number;repository:string;workflowId:number};
 type Locator={id:number;run_attempt:number;head_sha:string;conclusion:string};
 type Retry={site:Site;hint:Locator;policy:string;reservation:string;due:number;expires:number};
+type ReceiptQuery={site:Site;hint:Locator;policy:string;reservation:string};
 type Watch=Pick<Retry,'site'|'hint'|'policy'|'expires'>;
 type StoredWatch=Watch & {startedAt?:number};
 const probeInterval=5*60000;
@@ -44,7 +45,7 @@ async function recordReceipt(db:D1Database,g:GitReader,site:Site,hint:Locator,po
     .bind(matches[0].id,...key,policySha,reservedAt,matches[0].id).run();
   ensure(saved.success&&saved.meta.changes===1,'PAGES_RECEIPT_STORE');return true;
 }
-async function forward(env:BoundedEnv,site:Site,hint:Locator,g:GitReader,retry?:Retry,schedule?:(ticket:Retry)=>Promise<void>){
+async function forward(env:BoundedEnv,site:Site,hint:Locator,g:GitReader,retry?:Retry,schedule?:(ticket:Retry)=>Promise<void>,localReceipt?:(query:ReceiptQuery)=>Promise<boolean>){
   const db=env.ISSUE_SNAPSHOTS;
   ensure(db,'PAGES_DISPATCH_STORAGE');
   const key=[site.repositoryId,site.workflowId,hint.id,hint.run_attempt];
@@ -57,6 +58,15 @@ async function forward(env:BoundedEnv,site:Site,hint:Locator,g:GitReader,retry?:
     existing.retry_after!==null && Date.now()>=existing.retry_after && existing.controller_sha===retry.policy && env.BOUNDED_CONTROLLER_SHA===retry.policy;
   const reservedAt=retrying?new Date(Math.max(Date.now(),Date.parse(retry!.reservation)+1)).toISOString():
     existing?.reserved_at??new Date().toISOString();
+  const receipt=async(policy:string)=>{
+    const query={site,hint,policy,reservation:reservedAt};
+    if(localReceipt)return localReceipt(query);
+    ensure(env.BOUNDED_RECHECK,'PAGES_RETRY_STORAGE');
+    const stub=env.BOUNDED_RECHECK.get(env.BOUNDED_RECHECK.idFromName('pages-retry:v1:'+key.join(':')));
+    const response=await stub.fetch(new Request('https://bounded.internal/pages-receipt',{method:'POST',body:JSON.stringify(query)}));
+    ensure(response.ok,'PAGES_RECEIPT_QUERY');
+    return (await response.json() as {confirmed:boolean}).confirmed===true;
+  };
   const scheduleRetry=async(ticket:Retry)=>{
     if(schedule){await schedule(ticket);return;}
     ensure(env.BOUNDED_RECHECK,'PAGES_RETRY_STORAGE');
@@ -71,7 +81,7 @@ async function forward(env:BoundedEnv,site:Site,hint:Locator,g:GitReader,retry?:
         reservation:existing.reserved_at,due:existing.retry_after,expires:Date.parse(existing.run_created_at)+30*86400_000});
       return;
     }
-    ensure(await recordReceipt(db,g,site,hint,existing.controller_sha,reservedAt),'PAGES_DISPATCH_UNCONFIRMED');return;
+    ensure(await receipt(existing.controller_sha),'PAGES_DISPATCH_UNCONFIRMED');return;
   }
   const base='/repos/'+TARGET.name;
   const workflow=await g.json(TARGET.id,base+'/actions/workflows/pages.yml');
@@ -131,10 +141,10 @@ async function forward(env:BoundedEnv,site:Site,hint:Locator,g:GitReader,retry?:
       ensure(saved.success&&saved.meta.changes===1,'PAGES_REJECTION_STORE');
       await scheduleRetry(ticket);return;
     }
-    if(ownsClaim&&await recordReceipt(db,g,site,hint,pin,reservedAt))return;
+    if(ownsClaim&&await receipt(pin))return;
     throw error; // Keep the reservation even if the POST response or the worker was interrupted.
   }
-  if(ownsClaim)ensure(await recordReceipt(db,g,site,hint,pin,reservedAt),'PAGES_DISPATCH_UNCONFIRMED');
+  if(ownsClaim)ensure(await receipt(pin),'PAGES_DISPATCH_UNCONFIRMED');
 }
 
 
@@ -143,6 +153,22 @@ async function forward(env:BoundedEnv,site:Site,hint:Locator,g:GitReader,retry?:
 export class PagesRetry {
   constructor(private store:DurableObjectStorage,private env:BoundedEnv,private reader:()=>GitReader=()=>new BoundedGitHub(env),
     private sites:readonly Site[]=registry.publicSites){}
+  async receipt(query:ReceiptQuery){
+    const now=Date.now(),prior=await this.store.get<{reservation:string;until:number}>('pagesReceiptCooldown');
+    if(prior?.reservation===query.reservation && now<prior.until)return false;
+    const db=this.env.ISSUE_SNAPSHOTS;ensure(db,'PAGES_DISPATCH_STORAGE');
+    try{return await recordReceipt(db,this.reader(),query.site,query.hint,query.policy,query.reservation);}
+    catch(error){
+      const floor=retryAfterTime(error,Date.now(),Date.parse(query.reservation)+30*86400_000);
+      if(floor===undefined)throw error;
+      await this.store.transaction(async t=>{
+        const current=await t.get<{reservation:string;until:number}>('pagesReceiptCooldown');
+        if(!current||current.reservation<query.reservation||current.reservation===query.reservation&&current.until<floor)
+          await t.put('pagesReceiptCooldown',{reservation:query.reservation,until:floor});
+      });
+      return false;
+    }
+  }
   async watch(watch:Watch){
     await this.store.transaction(async t=>{
       if(await t.get('pagesWatch'))return;
@@ -171,11 +197,11 @@ export class PagesRetry {
         // bounded observation period so a later webhook can still confirm it.
         const deadline=Math.min(expires,Date.parse(row.reserved_at)+3*probeInterval);
         if(Date.now()<deadline){
-          try{if(!await recordReceipt(db,this.reader(),site,hint,policy,row.reserved_at))return;}
-          catch(error){
-            const now=Date.now(),floor=retryAfterTime(error,now,deadline);
-            if(floor===undefined)throw error;
-            await this.store.setAlarm(Math.min(deadline,Math.max(now+probeInterval,floor)));return;
+          if(!await this.receipt({site,hint,policy,reservation:row.reserved_at})){
+            const cooldown=await this.store.get<{reservation:string;until:number}>('pagesReceiptCooldown');
+            if(cooldown?.reservation===row.reserved_at)
+              await this.store.setAlarm(Math.min(deadline,Math.max(Date.now()+probeInterval,cooldown.until)));
+            return;
           }
         }
       }
@@ -206,7 +232,7 @@ export class PagesRetry {
       // Arm recovery before I/O. A crash after acquiring the D1 reservation
       // makes this ticket stale and can never authorize a second POST.
       await this.store.setAlarm(Math.min(now+60000,ticket.expires));
-      try{await forward(this.env,site,ticket.hint,this.reader(),ticket,next=>this.schedule(next));}
+      try{await forward(this.env,site,ticket.hint,this.reader(),ticket,next=>this.schedule(next),query=>this.receipt(query));}
       catch(error){again=Math.max(now+60000,retryAfterTime(error,now,now+60000-1)??0);}
     }
     await this.store.transaction(async t=>{

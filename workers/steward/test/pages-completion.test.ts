@@ -18,8 +18,9 @@ function fixture(){
   const db=new ReleaseTestDb();
   db.database.exec(readFileSync(new URL('../../../packages/runtime/migrations/0020_pages_completion_dispatches.sql',import.meta.url),'utf8'));
   db.database.exec(readFileSync(new URL('../../../packages/runtime/migrations/0021_pages_completion_retry_after.sql',import.meta.url),'utf8'));
+  const receiptStorage=new SqliteDurableStorage();
   const config={...env,ISSUE_SNAPSHOTS:db.binding(),BOUNDED_RECHECK:{idFromName:(x:string)=>x,get:()=>({
-    fetch:async(req:Request)=>{expect(new URL(req.url).pathname).toBe('/pages-watch');return Response.json({});}
+    fetch:async(req:Request)=>{if(new URL(req.url).pathname==='/pages-receipt')return Response.json({confirmed:await new PagesRetry(receiptStorage as any,config,()=>g,[site]).receipt(await req.json() as any)});expect(new URL(req.url).pathname).toBe('/pages-watch');return Response.json({});}
   })}};
   const result={lost:false,visible:true,rejections:0,rejectionStatus:429,denied:false};
   const receipt={id:99,path:'.github/workflows/'+receiver,display_title:'Pages completion '+TARGET.id+' 12 1',event:'workflow_dispatch',
@@ -176,6 +177,7 @@ it.each([false,true])('bounds receipt-only alarm recovery when the receipt becom
  const f=fixture(),store=new SqliteDurableStorage();
  const object=()=>new PagesRetry(store as any,f.config,()=>f.g,[f.site]);
  f.config.BOUNDED_RECHECK.get=()=>({fetch:async(req:Request)=>{
+   if(new URL(req.url).pathname==='/pages-receipt')return Response.json({confirmed:await object().receipt(await req.json() as any)});
    await object().watch(await req.json() as any);return Response.json({});
  }});
  f.result.visible=false;await expect(f.forward()).rejects.toThrow('PAGES_DISPATCH_UNCONFIRMED');
@@ -197,6 +199,7 @@ it('honors a receipt GET retry floor beyond the remaining observation window',as
  const f=fixture(),store=new SqliteDurableStorage();
  const object=()=>new PagesRetry(store as any,f.config,()=>f.g,[f.site]);
  f.config.BOUNDED_RECHECK.get=()=>({fetch:async(req:Request)=>{
+   if(new URL(req.url).pathname==='/pages-receipt')return Response.json({confirmed:await object().receipt(await req.json() as any)});
    await object().watch(await req.json() as any);return Response.json({});
  }});
  f.result.visible=false;await expect(f.forward()).rejects.toThrow('PAGES_DISPATCH_UNCONFIRMED');
@@ -204,6 +207,8 @@ it('honors a receipt GET retry floor beyond the remaining observation window',as
  try{
    f.json.mockRejectedValueOnce(new GitHubRetryError(429,'601',false));
    await object().alarm();
+   const callsBeforeRedelivery=f.json.mock.calls.length;await expect(f.forward()).rejects.toThrow('PAGES_DISPATCH_UNCONFIRMED');
+   expect(f.json.mock.calls).toHaveLength(callsBeforeRedelivery);
    const deadline=(await store.get<number>('__alarm'))!;
    expect(deadline-first).toBeGreaterThan(5*60000);expect(deadline-first).toBeLessThanOrEqual(601000);
    const calls=f.json.mock.calls.length;clock.mockReturnValue(deadline);await object().alarm();

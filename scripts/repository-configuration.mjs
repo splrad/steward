@@ -13,7 +13,7 @@ import {ciPath,deliveryPath,inspectRepository,versionsPath} from './configuratio
 const exec=promisify(execFile), lockPath='.github/workflows/actions.lock';
 import {candidates,configurationForm,parseForm,planFromForm} from './configuration-form.mjs';
 import {readBotComment,readSession,writeSession} from './configuration-session.mjs';
-import {dashboardRequest,requestFromComment} from './configuration-dashboard.mjs';
+import {dashboardRequest,processDashboardComments,requestFromComment} from './configuration-dashboard.mjs';
 const receipt=(run)=>'Configuration request: '+run.id+'/'+run.run_attempt;
 const page='.github/repository-configuration.md';
 const pathsForModel=/^\.github\/(workflows\/[^/]+\.ya?ml|actions\/.+\/action\.ya?ml)$/;
@@ -266,22 +266,26 @@ export async function main() {
   repo={...repo,owner:{login:owner},name};
   await app.forTemplateRepository(id,async(writeToken,readToken)=>{
     const api=client(readToken,repo),write=client(writeToken,repo);
-    const base=(await api.rest.repos.getBranch({...api.target,branch:repo.default_branch})).data.commit.sha;
     const {REQUEST_RUN,REQUEST_ATTEMPT,ISSUE_NUMBER,COMMENT_ID}=process.env;
     const native=Boolean(ISSUE_NUMBER || COMMENT_ID);
     must(native ? !REQUEST_RUN && !REQUEST_ATTEMPT && process.env.GITHUB_ACTOR_ID==='301115370' : REQUEST_RUN && REQUEST_ATTEMPT,'Invalid configuration locator');
-    const {run,data,dashboard,publicRequests}=native
-      ?await requestFromComment(api,repo,base,ISSUE_NUMBER,COMMENT_ID,process.env.GITHUB_RUN_ID,process.env.GITHUB_RUN_ATTEMPT)
-      :await requestFromRun(api,readToken,repo,REQUEST_RUN,REQUEST_ATTEMPT,base);
-    const apply=options=>app.forRepository(id,async token=>
-      reconcile({repo,base,run,data,api,write,actions:client(token,repo),readToken,...options}),'configuration-actions');
-    if(!dashboard || run.event==='pull_request_review')return apply();
-    const current=(await api.rest.repos.get(api.target)).data;
-    must(current.id===id && typeof current.has_issues==='boolean' && current.default_branch===repo.default_branch,'Repository settings changed');
-    repo.has_issues=current.has_issues;
-    if(repo.has_issues)return app.forRepository(id,token=>dashboardRequest({repo,base,api,issues:client(token,repo),
-      run,data,publicRequests,load:snapshot,apply}),'configuration-issues');
-    if(!native && !data.closed && !['schedule','issues'].includes(run.event))return apply();
+    const processOne=async commentId=>{
+      const base=(await api.rest.repos.getBranch({...api.target,branch:repo.default_branch})).data.commit.sha;
+      const {run,data,dashboard,publicRequests}=native
+        ?await requestFromComment(api,repo,base,ISSUE_NUMBER,commentId,process.env.GITHUB_RUN_ID,process.env.GITHUB_RUN_ATTEMPT)
+        :await requestFromRun(api,readToken,repo,REQUEST_RUN,REQUEST_ATTEMPT,base);
+      const apply=options=>app.forRepository(id,async token=>
+        reconcile({repo,base,run,data,api,write,actions:client(token,repo),readToken,...options}),'configuration-actions');
+      if(!dashboard || run.event==='pull_request_review')return apply();
+      const current=(await api.rest.repos.get(api.target)).data;
+      must(current.id===id && typeof current.has_issues==='boolean' && current.default_branch===repo.default_branch,'Repository settings changed');
+      repo.has_issues=current.has_issues;
+      if(repo.has_issues)return app.forRepository(id,token=>dashboardRequest({repo,base,api,issues:client(token,repo),
+        run,data,publicRequests,load:snapshot,apply}),'configuration-issues');
+      if(!native && !data.closed && !['schedule','issues'].includes(run.event))return apply();
+    };
+    if(native)return processDashboardComments(COMMENT_ID,processOne);
+    return processOne();
   },'configuration-read');
 }
 if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) main().catch(error=>{
