@@ -11,16 +11,19 @@ const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 const check=(condition,code)=>{if(!condition)throw Error('REPOSITORY_POLICY_PROJECTION_'+code);};
 const identity={name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'};
 
-export async function projectMergedRepositoryPolicy(app, repository, source, observed, readSource, ports) {
+export async function projectMergedRepositoryPolicy(app, repository, source, observe, readSource, ports) {
   const getPolicy=ports.getPolicy??mergedRepositoryPolicy;
   const readMerged=()=>getPolicy(app,repository,{allowRegisteredRename:true});
   const adopted=await readMerged();
   if(!adopted.policy||adopted.policy.repository!==repository.full_name)return;
   const selected=adopted.policy;
-  check(selected.productCi.every(path=>observed.productCi.includes(path)),'PRODUCT_CI');
-  if(selected.site) {
-    check(await readSource(selected.site.workflow),'PAGES');
-    if(selected.site.source==='release')check(observed.release?.units.some(unit=>unit.id===selected.site.unit),'PAGES');
+  if(selected.adoption==='central') {
+    const observed=(await observe()).policy;
+    check(selected.productCi.every(path=>observed.productCi.includes(path)),'PRODUCT_CI');
+    if(selected.site) {
+      check(await readSource(selected.site.workflow),'PAGES');
+      if(selected.site.source==='release')check(observed.release?.units.some(unit=>unit.id===selected.site.unit),'PAGES');
+    }
   }
   const content=projectionBytes(selected);
   const root=await mkdtemp(join(await nativeTemporaryParent('REPOSITORY_POLICY_PROJECTION_TEMP_LINK'),'repository-policy-projection-'));

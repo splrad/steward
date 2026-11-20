@@ -131,7 +131,7 @@ test('projection writer uses one path, scoped credentials and reads back only ap
       writes++;bytes=Buffer.from(request.changes[0].content);return {status:'APPLIED'};
     }
   };
-  const run=override=>projectMergedRepositoryPolicy(app,product,source,policy,path=>productFiles.get(path),{...ports,...override});
+  const run=override=>projectMergedRepositoryPolicy(app,product,source,async()=>({policy}),path=>productFiles.get(path),{...ports,...override});
   assert.equal(await run(),'APPLIED');
   assert.equal(await run(),'UNCHANGED');
   assert.equal(writes,1);
@@ -145,6 +145,30 @@ test('projection writer uses one path, scoped credentials and reads back only ap
   bytes=null;
   await assert.rejects(run({currentSource:async()=>candidate}),/PROJECTION_MOVED/);
   assert.equal(writes,1);
+});
+
+test('an approved rollback replaces the central projection when product declarations drift',async()=>{
+  const {policy}=await propose(product,productFiles);
+  const selected={...policy,adoption:'central',site:{workflow:pages,mode:'build-only',source:'default-branch'}};
+  const app={forRepository:(_id,operation)=>operation('fixture')};
+  const path='configuration/repository.json';
+  let bytes=Buffer.from(projectionBytes(selected));
+  const publish=(adoption,observe)=>projectMergedRepositoryPolicy(app,product,source,observe,async()=>null,{
+    getPolicy:async()=>({commit:base,policy:{...selected,adoption}}),currentSource:async()=>source,
+    getState:async()=>({remote:'/fixture',snapshot:{head:base,currentPaths:[path]},readBytes:async()=>bytes}),
+    write:async request=>{
+      assert.equal(request.changes[0].previousSha256,createHash('sha256').update(bytes).digest('hex'));
+      bytes=Buffer.from(request.changes[0].content);
+      return {status:'APPLIED'};
+    }
+  });
+  await assert.rejects(publish('central',async()=>({policy:{...policy,productCi:[]}})),/PROJECTION_PRODUCT_CI/);
+  await assert.rejects(publish('central',async()=>({policy})),/PROJECTION_PAGES/);
+  assert.equal(JSON.parse(bytes).adoption,'central');
+  for(const adoption of ['paused','legacy']) {
+    assert.equal(await publish(adoption,async()=>assert.fail('Rollback read product declarations')),'APPLIED');
+    assert.equal(JSON.parse(bytes).adoption,adoption);
+  }
 });
 
 test('registry rejects workflow selections the native consumers cannot execute',async()=>{
@@ -176,7 +200,7 @@ test('native projection writer preserves a concurrent quality record on the same
     const old=local('rev-parse','HEAD');
     const {policy}=await propose(product,productFiles);
     const app={forRepository:(_id,operation)=>operation('fixture')};
-    const result=await projectMergedRepositoryPolicy(app,product,source,policy,path=>productFiles.get(path),{
+    const result=await projectMergedRepositoryPolicy(app,product,source,async()=>({policy}),path=>productFiles.get(path),{
       getPolicy:async()=>({commit:base,policy}),currentSource:async()=>source,
       getState:async()=>{
         const head=state('rev-parse','refs/heads/'+branch);

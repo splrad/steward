@@ -348,7 +348,8 @@ async function applyRequests(ids, withGovernance, withAdmin, project) {
         const source = await ref();
         if (!source) return { result: 'awaiting-default-branch' };
         const read = revisionReader(sourceApi, source);
-        const proposal = await registrationProposal(repo, read);
+        let proposal;
+        const observe = () => proposal ??= registrationProposal(repo, read);
         const currentSource=async()=>{
           const { data } = await sourceApi.request('GET /repositories/{id}', { id });
           const fresh = checkRepository(data, id);
@@ -356,10 +357,10 @@ async function applyRequests(ids, withGovernance, withAdmin, project) {
             fresh.default_branch !== repo.default_branch) return null;
           return ref();
         };
-        const outcome=await withAdmin('registration-write', (api, admin) =>
-          reconcileRegistration(api, admin, repo, source, proposal, currentSource));
-        if(project)await project(repo, source, proposal.policy, read, {currentSource});
-        return outcome;
+        if(project)await project(repo, source, observe, read, {currentSource});
+        const observed=await observe();
+        return withAdmin('registration-write', (api, admin) =>
+          reconcileRegistration(api, admin, repo, source, observed, currentSource));
         });
       outcomes.push(outcome);
     } catch (error) { errors.push(error); }
