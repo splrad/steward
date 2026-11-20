@@ -72,7 +72,7 @@ const noGateWrites = () => {
 };
 
 describe('exact legacy Gate consumer retirement', () => {
-  it.each(['unavailable', 'invalid'])('preserves pending check and classification when the retirement PR lookup is %s', async failure => {
+  it.each(['unavailable', 'invalid'])('preserves the pending check without dispatching retired classification when the retirement PR lookup is %s', async failure => {
     if (failure === 'unavailable') vi.mocked(GitHubClient.prototype.getPullRequest).mockRejectedValue(new Error('lookup unavailable'));
     else vi.mocked(GitHubClient.prototype.getPullRequest).mockResolvedValue(null as any);
     const response = await handleWebhook(request('pull_request', {
@@ -82,7 +82,7 @@ describe('exact legacy Gate consumer retirement', () => {
     expect(GitHubClient.prototype.createCheckRun).toHaveBeenCalledWith('splrad', 'steward', expect.objectContaining({
       name: 'PR Validation Gate', head_sha: 'c'.repeat(40), status: 'in_progress',
     }));
-    expect(dispatchWorkflow).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ workflow: 'pr-classification.yml' }));
+    expect(dispatchWorkflow).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ workflow: 'pr-classification.yml' }));
   });
 
   it.each(repositories)('blocks queued DO producers for $full_name/$default_branch', async repository => {
@@ -98,10 +98,10 @@ describe('exact legacy Gate consumer retirement', () => {
     expect(GitHubClient.prototype.listAllCheckRuns).not.toHaveBeenCalled();
   });
 
-  it.each(['opened', 'synchronize', 'reopened', 'edited'])('keeps classification while retiring PR %s Gate with evaluator absent', async action => {
+  it.each(['opened', 'synchronize', 'reopened', 'edited'])('does not dispatch retired classification while retiring PR %s Gate with evaluator absent', async action => {
     const repository = repositories[1]!;
     expect((await handleWebhook(request('pull_request', { action, repository, pull_request: pull() }), { ...env(), WORKFLOW_EVALUATOR_SHA: undefined })).status).toBe(202);
-    expect(dispatchWorkflow).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ workflow: 'pr-classification.yml' }));
+    expect(dispatchWorkflow).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ workflow: 'pr-classification.yml' }));
     noGateWrites();
   });
 

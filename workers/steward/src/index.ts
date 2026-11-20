@@ -17,10 +17,9 @@ import { evaluatorSha, trustedContractAuthorities } from './workflow-evaluator.j
 import { isStewardOwnedPullRequest } from "../support/core/issues.js";
 import {selectContractAuthority} from "../support/core/workflow-contract-authority.js";
 import {evaluateRemoteWorkflowContract} from "../support/github/workflow-contract.js";
-import { createAppJwt, createInstallationToken, dispatchWorkflow, GitHubClient, GitHubRequestError, isDependabotReviewEligible } from "../support/github/index.js";
+import { createAppJwt, createInstallationToken, dispatchWorkflow, GitHubClient, GitHubRequestError } from "../support/github/index.js";
 import { dispatchQualityEvent } from "./quality-event.js";
 import repositoryCatalog from "../config/repositories.json" with { type: "json" };
-import semanticCatalog from "../config/labels/pr-semantics.json" with { type: "json" };
 import { handleBodyWriteInternalRequest } from "./pr-body-api.js";
 import { confirmPullRequestBodyWriteIntent, processPullRequestBodyEditedDelivery, PullRequestBodyWriteIntentStore, type PullRequestBodyWriteIntent } from "./pr-body-write-intents.js";
 
@@ -439,7 +438,7 @@ function configurationRepository(env: Env, payload: any): boolean {
 }
 
 async function dispatchConfigurationLocator(env: Env, reader: GitReader, inputs: Record<string,string>) {
-  const policy = await promotedController(reader, env.RELEASE_RELAY_DEPLOYMENT_SHA);
+  const policy = await promotedController(reader, env.RELEASE_RELAY_DEPLOYMENT_SHA ?? env.BOUNDED_DEPLOYMENT_SHA);
   await dispatchFixed(reader, CENTRAL.id, 'repository-configuration-event.yml', policy, inputs);
 }
 
@@ -496,16 +495,6 @@ export async function forwardConfigurationCompletion(env: Env, payload: any, rea
   });
 }
 
-async function dispatchDependabotReview(env: Env, repository: any, pull: any, action: string, deliveryId: string, previousBaseRef?: unknown): Promise<boolean> {
-  const enteredDefault = action === "edited" && typeof previousBaseRef === "string" && previousBaseRef.length > 0
-    && previousBaseRef !== repository?.default_branch && pull?.base?.ref === repository?.default_branch;
-  if ((!enteredDefault && !["opened", "synchronize", "reopened", "ready_for_review"].includes(action))
-    || !repository || !isManaged(repository) || repositoryConfiguration(repository).managed !== true
-    || !isDependabotReviewEligible(repository, pull, String(pull?.head?.sha ?? ""))
-    || typeof pull.head.ref !== "string" || !pull.head.ref) return false;
-  await send(env, "native-review.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), eventAfterSha: pull.head.sha, policySha: env.POLICY_SHA });
-  return true;
-}
 function repositoryBeforeEdit(repository: any, changes: any): any {
   const previousVisibility = changes?.visibility?.from;
   return {
@@ -603,21 +592,11 @@ async function handleExistingEvent(env:Env,event:string,payload:any,deliveryId:s
     if (event === "push") {
       const repository = payload.repository; if (!repository || !isManaged(repository) || repository.fork || repository.archived || repository.disabled || payload.deleted || !String(payload.ref).startsWith("refs/heads/") || payload.after === ZERO_SHA) return response(204);
       if (payload.ref === `refs/heads/${repository.default_branch}`) {
-        if (payload.before === ZERO_SHA) await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger: "default-branch-push", deliveryId, policySha: env.POLICY_SHA });
-        else {
-          await send(env, "pr-classification.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", policySha: env.POLICY_SHA });
-        }
+        if (payload.before !== ZERO_SHA) return response(204);
+        await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger: "default-branch-push", deliveryId, policySha: env.POLICY_SHA });
         return response(202);
       }
       return response(204);
-    }
-    if (event === "pull_request" && ["labeled", "unlabeled"].includes(action)) {
-      const repository = payload.repository; const pull = payload.pull_request;
-      const riskLabels = semanticCatalog.roles.riskFlags.definitions.flatMap(definition => definition.githubLabel ? [definition.githubLabel.name] : []);
-      if (!repository || !isManaged(repository) || !pull || pull.state !== "open" || pull.base?.ref !== repository.default_branch
-        || !riskLabels.includes(payload.label?.name)) return response(204);
-      await send(env, "pr-classification.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), eventHeadSha: pull.head.sha, policySha: env.POLICY_SHA });
-      return response(202);
     }
     if (event === "pull_request" && ["opened", "synchronize", "reopened", "edited"].includes(action)) {
       const repository = payload.repository; const pull = payload.pull_request;
@@ -625,19 +604,13 @@ async function handleExistingEvent(env:Env,event:string,payload:any,deliveryId:s
       if (Number.isSafeInteger(pull.number))
         await refreshWorkflowContractChecks(env, Number(repository.id), pull.number);
       if (!isManaged(repository)) return response(env.WORKFLOW_EVALUATOR_SHA === undefined ? 204 : 202);
-      const targetsDefault = pull.base?.ref === repository.default_branch;
-      let dispatched = false;
-      if (targetsDefault) {
-        await ensureValidationPending(env, repository, pull);
-        await send(env, "pr-classification.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), eventHeadSha: pull.head.sha, policySha: env.POLICY_SHA });
-        dispatched = true;
-      }
-      const reviewDispatched = await dispatchDependabotReview(env, repository, pull, action, deliveryId, payload.changes?.base?.ref?.from);
-      return response(dispatched || reviewDispatched ? 202 : 204);
+      if (pull.base?.ref !== repository.default_branch) return response(204);
+      await ensureValidationPending(env, repository, pull);
+      return response(202);
     }
     if (event === "pull_request" && action === "ready_for_review") {
       const repository = payload.repository; const pull = payload.pull_request;
-      if (!repository || !isManaged(repository) || !pull || !isStewardOwnedPullRequest(pull, Number(repository.id)) || pull.draft !== false || pull.base?.ref !== repository.default_branch) return response(await dispatchDependabotReview(env, repository, pull, action, deliveryId) ? 202 : 204);
+      if (!repository || !isManaged(repository) || !pull || !isStewardOwnedPullRequest(pull, Number(repository.id)) || pull.draft !== false || pull.base?.ref !== repository.default_branch) return response(204);
       return response(await requestMaintainersReview(env, repository, pull) ? 202 : 204);
     }
     if (event === "pull_request" && action === "closed" && payload.pull_request?.merged === false) return response(204);

@@ -92,7 +92,7 @@ export class BoundedGitHub implements GitReader {
      ensure(settings['separate-pull-requests']===false&&new Set(roots).size===roots.length&&JSON.stringify(roots)===JSON.stringify(Object.keys(settings.packages).sort())&&
        Object.keys(versions).every(path=>roots.includes(path)),'CANDIDATE_UNIT_COVERAGE');
      target.units=delivery.units.map(({id,path}:any)=>({id,path}));
-   }catch(error){if(error instanceof Error&&error.message==='GITHUB_HTTP_404')return;throw error;}
+   }catch(error){if(error instanceof Error && error.message === 'GITHUB_HTTP_404')return;throw error;}
    ensure((await scoped.json(id,refPath)).object?.sha===ref.object.sha,'CANDIDATE_SOURCE_MOVED');
    return scoped;
  }

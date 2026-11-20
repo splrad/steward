@@ -120,7 +120,7 @@ export class BoundedRecheck {
     }
     await this.store.transaction(r=>{
       if(!r || !r.intent || r.intent.key!==claim.intent.key) return {record:r,result:undefined};
-      if('retryAfter' in outcome&&outcome.retryAfter!==undefined){r.retryAfter=Math.max(r.retryAfter??0,outcome.retryAfter);r.intent.retryAfter=r.retryAfter;if(r.status==='PENDING'&&r.nextAt!==null)r.nextAt=Math.min(Math.max(r.nextAt,r.retryAfter),r.deadline);}
+      if('retryAfter' in outcome && outcome.retryAfter !== undefined){r.retryAfter=Math.max(r.retryAfter??0,outcome.retryAfter);r.intent.retryAfter=r.retryAfter;if(r.status==='PENDING'&&r.nextAt!==null)r.nextAt=Math.min(Math.max(r.nextAt,r.retryAfter),r.deadline);}
       if(r.intent.generation!==claim.intent.generation || r.generation!==claim.record.generation || (r.status!=='PENDING' && !(claim.confirm && claim.intent.confirmations===3 && r.reason==='UNKNOWN_DELIVERY'))) {
         // A late verified fact is retained for handoff, never a new timer or permission.
         if(outcome.kind==='done')r.evidence=outcome.evidence;

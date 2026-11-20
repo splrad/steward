@@ -79,7 +79,7 @@ export class QualityEvent {
     ensure(!record.retryAt||Date.now()>=record.retryAt,'QUALITY_RATE_LIMIT');
     ensure(this.env.BOUNDED_RECHECK_ENABLED==='true','QUALITY_QUIESCED');
     // The explicit release pin fences older controllers whose quality workflow lacks these inputs.
-    const deployment=this.env.RELEASE_RELAY_DEPLOYMENT_SHA;
+    const deployment=this.env.RELEASE_RELAY_DEPLOYMENT_SHA??this.env.BOUNDED_DEPLOYMENT_SHA;
     ensure(deployment,'QUALITY_DEPLOYMENT');
     const reader=this.reader();
     let policy:string;

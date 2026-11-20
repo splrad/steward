@@ -13,7 +13,7 @@ function configurationApi(sha:string){
 
 it('forwards only the locator of a successful same-repository default branch configuration attempt',async()=>{
   const sha='a'.repeat(40),org=302208797;
-  const env={ORGANIZATION_ID:String(org),INSTALLATION_ID:'123',BOUNDED_RECHECK_ENABLED:'true',RELEASE_RELAY_DEPLOYMENT_SHA:sha};
+  const env={ORGANIZATION_ID:String(org),INSTALLATION_ID:'123',BOUNDED_RECHECK_ENABLED:'true',BOUNDED_DEPLOYMENT_SHA:sha};
   const repository={id:42,full_name:'splrad/new-product',private:false,owner:{id:org},archived:false,disabled:false,fork:false,default_branch:'trunk'};
   const run={event:'workflow_dispatch',id:334,run_attempt:2,repository,head_repository:repository,head_branch:'trunk',path:'.github/workflows/repository-configuration.yml',status:'completed',conclusion:'success'};
   const payload={action:'completed',installation:{id:123},organization:{id:org},repository,workflow_run:run};

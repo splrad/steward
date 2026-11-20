@@ -28,13 +28,13 @@ it('targets the native dynamic run even when GitHub lists no associated pulls', 
    if(path==='/wait')pending.push(await request.text());
    return Response.json({generation:0});
  }})};
- const env={INSTALLATION_ID:String(install),BOUNDED_RECHECK_ENABLED:'true',RELEASE_RELAY_DEPLOYMENT_SHA:'c'.repeat(40),BOUNDED_RECHECK:ns};
+ const env={INSTALLATION_ID:String(install),BOUNDED_RECHECK_ENABLED:'true',BOUNDED_DEPLOYMENT_SHA:'c'.repeat(40),BOUNDED_RECHECK:ns};
  const object=new QualityEvent(storage as any,env as any,()=>({json} as any));
  const record={delivery:'delivery-123',event:'workflow_run',target,phase:'pending' as const};
  await object.register(record);
  expect(pending.map(x=>JSON.parse(x).kind)).toEqual(['quality']);
  expect(json.mock.calls.some(([,path])=>path.endsWith('/dispatches'))).toBe(false);
- config=Buffer.from(JSON.stringify({schemaVersion:1,enabled:true,deploymentSha:env.RELEASE_RELAY_DEPLOYMENT_SHA}));
+ config=Buffer.from(JSON.stringify({schemaVersion:1,enabled:true,deploymentSha:env.BOUNDED_DEPLOYMENT_SHA}));
  await object.forward();await object.register(record);await object.forward();
  expect(json.mock.calls.filter(([,path])=>path.endsWith('/dispatches'))).toHaveLength(1);
  expect(json).toHaveBeenLastCalledWith(id,'/repos/splrad/steward/actions/workflows/quality-language-summary.yml/dispatches',
