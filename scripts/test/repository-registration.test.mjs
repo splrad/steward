@@ -104,6 +104,22 @@ test('product reads only selected CI and Pages from protected state, with digest
   assert.equal((await workflowPagesOptions(reader,{...env,STEWARD_DOCS_SOURCE:'default-branch',
     STEWARD_DOCS_APPROVED_SOURCE:''},async()=>selection)).publicAllowed,false);
   assert.equal((await workflowPagesOptions(reader,{...env,STEWARD_DOCS_SOURCE:'default-branch'},async()=>({...selection,site:null}))).options.mode,'');
+  const required={...env,STEWARD_DOCS_SOURCE:'default-branch',STEWARD_REPOSITORY_POLICY_REQUIRED:'true'};
+  for(const pending of [null,{...selection,adoption:'paused'},{...selection,adoption:'legacy'}]) {
+    assert.throws(()=>selectedProductWorkflows(pending,[ci],true,true),/PROJECTION_REQUIRED/);
+    await assert.rejects(workflowPagesOptions(reader,required,async()=>pending),/PROJECTION_REQUIRED/);
+  }
+  await assert.rejects(workflowPagesOptions(reader,required,async()=>{throw Error('PROJECTION_READ_DENIED');}),/PROJECTION_READ_DENIED/);
+  const revised={...selection,site:null};
+  assert.equal((await workflowPagesOptions(reader,required,async()=>selection)).publicAllowed,true);
+  assert.deepEqual(selectedProductWorkflows(selection,[ci,'.github/workflows/unselected.yml'],true,true),[ci]);
+  assert.equal((await workflowPagesOptions(reader,required,async()=>revised)).publicAllowed,false);
+  const restored={...selection,adoption:'legacy',productCi:[],site:null};
+  const released={...required,STEWARD_REPOSITORY_POLICY_REQUIRED:''};
+  assert.equal((await workflowPagesOptions(reader,released,async()=>restored)).publicAllowed,true);
+  assert.deepEqual(selectedProductWorkflows(restored,[ci],true),[ci]);
+  await assert.rejects(workflowPagesOptions(reader,{...required,STEWARD_REPOSITORY_POLICY_REQUIRED:'typo'},async()=>selection),
+    /PROJECTION_MODE/);
   await assert.rejects(readRepositoryProjection(reader,1),/PROJECTION_INVALID/);
   protectedRules=false;
   await assert.rejects(readRepositoryProjection(reader,product.id),/PROJECTION_PROTECTION/);
@@ -504,10 +520,15 @@ test('manual central PRs and merged choices keep authority over discovered diffe
   assert.deepEqual(state.writes,[['comment',87]]);
   assert.match(state.comments[1].body,/实际读回.*null/);
   assert.match(state.comments[0].body,/人工备注/);
+  await reconcileRegistration(api,admin,product,source,
+    async()=>({...proposal,policy:{...proposal.policy,site:manual.site}}),async()=>source);
+  assert.match(state.comments[1].body,/核对完成/);
+  assert.doesNotMatch(state.comments[1].body,/待确认/);
+  assert.equal(draft.body,'人工内容');
   state.open.pop();
   const review=await run();
   assert.deepEqual(review,{result:'review-required',number:55,differences:['site'],pending:[]});
-  assert.deepEqual(state.writes,[['comment',87],['comment',55]]);
+  assert.deepEqual(state.writes,[['comment',87],['update-comment',87],['comment',55]]);
   assert.equal(state.comments[2].issue_number,55);
   assert.equal(state.trees.get(base).get(registrationPath(product)),JSON.stringify(manual));
   const renamed={...product,name:'LayerScape-next',full_name:'splrad/LayerScape-next'};
@@ -526,10 +547,18 @@ test('an adjustment draft changes only compatible selections and preserves the e
   assert.equal((await reconcile(source)).result,'created');
   assert.deepEqual(JSON.parse(state.trees.get(candidate).get(registrationPath(product))),{...current,productCi:[ci]});
   assert.match(state.open[0].title,/调整/);
+  assert.match(state.open[0].body,/- 本次修改 `productCi`\r?\n/);
   assert.match(state.open[0].body,/已批准值、读回值及建议/);
   assert.match(state.open[0].body,/obsolete\.yml/);
   assert.equal((await reconcile(base)).result,'reused');
   assert.deepEqual(state.writes.map(([kind])=>kind),['ref','commit','pull']);
+  const withAnotherSource={...proposal,policy:{...proposal.policy,site:{workflow:pages,mode:'build-only',source:'default-branch'}}};
+  await reconcileRegistration(api,admin,product,candidate,async()=>withAnotherSource,async()=>candidate);
+  assert.match(state.comments[0].body,/"实际读回": \{/);
+  await reconcile(source);
+  assert.match(state.comments[0].body,/"实际读回": null/);
+  assert.deepEqual(state.writes.slice(-2),[['comment',42],['update-comment',42]]);
+  assert.equal(state.comments.length,1);
 });
 
 test('a merged registry removal cannot create a replacement registration draft',async()=>{

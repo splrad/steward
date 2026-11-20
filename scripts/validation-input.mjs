@@ -9,7 +9,7 @@ import {loadPolicy,dependencyMode,assertGovernanceOnlyScope,configurationCallers
 import {parseRegistration,registrationPath,registrationWorkflow} from './repository-registration-policy.mjs';
 import {assertLifecycleScope} from './private-lifecycle-policy.mjs';
 import {NativeEvidenceReader,nativeEvidenceTransport} from '../packages/runner/dist/index.js';
-import {readRepositoryProjection} from './repository-policy-projection.mjs';
+import {assertCentralProjection,centralProjectionRequired,readRepositoryProjection} from './repository-policy-projection.mjs';
 const check=(ok,code)=>{if(!ok)throw Error('VALIDATION_'+code);};
 export function git(workspace,args) {
   return execFileSync('git',['--no-replace-objects','-c','core.hooksPath=','-c','credential.helper=',...args],
@@ -128,10 +128,12 @@ export async function validationInput(workspace,env=process.env) {
   const productApplicable=files.includes(declaration)||requiresProductCI(files,dependency,policy.administrators.find(item=>item.repositoryId===repositoryId));
   const available=files.includes(declaration)
     ? productWorkflows(JSON.parse(await readFile(await regular(workspace,declaration),'utf8')),files) : [];
-  const selection=env.REPOSITORY_POLICY_TOKEN&&event.repository.full_name.startsWith('splrad/')
+  const organizationRepository=event.repository.full_name.startsWith('splrad/');
+  const projectionRequired=organizationRepository&&centralProjectionRequired(env.STEWARD_REPOSITORY_POLICY_REQUIRED);
+  const selection=env.REPOSITORY_POLICY_TOKEN&&organizationRepository
     ? await readRepositoryProjection(new NativeEvidenceReader(nativeEvidenceTransport(env.REPOSITORY_POLICY_TOKEN),event.repository.full_name),repositoryId)
     : null;
-  const workflows=selectedProductWorkflows(selection,available,productApplicable);
+  const workflows=selectedProductWorkflows(selection,available,productApplicable,projectionRequired);
   const boundNames=[];
   for(const path of workflows){
     const workflow=YAML.parse(await readFile(await regular(workspace,path),'utf8'));
@@ -144,7 +146,8 @@ export async function validationInput(workspace,env=process.env) {
   return {input,files,productApplicable,workflows,boundNames,dependencyMode:dependency,
     ...(selection?{repositoryPolicy:{adoption:selection.adoption,sourceDigest:selection.sourceDigest}}:{})};
 }
-export function selectedProductWorkflows(selection,available,productApplicable) {
+export function selectedProductWorkflows(selection,available,productApplicable,projectionRequired=false) {
+  assertCentralProjection(selection,projectionRequired);
   if(selection?.adoption!=='central')return available;
   check(selection.productCi.every(path=>available.includes(path))&&(!productApplicable||selection.productCi.length>0),'PRODUCT_CI_REPOSITORY_POLICY');
   return selection.productCi;

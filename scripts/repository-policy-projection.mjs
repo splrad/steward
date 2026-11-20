@@ -5,6 +5,15 @@ const ref='refs/heads/'+repositoryPolicyBranch;
 const sha=value=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
 const check=(condition,code='UNAVAILABLE')=>{if(!condition)throw Error('REPOSITORY_POLICY_PROJECTION_'+code);};
 
+export function centralProjectionRequired(value) {
+  check(value===undefined||['','false','true'].includes(value),'MODE');
+  return value==='true';
+}
+
+export function assertCentralProjection(projection,required) {
+  check(!required||projection?.adoption==='central','REQUIRED');
+}
+
 // No repository names, private repository positions, channels or comments enter product state.
 export function projectionBytes(policy) {
   const selected={schemaVersion:1,repositoryId:policy.repositoryId,adoption:policy.adoption??'legacy',

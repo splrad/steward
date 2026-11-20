@@ -208,6 +208,7 @@ export function renderRegistrationPull(repo, source, proposal, current=null, pol
   const path='repositories/'+repo.id+'.json';
   const title='chore: '+(current&&current.repository===repo.full_name?'调整 ':'登记 ')+repo.name+' 逐仓配置';
   const differences=current?fields.filter(key=>!isDeepStrictEqual(current[key],proposal.policy[key])):[];
+  const changed=['repository',...fields].filter(key=>!current||!isDeepStrictEqual(current[key],policy[key]));
   const needsReview=differences.length>0||proposal.pending.length>0;
   const lines=[
     '请在这张私有管理员仓 PR 中确认目标仓的治理选择。需要调整时，在 PR 分支编辑 '+quote(path)+
@@ -217,7 +218,7 @@ export function renderRegistrationPull(repo, source, proposal, current=null, pol
     '- 目标仓 '+quote(repo.full_name)+'（'+repo.id+'）',
     '- 目标仓默认分支提交 '+quote(source),
     '- 配置文件 '+quote(path),
-    '- 本次修改 '+list(current?['repository']:['repository',...fields]),
+    '- 本次修改 '+list(changed),
     '- 产品 CI '+(list(policy.productCi)||'沿用组织公共检查'),
     '', '## 发行与产物', ''
   ];
@@ -312,17 +313,20 @@ async function publishRegistrationReview(api, admin, {id,path,base,source,observ
     admin.default_branch==='main'&&api.target.owner==='splrad'&&api.target.repo==='steward-settings',
   'Invalid registration review destination');
   const marker=reviewMarker(id,observations,pending);
-  if(pull.user?.id===stewardBot&&pull.body?.split('\n').includes(marker))return;
+  const needsReview=observations.length>0||pending.length>0;
   const args={...api.target,issue_number:positive(pull.number)};
   const comments=await api.paginate(api.rest.issues.listComments,{...args,per_page:100});
   const reports=comments.filter(comment=>comment.user?.id===stewardBot&&comment.body?.startsWith(reviewPrefix(id)));
   must(reports.length<=1,'Multiple private registration reviews');
   const prior=reports[0];
   if(prior?.body.startsWith(marker+'\n'))return;
-  const body=[marker,`### ${path} 待确认`,'',`产品源码 \`${source}\`。`,
+  if(!prior&&(!needsReview||pull.user?.id===stewardBot&&pull.body?.split('\n').includes(marker)))return;
+  const lines=[marker,`### ${path} ${needsReview?'待确认':'核对完成'}`,'',`产品源码 \`${source}\`。`];
+  if(needsReview)lines.push(
     `请核对 \`${path}\`。如需采用变动，请更新已有开放配置 PR，或从最新 \`main\` 发起调整 PR。`,
-    '',...registrationReviewLines(observations),
-    ...pending.map(line=>'- '+line)].join('\n');
+    '',...registrationReviewLines(observations),...pending.map(line=>'- '+line));
+  else lines.push('当前产品声明与已批准配置相符。');
+  const body=lines.join('\n');
   must(await verifySource()===source&&await readHead(api,admin.default_branch)===base,'Registration review source moved');
   if(prior) {
     await api.rest.issues.updateComment({...api.target,comment_id:positive(prior.id),body});
@@ -347,12 +351,15 @@ export async function reconcileRegistration(api, admin, repo, source, observe, v
   const open = await matchingPull(api, admin, id, path);
   const notify=pull=>publishRegistrationReview(api,admin,{id,path,base,source,observations,pending:proposal.pending,pull,verifySource});
   if(open) {
-    if(current&&needsReview)await notify(open);
+    if(current)await notify(open);
     return {result:'reused',number:open.number,differences,pending:proposal.pending};
   }
   if(current&&isDeepStrictEqual(policy,current)) {
-    if(!needsReview)return {result:'unchanged',differences,pending:proposal.pending};
     const previous=await matchingPull(api,admin,id,path,'closed');
+    if(!needsReview) {
+      if(previous)await notify(previous);
+      return {result:'unchanged',differences,pending:proposal.pending};
+    }
     must(previous,'Missing private configuration pull for registration review');
     await notify(previous);
     return {result:'review-required',number:previous.number,differences,pending:proposal.pending};
@@ -394,7 +401,7 @@ export async function reconcileRegistration(api, admin, repo, source, observe, v
   'Registration input changed before PR creation');
   const concurrent = await matchingPull(api, admin, id, path);
   if(concurrent) {
-    if(current&&needsReview)await notify(concurrent);
+    if(current)await notify(concurrent);
     return {result:'reused',number:concurrent.number,differences,pending:proposal.pending};
   }
   const { data: pull } = await api.rest.pulls.create({ ...args, head: branch, title, body, draft: true });

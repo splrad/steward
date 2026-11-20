@@ -7,7 +7,7 @@ import {Version} from 'release-please/build/src/version.js';
 import {TagName} from 'release-please/build/src/util/tag-name.js';
 import {NativeEvidenceReader,nativeEvidenceTransport,nativeGhCommand,nativeReleaseDownload,NativeGitHubRelease,
   parseDeliveryConfig,deliveryAssetNames,validateProductManifest} from '../packages/runner/dist/index.js';
-import {readRepositoryProjection} from './repository-policy-projection.mjs';
+import {assertCentralProjection,centralProjectionRequired,readRepositoryProjection} from './repository-policy-projection.mjs';
 
 const check=(ok,code)=>{if(!ok)throw Error('PAGES_'+code);};
 const positive=n=>Number.isSafeInteger(n)&&n>0;
@@ -162,8 +162,11 @@ export async function workflowPagesOptions(reader,env,read=readRepositoryProject
   const isApproved=(mode,unit)=>Boolean(mode&&mode===approvedSource&&
     (mode!=='release'||unit&&unit===approvedUnit));
   let publicAllowed=isApproved(options.mode,options.unitId)&&!options.buildOnly;
-  if(env.STEWARD_REPOSITORY_POLICY==='true'&&reader.repository.startsWith('splrad/')) {
+  const organizationRepository=reader.repository.startsWith('splrad/');
+  const projectionRequired=organizationRepository&&centralProjectionRequired(env.STEWARD_REPOSITORY_POLICY_REQUIRED);
+  if(organizationRepository&&(projectionRequired||env.STEWARD_REPOSITORY_POLICY==='true')) {
     const projection=await read(reader,options.repositoryId);
+    assertCentralProjection(projection,projectionRequired);
     if(projection?.adoption==='central') {
       const site=projection.site;
       publicAllowed=Boolean(site&&site.mode==='build-and-deploy'&&!options.buildOnly&&isApproved(site.source,site.unit));
