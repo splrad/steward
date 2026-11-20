@@ -4,20 +4,20 @@ import {tmpdir} from 'node:os';
 import {pathToFileURL} from 'node:url';
 import {nativeReleaseApp,NativeEvidenceReader,nativeEvidenceTransport} from '../packages/runner/dist/index.js';
 import {entryGuard} from './bounded-release-entry.mjs';
-import {candidateEvidence,validateNormalCandidateEvent,key,product} from './bounded-candidate-contract.mjs';
+import {candidateEvidence,validateNormalCandidateEvent,key,withCandidateProduct,product as legacyProduct} from './bounded-candidate-contract.mjs';
 import {fetchState} from './release-coordinator.mjs';
 import {nativeReleaseCandidate} from './release-candidate.mjs';
 const central='splrad/steward',centralId=1296724484;
 const botIdentity={name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'};
 const fail=code=>{throw Error(code);};
 /** Only this event-bound port may execute ordinary candidate work; no cycle service is exposed. */
-export async function processNormalCandidateEvent({hint,sourceSha,requestKey,producer},{get,invoke}) {
+export async function processNormalCandidateEvent({hint,sourceSha,requestKey,producer},{get,invoke,product=legacyProduct}) {
   if(!key(requestKey))fail('CANDIDATE_EVENT_KEY');
-  const before=await validateNormalCandidateEvent(hint,sourceSha,get);
+  const before=await validateNormalCandidateEvent(hint,sourceSha,get,product);
   const result=await invoke({before,sourceSha});
-  const after=await candidateEvidence(get,{requireReady:false});
+  const after=await candidateEvidence(get,{requireReady:false,product});
   if(after.state.candidate.id!==before.state.candidate.id||after.pull.number!==before.pull.number)fail('CANDIDATE_EVENT_OWNER_CHANGED');
-  if((await get(`/repos/${product.name}/git/ref/heads/main`)).object?.sha!==sourceSha)fail('CANDIDATE_EVENT_SOURCE_CHANGED');
+  if((await get(`/repos/${product.name}/git/ref/heads/${encodeURIComponent(product.defaultBranch)}`)).object?.sha!==sourceSha)fail('CANDIDATE_EVENT_SOURCE_CHANGED');
   if(!Array.isArray(after.pull.labels))fail('CANDIDATE_LABELS_UNKNOWN');
   const resultHead=result.head??(result.status==='CONFLICT'?after.session.conflict?.head:null);
   if(resultHead&&resultHead!==after.pull.head.sha||result.status==='READY'&&!resultHead)fail('CANDIDATE_EVENT_HEAD_MOVED');
@@ -35,19 +35,20 @@ export async function main(env=process.env) {
   const run=await entryGuard(env,path=>centralReader.json(path===`/repos/${central}`?'':path.replace(`/repos/${central}/`,'')),config);
   const app=await nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY??'');
   if(run.actor?.id!==app.appBotId)fail('CANDIDATE_EVENT_ACTOR');
+  const hint=JSON.parse(env.BOUNDED_EVENT_JSON??'null');
   const root=await mkdtemp(join(tmpdir(),'steward-candidate-event-'));
-  try {return await app.forCandidateRepository(product.id,async(token,readToken)=>{
+  try {return await withCandidateProduct(app,hint?.repositoryId,async(product,token,readToken)=>{
     const reader=new NativeEvidenceReader(nativeEvidenceTransport(token),product.name);
     const get=path=>reader.json(path===`/repos/${product.name}`?'':path.replace(`/repos/${product.name}/`,''));
     const result=await processNormalCandidateEvent({hint:JSON.parse(env.BOUNDED_EVENT_JSON??'null'),sourceSha:env.BOUNDED_SOURCE_SHA,
       requestKey:env.BOUNDED_REQUEST_KEY,producer:{repositoryId:centralId,runId:run.id,attempt:run.run_attempt,controllerSha:env.STEWARD_CONTROLLER_SHA}},
-    {get,invoke:async({before,sourceSha})=>{
-      const repository={id:product.id,full_name:product.name,default_branch:'main'},state=await fetchState(root,repository,token);
+    {get,product,invoke:async({before,sourceSha})=>{
+      const repository={id:product.id,full_name:product.name,default_branch:product.defaultBranch},state=await fetchState(root,repository,token);
       if(state.snapshot.head!==before.evidence.stateCommit)fail('CANDIDATE_EVENT_STATE_MOVED');
       return nativeReleaseCandidate({directory:state.directory,writeDirectory:join(root,'writes'),remote:state.remote,repository:product.name,
-        repositoryId:product.id,defaultBranch:'main',appBotId:app.appBotId,identity:botIdentity},{token,readToken,
+        repositoryId:product.id,defaultBranch:product.defaultBranch,appBotId:app.appBotId,identity:botIdentity},{token,readToken,
         copilotToken:env.STEWARD_COPILOT_TOKEN,controllerSha:env.STEWARD_CONTROLLER_SHA,expectedStateSha:before.evidence.stateCommit,expectedSourceSha:sourceSha,
-        manualCandidateProducer:{repositoryId:centralId,runId:run.id,attempt:run.run_attempt,controllerSha:env.STEWARD_CONTROLLER_SHA,requestKey:env.BOUNDED_REQUEST_KEY}});
+        reselectUnits:before.selectionChanged,manualCandidateProducer:{repositoryId:centralId,runId:run.id,attempt:run.run_attempt,controllerSha:env.STEWARD_CONTROLLER_SHA,requestKey:env.BOUNDED_REQUEST_KEY}});
     }});
     await writeFile('result.json',JSON.stringify(result)+'\n',{flag:'wx'});return result;
   });}finally {await rm(root,{recursive:true,force:true});}

@@ -1,5 +1,5 @@
 name: Pages
-run-name: Pages ${{ inputs.source_mode || vars.STEWARD_DOCS_SOURCE }} ${{ inputs.source_sha || github.sha }} ${{ inputs.input_digest || github.event.release.id || github.run_id }}
+run-name: Pages ${{ !vars.STEWARD_DOCS_SOURCE && 'build-only ' || '' }}${{ inputs.source_mode || vars.STEWARD_DOCS_SOURCE || 'default-branch' }} ${{ inputs.source_sha || github.sha }} ${{ inputs.input_digest || github.event.release.id || github.run_id }}
 on:
   push:
     branches: ['**']
@@ -28,7 +28,8 @@ concurrency:
   cancel-in-progress: false
 env:
   STEWARD_CONTROLLER_SHA: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
-  STEWARD_DOCS_SOURCE: ${{ vars.STEWARD_DOCS_SOURCE }}
+  # The configuration PR writes the selected source and release unit to these fields.
+  STEWARD_DOCS_SOURCE: ${{ vars.STEWARD_DOCS_SOURCE || 'default-branch' }}
   STEWARD_DOCS_UNIT: ${{ vars.STEWARD_DOCS_UNIT }}
 jobs:
   select:
@@ -40,6 +41,7 @@ jobs:
       attestations: read
     outputs:
       ready: ${{ steps.source.outputs.ready }}
+      public_source: ${{ steps.authorization.outputs.matches }}
       source: ${{ steps.source.outputs.source }}
       source_sha: ${{ steps.source.outputs.source_sha }}
       input_digest: ${{ steps.source.outputs.input_digest }}
@@ -63,9 +65,26 @@ jobs:
           persist_github_token: false
       - name: Install selector libraries
         run: npm ci --prefix controller --ignore-scripts --no-audit --no-fund
+      - name: Check approved public source
+        id: authorization
+        shell: python
+        env:
+          APPROVED_SOURCE: ${{ vars.STEWARD_DOCS_SOURCE }}
+          APPROVED_UNIT: ${{ vars.STEWARD_DOCS_UNIT }}
+        run: |
+          import os
+
+          mode = os.environ["STEWARD_DOCS_SOURCE"]
+          unit = os.environ.get("STEWARD_DOCS_UNIT", "")
+          matches = mode in ("default-branch", "release") and mode == os.environ["APPROVED_SOURCE"]
+          if mode == "release":
+              matches = matches and bool(unit) and unit == os.environ["APPROVED_UNIT"]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"matches={str(matches).lower()}", file=output)
       - name: Select current Pages source
         id: source
         env:
+          STEWARD_PAGES_BUILD_ONLY: ${{ steps.authorization.outputs.matches != 'true' }}
           GH_TOKEN: ${{ github.token }}
         run: node controller/scripts/select-pages-source.mjs
   build:
@@ -83,30 +102,56 @@ jobs:
         with:
           ref: ${{ needs.select.outputs.source_sha }}
           persist-credentials: false
-      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
-        env:
-          MISE_SAFE: '1'
-          MISE_NODE_COMPILE: 'false'
-        with:
-          version: 2026.10.24
-          install_args: --locked
-          cache: false
-          env: false
-          persist_github_token: false
-      - name: Build documentation
+      # Adopt this step and its output from the product's reviewed site build.
+      - name: Build site
+        id: site
+        shell: bash
+        run: bash .github/scripts/build-site.sh
         env:
           DOCS_SOURCE_SHA: ${{ needs.select.outputs.source_sha }}
+      - name: Check site output
+        id: output
+        shell: python
+        env:
+          SITE_DIRECTORY: ${{ steps.site.outputs.directory }}
         run: |
-          npm ci --prefix docs-site --ignore-scripts --no-audit --no-fund
-          npm run --prefix docs-site build
+          import os
+          from pathlib import Path
+
+          raw = os.environ["SITE_DIRECTORY"]
+          workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+          if not raw or Path(raw).is_absolute() or any(c in raw for c in "\r\n"):
+              raise ValueError("Expected a repository-relative site output directory")
+          directory = (workspace / raw).resolve(strict=True)
+          if workspace not in directory.parents or not directory.is_dir():
+              raise ValueError("Expected a directory inside the workspace")
+          if any(c in str(directory) for c in "\r\n"):
+              raise ValueError("Invalid output path")
+          found = False
+          def fail(error):
+              raise error
+          for parent, dirs, files in os.walk(directory, onerror=fail):
+              for name in dirs + files:
+                  if (Path(parent) / name).is_symlink():
+                      raise ValueError("Site output contains a symbolic link")
+              for name in files:
+                  if not (Path(parent) / name).is_file():
+                      raise ValueError("Expected regular site output files")
+                  found = True
+          if not found:
+              raise ValueError("Site output is empty")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"directory={directory}", file=output)
       - name: Upload Pages artifact
         id: artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           name: github-pages-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.select.outputs.input_digest }}
-          path: docs-site/dist
+          path: ${{ steps.output.outputs.directory }}
           retention-days: 1
   deploy:
+    # The deployment source variable is set only after public deployment is approved.
+    if: needs.select.outputs.ready == 'true' && needs.select.outputs.public_source == 'true'
     name: deploy/${{ needs.select.outputs.input_digest }}
     needs: [select, build]
     runs-on: ubuntu-24.04

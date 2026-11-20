@@ -8,7 +8,7 @@ export interface CandidatePullRequest { number: number; head: string; branch: st
 export interface CandidateComment { id: number; authorId: number; body: string }
 export interface CandidateSession {
   manualValidation?: ManualCandidate | null;
-  repository: RepositoryRecord; generated: CandidateSnapshot | null; pending: { write: PreparedCandidateWrite; generated: CandidateSnapshot } | null;
+  repository: RepositoryRecord; generated: CandidateSnapshot | null; pending: { write: PreparedCandidateWrite; generated: CandidateSnapshot; previousIdentity?: CandidateSession['identity'] } | null;
   identity: null | { authorsDigest: string; sourceDigest: string; actors: (ReleaseActor | null)[]; contributors: ReturnType<typeof selectReleaseContributors>;
     units: { id: string; actors: (ReleaseActor | null)[]; contributors: ReturnType<typeof selectReleaseContributors> }[] };
   conflict: null | { head: string; generated: CandidateSnapshot; paths: string[] };
@@ -40,6 +40,14 @@ export interface CandidateObservation {
   repositoryId: number; cycleId: string; channel: 'candidate'; version: string;
   artifactDigest: string; sourceSha: string; stage: 'candidate'; epoch: string; upstreamPR: null;
 }
+function candidateVersion(units:{id:string;path:string;version:string;tag:string}[]) {
+  if(!units.length || new Set(units.map(unit=>unit.id)).size!==units.length ||
+      new Set(units.map(unit=>unit.path)).size!==units.length)throw Error('CANDIDATE_UNIT_COVERAGE');
+  if(units.length===1)return units[0]!.version;
+  const ordered=[...units].sort((a,b)=>a.id<b.id?-1:1);
+  const identities=ordered.map(({id,path,version,tag})=>[id,path,version,tag]);
+  return 'units-'+digest(identities);
+}
 /** Stable generation identity; human edits and derived contributor projection do not restart a window. */
 export function candidateObservationIdentity(session: CandidateSession): CandidateObservation {
   const { repository, generated } = session, candidate = repository.candidate;
@@ -48,16 +56,16 @@ export function candidateObservationIdentity(session: CandidateSession): Candida
     if(repository.repositoryId!==m.repositoryId||candidate?.id!==m.candidateId||candidate.prNumber!==m.prNumber||candidate.branch!==m.branch
       ||repository.activeCycleId||session.pending||candidate.pendingWrite)throw Error('MANUAL_OWNER');
     const factDigest=digest(manualCandidateFacts(m));
-    return {repositoryId:m.repositoryId,cycleId:m.candidateId,channel:'candidate',version:m.units[0]!.version,
+    return {repositoryId:m.repositoryId,cycleId:m.candidateId,channel:'candidate',version:candidateVersion(m.units),
       artifactDigest:'sha256:'+factDigest,sourceSha:m.sourceSha,stage:'candidate',
       epoch:digest([m.kind,m.candidateId,m.headSha,m.sourceSha,factDigest]),upstreamPR:null};
   }
-  if (repository.repositoryId !== 1187527897 || !candidate?.prNumber || !candidate.publishedHead
+  if (!Number.isSafeInteger(repository.repositoryId) || repository.repositoryId<1 || !candidate?.prNumber || !candidate.publishedHead
     || !candidate.generatedSnapshotPath || !generated || !session.identity || session.pending || candidate.pendingWrite
-    || generated.baseSha !== candidate.baseSha || generated.units.length !== 1 || generated.units[0]?.id !== 'layerscape')
+    || generated.baseSha !== candidate.baseSha)
     throw new Error('CANDIDATE_OBSERVATION_NOT_READY');
   return { repositoryId: repository.repositoryId, cycleId: candidate.id, channel: 'candidate',
-    version: generated.units[0].version, artifactDigest: 'sha256:' + digest(generated), sourceSha: candidate.baseSha,
+    version: candidateVersion(generated.units), artifactDigest: 'sha256:' + digest(generated), sourceSha: candidate.baseSha,
     stage: 'candidate', epoch: digest([repository.repositoryId, candidate.id, candidate.baseSha, candidate.generatedSnapshotPath, candidate.publishedHead]), upstreamPR: null };
 }
 /** Exact existing generated-note projection, with frozen native contributor identities. */
@@ -140,6 +148,7 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
       if (value.pr?.editing || value.head !== pending.write.expectedHead || (await io.source()).baseSha !== pending.write.baseSha) {
         // The original proposal remains in protected state history. Keep the previous generated snapshot
         // so the next wake can detect and preserve human differences.
+        session.identity = pending.previousIdentity ?? null;
         candidate.pendingWrite = null; session.pending = null; await save();
         return { status: value.pr?.editing ? 'CANCELLED_FOR_EDITING' as const : 'REPLAN' as const };
       }
@@ -232,6 +241,7 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   if (content.status !== 'READY') return { status: 'WAIT', reason: `CONTENT_${content.status}` };
   const N: CandidateSnapshot = { ...generation.snapshot, files: [...generation.snapshot.files, ...content.files] };
   if (JSON.stringify(Object.keys(content.unitActors).sort()) !== JSON.stringify(N.units.map(unit => unit.id).sort())) throw new Error('CANDIDATE_CONTRIBUTOR_UNIT_COVERAGE');
+  const previousIdentity = session.identity;
   session.identity = { authorsDigest: source.authorsDigest, sourceDigest: N.sourceDigest, actors: content.actors, contributors: selectReleaseContributors(content.actors, source.authors),
     units: N.units.map(unit => ({ id: unit.id, actors: content.unitActors[unit.id]!, contributors: selectReleaseContributors(content.unitActors[unit.id]!, source.authors) })) };
   const latestSource = await io.source();
@@ -247,7 +257,7 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   const unchanged = H !== null && await candidateTreeMatches(io.workspace, H, N.baseSha, merged.files, io.temporaryRoot);
   if (!unchanged) {
   const prepared = await prepareCandidateWrite(io.workspace, H, N, merged, io.identity, io.temporaryRoot);
-  session.pending = { write: prepared, generated: N };
+  session.pending = { write: prepared, generated: N, previousIdentity };
   candidate.pendingWrite = { expectedHead: H, proposedCommit: prepared.proposedCommit,
     newGeneratedSnapshotPath: `generated/${candidate.id}/${prepared.generatedDigest}.json`, newGeneratedDigest: prepared.generatedDigest,
     operationKey: digest([candidate.id, prepared.proposedCommit]), observedAt: io.now() };

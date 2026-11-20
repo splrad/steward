@@ -40,10 +40,10 @@ it('projects legacy web-flow cache at merge while preserving original actors and
   corrupt.units[0]!.contributors.unresolved++;
   expect(()=>mergedContributorIdentity(corrupt,authors)).toThrow('MERGED_CANDIDATE_CONTRIBUTOR_DRIFT');
 });
-const { readReleaseRecords,releaseCommand } = await import(pathToFileURL(resolve('scripts/release-record.mjs')).href);
+const { readReleaseRecords,writeReleaseRecords,releaseCommand } = await import(pathToFileURL(resolve('scripts/release-record.mjs')).href);
 const roots: string[] = [];
 afterEach(async () => { vi.unstubAllGlobals();for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
-it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-recovery'])('runs the native candidate adapter through protected state, real Git, upstream generation, fake SDK and same-PR editing: %s', async pinCase => {
+it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-recovery', 'pending-recovery', 'legacy-pending-cancel'])('runs the native candidate adapter through protected state, real Git, upstream generation, fake SDK and same-PR editing: %s', async pinCase => {
   const root = await mkdtemp(join(tmpdir(), 'candidate-native-test-')); roots.push(root); registerOfflineFixtureRoot(root);
   const directory = join(root, 'source'), remote = join(root, 'remote.git'); await mkdir(directory);
   const env = isolatedBuildEnvironment(process.env, root), identity = { name: 'Fixture', email: 'fixture@example.invalid' };
@@ -73,8 +73,13 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   let pr: any = null, modelCalls = 0;
   let policySha='e'.repeat(40);
   const head = async (branch: string) => { try { return await git('-C', remote, 'rev-parse', '--verify', `refs/heads/${branch}`); } catch { return null; } };
+  let interruptPending = pinCase === 'pending-recovery' || pinCase === 'legacy-pending-cancel';
   const fetcher = (async (input, init) => {
     const url = new URL(String(input)), method = init?.method ?? 'GET', path = decodeURIComponent(url.pathname), body = init?.body ? JSON.parse(String(init.body)) : null;
+    if (interruptPending && method === 'GET' && path.endsWith('/pulls')) {
+      const durable = JSON.parse(await git('-C', remote, 'show', 'refs/heads/steward/release-state:state.json'));
+      if (durable.candidate?.pendingWrite) throw Error('FIXTURE_PENDING_INTERRUPTION');
+    }
     requests.push({ method, path, body }); expect(url.origin).toBe('https://api.github.com'); let value: any;
     if (method === 'GET' && (path.includes('/git/ref/heads/') || path.endsWith('/pulls')))
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer fixture-read');
@@ -171,6 +176,54 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     expect(next.input.batches[0].attempts[1].recovery.archiveContentDigest).toBe(candidate.contentGenerationDigest);
     await expect(nativeReleaseCandidate({...request,writeDirectory:join(root,'duplicate-recovery-writes')},{...options,contentRecovery:grant})).rejects.toThrow('CONTENT_RECOVERY_ARCHIVE_EXISTS');
     expect(modelCalls).toBe(2);return;
+  }
+  if (interruptPending) {
+    await expect(nativeReleaseCandidate(request, options)).rejects.toThrow();
+    await refresh();
+    const state = JSON.parse(await git('show', 'steward/release-state:state.json'));
+    const archived = JSON.parse(await git('show', `steward/release-state:generated/${state.candidate.id}/session.json`));
+    const session = await decodeCandidateDocument([archived]);
+    expect(session.pending.write.proposedCommit).toBe(state.candidate.pendingWrite.proposedCommit);
+    expect(session.pending.previousIdentity).toBeNull();
+    expect(await head('steward/release-candidate')).toBeNull();
+    for (const previous of [undefined, session.identity, false, { units: [] }]) {
+      const copy = structuredClone(session);
+      if (previous === undefined) delete copy.pending.previousIdentity;
+      else copy.pending.previousIdentity = previous;
+      const content = JSON.stringify(copy);
+      const read = decodeCandidateDocument([{ ...archived, content, documentDigest: createHash('sha256').update(content).digest('hex') }]);
+      if (previous === undefined || previous === session.identity) await expect(read).resolves.toEqual(copy);
+      else await expect(read).rejects.toThrow();
+    }
+    interruptPending = false;
+    if (pinCase === 'legacy-pending-cancel') {
+      const path = `generated/${state.candidate.id}/session.json`;
+      delete session.pending.previousIdentity;
+      const content = JSON.stringify(session);
+      const hashText = (text: string) => createHash('sha256').update(text).digest('hex');
+      const updated = JSON.stringify({ ...archived, content, documentDigest: hashText(content) }) + '\n';
+      const previous = (await git('show', `steward/release-state:${path}`)) + '\n';
+      const written = await writeReleaseRecords({ directory: join(root, 'legacy-state'), remote, repositoryId: 1,
+        defaultBranch: 'main', targetRef: 'steward/release-state', writer: 'release', expectedHead: await head('steward/release-state'),
+        allowedPaths: [path], changes: [{ path, content: updated, sha256: hashText(updated), previousSha256: hashText(previous) }], identity });
+      expect(written.status).toBe('APPLIED');
+      await git('commit', '--allow-empty', '-m', 'fix: new default source');
+      await git('push', '--porcelain', remote, 'HEAD:refs/heads/main');
+      await refresh();
+      expect(await nativeReleaseCandidate({ ...request, writeDirectory: join(root, 'cancel-writes') }, options))
+        .toMatchObject({ status: 'WAIT', reason: 'REPLAN' });
+      await refresh();
+      const cancelled = await decodeCandidateDocument([JSON.parse(await git('show', `steward/release-state:${path}`))]);
+      expect(cancelled.pending).toBeNull(); expect(cancelled.identity).toBeNull();
+      expect(await head('steward/release-candidate')).toBeNull();
+      return;
+    }
+    const callsBeforeRestart = modelCalls;
+    expect(await nativeReleaseCandidate({ ...request, writeDirectory: join(root, 'restart-writes') }, options))
+      .toMatchObject({ status: 'READY', prNumber: 9 });
+    expect(await head('steward/release-candidate')).toBe(state.candidate.pendingWrite.proposedCommit);
+    expect(modelCalls).toBe(callsBeforeRestart);
+    return;
   }
   expect(await nativeReleaseCandidate(request, options)).toMatchObject({ status: 'READY', prNumber: 9 });
   const firstHead = await head('steward/release-candidate'), firstCalls = modelCalls; expect(firstCalls).toBeGreaterThan(0); await refresh();
