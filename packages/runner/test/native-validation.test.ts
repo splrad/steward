@@ -163,11 +163,14 @@ it('the private registration PR check rejects an unsupported edit and accepts it
         units:[{id:'fixture',path:'.',notesPath:'.release-notes/fixture.md',assets:['bundle','extras'].map(asset),channels:[channel]}]})],
       [build,'jobs: {build: {strategy: {matrix: {include: [{unit: fixture, target: windows-x64}]}}}}'],
     ]);
-    let publicReadable=true;
+    let publicReadable=true,scopeDenied=false,rateStatus=0,identityOnly=false;
     vi.stubGlobal('fetch',vi.fn(async(url:string,request:RequestInit)=>{
       const path=new URL(url).pathname;
+      const authorization=new Headers(request.headers).get('authorization');
       if(path==='/repositories/91'){
-        expect(new Headers(request.headers).get('authorization')).toBeNull();
+        if(rateStatus)return new Response(null,{status:rateStatus,headers:{'x-ratelimit-remaining':'0'}});
+        if(scopeDenied&&authorization)return new Response(null,{status:403});
+        if(publicReadable)expect(authorization).toBe(scopeDenied?null:'Bearer workflow-read');
         return publicReadable?Response.json(product):new Response(null,{status:404});
       }
       if(path.startsWith('/repos/'+repository.full_name)) {
@@ -179,7 +182,8 @@ it('the private registration PR check rejects an unsupported edit and accepts it
         if(route==='/git/matching-refs/heads/steward/governance-state')return Response.json([]);
         throw Error(route);
       }
-      expect(new Headers(request.headers).get('authorization')).toBeNull();
+      expect(identityOnly).toBe(false);
+      expect(authorization).toBe(scopeDenied?null:'Bearer workflow-read');
       const prefix='/repos/'+product.full_name;
       expect(path.startsWith(prefix)).toBe(true);
       const route=path.slice(prefix.length);
@@ -198,8 +202,8 @@ it('the private registration PR check rejects an unsupported edit and accepts it
       GITHUB_REPOSITORY_ID:String(repository.id),GITHUB_REPOSITORY:repository.full_name,GITHUB_ACTIONS:'true',
       WORKFLOW_REPOSITORY:'splrad/steward',WORKFLOW_PATH:'.github/workflows/pr-validation-native.yml',
       WORKFLOW_SHA:S,REPOSITORY_POLICY_TOKEN:'workflow-read',GITHUB_STEP_SUMMARY:summary,GITHUB_OUTPUT:output};
-    await mkdir(join(root,'repositories'));
     const update=async(artifactIds:string[],name=product.full_name,adoption?:string)=>{
+      await mkdir(join(root,'repositories'),{recursive:true});
       await writeFile(join(root,'repositories','91.json'),JSON.stringify({schemaVersion:1,repositoryId:91,
         repository:name,adoption,productCi:[ci],release:{buildWorkflow:build,units:[{id:'fixture',channels:[{...channel,artifactIds}]}]},site:null}));
       git('add','repositories/91.json');git('commit','--signoff','--no-gpg-sign','-m','adjust selection');
@@ -210,16 +214,35 @@ it('the private registration PR check rejects an unsupported edit and accepts it
     await expect(main(env)).rejects.toThrow('VALIDATION_REGISTRATION_PREVIEW_SELECTION');
     expect(await readFile(summary,'utf8')).toContain('先让产品声明体现计划发布的范围');
     await expect(readFile(output)).rejects.toMatchObject({code:'ENOENT'});
-    await update(channel.artifactIds,'splrad/misspelled-fixture');
-    await expect(main(env)).rejects.toThrow('VALIDATION_REGISTRATION_PREVIEW_IDENTITY');
+    for(const adoption of [undefined,'central','legacy','paused']){
+      await update(channel.artifactIds,'splrad/misspelled-fixture',adoption);
+      await expect(main(env)).rejects.toThrow('VALIDATION_REGISTRATION_PREVIEW_IDENTITY');
+    }
+    identityOnly=true;
+    for(const adoption of ['legacy','paused']){
+      await update(['bundle'],product.full_name,adoption);
+      await expect(main(env)).resolves.toMatchObject({dependencyMode:'private-administrator'});
+    }
+    identityOnly=false;
     await rm(summary);
     await update(channel.artifactIds);
     await expect(main(env)).resolves.toMatchObject({dependencyMode:'private-administrator'});
     expect(await readFile(summary,'utf8')).toContain('的声明相符');
+    await update(channel.artifactIds,product.full_name,'central');
+    await expect(main(env)).resolves.toMatchObject({dependencyMode:'private-administrator'});
+    for(const status of [403,429]){
+      rateStatus=status;
+      await expect(main(env)).rejects.toThrow('VALIDATION_REGISTRATION_PREVIEW_RETRY_RATE_LIMIT');
+    }
+    rateStatus=0;scopeDenied=true;
+    await expect(main(env)).resolves.toMatchObject({dependencyMode:'private-administrator'});
+    scopeDenied=false;
     publicReadable=false;await rm(summary);
     await main(env);
     expect(await readFile(summary,'utf8')).toContain('无法读取目标仓的公开声明');
     expect(await readFile(summary,'utf8')).not.toContain('的声明相符');
+    git('checkout','--detach',base);
+    await update(channel.artifactIds);
     const unadopted=git('rev-parse','HEAD');
     git('rm','repositories/91.json');git('commit','--signoff','--no-gpg-sign','-m','remove unadopted registration');
     git('update-ref','refs/remotes/origin/main',unadopted);
