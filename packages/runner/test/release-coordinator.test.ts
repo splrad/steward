@@ -175,3 +175,17 @@ it.each([{status:'WAIT',reason:'EDITING'}, {status:'WAIT',reason:'CONTENT_WAIT_A
   expect(calls).toEqual(['candidate']);
   expect(result).toEqual(candidate.reason==='UNCHANGED'?{status:'COMPLETE',reason:'REGISTERED_RELEASES_VERIFIED'}:candidate);
 });
+it('recovers an unconfirmed build-only receipt before declaring a wake complete',async()=>{
+  const cycle={id:'c',units:[{id:'app'}],freezeOnly:[{unitId:'app'}],freezeCompletedAt:null as string|null};
+  const snapshot={repository:{activeCycleId:'c',candidate:null},cycles:[{value:cycle}]};
+  const commands:string[]=[];
+  const invoke=async(command:string)=>{
+    commands.push(command);
+    return command==='candidate'?{status:'WAIT',reason:'UNCHANGED'}:{status:'UNKNOWN',reason:'FROZEN_BUILD_SOURCE_UNAVAILABLE'};
+  };
+  expect((await serviceReleaseWake({},async()=>snapshot,invoke)).status).toBe('UNKNOWN');
+  expect(commands).toEqual(['candidate','observe-channel']);
+  commands.length=0;cycle.freezeCompletedAt='2026-11-19T00:00:00Z';
+  expect((await serviceReleaseWake({},async()=>snapshot,invoke)).status).toBe('COMPLETE');
+  expect(commands).toEqual(['candidate']);
+});

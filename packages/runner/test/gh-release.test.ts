@@ -102,6 +102,18 @@ it('recovers only an exact owned starter after the original upload failed', asyn
   await f.adapter.publish(f.target); expect(writes(f).filter(args => args.includes('DELETE'))).toHaveLength(1);
 });
 
+it('publishes only the selected GitHub files from a fully sealed multi-channel build', async () => {
+  const f = await fixture();
+  f.target.delivery = {id:'sample',path:'.',notesPath:'notes.md',
+    assets:f.target.manifest.artifacts.map(a=>({id:a.id,name:a.path,mediaType:a.mediaType})),
+    channels:[{id:'github-release',required:true,location:'github',artifactIds:['dll'],metadata:[]},
+      {id:'ghcr-assets',required:true,location:'ghcr.io/fixture/sample',artifactIds:['fonts'],metadata:['SHA256SUMS']},
+      {id:'winget',required:true,location:'Fixture.App',artifactIds:['app']}]};
+  expect((await f.adapter.publish(f.target)).mode).toBe('verified');
+  expect([...f.remote.keys()]).toEqual(['dll.zip']);
+  expect(f.target.manifest.artifacts).toHaveLength(3);
+});
+
 it('leaves an unowned blank draft label untouched', async () => {
   const f = await fixture();
   f.put('app.exe', Buffer.from('app'), { label: '', uploader: { id: 99 } });

@@ -108,7 +108,8 @@ $env:RUNNER_TEMP=$pwd.Path;$env:GHCR_TOKEN='offline-registry';$env:GHCR_METADATA
 New-Item -ItemType Directory -Path final,controller/scripts|Out-Null
 [IO.File]::WriteAllBytes('controller/scripts/ghcr-package-state.ps1',[Convert]::FromBase64String('${encoded}'))
 [IO.File]::WriteAllBytes('business.ps1',[Convert]::FromBase64String('${script}'))
-@{version='1.0.0';artifacts=@(@{path='AFR-Deployer_v1.0.0.exe'},@{path='AFR-DLL_v1.0.0.zip'},@{path='Fonts.zip'})}|ConvertTo-Json -Depth 8|Set-Content manifest.json
+$selected=@('AFR-DLL_v1.0.0.zip','SHA256SUMS')
+@{version='1.0.0';channelFiles=$selected;artifacts=@(@{path='AFR-Deployer_v1.0.0.exe'},@{path='AFR-DLL_v1.0.0.zip'},@{path='Fonts.zip'})}|ConvertTo-Json -Depth 8|Set-Content manifest.json
 foreach($name in @('AFR-Deployer_v1.0.0.exe','AFR-DLL_v1.0.0.zip','Fonts.zip','sbom.spdx.json','release-notes.md','artifact-manifest.json','SHA256SUMS')){Set-Content -LiteralPath "final/$name" -Value 'fixture'}
 function Invoke-WebRequest {
   param($Uri,$Headers,[switch]$SkipHttpErrorCheck)
@@ -125,7 +126,7 @@ function oras {
   if($args -contains 'oras-anonymous.json'){$global:anonymous++;throw 'anonymous visibility required during submit'}
   switch($args[0]) {
     'login' {if((@($input) -join '') -cne 'offline-registry'){throw 'wrong registry credential'};return}
-    'push' {if(@($args|Where-Object{$_ -in @('AFR-Deployer_v1.0.0.exe','AFR-DLL_v1.0.0.zip','Fonts.zip','sbom.spdx.json','release-notes.md','artifact-manifest.json','SHA256SUMS')}).Count -ne 7){throw 'seven file layout'};return}
+    'push' {$arguments=@($args);if(@($args|Where-Object{$_ -in @('AFR-Deployer_v1.0.0.exe','AFR-DLL_v1.0.0.zip','Fonts.zip','sbom.spdx.json','release-notes.md','artifact-manifest.json','SHA256SUMS')}).Count -ne $selected.Count -or @($selected|Where-Object {$_ -notin $arguments}).Count){throw 'selected file layout'};return}
     'resolve' {if($args -contains '--oci-layout' -or $global:uploaded -or $scenario -eq 'same-digest'){return 'sha256:'+('a'*64)};if($scenario -eq 'different-digest'){return 'sha256:'+('b'*64)};$global:LASTEXITCODE=1;return}
     'repo' {$global:tags++;throw 'nonexistent package tags must not be required'}
     'cp' {$global:copies++;$global:uploaded=$true;if($scenario -eq 'lost-response'){$global:LASTEXITCODE=1};return}
@@ -216,4 +217,37 @@ if($items.Count -ne 1 -or $items[0].channelId -cne 'winget' -or $items[0].readSt
 Write-Output 'PASS winget-only'
 `);
   expect(output).toContain('PASS winget-only');
+});
+it('a second product queries its own package; copying the LayerScape adapter cannot read that package or LayerScape',async()=>{
+  const helper=await readFile('scripts/ghcr-package-state.ps1','utf8');
+  const output=await run(helper+`
+$env:GITHUB_ACTIONS='true';$env:GITHUB_REPOSITORY='example/cli';$env:GITHUB_REPOSITORY_ID='90'
+$script:uris=@()
+function Invoke-WebRequest($Uri,$Headers,[switch]$SkipHttpErrorCheck) {
+  $script:uris+=@([string]$Uri)
+  if ($Uri -eq 'https://api.github.com/orgs/example/packages?package_type=container&per_page=100&page=1') {return @{StatusCode=200;Content='[]';Headers=@{}}}
+  if ($Uri -eq 'https://api.github.com/orgs/example/packages/container/example-cli') {return @{StatusCode=404;Content='{}';Headers=@{}}}
+  throw "Unexpected URI $Uri"
+}
+$inventory=@{schemaVersion=1;ownerId=77;repositoryId=90;packageType='container';target='example-cli';packageIds=@();targetId=$null;observedAt='2026-10-01T00:00:00Z'}|ConvertTo-Json -Compress
+try {Get-LayerScapePackageState -Token fixture -OwnerInventory $inventory; throw 'unexpected adapter entry'} catch {if($_.Exception.Message -ne 'GHCR_PRODUCT_ADAPTER_IDENTITY'){throw}}
+if($script:uris.Count -ne 0){throw 'foreign adapter made a request'}
+$result=Get-RegisteredPackageState -Token fixture -OwnerInventory $inventory -OwnerLogin example -OwnerId 77 -RepositoryId 90 -PackageName example-cli
+if($result.state -ne 'ABSENT' -or $script:uris.Count -ne 2){throw 'wrong target observation'}
+Write-Output 'PASS'
+`);
+  expect(output).toContain('PASS');
+});
+it('all credential-consuming jobs in the product-specific seed depend on its bound repository identity',async()=>{
+  const jobs=parse(await readFile('templates/release/steward-release-channels.yml','utf8')).jobs;
+  expect(jobs['source-check'].if).toBe("github.repository == 'splrad/LayerScape' && github.repository_id == '1187527897'");
+  const guarded=(id:string):boolean=>id==='source-check'||[jobs[id].needs].flat().some((need:string)=>need && guarded(need));
+  for(const [id,job] of Object.entries<any>(jobs)){
+    expect(guarded(id)).toBe(true);
+    if(id==='collect') {
+      expect(JSON.stringify(job)).not.toMatch(/GHCR_METADATA_TOKEN|WINGET_FORK_TOKEN|axiomoth|layerscape-assets|splrad\/LayerScape/i);
+      continue;
+    }
+    if(id!=='source-check')expect(job.if??'').not.toMatch(/always\(\)|failure\(\)|cancelled\(\)/);
+  }
 });

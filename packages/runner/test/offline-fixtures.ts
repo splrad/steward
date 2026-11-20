@@ -92,7 +92,8 @@ export function offlineProcessArguments(command: string, args: string[], options
     } catch { return null; }
   }
   const isolatedPython = executable === 'python' && args[0] === '-I'
-    && (args.length === 3 || args.length === 5 && (args[2] === '--source-version' || args[2] === '--stage' && local(args[4]!)));
+    && (args.length === 3 || [5, 6].includes(args.length) && args[2] === '--declared'
+      && local(args[4]!) && (args.length === 5 || local(args[5]!)) || args.length === 5 && (args[2] === '--source-version' || args[2] === '--stage' && local(args[4]!)));
   if (!['node', 'pwsh'].includes(executable) && !isolatedPython) return null;
   const script = isolatedPython ? args[1] : executable === 'node' ? args[0] : args[args.indexOf('-File') + 1];
   if (!script || (executable === 'pwsh' && (!args.includes('-NoProfile') || !args.includes('-File')))) return null;

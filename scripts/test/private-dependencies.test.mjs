@@ -142,9 +142,9 @@ test('tool execution errors are not clean scan results',()=>{
 });
 test('workflow keeps private execution under dependency job, fixed policy source and native review elsewhere',async()=>{
  const workflow=YAML.parse(await readFile(new URL('../../.github/workflows/pr-validation-native.yml',import.meta.url),'utf8'));
- assert.deepEqual(Object.keys(workflow.jobs),['scope','source-linux','source-windows','governance','dependency','docs','summary']);
- assert.equal(workflow.jobs.scope.outputs.source,"${{ steps.identity.outputs.dependencyMode == 'private-governance' && 'false' || steps.scope.outputs.source }}");
- for(const name of ['source-linux','source-windows'])assert.equal(workflow.jobs[name].if,"needs.scope.outputs.source == 'true'");
+ assert.deepEqual(Object.keys(workflow.jobs),['scope','source','governance','dependency','docs','summary']);
+ assert.equal(workflow.jobs.scope.outputs.source,"${{ steps.identity.outputs.workflows != '[]' && 'true' || steps.identity.outputs.productApplicable == 'false' && 'false' || steps.scope.outputs.source }}");
+ assert.equal(workflow.jobs.source.if,"needs.scope.outputs.source == 'true'");
  const steps=workflow.jobs.dependency.steps;
  assert.equal(steps.find(s=>s.uses?.startsWith('actions/dependency-review-action@')).if,"needs.scope.outputs.dependency-mode == 'native'");
  const scan=steps.find(s=>s.name==='Scan private administrator dependencies');assert.equal(scan.if,"startsWith(needs.scope.outputs.dependency-mode, 'private-')");assert.equal(scan['working-directory'],'policy');
@@ -175,8 +175,8 @@ test('existing Renovate regex manager extracts the scanner stable version and di
  const config=JSON.parse(await readFile(new URL('../../.github/renovate.json',import.meta.url),'utf8'));
  const manager=config.customManagers.find(m=>m.depNameTemplate==='ghcr.io/google/osv-scanner-action');assert.equal(manager.datasourceTemplate,'docker');
  const text=await readFile(new URL('../../config/private-dependency-security.json',import.meta.url),'utf8');
- const match=new RegExp(manager.matchStrings[0]).exec(text);assert.equal(match.groups.currentValue,'v2.7.0');assert.match(match.groups.currentDigest,/^sha256:[a-f0-9]{64}$/);
- assert.equal(new RegExp(manager.matchStrings[0]).exec(text.replace('v2.7.0','latest')),null);
+ const match=new RegExp(manager.matchStrings[0]).exec(text);assert.match(match.groups.currentValue,/^v[0-9]+\.[0-9]+\.[0-9]+$/);assert.equal(JSON.parse(text).osvImage,`ghcr.io/google/osv-scanner-action:${match.groups.currentValue}@${match.groups.currentDigest}`);assert.match(match.groups.currentDigest,/^sha256:[a-f0-9]{64}$/);
+ assert.equal(new RegExp(manager.matchStrings[0]).exec(text.replace(match.groups.currentValue,'latest')),null);
 });
 
 test('official reporter null-results means no new findings only after complete scans and reporter mode',()=>{
@@ -341,6 +341,10 @@ test('Copier admission requires trusted template bytes and original versioned an
  const templates=new Map(await Promise.all(paths.map(async path=>[path,await readFile(new URL('../../templates/repository/'+path,import.meta.url))])));
  const files=new Map(templates);files.set('.copier-answers.yml',Buffer.from('_src_path: https://github.com/splrad/steward.git\n_commit: v0.2.0\n'));
  assertInputScope([...files.keys()]);assertCopierInputs(files,ref=>ref==='v0.2.0'?templates:null);
+ const adopted=new Map(files);
+ adopted.set('.copier-answers.yml',Buffer.concat([files.get('.copier-answers.yml'),Buffer.from('product_repository: splrad/fixture\n')]));
+ assertCopierInputs(adopted,()=>templates,paths,'splrad/fixture');
+ assert.throws(()=>assertCopierInputs(adopted,()=>templates,paths,'splrad/other'),/COPIER_ANSWERS/);
  for(const tag of ['v1!2.3.5','v1.2.3.4','v1.2.3.post1','V1.2.3+local.1']){
   const versioned=new Map(files);versioned.set('.copier-answers.yml',Buffer.from('_src_path: https://github.com/splrad/steward.git\n_commit: '+tag+'\n'));
   assertCopierInputs(versioned,ref=>ref===tag?templates:null);
