@@ -42,7 +42,7 @@ function fixture(enabled=true) {
       return {node:{author:{login:bot.login},body:c.body}};
     }};
   const run=(event='schedule',data={},id=10)=>dashboardRequest({repo,api,issues:api,base,publicRequests:true,
-    run:{id,event,actor},data,load:async()=>inspectRepository(new Map()),apply:async({base:source,branch,draft})=>{
+    run:{id,event,actor,run_attempt:1},data,load:async()=>inspectRepository(new Map()),apply:async({base:source,branch,draft})=>{
       sources.push(source);
       assert.equal(draft,true);
       const number=pulls.length+1;
