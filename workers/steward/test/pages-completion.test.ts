@@ -343,3 +343,29 @@ it('keeps the exhausted preflight budget across redelivery and restart until the
    expect(await store.get('pagesIntake')).toBeUndefined();expect(f.json).toHaveBeenCalledTimes(4);
  }finally{clock.mockRestore();}
 });
+
+it.each([true,false])('recovers an interrupted fourth intake only with a D1 reservation: %s',async reserved=>{
+ const store=new SqliteDurableStorage(),f=fixture(store);
+ const object=()=>new PagesRetry(store as any,f.config,()=>f.g,[f.site]);
+ const clock=vi.spyOn(Date,'now').mockReturnValue(Date.now());
+ try{
+   for(let n=0;n<3;n++)f.json.mockRejectedValueOnce(new GitHubRetryError(429,'600',false));
+   await expect(f.forward()).rejects.toThrow('RETRY_AFTER:600');
+   for(let n=1;n<=2;n++){clock.mockReturnValue((await store.getAlarm())!);await object().alarm();}
+   clock.mockReturnValue((await store.getAlarm())!);f.result.visible=false;f.result.lost=true;
+   if(!reserved)f.db.database.exec("CREATE TRIGGER abort_insert BEFORE INSERT ON pages_completion_dispatches BEGIN SELECT RAISE(ABORT,'injected'); END;");
+   const del=store.delete.bind(store),put=store.put.bind(store);
+   store.delete=async key=>{if(key==='pagesIntake')throw Error('interrupted cleanup');return del(key);};
+   store.put=async(key,value)=>{if(key==='pagesIntake'&&(value as any).exhausted)throw Error('interrupted cleanup');return put(key,value);};
+   await expect(f.forward()).rejects.toThrow('interrupted cleanup');
+   store.delete=del;store.put=put;
+   expect(await store.get('pagesIntake')).toMatchObject({attempts:4});expect(await store.get('pagesWatch')).toBeDefined();
+   Object.assign(f.prior,{total_count:1,workflow_runs:[f.receipt]});
+   clock.mockReturnValue((await store.getAlarm())!);await object().alarm();
+   expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(reserved?1:0);
+   if(reserved){
+     expect(await store.get('pagesIntake')).toBeUndefined();
+     expect(f.db.database.prepare('SELECT central_run_id FROM pages_completion_dispatches').get()?.central_run_id).toBe(99);
+   }else expect(await store.get('pagesIntake')).toMatchObject({attempts:4,exhausted:true});
+ }finally{clock.mockRestore();}
+});

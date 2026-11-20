@@ -3,7 +3,6 @@ import {acceptReleaseHint} from './release-cycle-relay.js';
 import {forwardPagesCompletion} from './pages-completion.js';
 import {APP_BOT_ID} from './bounded-winget-evidence.js';
 import {acceptWingetSubmit} from './bounded-winget-submit.js';
-import {BoundedGitHub} from './bounded-recheck-github.js';
 import {acceptNativeCandidateEvent,acceptNativeCandidateCompletion} from './bounded-native-event.js';
 import { handleBoundedRecheckRequest } from './bounded-recheck-api.js';
 export { BoundedRecheckCoordinator } from './bounded-recheck-do.js';

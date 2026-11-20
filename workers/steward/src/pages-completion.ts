@@ -66,7 +66,7 @@ async function forward(env:BoundedEnv,site:Site,hint:Locator,g:GitReader,owner:P
   const retrying=!!retry && !!existing && existing.reserved_at===retry.reservation &&
     existing.retry_after!==null && Date.now()>=existing.retry_after && existing.controller_sha===retry.policy && env.BOUNDED_CONTROLLER_SHA===retry.policy;
   const reservedAt=retrying?new Date(Math.max(Date.now(),Date.parse(retry!.reservation)+1)).toISOString():
-    existing?.reserved_at??new Date().toISOString();
+    existing?.reserved_at??new Date(Date.now()).toISOString();
   const receipt=(policy:string)=>owner.receipt({site,hint,policy,reservation:reservedAt});
   if(!retrying && retry && (!existing || existing.retry_after===null))return;
   if(existing&&!retrying){
@@ -141,8 +141,23 @@ async function forward(env:BoundedEnv,site:Site,hint:Locator,g:GitReader,owner:P
 export class PagesRetry {
   constructor(private store:DurableObjectStorage,private env:BoundedEnv,private reader:(site:Site)=>GitReader=site=>new BoundedGitHub(env,undefined,undefined,{id:site.repositoryId,name:site.repository}),
     private sites:readonly Site[]=registry.publicSites){}
+  private async hasReservation({site,hint}:Watch){
+    const db=this.env.ISSUE_SNAPSHOTS;ensure(db,'PAGES_DISPATCH_STORAGE');
+    const row=await db.prepare('SELECT 1 AS present FROM pages_completion_dispatches WHERE repository_id=? AND workflow_id=? AND run_id=? AND attempt=?')
+      .bind(site.repositoryId,site.workflowId,hint.id,hint.run_attempt).first();
+    return !!row;
+  }
   async intake(incoming:Watch){
     const now=Date.now();
+    const interrupted=await this.store.get<Intake>('pagesIntake');
+    if(interrupted && await this.store.get('pagesWatch') && await this.hasReservation(interrupted)){
+      await this.store.transaction(async t=>{
+        await t.delete('pagesIntake');
+        const retry=await t.get<Retry>('pagesRetry');
+        await t.setAlarm(retry?Math.max(now,retry.due):now);
+      });
+      return;
+    }
     const claim=await this.store.transaction(async t=>{
       const prior=await t.get<Intake>('pagesIntake');
       const item=prior??{...incoming,due:now,attempts:0};
@@ -172,13 +187,7 @@ export class PagesRetry {
     let failure:unknown;
     try{await forward(this.env,claim.site,claim.hint,this.reader(claim.site),this);}
     catch(error){failure=error;}
-    let reserved=false;
-    if(failure&&await this.store.get('pagesWatch')){
-      const {site,hint}=claim;
-      const row=await this.env.ISSUE_SNAPSHOTS!.prepare('SELECT 1 AS present FROM pages_completion_dispatches WHERE repository_id=? AND workflow_id=? AND run_id=? AND attempt=?')
-        .bind(site.repositoryId,site.workflowId,hint.id,hint.run_attempt).first();
-      reserved=!!row;
-    }
+    const reserved=!!failure && !!await this.store.get('pagesWatch') && await this.hasReservation(claim);
     await this.store.transaction(async t=>{
       const current=await t.get<Intake>('pagesIntake');
       if(current?.attempts!==claim.attempts||current.due!==claim.due)return;
@@ -269,7 +278,7 @@ export class PagesRetry {
     const ticket=await this.store.get<Retry>('pagesRetry');if(!ticket){
       const intake=await this.store.get<Intake>('pagesIntake');
       if(intake){
-        try{await this.intake(intake);}catch{/* The intake or reservation already owns its next alarm. */}
+        try{await this.intake(intake);}catch(error){if(await this.store.getAlarm()===null)throw error;}
         if(await this.store.get('pagesIntake'))return;
       }
       await this.reconcileWatch();return;
