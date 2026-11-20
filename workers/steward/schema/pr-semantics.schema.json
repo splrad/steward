@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/splrad/steward/schema/pr-semantics.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "catalogId", "roles", "fallback"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "const": 1 },
+    "catalogId": { "const": "pr-semantics" },
+    "roles": {
+      "type": "object", "additionalProperties": false,
+      "required": ["primaryKind", "riskFlags", "areas", "facets"],
+      "properties": {
+        "primaryKind": { "$ref": "#/$defs/primaryRole" },
+        "riskFlags": { "$ref": "#/$defs/sharedRole" },
+        "areas": { "$ref": "#/$defs/areaRole" },
+        "facets": { "$ref": "#/$defs/sharedRole" }
+      }
+    },
+    "fallback": {
+      "type": "object", "additionalProperties": false,
+      "required": ["defaultPrimaryKind", "commitTypeToPrimaryKind"],
+      "properties": {
+        "defaultPrimaryKind": { "type": "string", "minLength": 1 },
+        "commitTypeToPrimaryKind": { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 }, "minProperties": 1 }
+      }
+    }
+  },
+  "$defs": {
+    "githubLabel": {
+      "type": ["object", "null"], "additionalProperties": false,
+      "required": ["name", "color"],
+      "properties": { "name": { "type": "string", "minLength": 1 }, "color": { "type": "string", "pattern": "^[0-9a-f]{6}$" } }
+    },
+    "definition": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "description", "includes", "excludes", "githubLabel"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "includes": { "type": "string", "minLength": 1 },
+        "excludes": { "type": "string", "minLength": 1 },
+        "githubLabel": { "$ref": "#/$defs/githubLabel" }
+      }
+    },
+    "primaryDefinition": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "selection", "description", "includes", "excludes", "githubLabel"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "selection": { "enum": ["ai-eligible", "rule-only", "fallback-only"] },
+        "description": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "includes": { "type": "string", "minLength": 1 },
+        "excludes": { "type": "string", "minLength": 1 },
+        "githubLabel": { "$ref": "#/$defs/githubLabel" }
+      }
+    },
+    "management": {
+      "type": "object", "additionalProperties": false,
+      "required": ["metadataOwner", "assignmentOwner", "reconcile"],
+      "properties": {
+        "metadataOwner": { "const": "steward" },
+        "assignmentOwner": { "enum": ["steward", "shared"] },
+        "reconcile": { "enum": ["exclusive-replace", "provenance-aware-set", "authoritative-set"] }
+      }
+    },
+    "primaryRole": {
+      "type": "object", "additionalProperties": false,
+      "required": ["cardinality", "management", "order", "definitions"],
+      "properties": {
+        "cardinality": { "const": "exactly-one" },
+        "management": { "$ref": "#/$defs/management" },
+        "order": { "type": "array", "items": { "type": "string" }, "minItems": 1, "uniqueItems": true },
+        "definitions": { "type": "array", "items": { "$ref": "#/$defs/primaryDefinition" }, "minItems": 1 }
+      }
+    },
+    "sharedRole": {
+      "type": "object", "additionalProperties": false,
+      "required": ["cardinality", "management", "definitions"],
+      "properties": {
+        "cardinality": { "const": "zero-or-more" },
+        "management": { "$ref": "#/$defs/management" },
+        "definitions": { "type": "array", "items": { "$ref": "#/$defs/definition" } }
+      }
+    },
+    "areaRole": {
+      "type": "object", "additionalProperties": false,
+      "required": ["cardinality", "management", "definitions"],
+      "properties": {
+        "cardinality": { "const": "zero-or-more" },
+        "management": { "$ref": "#/$defs/management" },
+        "definitions": { "type": "array", "items": { "$ref": "#/$defs/definition" }, "minItems": 1 }
+      }
+    }
+  }
+}

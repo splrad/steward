@@ -13,7 +13,7 @@ updates:
         update-types: [minor, patch]
     open-pull-requests-limit: 5
   - package-ecosystem: npm
-    directory: /tools/quality-language
+    directories: ["/tools/quality-language", "/workers/steward"]
     schedule:
       interval: weekly
       day: monday
