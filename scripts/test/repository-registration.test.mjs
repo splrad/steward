@@ -364,14 +364,29 @@ test('initial .github and LayerScape drafts contain their actual selection shape
     const {api,state}=fake();
     assert.equal((await reconcileRegistration(api,admin,repo,source,proposal,async()=>source)).result,'created');
     assert.deepEqual(JSON.parse(state.trees.get(candidate).get(registrationPath(repo))),proposal.policy);
-    assert.match(state.open[0].body,new RegExp(source));
+    const pull=state.open[0];
+    assert.equal(pull.title,'chore: 登记 '+repo.name+' 逐仓配置');
+    assert.match(pull.body,new RegExp(source));
+    assert.ok(pull.body.includes('在 PR 分支编辑 `'+registrationPath(repo)+'` 并提交修改'));
+    assert.match(pull.body,/站点未配置/);
     assert.deepEqual(state.writes.map(([kind])=>kind),['ref','commit','pull']);
-    if(repo===governance) assert.deepEqual([proposal.policy.productCi,proposal.policy.release,proposal.pending],[[],null,[]]);
+    if(repo===governance) {
+      assert.deepEqual([proposal.policy.productCi,proposal.policy.release,proposal.pending],[[],null,[]]);
+      assert.match(pull.body,/沿用组织公共检查/);
+      assert.match(pull.body,/发行渠道未配置/);
+      assert.ok(!pull.body.includes('LayerScape')&&!pull.body.includes('构建目标'));
+    }
     else {
       assert.deepEqual(proposal.policy.productCi,[ci]);
       assert.deepEqual(proposal.policy.release,{buildWorkflow:publish,units:[{id:'layerscape',channels:[channel]}]});
       assert.equal(proposal.policy.site,null);
       assert.equal(proposal.pending.length,1);
+      assert.ok(pull.body.includes('正式构建入口 `'+publish+'`'));
+      assert.ok(pull.body.includes('构建目标 `windows-x64`'));
+      assert.ok(pull.body.includes('`github-release`（必需）'));
+      for(const asset of assets)assert.ok(pull.body.includes('`'+asset.id+'`（`'+asset.name+'`）'));
+      for(const file of metadata)assert.ok(pull.body.includes('`'+file+'`'));
+      assert.match(pull.body,/确认站点来源和公开部署授权/);
     }
     state.open[0].body += '\n人工改稿';
     state.trees.get(candidate).set(registrationPath(repo),'人工正在编辑');

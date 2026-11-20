@@ -137,7 +137,7 @@ export function releaseRegistration(model, pending) {
     const units = [];
     for (const unit of delivery.units) {
       if (!model.versions?.packages?.[unit.path] || !Array.isArray(matrix) ||
-        !matrix.some(row => row.unit === unit.id && typeof row.target === 'string' && row.target)) {
+        !matrix.some(row => row?.unit === unit.id && typeof row.target === 'string' && row.target)) {
         pending.push('确认发行单元和构建入口 ' + unit.id);
         continue;
       }
@@ -186,8 +186,62 @@ export async function registrationProposal(repo, read) {
       ...(choice.source === 'release' ? { unit: choice.unit } : {}) };
   }
   if (model.pages && (!site || choice.deploy !== false)) pending.push('确认站点来源和公开部署授权');
+  const matrix = model.publish?.jobs?.build?.strategy?.matrix?.include;
+  const rows = Array.isArray(matrix) ? matrix : [];
+  const releaseDetails = new Map((model.delivery?.units ?? []).map(unit => [unit.id, {
+    assets: new Map(unit.assets.map(asset => [asset.id, asset.name])),
+    targets: rows.filter(row => row?.unit === unit.id && typeof row.target === 'string' && row.target).map(row => row.target)
+  }]));
   return { policy: checkedRegistration({ schemaVersion: 1, repositoryId: repo.id, repository: repo.full_name,
-    productCi, release, site }, repo.id), pending };
+    productCi, release, site }, repo.id), pending, releaseDetails };
+}
+
+export function renderRegistrationPull(repo, source, proposal, current=null) {
+  const policy=current ? {...current,repository:repo.full_name} : proposal.policy;
+  const quote=value=>'`'+String(value).replace(/[`<>\r\n]/g,'')+'`';
+  const list=values=>values.map(quote).join('、');
+  const path='repositories/'+repo.id+'.json';
+  const title='chore: 登记 '+repo.name+' 逐仓配置';
+  const lines=[
+    '请在这张私有管理员仓 PR 中确认目标仓的治理选择。需要调整时，在 PR 分支编辑 '+quote(path)+' 并提交修改，再从 **Files changed** 核对最终 JSON 和下列待确认项。确认后将草稿转为待审，按本仓流程审查合并。',
+    '', '## 仓库与配置', '',
+    '- 目标仓 '+quote(repo.full_name)+'（'+repo.id+'）',
+    '- 目标仓默认分支提交 '+quote(source),
+    '- 配置文件 '+quote(path),
+    '- 本次修改 '+list(current?['repository']:['repository',...fields]),
+    '- 产品 CI '+(list(policy.productCi)||'沿用组织公共检查'),
+    '', '## 发行与产物', ''
+  ];
+  if(policy.release) {
+    lines.push('- 正式构建入口 '+quote(policy.release.buildWorkflow));
+    for(const unit of policy.release.units) {
+      const details=proposal.releaseDetails?.get(unit.id);
+      const targets=details?.targets.length? '，构建目标 '+list([...new Set(details.targets)]) : '';
+      lines.push('- 发行单元 '+quote(unit.id)+targets);
+      if(!unit.channels.length)lines.push('  - 发行渠道未配置');
+      for(const channel of unit.channels) {
+        lines.push('  - '+quote(channel.id)+'（'+(channel.required?'必需':'非必需')+'）· '+quote(channel.location));
+        const assets=channel.artifactIds.map(id=>quote(id)+(details?.assets.get(id)?'（'+quote(details.assets.get(id))+'）':''));
+        lines.push('    - 产品文件 '+(assets.join('、')||'无'));
+        lines.push('    - 发布元数据 '+(list(channel.metadata)||'无'));
+      }
+    }
+  } else lines.push('发行渠道未配置。');
+  lines.push('','## 站点','');
+  if(policy.site) {
+    const {mode,source:siteSource,unit,workflow}=policy.site;
+    lines.push('- 工作流 '+quote(workflow),
+      '- 选择 '+(mode==='build-only'?'仅构建':'构建并部署'),
+      '- 来源 '+(siteSource==='default-branch'?'默认分支':'正式 Release 单元 '+quote(unit)));
+  } else lines.push('站点未配置。');
+  const differences=current?fields.filter(key=>!isDeepStrictEqual(current[key],proposal.policy[key])):[];
+  if(differences.length||proposal.pending.length) {
+    lines.push('','## 待确认','');
+    if(differences.length)lines.push('- 仓内声明与已采用配置有差异，需审阅 '+list(differences));
+    for(const note of proposal.pending)lines.push('- '+note);
+  }
+  lines.push('','配置采用、正式发行与公开部署沿用各自的审批和验收。');
+  return {title,body:lines.join('\n')};
 }
 
 const branchPrefix = id => 'steward/repository-registration-' + id + '-';
@@ -238,7 +292,7 @@ export async function reconcileRegistration(api, admin, repo, source, proposal, 
     await api.rest.git.createRef({ ...api.target, ref: 'refs/heads/' + branch, sha: base });
     head = base;
   }
-  const title = 'chore: 登记 ' + repo.name + ' 逐仓配置';
+  const {title,body}=renderRegistrationPull(repo,source,proposal,current);
   if (head === base) {
     head = await commitFiles(api, admin, branch, base, new Map([[path, bytes]]), '目标仓源码 ' + source, title);
   } else {
@@ -258,15 +312,6 @@ export async function reconcileRegistration(api, admin, repo, source, proposal, 
   'Registration input changed before PR creation');
   const concurrent = await matchingPull(api, admin, id, path);
   if (concurrent) return { result: 'reused', number: concurrent.number, differences, pending: proposal.pending };
-  const body = ['维护者审阅中央配置后合并。', '', '- 目标仓 `' + repo.full_name + '`（' + id + '）',
-    '- 目标仓默认分支提交 `' + source + '`', '- 配置文件 `' + path + '`',
-    '- 产品 CI ' + (policy.productCi.map(file => '`' + file + '`').join('、') || '沿用组织公共检查'),
-    '- 发行 ' + (policy.release?.units.map(unit => '`' + unit.id + '`（' +
-      (unit.channels.filter(channel => channel.required).map(channel => channel.id).join('、') || '渠道未启用') +
-      '）').join('、') || '未配置'),
-    '- 站点 ' + (policy.site ? '`' + policy.site.mode + '` · `' + policy.site.source + '`' : '未配置'),
-    ...proposal.pending.map(note => '- 待确认：' + note), '',
-    '按 Files changed 核对实际选择；配置登记与业务启用分别验证。'].join('\n');
   const { data: pull } = await api.rest.pulls.create({ ...args, head: branch, title, body, draft: true });
   return { result: 'created', number: pull.number, differences, pending: proposal.pending };
 }
