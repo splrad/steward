@@ -25,15 +25,14 @@ function exact(v:any,keys:string){ensure(v&&typeof v==='object'&&!Array.isArray(
 export function nativeHintKey(h:NativeHint){return digest(JSON.stringify([h.repositoryId,h.prNumber,h.actorId,h.action,h.updatedAt])).slice(7);}
 function validateHint(h:NativeHint){exact(h,'action,actorId,prNumber,repositoryId,updatedAt');ensure(Number.isSafeInteger(h.repositoryId)&&h.repositoryId>0&&Number.isSafeInteger(h.prNumber)&&h.prNumber>0&&Number.isSafeInteger(h.actorId)&&h.actorId>0&&['labeled','unlabeled','reopened'].includes(h.action)&&typeof h.updatedAt==='string'&&Number.isFinite(Date.parse(h.updatedAt)),'NATIVE_HINT');}
 /** Only called after existing HMAC and organization checks. No Git/network read precedes durable acceptance. */
-export async function acceptNativeCandidateEvent(env:BoundedEnv,event:string,payload:any,deliveryId:string,g:GitReader=new BoundedGitHub(env)){
+export async function acceptNativeCandidateEvent(env:BoundedEnv,event:string,payload:any,deliveryId:string){
  if(env.BOUNDED_RECHECK_ENABLED!=='true'||event!=='pull_request'||payload.repository?.private!==false||!Number.isSafeInteger(payload.repository?.id)||!payload.installation?.id||payload.installation.id!==Number(env.INSTALLATION_ID)||!['labeled','unlabeled','reopened'].includes(payload.action))return;
  if(payload.action!=='reopened'&&payload.label?.name!=='release:editing')return;
  ensure(env.BOUNDED_RECHECK&&sha(env.BOUNDED_CONTROLLER_SHA)&&sha(env.BOUNDED_DEPLOYMENT_SHA),'NATIVE_CONFIGURATION');
- const scoped=g.forCandidate?await g.forCandidate(payload.repository.id):g;
- if(!scoped)return;
- const target=scoped.target??TARGET;
- if(payload.repository.id!==target.id||payload.repository.full_name!==target.name||payload.repository.default_branch!==target.defaultBranch)return;
- const hint:NativeHint={repositoryId:target.id,prNumber:payload.pull_request?.number,actorId:payload.sender?.id,action:payload.action,updatedAt:payload.pull_request?.updated_at};validateHint(hint);
+ const repo=payload.repository;
+ if(repo.id<=0||repo.fork===true||repo.archived===true||repo.disabled===true||
+    (repo.visibility!==undefined&&repo.visibility!=='public')||!repo.default_branch)return;
+ const hint:NativeHint={repositoryId:repo.id,prNumber:payload.pull_request?.number,actorId:payload.sender?.id,action:payload.action,updatedAt:payload.pull_request?.updated_at};validateHint(hint);
  ensure(/^[A-Za-z0-9-]{1,128}$/.test(deliveryId),'NATIVE_DELIVERY');const key=nativeHintKey(hint),stub=env.BOUNDED_RECHECK.get(env.BOUNDED_RECHECK.idFromName('native:v1:'+key));
  const result=await stub.fetch(new Request('https://bounded.internal/native-event',{method:'POST',body:JSON.stringify({hint,deliveryId})}));ensure(result.ok,'NATIVE_DURABLE_ACCEPTANCE');
 }
@@ -178,8 +177,21 @@ export class NativeCandidateCoordinator {
     Date.parse(run.updated_at)>=record.t0 && Date.parse(run.updated_at)<t0,'PRIOR_OBSERVATION_ORDER');
  }
  private async prepare(r:NativeEventRecord){
-  const g=this.reader(),policy=await promotedController(g,this.env.RELEASE_RELAY_DEPLOYMENT_SHA??this.env.BOUNDED_DEPLOYMENT_SHA??r.deploymentSha,this.env);
-  const prepared=await resolveNativeEvent(g,r.hint);ensure(prepared.t0===Date.parse(r.hint.updatedAt),'NATIVE_ORIGINAL_TIME');
+  const g=this.reader();
+  let candidate:GitReader;
+  try {candidate=await candidateReader(g,r.hint.repositoryId);}
+  catch(error){
+   if(!(error instanceof Error)||error.message!=='CANDIDATE_NOT_REGISTERED')throw error;
+   await this.storage.transaction(async t=>{
+    const latest=await t.get<NativeEventRecord>('nativeEvent');
+    if(!latest||latest.claim!==r.claim||latest.dispatchedAt!==null||latest.status==='PAUSED')return;
+    latest.status='PROTECTED';latest.reason='CANDIDATE_NOT_REGISTERED';latest.nextAt=null;
+    await this.save(t,latest);
+   });
+   return;
+  }
+  const policy=await promotedController(g,this.env.RELEASE_RELAY_DEPLOYMENT_SHA??this.env.BOUNDED_DEPLOYMENT_SHA??r.deploymentSha,this.env);
+  const prepared=await resolveNativeEvent(candidate,r.hint);ensure(prepared.t0===Date.parse(r.hint.updatedAt),'NATIVE_ORIGINAL_TIME');
   if(prepared.priorIdentity){const current=await objectPost(this.env,prepared.priorIdentity,'status',{});await this.checkPrior(current,prepared.priorIdentity,{...r,policySha:policy},prepared.t0);if(current?.status==='PENDING')await objectPost(this.env,prepared.priorIdentity,'pause',{expectedGeneration:current.generation});}
   await dispatchFixed(g,CENTRAL.id,'release-candidate-event.yml',policy,{event_json:JSON.stringify(prepared.event),source_sha:prepared.sourceSha,request_key:r.requestKey,policy_sha:policy},async()=>{
    const now=this.clock();

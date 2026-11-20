@@ -80,7 +80,34 @@ async function normalFixture(){
  return {f,hint,key,g,env,run,artifact,eventStorage,store,engine,coordinator,time:(n:number)=>{now=n;},clock:()=>now,missingArtifact:()=>{artifactError='ARTIFACT_UNIQUE';},artifactFailure:(s:string|null)=>{artifactError=s;},readError:(s:string|null)=>{readError=s;},unavailable:(v:boolean)=>{unavailable=v;},losePost:()=>{losePost=true;},posts:()=>posts,reads:()=>reads};
 }
 describe('durable normal candidate event chain',()=>{
- it('persists a signed hint before any Git reads, duplicates preserve the original window',async()=>{const f=await normalFixture();await acceptNativeCandidateEvent({...f.env,INSTALLATION_ID:'123'},'pull_request',{installation:{id:123},repository:{id:TARGET.id,full_name:TARGET.name,default_branch:'main',private:false},action:'unlabeled',label:{name:'release:editing'},sender:{id:7},pull_request:{number:192,updated_at:f.hint.updatedAt}},'delivery-1',f.g);expect(f.reads()).toBe(0);const original=await f.eventStorage.get<any>('nativeEvent');expect(original.status).toBe('PREPARING');f.time(f.clock()+60000);await f.coordinator().register({hint:f.hint,deliveryId:'delivery-2'});expect(await f.eventStorage.get('nativeEvent')).toEqual(original);expect(f.posts()).toBe(0);});
+ it('recovers a durable hint after candidate discovery fails without redelivery or duplicate dispatch',async()=>{
+  const f=await normalFixture();
+  let attempts=0;
+  f.g.forCandidate=async()=>{
+   if(++attempts===1)throw Error('SOURCE_TEMPORARILY_UNREADABLE');
+   return {...f.g,target:TARGET};
+  };
+  const payload={installation:{id:123},repository:{id:TARGET.id,full_name:TARGET.name,default_branch:'main',private:false},
+   action:'unlabeled',label:{name:'release:editing'},sender:{id:7},pull_request:{number:192,updated_at:f.hint.updatedAt}};
+  const receive=(delivery:string)=>acceptNativeCandidateEvent({...f.env,INSTALLATION_ID:'123'},'pull_request',payload,delivery);
+  await receive('delivery-1');
+  const original=await f.eventStorage.get<any>('nativeEvent');
+  expect(original.status).toBe('PREPARING');
+  expect(f.reads()).toBe(0);expect(attempts).toBe(0);
+  await f.coordinator().alarm();expect(attempts).toBe(1);expect(f.posts()).toBe(0);
+  f.time(f.clock()+60000);await f.coordinator().alarm();expect(f.posts()).toBe(1);
+  await receive('delivery-2');await f.coordinator().alarm();
+  const recovered=await f.eventStorage.get<any>('nativeEvent');
+  expect(recovered.firstDeliveryId).toBe('delivery-1');expect(recovered.deadline).toBe(original.deadline);
+  expect(f.posts()).toBe(1);
+ });
+ it('protects an ineligible repository without dispatch or further alarms',async()=>{
+  const f=await normalFixture();f.g.forCandidate=async()=>undefined;
+  await f.coordinator().register({hint:f.hint,deliveryId:'not-registered'});
+  await f.coordinator().alarm();
+  expect(await f.eventStorage.get('nativeEvent')).toMatchObject({status:'PROTECTED',nextAt:null});
+  expect(f.posts()).toBe(0);
+ });
  it('pauses the archived registration across a failed read and a protected migration result',async()=>{
    const f=await normalFixture(),source=sha('b'),read=f.g.json.bind(f.g);
    f.g.target={...TARGET,units:[{id:'layerscape',path:'packages/app'}]};

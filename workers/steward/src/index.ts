@@ -495,7 +495,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
 
 async function handleExistingEvent(env:Env,event:string,payload:any,deliveryId:string,action:string):Promise<Response> {
   try {
-    await acceptNativeCandidateEvent(env, event, payload, deliveryId);
+    if (belongsToOrganization(payload.repository)) await acceptNativeCandidateEvent(env, event, payload, deliveryId);
     await acceptNativeCandidateCompletion(env, event, payload);
     if (event === 'issue_comment') {
       await forwardConfigurationComment(env, payload, new BoundedGitHub(env));
