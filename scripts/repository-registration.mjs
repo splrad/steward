@@ -5,15 +5,15 @@ import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { createAppAuth } from '@octokit/auth-app';
 import { Octokit } from '@octokit/rest';
-import { NativeEvidenceReader, nativeEvidenceTransport, nativeReleaseApp, parseDeliveryConfig } from '../packages/runner/dist/index.js';
+import { NativeEvidenceReader, nativeEvidenceTransport, nativeReleaseApp } from '../packages/runner/dist/index.js';
 import contract from '../config/settings-source-events.json' with { type: 'json' };
 import { revisionReader } from './configuration-authorization.mjs';
 import { commitFiles, must, positive, sha } from './configuration-native.mjs';
-import { ciPath, deliveryPath, effectiveChannels, inspectRepository, jsonFile, pagesChoices, pagesPath,
+import { ciPath, deliveryPath, inspectRepository, jsonFile, pagesChoices, pagesPath,
   publishPath, versionsPath } from './configuration-view.mjs';
 import { productWorkflows, requiresProductCI, selectableProductCI } from './validation-input.mjs';
 import { dependencyMode, loadPolicy } from './private-dependency-policy.mjs';
-import { checkedRegistration,configurationConflicts,parseRegistration } from './repository-registration-policy.mjs';
+import { checkedRegistration,configurationConflicts,parseRegistration,releaseRegistration } from './repository-registration-policy.mjs';
 import { projectMergedRepositoryPolicy } from './repository-policy-publish.mjs';
 import { readRepositoryProjection } from './repository-policy-projection.mjs';
 import { adminId, centralId, isGovernanceBot, loadPrivateRequest, makePrivateRequest, readWake, registrationGitHubOptions,
@@ -24,7 +24,6 @@ const governance = { id: 5639432, installation: 179184801 };
 const stewardBot = 301115370;
 const webFlow = 19864447;
 const fields = ['productCi', 'release', 'site'];
-const metadataFiles = ['sbom.spdx.json', 'release-notes.md', 'artifact-manifest.json', 'SHA256SUMS'];
 const digest = text => createHash('sha256').update(text).digest('hex');
 
 export function registrationIds(event, name) {
@@ -125,39 +124,6 @@ async function readHead(api, branch, missing = false) {
   must(result.data.ref === 'refs/heads/' + branch && result.data.object.type === 'commit' &&
     sha(result.data.object.sha), 'Invalid registration ref');
   return result.data.object.sha;
-}
-
-export function releaseRegistration(model, pending) {
-  let release = null;
-  if (model.delivery) {
-    const delivery = parseDeliveryConfig(model.delivery);
-    const matrix = model.publish?.jobs?.build?.strategy?.matrix?.include;
-    const units = [];
-    for (const unit of delivery.units) {
-      if (!model.versions?.packages?.[unit.path] || !Array.isArray(matrix) ||
-        !matrix.some(row => row?.unit === unit.id && typeof row.target === 'string' && row.target)) {
-        pending.push('确认发行单元和构建入口 ' + unit.id);
-        continue;
-      }
-      const channels = [];
-      for (const channel of effectiveChannels(delivery, unit)) {
-        let artifactIds = channel.artifactIds;
-        if (!artifactIds && channel.id === 'winget') {
-          const installers = unit.assets.filter(asset => /\.(?:exe|msi|msix|appx|msixbundle|appxbundle)$/i.test(asset.name));
-          if (installers.length !== 1) {
-            pending.push('确认 WinGet 安装文件 ' + unit.id);
-            continue;
-          }
-          artifactIds = [installers[0].id];
-        }
-        channels.push({ ...channel, artifactIds: artifactIds ?? unit.assets.map(asset => asset.id),
-          metadata: channel.metadata ?? (channel.id === 'winget' ? [] : metadataFiles) });
-      }
-      units.push({ id: unit.id, channels });
-    }
-    if (units.length) release = { buildWorkflow: publishPath, units };
-  }
-  return release;
 }
 
 export async function registrationProposal(repo, read, productPaths) {
