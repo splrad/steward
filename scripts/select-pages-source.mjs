@@ -162,7 +162,7 @@ export async function workflowPagesOptions(reader,env,read=readRepositoryProject
   const isApproved=(mode,unit)=>Boolean(mode&&mode===approvedSource&&
     (mode!=='release'||unit&&unit===approvedUnit));
   let publicAllowed=isApproved(options.mode,options.unitId)&&!options.buildOnly;
-  if(env.STEWARD_REPOSITORY_POLICY==='true') {
+  if(env.STEWARD_REPOSITORY_POLICY==='true'&&reader.repository.startsWith('splrad/')) {
     const projection=await read(reader,options.repositoryId);
     if(projection?.adoption==='central') {
       const site=projection.site;

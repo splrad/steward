@@ -77,7 +77,7 @@ test('product reads only selected CI and Pages from protected state, with digest
   const bytes=Buffer.from(content),path='configuration/repository.json';
   const blob=createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
   let protectedRules=true,reads=0,drift=false;
-  const reader={path:value=>value,io:{request:async()=>({status:200,bytes:Buffer.from(JSON.stringify({
+  const reader={repository:product.full_name,path:value=>value,io:{request:async()=>({status:200,bytes:Buffer.from(JSON.stringify({
     ref:'refs/heads/steward/governance-state',object:{type:'commit',sha:drift&&reads++?source:base}
   }))})},json:async route=>{
     if(route==='git/trees/'+base)return {truncated:false,tree:[{path:'configuration',type:'tree',mode:'040000',sha:candidate}]};
