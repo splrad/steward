@@ -206,11 +206,14 @@ export async function promoteRequiredWorkflows(io,target,assertCurrent,record,ma
   if(!maintenanceBefore)await record({kind:'maintenance-retired',rulesetId:maintenanceId,ref:maintenanceRef});
   // Recheck the complete set after collecting and recording the first snapshot.
   // Separate API reads cannot provide an atomic cross-ruleset snapshot.
-  await assertCurrent();
-  await verifyTargets();
-  if(!maintenanceBefore)await assertMaintenanceRetired(io,maintenanceId);
-  await assertCurrent();
-  return {status:results.every(r=>r.status==='ALREADY_ADOPTED')?'ALREADY_ADOPTED':'ADOPTED',sha:target,targets:results};
+  const verifyCurrent=async()=>{
+    await assertCurrent();
+    await verifyTargets();
+    if(!maintenanceBefore)await assertMaintenanceRetired(io,maintenanceId);
+    await assertCurrent();
+  };
+  await verifyCurrent();
+  return {status:results.every(r=>r.status==='ALREADY_ADOPTED')?'ALREADY_ADOPTED':'ADOPTED',sha:target,targets:results,verifyCurrent};
 }
 
 export async function publishTemplateTag(io,plan,assertCurrent,record) {
@@ -298,18 +301,13 @@ export async function recordPromotionFailure(error,record) {
   await record({kind:'failure',code});throw Error(code);
 }
 
-export async function publishPromotedSources(io,plan,adopted,{appId,maintenanceId},assertCurrent,record){
-  const maintenanceRetired=!adopted.targets.some(target=>target.rulesetId===maintenanceId);
-  const guard=maintenanceRetired?async()=>{
-    await assertCurrent();
-    await assertMaintenanceRetired(io,maintenanceId);
-  }:assertCurrent;
+export async function publishPromotedSources(io,plan,target,appId,guard,record){
   const published=await publishTemplateTag(io,plan,guard,record);
   await record({kind:'template-result',...published});
-  const controller=await publishControllerSource(io,adopted.sha,appId,guard,record);
+  const controller=await publishControllerSource(io,target,appId,guard,record);
   await record({kind:'controller-source-result',...controller});
   await wakePublishedTemplate(io,published,guard,record);
-  if(maintenanceRetired)await guard();
+  await guard();
 }
 
 export async function main(env=process.env,transport=fetch) {
@@ -335,8 +333,9 @@ export async function main(env=process.env,transport=fetch) {
     const appId=Number(env.GOVERNANCE_APP_ID);
     const guard=createSourceGuard(io,appId,assertCurrent);
     await guard();
-    const adopted=await promoteRequiredWorkflows(io,source.sha,guard,record,maintenanceRuleId);await record({kind:'rules-result',...adopted});
-    await publishPromotedSources(io,plan,adopted,{appId,maintenanceId:maintenanceRuleId},guard,record);
+    const {verifyCurrent,...adopted}=await promoteRequiredWorkflows(io,source.sha,guard,record,maintenanceRuleId);
+    await record({kind:'rules-result',...adopted});
+    await publishPromotedSources(io,plan,adopted.sha,appId,verifyCurrent,record);
   },transport);
   process.stdout.write('Promotion: adopted and reconciled\n');
   }catch(error){
