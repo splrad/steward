@@ -10,7 +10,7 @@ function snapshot():any {return {
     {type:'required_status_checks',parameters:{required_status_checks:[{context:'existing-check',integration_id:9}]}},
     {type:'workflows',parameters:{workflows:[{repository_id:1296724484,path:'.github/workflows/pr-validation-native.yml',ref:'main'},{repository_id:1,path:'.github/workflows/other.yml',sha:'b'.repeat(40)}]}}
   ]},
-  team:{id:91,slug:'primary-account-approval-exception',organization:{id:302208797}},members:[{id:44151430,login:'axiomoth',type:'User'}],
+  team:{id:91,slug:'stewardship',organization:{id:302208797}},members:[{id:44151430,login:'axiomoth',type:'User'}],
   governanceApp:{id:92,slug:'splrad-governance'},installation:{id:93,app_id:92,account:{id:302208797},repository_selection:'all',suspended_at:null},
   validationCheck:{name:'SPLRAD Validation',head_sha:'a'.repeat(40),status:'completed',conclusion:'success',app:{id:15368,slug:'github-actions'}}
 };}
