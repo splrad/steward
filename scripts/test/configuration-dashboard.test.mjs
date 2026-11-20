@@ -96,3 +96,28 @@ test('an exact native comment opens or reuses a PR and cannot edit its configura
   await assert.rejects(f.run('issue_comment',request),/Invalid configuration request/);
   await assert.rejects(f.run('issue_comment',{command:{number:99,id:71}}),/Unknown configuration issue/);
 });
+
+test('closing a configuration PR refreshes the pinned issue without repeating the request',async()=>{
+  const f=fixture();
+  await f.run();
+  const [issue]=f.issues;
+  await f.run('issues',f.click());
+  assert.ok(issue.body.includes('- [ ] <!-- steward-configure'));
+  const [pr]=f.pulls;
+  pr.state='closed';
+  pr.closed_at='2026-11-20T02:00:00Z';
+  f.pulls.unshift({...pr,number:8,closed_at:'2026-11-20T01:00:00Z',merged_at:'2026-11-20T01:00:00Z'});
+  await f.run('pull_request',{closed:true});
+  assert.match(issue.body,/配置 PR #1[^\n]+已关闭，变更未采用/);
+  assert.equal(issue.state,'open');
+  assert.deepEqual(f.pins,[issue.number]);
+  const writes=f.writes.length;
+  await f.run();
+  assert.equal(f.writes.length,writes);
+  await f.run('issues',f.click(),23);
+  const next=f.pulls[0];
+  Object.assign(next,{state:'closed',closed_at:'2026-11-20T03:00:00Z',merged_at:'2026-11-20T03:00:00Z'});
+  await f.run('pull_request',{closed:true});
+  assert.ok(issue.body.includes('已合并。'));
+  assert.ok(!issue.body.includes('变更未采用'));
+});

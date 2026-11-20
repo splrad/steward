@@ -28,13 +28,15 @@ async function findIssue(api,repo) {
   return matches[0];
 }
 
-async function syncIssue(api,repo,summary,pr,publicRequests) {
+async function syncIssue(api,repo,summary,pr,lastClosed,publicRequests) {
   let issue=await findIssue(api,repo);
   const {repository}=await api.graphql('query($owner:String!,$repo:String!){repository(owner:$owner,name:$repo){pinnedIssues(first:3){totalCount nodes{issue{number}}}}}',api.target);
   const pins=repository.pinnedIssues;
   const pinned=issue && pins.nodes.some(p=>p.issue.number===issue.number);
   const full=!pinned && pins.totalCount>=3;
   const body=[marker(repo.id),summary,pr?'[打开配置 PR #'+pr.number+']('+pullUrl(repo,pr.number)+')':'当前没有开放的配置 PR。',
+    ...(!pr && lastClosed?['[配置 PR #'+lastClosed.number+']('+pullUrl(repo,lastClosed.number)+')'+
+      (lastClosed.merged_at?' 已合并。':' 已关闭，变更未采用。')]:[]),
     publicRequests?'任何用户均可在此评论 `/configure` 请求配置 PR。配置选择由管理员或受托维护者修改。':'管理员或受托维护者可在此评论 `/configure` 请求配置 PR。',
     '机器人会用 👍 确认已处理的评论。如果默认分支连续变化导致本次未能处理，机器人会标记 😕。',
     checkbox,...(full?['本仓的三个置顶位置已占满。']:[])].join('\n\n');
@@ -50,7 +52,7 @@ async function syncIssue(api,repo,summary,pr,publicRequests) {
 
 async function closedPulls(api,repo) {
   const pulls=await api.paginate(api.rest.pulls.list,{...api.target,base:repo.default_branch,state:'closed',sort:'created',direction:'desc',per_page:100});
-  return pulls.filter(pr=>nativePull(pr,repo));
+  return pulls.filter(pr=>nativePull(pr,repo)).sort((a,b)=>Date.parse(b.closed_at)-Date.parse(a.closed_at) || b.number-a.number);
 }
 
 // The caller serializes this transaction per repository in the central workflow.
@@ -107,6 +109,6 @@ export async function dashboardRequest({repo,api,issues,base,run,data,publicRequ
     } else await apply({draft:true,firstAdoption:!current && !history.length});
   }
   current=await openPull(api,repo);
-  await syncIssue(issues,repo,summary,current,publicRequests);
+  await syncIssue(issues,repo,summary,current,history[0],publicRequests);
   if(event==='issue_comment')await issues.rest.reactions.createForIssueComment({...issues.target,comment_id:data.command.id,content:'+1'});
 }
