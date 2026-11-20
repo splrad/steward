@@ -9,7 +9,8 @@ import {loadPolicy,dependencyMode,assertGovernanceOnlyScope,configurationCallers
 import {parseRegistration,registrationPath,registrationWorkflow} from './repository-registration-policy.mjs';
 import {assertLifecycleScope} from './private-lifecycle-policy.mjs';
 import {NativeEvidenceReader,nativeEvidenceTransport} from '../packages/runner/dist/index.js';
-import {assertCentralProjection,centralProjectionRequired,readRepositoryProjection} from './repository-policy-projection.mjs';
+import {assertCentralProjection,assertRepositoryPolicyMarker,readRequiredRepositoryProjection,readRepositoryProjection,
+  repositoryPolicyAdoptionPath} from './repository-policy-projection.mjs';
 const check=(ok,code)=>{if(!ok)throw Error('VALIDATION_'+code);};
 export function git(workspace,args) {
   return execFileSync('git',['--no-replace-objects','-c','core.hooksPath=','-c','credential.helper=',...args],
@@ -20,7 +21,7 @@ export async function regular(workspace,path) {
   check(actual.startsWith(root+sep)&&info.isFile()&&!info.isSymbolicLink(),'FILE_BOUNDARY');return file;
 }
 // Community repositories can contain governance metadata alongside documentation.
-const communityFiles=new Set([...configurationCallers,'LICENSE','.copier-answers.yml','.github/VULNERABILITY_REPORT.yml',
+const communityFiles=new Set([...configurationCallers,repositoryPolicyAdoptionPath,'LICENSE','.copier-answers.yml','.github/VULNERABILITY_REPORT.yml',
   '.github/labeler.yml','.github/release-template.md.mustache','.github/workflows/actions.lock',
   '.github/workflows/pr-labeler.yml','.github/workflows/pr-title.yml']);
 export function documentationOnly(files) {
@@ -109,6 +110,8 @@ export async function validationInput(workspace,env=process.env) {
   const changedPaths=new TextDecoder('utf-8',{fatal:true}).decode(git(workspace,['diff','--no-ext-diff','--no-textconv','--name-only','--no-renames','-z',base,head])).split('\0').filter(Boolean);
   const input={complete:true,repositoryId,base,head,workflowSha:env.WORKFLOW_SHA,changedPaths};
   const files=git(workspace,['ls-files','-z']).toString('utf8').split('\0').filter(Boolean);
+  if(event.repository.full_name.startsWith('splrad/')&&changedPaths.includes(repositoryPolicyAdoptionPath)&&files.includes(repositoryPolicyAdoptionPath))
+    assertRepositoryPolicyMarker(await readFile(await regular(workspace,repositoryPolicyAdoptionPath)));
   const policy=await loadPolicy();
   const dependency=dependencyMode(event,policy,env.PRIVATE_GOVERNANCE_REPOSITORY_ID);
   if(dependency==='private-administrator') {
@@ -129,10 +132,11 @@ export async function validationInput(workspace,env=process.env) {
   const available=files.includes(declaration)
     ? productWorkflows(JSON.parse(await readFile(await regular(workspace,declaration),'utf8')),files) : [];
   const organizationRepository=event.repository.full_name.startsWith('splrad/');
-  const projectionRequired=organizationRepository&&centralProjectionRequired(env.STEWARD_REPOSITORY_POLICY_REQUIRED);
-  const selection=env.REPOSITORY_POLICY_TOKEN&&organizationRepository
-    ? await readRepositoryProjection(new NativeEvidenceReader(nativeEvidenceTransport(env.REPOSITORY_POLICY_TOKEN),event.repository.full_name),repositoryId)
-    : null;
+  if(organizationRepository&&env.GITHUB_ACTIONS==='true')check(env.REPOSITORY_POLICY_TOKEN,'REPOSITORY_POLICY_TOKEN');
+  const policyReader=env.REPOSITORY_POLICY_TOKEN&&organizationRepository
+    ? new NativeEvidenceReader(nativeEvidenceTransport(env.REPOSITORY_POLICY_TOKEN),event.repository.full_name) : null;
+  const projectionRequired=policyReader?await readRequiredRepositoryProjection(policyReader,repositoryId):false;
+  const selection=policyReader?await readRepositoryProjection(policyReader,repositoryId):null;
   const workflows=selectedProductWorkflows(selection,available,productApplicable,projectionRequired);
   const boundNames=[];
   for(const path of workflows){

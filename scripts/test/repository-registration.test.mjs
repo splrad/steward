@@ -14,7 +14,7 @@ import {readRepositoryPolicy} from '../repository-policy-read.mjs';
 import {main as runLegacyConfiguration} from '../repository-configuration.mjs';
 import {releasePolicyGuard} from '../release-repository-policy.mjs';
 import {servicePages} from '../pages-maintenance.mjs';
-import {projectionBytes,readRepositoryProjection} from '../repository-policy-projection.mjs';
+import {projectionBytes,readRequiredRepositoryProjection,readRepositoryProjection,repositoryPolicyAdoptionPath} from '../repository-policy-projection.mjs';
 import {projectMergedRepositoryPolicy} from '../repository-policy-publish.mjs';
 import {workflowPagesOptions} from '../select-pages-source.mjs';
 import {writeReleaseRecords} from '../release-record.mjs';
@@ -96,30 +96,28 @@ test('product reads only selected CI and Pages from protected state, with digest
   assert.throws(()=>selectedProductWorkflows(selection,[],true),/PRODUCT_CI_REPOSITORY_POLICY/);
   assert.deepEqual(selectedProductWorkflows({...selection,adoption:'paused'},[ci,'draft'],true),[ci,'draft']);
   const env={STEWARD_REPOSITORY_POLICY:'true',GITHUB_REPOSITORY_ID:String(product.id)};
-  const built=await workflowPagesOptions(reader,env,async()=>selection);
+  const options=(env,read,required=false)=>workflowPagesOptions(reader,env,read,async()=>required);
+  const built=await options(env,async()=>selection);
   assert.equal(built.options.mode,'default-branch');
   assert.equal(built.publicAllowed,false);
   assert.equal(built.options.buildOnly,true);
-  assert.equal((await workflowPagesOptions(reader,{...env,STEWARD_DOCS_SOURCE:'default-branch'},async()=>selection)).publicAllowed,true);
-  assert.equal((await workflowPagesOptions(reader,{...env,STEWARD_DOCS_SOURCE:'default-branch',
+  assert.equal((await options({...env,STEWARD_DOCS_SOURCE:'default-branch'},async()=>selection)).publicAllowed,true);
+  assert.equal((await options({...env,STEWARD_DOCS_SOURCE:'default-branch',
     STEWARD_DOCS_APPROVED_SOURCE:''},async()=>selection)).publicAllowed,false);
-  assert.equal((await workflowPagesOptions(reader,{...env,STEWARD_DOCS_SOURCE:'default-branch'},async()=>({...selection,site:null}))).options.mode,'');
-  const required={...env,STEWARD_DOCS_SOURCE:'default-branch',STEWARD_REPOSITORY_POLICY_REQUIRED:'true'};
+  assert.equal((await options({...env,STEWARD_DOCS_SOURCE:'default-branch'},async()=>({...selection,site:null}))).options.mode,'');
+  const required={...env,STEWARD_DOCS_SOURCE:'default-branch'};
   for(const pending of [null,{...selection,adoption:'paused'},{...selection,adoption:'legacy'}]) {
     assert.throws(()=>selectedProductWorkflows(pending,[ci],true,true),/PROJECTION_REQUIRED/);
-    await assert.rejects(workflowPagesOptions(reader,required,async()=>pending),/PROJECTION_REQUIRED/);
+    await assert.rejects(options(required,async()=>pending,true),/PROJECTION_REQUIRED/);
   }
-  await assert.rejects(workflowPagesOptions(reader,required,async()=>{throw Error('PROJECTION_READ_DENIED');}),/PROJECTION_READ_DENIED/);
+  await assert.rejects(options(required,async()=>{throw Error('PROJECTION_READ_DENIED');},true),/PROJECTION_READ_DENIED/);
   const revised={...selection,site:null};
-  assert.equal((await workflowPagesOptions(reader,required,async()=>selection)).publicAllowed,true);
+  assert.equal((await options(required,async()=>selection,true)).publicAllowed,true);
   assert.deepEqual(selectedProductWorkflows(selection,[ci,'.github/workflows/unselected.yml'],true,true),[ci]);
-  assert.equal((await workflowPagesOptions(reader,required,async()=>revised)).publicAllowed,false);
+  assert.equal((await options(required,async()=>revised,true)).publicAllowed,false);
   const restored={...selection,adoption:'legacy',productCi:[],site:null};
-  const released={...required,STEWARD_REPOSITORY_POLICY_REQUIRED:''};
-  assert.equal((await workflowPagesOptions(reader,released,async()=>restored)).publicAllowed,true);
+  assert.equal((await options(required,async()=>restored)).publicAllowed,true);
   assert.deepEqual(selectedProductWorkflows(restored,[ci],true),[ci]);
-  await assert.rejects(workflowPagesOptions(reader,{...required,STEWARD_REPOSITORY_POLICY_REQUIRED:'typo'},async()=>selection),
-    /PROJECTION_MODE/);
   await assert.rejects(readRepositoryProjection(reader,1),/PROJECTION_INVALID/);
   protectedRules=false;
   await assert.rejects(readRepositoryProjection(reader,product.id),/PROJECTION_PROTECTION/);
@@ -128,6 +126,30 @@ test('product reads only selected CI and Pages from protected state, with digest
   reads=0;
   await assert.rejects(readRepositoryProjection({...reader,json:async()=>({truncated:false,tree:[]})},product.id),
     /PROJECTION_MOVED/);
+});
+
+test('the adoption marker is independent of Pages and Issues and comes only from protected default Git bytes',async()=>{
+  const adopted=Buffer.from('central\n');
+  const digest=createHash('sha1').update(`blob ${adopted.length}\0`).update(adopted).digest('hex');
+  let present=true,protectedBranch=true,moves=false,refs=0;
+  const reader={repository:product.full_name,json:async route=>{
+    if(route==='')return {...product,has_issues:false,has_pages:false};
+    if(route==='branches/main')return {name:'main',protected:protectedBranch,commit:{sha:moves&&refs++?source:base}};
+    if(route==='git/trees/'+base)return {truncated:false,tree:[{path:'.github',type:'tree',mode:'040000',sha:candidate}]};
+    if(route==='git/trees/'+candidate)return {truncated:false,tree:present?
+      [{path:'steward-central-policy',mode:'100644',type:'blob',sha:digest}]:[]};
+    assert.equal(route,`contents/${repositoryPolicyAdoptionPath}?ref=${base}`);
+    return {path:repositoryPolicyAdoptionPath,type:'file',encoding:'base64',sha:digest,size:adopted.length,content:adopted.toString('base64')};
+  }};
+  assert.equal(await readRequiredRepositoryProjection(reader,product.id),true);
+  await assert.rejects(workflowPagesOptions(reader,{GITHUB_REPOSITORY_ID:String(product.id)},async()=>null),/PROJECTION_REQUIRED/);
+  assert.throws(()=>selectedProductWorkflows(null,[ci],true,true),/PROJECTION_REQUIRED/);
+  present=false;
+  assert.equal(await readRequiredRepositoryProjection(reader,product.id),false);
+  protectedBranch=false;
+  await assert.rejects(readRequiredRepositoryProjection(reader,product.id),/DEFAULT_BRANCH/);
+  protectedBranch=true;moves=true;
+  await assert.rejects(readRequiredRepositoryProjection(reader,product.id),/PROJECTION_MOVED/);
 });
 
 test('projection writer uses one path, scoped credentials and reads back only approved bytes',async()=>{

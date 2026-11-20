@@ -3,6 +3,7 @@ import {readFile} from 'node:fs/promises';
 import {posix,resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {readBotComment} from './configuration-session.mjs';
+import {repositoryPolicyAdoptionPath} from './repository-policy-projection.mjs';
 import {Octokit} from '@octokit/rest';
 
 export const delegatesPath = '.github/configuration-delegates.json';
@@ -134,7 +135,7 @@ export async function protectedChanges(api,files,base,head,decisionOnly=false) {
   const paths=files.flatMap(f=>[f.filename,f.previous_filename].filter(Boolean));
   const ciPath='.github/product-ci.json';
   const old=await fileText(api,ciPath,base),next=await fileText(api,ciPath,head);
-  const ci=new Set([ciPath,delegatesPath]);
+  const ci=new Set([ciPath,delegatesPath,repositoryPolicyAdoptionPath]);
   for(const bytes of [old,next]) {
     if(bytes===null) continue;
     const entries=JSON.parse(bytes);
@@ -193,7 +194,7 @@ export async function authorizePull(api, number, expectedHead, defaultBranch, or
     if(!protectedPaths.size) return true;
   }
   const paths=[...protectedPaths];
-  const adminOnly = central(api) && paths.includes(receiver) || paths.includes(delegatesPath) || paths.includes(requestPath) && !await fileText(api,requestPath,base)
+  const adminOnly = central(api) && paths.includes(receiver) || paths.includes(delegatesPath) || paths.includes(repositoryPolicyAdoptionPath) || paths.includes(requestPath) && !await fileText(api,requestPath,base)
     || paths.includes('.github/product-ci.json') && !await fileText(api,'.github/product-ci.json',base);
   if(origin?.number===number && origin.head===expectedHead && await authorized(api,origin.actor,base,adminOnly)) return true;
   const reviews = await api.paginate(api.rest.pulls.listReviews,{...api.target,pull_number:number,per_page:100});
