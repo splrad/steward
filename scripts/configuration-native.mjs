@@ -333,7 +333,7 @@ export async function openPull(api,repo) {
 }
 
 export async function commitFiles(api,repo,branch,head,changes,message) {
-  const input={branch:{repositoryNameWithOwner:repo.full_name,refName:branch},expectedHeadOid:head,
+  const input={branch:{repositoryNameWithOwner:repo.full_name,branchName:branch},expectedHeadOid:head,
     message:{headline:'chore: 配置 '+repo.name+' 仓库功能',body:message+'\n\nSigned-off-by: splrad-steward[bot] <301115370+splrad-steward[bot]@users.noreply.github.com>'},
     fileChanges:{additions:[...changes].map(([path,bytes])=>({path,contents:Buffer.from(bytes).toString('base64')}))}};
   const response=await api.graphql('mutation($input:CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid}}}',{input});
