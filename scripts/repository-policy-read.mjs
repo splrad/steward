@@ -1,8 +1,7 @@
 import {createHash} from 'node:crypto';
 import {Octokit} from '@octokit/rest';
 import {parseRegistration} from './repository-registration-policy.mjs';
-import {adminId} from './repository-registration-request.mjs';
-import apiVersion from '../config/github-api.json' with {type:'json'};
+import {adminId,registrationGitHubOptions} from './repository-registration-request.mjs';
 
 const target={owner:'splrad',repo:'steward-settings'};
 const sha=value=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
@@ -51,8 +50,8 @@ export async function readRepositoryPolicy(api, repository, {allowRegisteredRena
 
 export async function mergedRepositoryPolicy(app,repository,options) {
   try {
-    return await app.forRepository(adminId,token=>readRepositoryPolicy(new Octokit({auth:token,
-      request:{headers:{'x-github-api-version':apiVersion.version}}}),repository,options),'registry-read');
+    return await app.forRepository(adminId,token=>readRepositoryPolicy(
+      new Octokit({...registrationGitHubOptions,auth:token}),repository,options),'registry-read');
   } catch {
     throw Error('REPOSITORY_POLICY_UNAVAILABLE');
   }

@@ -4,11 +4,17 @@ import { dirname, join, resolve } from 'node:path';
 import { downloadNativeArtifact } from '../packages/runner/dist/index.js';
 import { must, positive, sha } from './configuration-native.mjs';
 import { centralRegistrationWorkflow, registrationWorkflow } from './repository-registration-policy.mjs';
+import apiVersion from '../config/github-api.json' with { type: 'json' };
 
 export const adminId = 1447987054;
 export const centralId = 1296724484;
 export const registrationEvent = 'steward-registration-request';
 export const requestFile = 'repository-registration.json';
+const quiet = { debug() {}, info() {}, warn() {}, error() {} };
+export const registrationGitHubOptions = {
+  log: quiet,
+  request: { log: quiet, headers: { 'x-github-api-version': apiVersion.version } }
+};
 const maxRequestBytes = 1024 * 1024;
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const types = ['repository_dispatch', 'workflow_dispatch', 'push'];

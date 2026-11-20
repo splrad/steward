@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {createHash,generateKeyPairSync} from 'node:crypto';
-import {execFileSync} from 'node:child_process';
+import {execFileSync,spawnSync} from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -377,6 +377,27 @@ test('reads policy only from a stable protected administrator main and proves mi
   await assert.rejects(readRepositoryPolicy(api,product),/REPOSITORY_POLICY_UNAVAILABLE/);
   protectedBranch=false;
   await assert.rejects(readRepositoryPolicy(api,product),/REPOSITORY_POLICY_UNAVAILABLE/);
+});
+
+test('an actual Octokit policy read failure emits no private details to process stderr',()=>{
+  const child=spawnSync(process.execPath,['--input-type=module','-e',`
+    import assert from 'node:assert/strict';
+    import {mergedRepositoryPolicy} from './scripts/repository-policy-read.mjs';
+    globalThis.fetch=async (url,init)=>{
+      assert.equal(new URL(url).pathname,'/repos/splrad/steward-settings');
+      assert.equal(init.method,'GET');
+      return new Response(JSON.stringify({message:'Private fixture response'}),{
+        status:403,headers:{'content-type':'application/json','x-github-request-id':'private-fixture-id',
+          deprecation:'true',link:'<https://api.github.com/example>; rel="deprecation"'}
+      });
+    };
+    const app={forRepository:(_id,operation)=>operation('fixture-read')};
+    await assert.rejects(mergedRepositoryPolicy(app,{full_name:'splrad/fixture-product',id:73}),
+      error=>error.message==='REPOSITORY_POLICY_UNAVAILABLE');
+  `],{encoding:'utf8',windowsHide:true});
+  assert.equal(child.status,0,child.stderr);
+  assert.equal(child.stderr,'');
+  assert.equal(child.stdout,'');
 });
 
 test('legacy workflow stops before acquiring product write credentials for paused and central targets',async()=>{
