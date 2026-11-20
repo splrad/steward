@@ -8,7 +8,7 @@ import {pathToFileURL} from 'node:url';
 import YAML from 'yaml';
 import {candidates,configurationForm,parseForm,planFromForm} from '../configuration-form.mjs';
 import {applySelection} from '../configuration-selection.mjs';
-import {inspectRepository} from '../configuration-view.mjs';
+import {inspectRepository,pagesPath,publishPath,renderConfiguration} from '../configuration-view.mjs';
 import {dynamicBuildInputs,findEvidence,trialInventory} from '../configuration-native.mjs';
 import {stageNativeProducer} from '../configuration-native-artifact.mjs';
 import {reconcile} from '../repository-configuration.mjs';
@@ -273,6 +273,39 @@ test('rejects edits that change the head, labels or locked controls',()=>{
   assert.throws(()=>parseForm(form.body,form.body.replace(head,'b'.repeat(40)),form.items),/marked/);
   assert.match(form.body,/🔒 Windows 构建/);
   assert.throws(()=>parseForm(form.body,form.body.replace('🔒 Windows 构建','[x] Windows 构建'),form.items),/marked/);
+});
+
+test('reports only declared product platforms and keeps operational Pages conditions out of selections',async()=>{
+  const unit={id:'cli',path:'.',assets:[],channels:[]};
+  const pages={env:{STEWARD_DOCS_SOURCE:'${{ vars.STEWARD_DOCS_SOURCE }}',STEWARD_DOCS_UNIT:'${{ vars.STEWARD_DOCS_UNIT }}'},jobs:{
+    build:{if:'always()',steps:[]},deploy:{'runs-on':'ubuntu-24.04',if:'vars.PUBLIC_ENABLED',steps:[{uses:'actions/upload-artifact@v4'}]}}};
+  const validation={jobs:{receipt:{'runs-on':'macos-15',steps:[{uses:'actions/upload-artifact@v4'}]}}};
+  const build={'runs-on':'windows-2025',strategy:{matrix:{include:[{unit:'cli',target:'x64'}]}}};
+  const files=new Map([[pagesPath,YAML.stringify(pages)],[publishPath,YAML.stringify({jobs:{build}})],
+    ['.github/workflows/independent.yml',YAML.stringify(validation)],['.github/delivery.json',JSON.stringify({schemaVersion:2,units:[unit]})]]);
+  const model=inspectRepository(files),head='a'.repeat(40);
+  const summary=renderConfiguration(model,head),form=configurationForm(model,head);
+  assert.match(summary,/\[x\] Windows 构建 .*cli\/x64/);
+  assert.doesNotMatch(summary,/Linux 构建待选择|macOS 构建待选择|\[x\].*GitHub Pages|\$\{\{/);
+  assert.match(summary,/公开部署 · 已有作业，仓内选择尚未确认/);
+  assert.match(summary,/站点来源 · 尚未确认/);
+  const fields=Object.fromEntries(form.items.filter(i=>i.id.startsWith('site.')).map(i=>[i.id,i.value]));
+  assert.deepEqual(fields,{'site.build':false,'site.deploy':false,'site.source':'','site.unit':''});
+  assert.equal(planFromForm(model,{values:fields},'configure').site,undefined);
+  const choice={source:'release',unit:'cli',build:true,deploy:false};
+  const saved=await applySelection(model,'configure',{site:choice},{});
+  files.set(pagesPath,saved.get(pagesPath));
+  const adopted=inspectRepository(files),confirmed=renderConfiguration(adopted,head);
+  assert.match(confirmed,/\[x\] 构建文档站/);assert.match(confirmed,/\[ \] 仓内允许 GitHub Pages 公开部署/);
+  assert.match(confirmed,/站点来源 · `release`/);assert.match(confirmed,/来源单元 · `cli`/);
+  const draft=configurationForm(adopted,head,{values:{'site.deploy':true}});
+  assert.equal(draft.items.find(i=>i.id==='site.deploy').value,true);
+  build['runs-on']='ubuntu-24.04';
+  build.steps=[{run:'node scripts/configuration-native-artifact.mjs',env:{UNIT:'cli',TARGET:'x64',
+    PRODUCER:Buffer.from(JSON.stringify({workflow:'.github/workflows/independent.yml',job:'receipt'})).toString('base64url')}}];
+  files.set(publishPath,YAML.stringify({jobs:{build}}));
+  const native=renderConfiguration(inspectRepository(files),head);
+  assert.match(native,/\[x\] macOS 构建/);assert.doesNotMatch(native,/\[x\] Linux 构建/);
 });
 
 test('CI-only and Pages-only settings keep release author fields out of the form',()=>{

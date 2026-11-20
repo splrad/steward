@@ -1,4 +1,5 @@
 import YAML from 'yaml';
+import {hostedRunner} from './configuration-build.mjs';
 import {posix} from 'node:path';
 
 export const deliveryPath='.github/delivery.json', versionsPath='release-please-config.json';
@@ -32,6 +33,18 @@ export function effectiveChannels(delivery,unit) {
   return result;
 }
 
+// This is the exact outer condition written by applySelection. The inner product condition stays opaque.
+export const managedPagesCondition=/^\((true|false) && (?:true|needs\.select\.outputs\.ready == 'true'|vars\.STEWARD_DOCS_SOURCE == '(?:default-branch|release)'(?: && vars\.STEWARD_DOCS_UNIT == '[a-z][a-z0-9-]*')?)\) && \(([\s\S]*)\)$/;
+export function pagesChoices(pages) {
+  const declared=pages?.env?.STEWARD_DOCS_SOURCE,unit=pages?.env?.STEWARD_DOCS_UNIT;
+  const flag=job=>{
+    const match=managedPagesCondition.exec(pages?.jobs?.[job]?.if);
+    return match?match[1]==='true':undefined;
+  };
+  return {build:flag('build'),deploy:flag('deploy'),source:['default-branch','release'].includes(declared)?declared:'',
+    unit:typeof unit==='string' && /^[a-z][a-z0-9-]*$/.test(unit)?unit:''};
+}
+
 export function renderConfiguration(model,head,extra='') {
   const {delivery,versions,publish,pages,ci,workflows}=model, units=delivery?.units??[];
   const body=['<!-- steward-repository-configuration -->','### 版本管理',''];
@@ -42,22 +55,33 @@ export function renderConfiguration(model,head,extra='') {
   }
   if(!units.length) body.push(locked('版本建议与同步','待声明发行单元及版本文件'));
   body.push(units.length>1?line(true,'多发行单元联动'):locked('多发行单元联动','需要多个发行单元'),'','### 构建与打包','');
-  const matrix=publish?.jobs?.build?.strategy?.matrix?.include??[];
-  const runner=publish?.jobs?.build?.['runs-on'];
-  for(const [name,prefix] of platforms) {
-    const fixed=typeof runner==='string' && runner.toLowerCase().startsWith(prefix+'-');
-    const native=workflows.flatMap(w=>Object.entries(w.document?.jobs??{}).filter(([,job])=>
-      typeof job['runs-on']==='string' && job['runs-on'].toLowerCase().startsWith(prefix+'-')
-      && job.steps?.some(s=>s.uses?.startsWith('actions/upload-artifact@'))).map(([id])=>w.path+' · '+id));
-    if(fixed && matrix.length) body.push(line(true,name+' 构建 · '+format(runner)+' · '+matrix.map(r=>format(r.unit+'/'+r.target)).join('、')));
-    else if(native.length) body.push('- '+name+' 构建待选择 · '+native.map(format).join('、'));
-    else body.push(locked(name+' 构建','待确认产品构建目标'));
+  const build=publish?.jobs?.build;
+  const matrix=build?.strategy?.matrix?.include;
+  const targets=(Array.isArray(matrix)?matrix:[]).filter(r=>r && units.some(u=>u.id===r.unit) && typeof r.target==='string' && r.target);
+  const targetsByPlatform=new Map(platforms.map(([name])=>[name,[]]));
+  for(const row of targets) {
+    let runner=build['runs-on'];
+    const collector=build.steps?.find(step=>step.run==='node scripts/configuration-native-artifact.mjs' &&
+      step.env?.UNIT===row.unit && step.env?.TARGET===row.target);
+    if(collector) {
+      // The archive reader runs on its own host. Only the product job can identify its build platform.
+      runner=undefined;
+      try {
+        const producer=JSON.parse(Buffer.from(collector.env.PRODUCER,'base64url'));
+        runner=workflows.find(w=>w.path===producer.workflow)?.document?.jobs?.[producer.job]?.['runs-on'];
+      } catch { /* The source runner is unconfirmed. */ }
+    }
+    const os=platforms.find(([,prefix])=>typeof runner==='string' && hostedRunner.test(runner) && runner.startsWith(prefix+'-'));
+    if(os)targetsByPlatform.get(os[0]).push(format(row.unit+'/'+row.target)+' · '+format(runner));
+    else body.push('- 已声明发行目标 '+format(row.unit+'/'+row.target)+' · 构建平台待确认');
   }
-  if(typeof runner==='string' && runner.includes('${{')) for(const row of matrix) body.push('- '+format(row.unit+'/'+row.target)+' · runner 由产品矩阵选择');
+  for(const [name,selected] of targetsByPlatform) {
+    body.push(selected.length?line(true,name+' 构建 · '+selected.join('、')):locked(name+' 构建','待确认产品构建目标'));
+  }
   const declared=units.flatMap(u=>u.assets.map(a=>({...a,unit:u.id})));
   const byInspection={'node-package':'Node 发行包',wheel:'Python 发行包',sdist:'Python 发行包'};
   for(const item of packaging) {
-    const assets=declared.filter(a=>byInspection[a.inspection]===item || (item==='Windows MSI' && a.name.toLowerCase().endsWith('.msi')));
+    const assets=declared.filter(a=>byInspection[a.inspection]===item || (item==='Windows MSI' && a.mediaType==='application/x-msi'));
     if(assets.length) body.push(line(true,item+' · '+assets.map(a=>format(a.unit+'/'+a.name)).join('、')));
     else body.push(locked(item,'待确认打包用途'));
   }
@@ -71,10 +95,17 @@ export function renderConfiguration(model,head,extra='') {
   }
   for(const [id,title] of channels) if(!used.has(id)) body.push(locked(title,'待声明渠道与交付对象'));
   body.push('','### 文档站','');
-  const output=pages?.jobs?.build?.steps?.find(step=>step.uses?.startsWith('actions/upload-pages-artifact@'))?.with?.path;
-  body.push(output?line(!/^\(?false\b/.test(String(pages.jobs.build.if)),'构建文档站 · '+format(output)):locked('构建文档站','待确认原生构建及上传目录'));
-  body.push(pages?.jobs?.deploy?line(!/^\(?false\b/.test(String(pages.jobs.deploy.if)),'仓内允许 GitHub Pages 公开部署（执行时另核对 Pages 和运维授权来源）'):locked('GitHub Pages 公开部署','缺少部署作业'));
-  if(pages) body.push('站点来源 · '+format(pages.env?.STEWARD_DOCS_SOURCE??'沿用仓库运维变量'));
+  const site=pagesChoices(pages);
+  for(const [key,label] of [['build','构建文档站'],['deploy','仓内允许 GitHub Pages 公开部署']]) {
+    if(!pages?.jobs?.[key]) body.push(locked(label,'缺少工作流作业'));
+    else if(site[key]===undefined) body.push('- '+label+' · 已有作业，仓内选择尚未确认');
+    else body.push(line(site[key],label+' · 仓内已'+(site[key]?'选用':'停用')));
+  }
+  if(pages) {
+    body.push('站点来源 · '+(site.source?format(site.source):'尚未确认'));
+    if(site.source==='release')body.push('来源单元 · '+(site.unit?format(site.unit):'尚未确认'));
+    if(pages.jobs?.deploy)body.push('公开部署还需 Pages 已启用且运维授权与所选来源一致。线上状态尚未核验。');
+  }
   body.push('','### 原生入口','',...workflows.map(w=>'- '+format(w.path)+' · '+w.jobs.map(format).join('、')+(ci.includes(w.path)?' · 已选 PR 验证':'')));
   if(!workflows.length) body.push('待配置仓内工作流或受审打包脚本。');
   body.push('','配置变更见 **Files changed**，合并后生效。','', '当前提交 '+format(head)+'。');
