@@ -189,3 +189,33 @@ it.each(['reserved','unconfirmed'] as const)('preserves an earlier %s dispatch w
  await object.register({...first,phase:'pending'});
  expect(await store.get('qualityEvent')).toMatchObject({delivery:'B',phase:'pending'});
 });
+
+it('retains the current delivery after 128 pending edits evict it from the recent list',async()=>{
+ const {SqliteDurableStorage}=await import('./bounded-storage.js');
+ const store=new SqliteDurableStorage(),env={BOUNDED_RECHECK_ENABLED:'true',RELEASE_RELAY_DEPLOYMENT_SHA:sha};
+ const policy=Buffer.from(JSON.stringify({schemaVersion:1,enabled:true,deploymentSha:sha})),posts:string[]=[];
+ const reader={json:async(_id:number,path:string,method?:string)=>{
+   if(method==='POST'){
+     posts.push((await store.get<any>('qualityEvent')).delivery);
+     if(posts.length===1)throw Error('lost response');
+     return {};
+   }
+   if(path.includes('/git/ref/'))return {ref:'refs/'+path.split('/git/ref/')[1],object:{type:'commit',sha}};
+   if(path.includes('quality-language.json'))return qualityFile({[id]:'splrad/steward'});
+   if(path.includes('/contents/'))return {type:'file',path:'config/bounded-recheck.json',size:policy.length,encoding:'base64',content:policy.toString('base64')};
+   return {path:'.github/workflows/quality-language-summary.yml',state:'active'};
+ }};
+ const object=()=>new WorkflowEvent(store as any,env as any,()=>reader as any);
+ const first={target,event:'workflow_run',delivery:'A',phase:'pending' as const,aggregate:true};
+ const clock=vi.spyOn(Date,'now').mockReturnValue(1000);
+ try{
+   await object().register(first);
+   for(let i=0;i<128;i++)await object().register({...first,delivery:'edit-'+i});
+   expect(await store.get<string[]>('qualityDeliveries')).not.toContain('A');
+   clock.mockReturnValue((await store.getAlarm())!);await expect(object().alarm()).rejects.toThrow('lost response');
+   await object().register(first);await object().alarm();await object().register(first);
+   expect(posts).toEqual(['A']);
+   await object().register({...first,delivery:'B'});clock.mockReturnValue((await store.getAlarm())!);await object().alarm();
+   expect(posts).toEqual(['A','B']);
+ }finally{clock.mockRestore();}
+});

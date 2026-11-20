@@ -133,7 +133,7 @@ export class WorkflowEvent {
         if(current?.phase==='pending' && current.retryAt && await t.getAlarm()===null){
           await t.setAlarm(Math.max(now,current.retryAt));
         }
-        if(seen.includes(record.delivery)||uncertain.some(entry=>entry.delivery===record.delivery&&now<entry.expires))return;
+        if(current?.delivery===record.delivery||seen.includes(record.delivery)||uncertain.some(entry=>entry.delivery===record.delivery&&now<entry.expires))return;
         if(current?.phase==='reserved'||current?.phase==='unconfirmed'){
           const entry={delivery:current.delivery,policy:current.policy,expires:current.expires??now+retention};
           await t.put('qualityUnconfirmed',[...uncertain.filter(item=>now<item.expires).slice(-127),entry]);

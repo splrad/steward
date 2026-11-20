@@ -532,7 +532,7 @@ async function handleExistingEvent(env:Env,event:string,payload:any,deliveryId:s
       const repository = payload.repository; if (!repository || !(isManaged(repository) || (env.WORKFLOW_EVALUATOR_SHA !== undefined && belongsToOrganization(repository)))) return response(204);
       const [validation,pages,configuration]=await Promise.allSettled([
         publishValidationState(env, repository, payload.workflow_run?.id),
-        forwardPagesCompletion(env,event,payload,new BoundedGitHub(env)),
+        forwardPagesCompletion(env,event,payload),
         forwardConfigurationCompletion(env,payload),
       ]);
       if(validation.status==='rejected')throw validation.reason;

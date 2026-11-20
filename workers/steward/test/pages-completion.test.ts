@@ -5,32 +5,35 @@ import {GitHubRetryError} from '../src/bounded-retry-after.js';
 import {SqliteDurableStorage} from './bounded-storage.js';
 import {PagesRetry,forwardPagesCompletion} from '../src/pages-completion.js';
 import {handleWebhook} from '../src/index.js';
-import {TARGET,CENTRAL,type GitReader} from '../src/bounded-recheck-github.js';
+import {BoundedGitHub,TARGET,CENTRAL,type GitReader} from '../src/bounded-recheck-github.js';
 
 const pin='b'.repeat(40),source='a'.repeat(40),receiver='pages-maintenance-event.yml',workflowPath='.github/workflows/pages.yml';
 const env={BOUNDED_RECHECK_ENABLED:'true',BOUNDED_CONTROLLER_SHA:pin,INSTALLATION_ID:'41',ORGANIZATION_ID:'42',STEWARD_WEBHOOK_SECRET:'offline-test'} as any;
-function fixture(){
-  const site={repositoryId:TARGET.id,repository:TARGET.name,workflowId:8};
-  const repo={id:TARGET.id,full_name:TARGET.name,private:false,has_pages:true,archived:false,disabled:false,fork:false};
+function fixture(storage=new SqliteDurableStorage(),product={id:Number(TARGET.id),name:String(TARGET.name)}){
+  const site={repositoryId:product.id,repository:product.name,workflowId:8};
+  const repo={id:product.id,full_name:product.name,private:false,has_pages:true,archived:false,disabled:false,fork:false};
   const run={id:12,run_attempt:1,repository:repo,head_repository:repo,workflow_id:8,path:workflowPath,head_sha:source,
     created_at:new Date(Date.now()-60000).toISOString(),event:'push',status:'completed',conclusion:'cancelled',updated_at:'2026-11-17T00:00:00Z'};
   const payload={repository:repo,installation:{id:41},organization:{id:42},workflow_run:structuredClone(run),action:'completed'};
   const db=new ReleaseTestDb();
   db.database.exec(readFileSync(new URL('../../../packages/runtime/migrations/0020_pages_completion_dispatches.sql',import.meta.url),'utf8'));
   db.database.exec(readFileSync(new URL('../../../packages/runtime/migrations/0021_pages_completion_retry_after.sql',import.meta.url),'utf8'));
-  const receiptStorage=new SqliteDurableStorage();
   const config={...env,ISSUE_SNAPSHOTS:db.binding(),BOUNDED_RECHECK:{idFromName:(x:string)=>x,get:()=>({
-    fetch:async(req:Request)=>{if(new URL(req.url).pathname==='/pages-receipt')return Response.json({confirmed:await new PagesRetry(receiptStorage as any,config,()=>g,[site]).receipt(await req.json() as any)});expect(new URL(req.url).pathname).toBe('/pages-watch');return Response.json({});}
+    fetch:async(req:Request)=>{
+      expect(new URL(req.url).pathname).toBe('/pages-intake');
+      await new PagesRetry(storage as any,config,()=>g,[site]).intake(await req.json() as any);
+      return Response.json({});
+    }
   })}};
   const result={lost:false,visible:true,rejections:0,rejectionStatus:429,denied:false};
-  const receipt={id:99,path:'.github/workflows/'+receiver,display_title:'Pages completion '+TARGET.id+' 12 1',event:'workflow_dispatch',
+  const receipt={id:99,path:'.github/workflows/'+receiver,display_title:'Pages completion '+product.id+' 12 1',event:'workflow_dispatch',
     actor:{id:301115370},repository:{id:CENTRAL.id},head_repository:{id:CENTRAL.id},head_branch:'main',head_sha:pin};
   const centralSites=[site];
   const workflow={id:8,path:workflowPath,state:'active'}, prior:any={total_count:0,workflow_runs:[]};
   const json=vi.fn(async(id:number,path:string,method?:string,body?:unknown)=>{
-    if(id===TARGET.id&&path==='/repos/'+TARGET.name)return repo;
-    if(id===TARGET.id&&path.endsWith('/actions/runs/12'))return run;
-    if(id===TARGET.id&&path.endsWith('/actions/workflows/pages.yml'))return workflow;
+    if(id===product.id&&path==='/repos/'+product.name)return repo;
+    if(id===product.id&&path.endsWith('/actions/runs/12'))return run;
+    if(id===product.id&&path.endsWith('/actions/workflows/pages.yml'))return workflow;
     if(id===CENTRAL.id&&path.includes('/contents/config/pages-completion.json?ref=')){
       const bytes=Buffer.from(JSON.stringify({publicSites:centralSites}));
       return {type:'file',path:'config/pages-completion.json',encoding:'base64',size:bytes.length,content:bytes.toString('base64')};
@@ -48,7 +51,7 @@ function fixture(){
     throw Error('unexpected native request');
   });
   const g={json} as unknown as GitReader;
-  return {site,centralSites,receipt,result,config,db,payload,run,workflow,prior,json,g,forward:()=>forwardPagesCompletion(config,'workflow_run',payload,g,[site])};
+  return {site,centralSites,receipt,result,config,db,payload,run,workflow,prior,json,g,forward:()=>forwardPagesCompletion(config,'workflow_run',payload,[site])};
 }
 describe('fixed public Pages completion bridge',()=>{
   it('uses the existing webhook HMAC gate',async()=>{
@@ -58,7 +61,7 @@ describe('fixed public Pages completion bridge',()=>{
     expect(r.status).toBe(401);
   });
   it('the shipped empty registry performs zero API calls',async()=>{
-    const f=fixture();await forwardPagesCompletion(env,'workflow_run',f.payload,f.g);expect(f.json).not.toHaveBeenCalled();
+    const f=fixture();await forwardPagesCompletion(env,'workflow_run',f.payload);expect(f.json).not.toHaveBeenCalled();
   });
   it('revalidates the public product Run before the sole fixed dispatch',async()=>{
     const f=fixture();await f.forward();
@@ -125,14 +128,9 @@ describe('fixed public Pages completion bridge',()=>{
 });
 
 it.each([429,403])('recovers explicit rate limit %s at its floor with one accepted POST',async status=>{
- const f=fixture(),storage=new SqliteDurableStorage(),now=Date.now();
+ const storage=new SqliteDurableStorage(),f=fixture(storage),now=Date.now();
  const clock=vi.spyOn(Date,'now').mockReturnValue(now);
  const object=()=>new PagesRetry(storage as any,f.config,()=>f.g,[f.site]);
- f.config.BOUNDED_RECHECK={idFromName:(x:string)=>x,get:()=>({fetch:async(req:Request)=>{
-   if(new URL(req.url).pathname==='/pages-watch')return Response.json({});
-   expect(new URL(req.url).pathname).toBe('/pages-retry');await object().schedule(await req.json() as any);
-   return Response.json({});
- }})};
  try{
    const posts=()=>f.json.mock.calls.filter(c=>c[2]==='POST').length;
    f.result.rejectionStatus=status;f.result.rejections=2;await f.forward();
@@ -156,10 +154,9 @@ it('retains the D1 reservation after an uncertain 503 and reconciles on redelive
  expect(f.db.database.prepare('SELECT central_run_id FROM pages_completion_dispatches').get()?.central_run_id).toBe(99);
 });
 it('a restored retry ticket cannot reacquire a newer reservation after rollback or restart',async()=>{
- const f=fixture(),storage=new SqliteDurableStorage();let ticket:any;
- f.config.BOUNDED_RECHECK={idFromName:(x:string)=>x,get:()=>({fetch:async(req:Request)=>{if(new URL(req.url).pathname==='/pages-retry')ticket=await req.json();return Response.json({});}})};
- f.result.rejections=1;await f.forward();
- const obj=()=>new PagesRetry(storage as any,f.config,()=>f.g,[f.site]);await obj().schedule(ticket);
+ const storage=new SqliteDurableStorage(),f=fixture(storage);let ticket:any;
+ f.result.rejections=1;await f.forward();ticket=await storage.get('pagesRetry');
+ const obj=()=>new PagesRetry(storage as any,f.config,()=>f.g,[f.site]);
  f.db.database.prepare('UPDATE pages_completion_dispatches SET reserved_at=?,retry_after=NULL').run(new Date(ticket.due).toISOString());
  const clock=vi.spyOn(Date,'now').mockReturnValue(ticket.due);
  try{await obj().alarm();await obj().alarm();}finally{clock.mockRestore();}
@@ -174,12 +171,8 @@ it('does not issue a retry ticket for an ordinary permission-denied 403',async()
 });
 
 it.each([false,true])('bounds receipt-only alarm recovery when the receipt becomes visible: %s',async visible=>{
- const f=fixture(),store=new SqliteDurableStorage();
+ const store=new SqliteDurableStorage(),f=fixture(store);
  const object=()=>new PagesRetry(store as any,f.config,()=>f.g,[f.site]);
- f.config.BOUNDED_RECHECK.get=()=>({fetch:async(req:Request)=>{
-   if(new URL(req.url).pathname==='/pages-receipt')return Response.json({confirmed:await object().receipt(await req.json() as any)});
-   await object().watch(await req.json() as any);return Response.json({});
- }});
  f.result.visible=false;await expect(f.forward()).rejects.toThrow('PAGES_DISPATCH_UNCONFIRMED');
  if(visible)Object.assign(f.prior,{total_count:1,workflow_runs:[f.receipt]});
  const clock=vi.spyOn(Date,'now');
@@ -196,12 +189,8 @@ it.each([false,true])('bounds receipt-only alarm recovery when the receipt becom
 });
 
 it('honors a receipt GET retry floor beyond the remaining observation window',async()=>{
- const f=fixture(),store=new SqliteDurableStorage();
+ const store=new SqliteDurableStorage(),f=fixture(store);
  const object=()=>new PagesRetry(store as any,f.config,()=>f.g,[f.site]);
- f.config.BOUNDED_RECHECK.get=()=>({fetch:async(req:Request)=>{
-   if(new URL(req.url).pathname==='/pages-receipt')return Response.json({confirmed:await object().receipt(await req.json() as any)});
-   await object().watch(await req.json() as any);return Response.json({});
- }});
  f.result.visible=false;await expect(f.forward()).rejects.toThrow('PAGES_DISPATCH_UNCONFIRMED');
  const first=(await store.get<number>('__alarm'))!,clock=vi.spyOn(Date,'now').mockReturnValue(first);
  try{
@@ -220,19 +209,16 @@ it('honors a receipt GET retry floor beyond the remaining observation window',as
 it('requires a durable watch before reserving or dispatching',async()=>{
  const f=fixture();
  f.config.BOUNDED_RECHECK.get=()=>({fetch:async()=>new Response(null,{status:503})});
- await expect(f.forward()).rejects.toThrow('PAGES_WATCH_REGISTRATION');
+ await expect(f.forward()).rejects.toThrow('PAGES_INTAKE_REGISTRATION');
  expect(f.db.database.prepare('SELECT COUNT(*) AS n FROM pages_completion_dispatches').get()?.n).toBe(0);
  expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(0);
 });
 
 it('reconstructs a rejected ticket from D1 without redelivery when the first ticket write failed',async()=>{
- const f=fixture(),storage=new SqliteDurableStorage();let unavailable=true;
+ const storage=new SqliteDurableStorage(),f=fixture(storage);let unavailable=true;
  const object=()=>new PagesRetry(storage as any,f.config,()=>f.g,[f.site]);
- f.config.BOUNDED_RECHECK={idFromName:(k:string)=>k,get:()=>({fetch:async(req:Request)=>{
-  if(new URL(req.url).pathname==='/pages-watch'){await object().watch(await req.json() as any);return Response.json({});}
-  if(unavailable)throw Error('DO_UNAVAILABLE');
-  await object().schedule(await req.json() as any);return Response.json({});
- }})};
+ const persist=storage.put.bind(storage);
+ storage.put=async(key,value)=>{if(key==='pagesRetry'&&unavailable)throw Error('DO_UNAVAILABLE');await persist(key,value);};
  f.result.rejections=1;await expect(f.forward()).rejects.toThrow('DO_UNAVAILABLE');
  const row=f.db.database.prepare('SELECT reserved_at,retry_after FROM pages_completion_dispatches').get()!;
  expect(row.retry_after).toBeGreaterThan(Date.now());expect(await storage.get('pagesRetry')).toBeUndefined();
@@ -260,13 +246,8 @@ it('keeps a reservation unconfirmed if writing the rejection proof fails',async(
 });
 
 it.each(['quiesced','other pin'])('rearms a rejected Pages dispatch while %s and resumes at its original pin',async mode=>{
- const f=fixture(),store=new SqliteDurableStorage();
+ const store=new SqliteDurableStorage(),f=fixture(store);
  const object=()=>new PagesRetry(store as any,f.config,()=>f.g,[f.site]);
- f.config.BOUNDED_RECHECK.get=()=>({fetch:async(req:Request)=>{
-   if(new URL(req.url).pathname==='/pages-watch')await object().watch(await req.json() as any);
-   else await object().schedule(await req.json() as any);
-   return Response.json({});
- }});
  f.result.rejections=1;await f.forward();
  const clock=vi.spyOn(Date,'now').mockReturnValue((await store.get<number>('__alarm'))!);
  try{
@@ -281,13 +262,9 @@ it.each(['quiesced','other pin'])('rearms a rejected Pages dispatch while %s and
 });
 
 it('recovers a newer D1 rejection when the second alarm ticket could not be persisted',async()=>{
- const f=fixture(),store=new SqliteDurableStorage(),now=Date.now();
+ const store=new SqliteDurableStorage(),f=fixture(store),now=Date.now();
  const clock=vi.spyOn(Date,'now').mockReturnValue(now);
  const object=()=>new PagesRetry(store as any,f.config,()=>f.g,[f.site]);
- f.config.BOUNDED_RECHECK={idFromName:(k:string)=>k,get:()=>({fetch:async(req:Request)=>{
-  if(new URL(req.url).pathname==='/pages-watch')await object().watch(await req.json() as any);
-  else await object().schedule(await req.json() as any);return Response.json({});
- }})};
  try{
    f.result.rejections=2;await f.forward();const first=await store.get<any>('pagesRetry');
    const put=store.put.bind(store);let fail=true;
@@ -305,4 +282,45 @@ it('recovers a newer D1 rejection when the second alarm ticket could not be pers
    expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(3);
    expect(f.db.database.prepare('SELECT central_run_id FROM pages_completion_dispatches').get()?.central_run_id).toBe(99);
  }finally{clock.mockRestore();}
+});
+
+it('recovers a second registered public repository after preflight is throttled without redelivery',async()=>{
+ const store=new SqliteDurableStorage(),other={id:7654321,name:'splrad/another-product'},f=fixture(store,other);
+ const obj=()=>new PagesRetry(store as any,f.config,()=>f.g,[f.site]);
+ const clock=vi.spyOn(Date,'now').mockReturnValue(Date.now());
+ try{
+   f.json.mockRejectedValueOnce(new GitHubRetryError(429,'600',false));
+   await expect(f.forward()).rejects.toThrow('RETRY_AFTER:600');const start=Date.now();
+   expect(await store.getAlarm()).toBe(start+600000);expect(f.json).toHaveBeenCalledTimes(1);
+   clock.mockReturnValue(start+300000);await obj().alarm();expect(f.json).toHaveBeenCalledTimes(1);
+   clock.mockReturnValue(start+600000);await obj().alarm();
+   expect(f.json.mock.calls.some(([id,path])=>id===other.id&&path==='/repos/'+other.name+'/actions/runs/12')).toBe(true);
+   expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(1);
+   expect(f.db.database.prepare('SELECT repository_id,central_run_id FROM pages_completion_dispatches').get()).toEqual({repository_id:other.id,central_run_id:99});
+   expect(await store.get('pagesIntake')).toBeUndefined();
+ }finally{clock.mockRestore();}
+});
+it('requires the registered id, name and workflow before acquiring storage or reading GitHub',async()=>{
+ const f=fixture(),binding=vi.fn(()=>{throw Error('unexpected storage access');});f.config.BOUNDED_RECHECK.get=binding;
+ for(const sites of [[],[{...f.site,repository:'splrad/other'}],[{...f.site,repositoryId:7}],[{...f.site,workflowId:7}]])
+   await forwardPagesCompletion(f.config,'workflow_run',f.payload,sites);
+ expect(binding).not.toHaveBeenCalled();expect(f.json).not.toHaveBeenCalled();
+});
+
+it('scopes a Pages source token to the enrolled repository and read-only actions and metadata',async()=>{
+ const {generateKeyPairSync}=await import('node:crypto');
+ const {privateKey}=generateKeyPairSync('rsa',{modulusLength:2048,privateKeyEncoding:{format:'pem',type:'pkcs8'},publicKeyEncoding:{format:'pem',type:'spki'}});
+ const site={id:7654321,name:'splrad/another-product'},permissions={metadata:'read',actions:'read'};
+ const transport=vi.fn(async(url:any,init:any)=>{
+   const path=new URL(String(url)).pathname;
+   if(path.endsWith('/access_tokens')){
+     expect(JSON.parse(init.body)).toEqual({repository_ids:[site.id],permissions});return Response.json({token:'offline',permissions});
+   }
+   if(path==='/installation/repositories')return Response.json({total_count:1,repositories:[{id:site.id,full_name:site.name}]});
+   expect(path).toBe('/repos/'+site.name+'/actions/workflows/pages.yml');return Response.json({state:'active'});
+ });
+ const reader=new BoundedGitHub({...env,APP_ID:'1',STEWARD_APP_PRIVATE_KEY:privateKey},transport as any,undefined,site);
+ await expect(reader.json(site.id,'/repos/'+site.name+'/actions/workflows/pages.yml')).resolves.toEqual({state:'active'});
+ await expect(reader.json(TARGET.id,'/repos/'+TARGET.name+'/actions/workflows/pages.yml')).rejects.toThrow('FIXED_REPOSITORY');
+ expect(transport).toHaveBeenCalledTimes(3);
 });

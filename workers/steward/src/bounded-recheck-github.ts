@@ -60,10 +60,10 @@ export function readZipJson(bytes:Uint8Array,name:string):unknown{
 export class BoundedGitHub implements GitReader {
  private deadline=Date.now()+30_000;
  private tokens=new Map<string,Promise<string>>();
- constructor(private env:BoundedEnv,private transport:typeof fetch=globalThis.fetch.bind(globalThis),readonly target?:ProductTarget){}
+ constructor(private env:BoundedEnv,private transport:typeof fetch=globalThis.fetch.bind(globalThis),readonly target?:ProductTarget,private pagesSite?:{id:number;name:string}){}
  private repo(id:number){
    if(id===CENTRAL.id)return CENTRAL;
-   const target=this.target??TARGET;
+   const target=this.pagesSite??this.target??TARGET;
    ensure(id===target.id,'FIXED_REPOSITORY');
    return target;
  }
@@ -115,19 +115,21 @@ export class BoundedGitHub implements GitReader {
    ensure(this.env.STEWARD_APP_PRIVATE_KEY,'APP_KEY_MISSING');
    const jwt=await createAppJwt(this.env.APP_ID,this.env.STEWARD_APP_PRIVATE_KEY);
    const permissions:Record<string,string>=metadataOnly?{metadata:'read'}:{actions:write?'write':'read',contents:'read',metadata:'read'};
-   if(!metadataOnly&&!write&&id===(this.target??TARGET).id)permissions.pull_requests='read';
+   if(!metadataOnly&&!write&&!this.pagesSite&&id===(this.target??TARGET).id)permissions.pull_requests='read';
+   if(!metadataOnly&&this.pagesSite&&id===this.pagesSite.id&&id!==CENTRAL.id){ensure(!write,'PAGES_SOURCE_READ_ONLY');delete permissions.contents;}
    const response=await this.transport(`https://api.github.com/app/installations/${Number(this.env.INSTALLATION_ID)}/access_tokens`,{
      method:'POST',headers:{Authorization:`Bearer ${jwt}`,'X-GitHub-Api-Version':GITHUB_API_VERSION,'Content-Type':'application/json','User-Agent':'splrad-bounded-recheck'},
      body:JSON.stringify({repository_ids:[id],permissions}),signal:this.signal(),redirect:'manual'});
    const value=JSON.parse(new TextDecoder().decode(await limitedBytes(response,32*1024)));
    ensure(typeof value.token==='string'&&value.token.length>0,'INSTALLATION_TOKEN');
-   if(metadataOnly||this.target){
+   if(metadataOnly||this.target||this.pagesSite){
      ensure(value.permissions&&Object.entries(permissions).every(([name,level])=>value.permissions[name]===level)&&
        Object.entries(value.permissions).every(([name,level])=>level==='none'||permissions[name]===level),'CANDIDATE_TOKEN_PERMISSIONS');
    }
-   if(this.target&&id===this.target.id){
+   const scopedTarget=this.pagesSite??this.target;
+   if(scopedTarget&&id===scopedTarget.id){
      const scope=await this.installationScope(value.token);
-     ensure(scope.total_count===1&&scope.repositories?.length===1&&scope.repositories[0].id===id&&scope.repositories[0].full_name===this.target.name,'CANDIDATE_TOKEN_SCOPE');
+     ensure(scope.total_count===1&&scope.repositories?.length===1&&scope.repositories[0].id===id&&scope.repositories[0].full_name===scopedTarget.name,'CANDIDATE_TOKEN_SCOPE');
    }
    return value.token;
  }
@@ -139,7 +141,7 @@ export class BoundedGitHub implements GitReader {
  }
  async upstreamPull(number:number){ensure(Number.isSafeInteger(number)&&number>0,'UPSTREAM_NUMBER');const res=await this.transport(`https://api.github.com/repos/microsoft/winget-pkgs/pulls/${number}`,{headers:{Accept:'application/vnd.github+json','X-GitHub-Api-Version':GITHUB_API_VERSION,'User-Agent':'splrad-bounded-recheck'},signal:this.signal(),redirect:'manual'});rateLimitError(res);ensure(res.ok,'UPSTREAM_READ');return JSON.parse(new TextDecoder().decode(await limitedBytes(res,256*1024)));}
  async json(id:number,path:string,method:'GET'|'POST'='GET',body?:unknown){
-  const r=this.repo(id);ensure((path.startsWith(`/repos/${r.name}/`)||method==='GET'&&id===(this.target??TARGET).id&&path===`/repos/${r.name}`)&&!path.split('?')[0]!.split('/').includes('..'),'API_SCOPE');
+  const r=this.repo(id);ensure((path.startsWith(`/repos/${r.name}/`)||method==='GET'&&id===(this.pagesSite??this.target??TARGET).id&&path===`/repos/${r.name}`)&&!path.split('?')[0]!.split('/').includes('..'),'API_SCOPE');
   // Only fixed observation/bridge dispatches may write. No repository mutation APIs.
   if(method==='POST')ensure([`/repos/${CENTRAL.name}/actions/workflows/repository-configuration-event.yml/dispatches`,`/repos/${CENTRAL.name}/actions/workflows/quality-language-summary.yml/dispatches`,`/repos/${CENTRAL.name}/actions/workflows/release-cycle-event.yml/dispatches`,`/repos/${CENTRAL.name}/actions/workflows/pages-maintenance-event.yml/dispatches`,`/repos/${CENTRAL.name}/actions/workflows/release-candidate-event.yml/dispatches`,`/repos/${CENTRAL.name}/actions/workflows/release-observe.yml/dispatches`,`/repos/${CENTRAL.name}/actions/workflows/bounded-release-event.yml/dispatches`,`/repos/${TARGET.name}/actions/workflows/steward-release-channels.yml/dispatches`].includes(path),'FIXED_DISPATCH');
   const token=await this.token(id,method==='POST');const res=await this.transport('https://api.github.com'+path,{method,headers:{Authorization:`Bearer ${token}`,Accept:'application/vnd.github+json','X-GitHub-Api-Version':GITHUB_API_VERSION,'User-Agent':'splrad-bounded-recheck','Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:this.signal(),redirect:'manual'});

@@ -28,6 +28,7 @@ export class BoundedRecheckCoordinator {
  async fetch(request:Request){
   ensure(request.method==='POST','INTERNAL_METHOD');const b=await request.json() as any;const action=new URL(request.url).pathname;
   let value:unknown;
+  if(action==='/pages-intake'){await new PagesRetry(this.state.storage,this.env).intake(b);return Response.json({accepted:true});}
   if(action==='/pages-receipt'){return Response.json({confirmed:await new PagesRetry(this.state.storage,this.env).receipt(b)});}
   if(action==='/pages-watch'){await new PagesRetry(this.state.storage,this.env).watch(b);return Response.json({accepted:true});}
   if(action==='/pages-retry'){await new PagesRetry(this.state.storage,this.env).schedule(b);return Response.json({accepted:true});}
@@ -62,7 +63,7 @@ export class BoundedRecheckCoordinator {
   return Response.json(value,{headers:{'Cache-Control':'no-store'}});
  }
  async alarm(){
-  if(await this.state.storage.get('pagesRetry')||await this.state.storage.get('pagesWatch')){await new PagesRetry(this.state.storage,this.env).alarm();return;}
+  if(await this.state.storage.get('pagesIntake')||await this.state.storage.get('pagesRetry')||await this.state.storage.get('pagesWatch')){await new PagesRetry(this.state.storage,this.env).alarm();return;}
   if(await this.state.storage.get('configurationComments')){await new WorkflowEvent(this.state.storage,this.env).flushComments();return;}
   if(await this.state.storage.get('configurationEvent')){await new WorkflowEvent(this.state.storage,this.env,undefined,'configurationEvent').alarm();return;}
   if(await this.state.storage.get('qualityEvent')){await new WorkflowEvent(this.state.storage,this.env).alarm();return;}
