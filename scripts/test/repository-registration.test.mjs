@@ -958,6 +958,9 @@ test('private workflow to public controller replays registration without exposin
           artifactAvailable=false;
           await expectFailure('artifact_lookup');
           artifactAvailable=true;
+          currentArtifact.workflow_run.head_branch='untrusted';
+          await expectFailure('producer_source');
+          currentArtifact.workflow_run.head_branch='main';
           await expectFailure('artifact_content',{extract:privateError});
           const merged={...(await propose(repo,files)).policy,adoption:'central',productCi:[ci,'.github/workflows/stale.yml']};
           const registry=state.trees.get(base);

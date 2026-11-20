@@ -69,13 +69,13 @@ export async function loadPrivateRequest(api, admin, token, requestId, extract =
   const { data: found } = await api.rest.actions.listArtifactsForRepo({ ...api.target, name, per_page: 100 });
   must(found.total_count === 1 && found.artifacts?.length === 1, 'Registration request missing or ambiguous');
   const artifact = found.artifacts[0];
-  const producer = artifact.workflow_run;
   must(artifact.name === name && artifact.expired === false && /^sha256:[a-f0-9]{64}$/.test(artifact.digest) &&
     positive(artifact.id) && Number.isSafeInteger(artifact.size_in_bytes) &&
-    artifact.size_in_bytes > 0 && artifact.size_in_bytes <= maxRequestBytes &&
-    producer?.repository_id === adminId && producer.head_repository_id === adminId &&
-    producer.head_branch === 'main' && sha(producer.head_sha) && positive(producer.id), 'Invalid private registration artifact');
+    artifact.size_in_bytes > 0 && artifact.size_in_bytes <= maxRequestBytes, 'Invalid private registration artifact');
   markStage('producer_source');
+  const producer = artifact.workflow_run;
+  must(producer?.repository_id === adminId && producer.head_repository_id === adminId &&
+    producer.head_branch === 'main' && sha(producer.head_sha) && positive(producer.id), 'Invalid private registration producer');
   const { data: workflow } = await api.rest.actions.getWorkflow({ ...api.target,
     workflow_id: registrationWorkflow.split('/').at(-1) });
   must(workflow.path === registrationWorkflow && workflow.state === 'active' && positive(workflow.id),
