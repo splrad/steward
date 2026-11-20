@@ -91,19 +91,19 @@ export class QualityEvent {
     const deployment=this.env.RELEASE_RELAY_DEPLOYMENT_SHA??this.env.BOUNDED_DEPLOYMENT_SHA;
     ensure(deployment,'QUALITY_DEPLOYMENT');
     const reader=this.reader();
-    let policy:string;
-    try{policy=await promotedController(reader,deployment,this.env);}
-    catch(error){
-      if(!(error instanceof PendingPromotion))throw error;
-      await promotionMessage(this.env,deployment,'wait',{policy:deployment,key:qualityKey(record),kind:'quality',generation:error.generation});
-      return;
-    }
-    if(!await approvedQualityRepository(reader,policy,record.target.repository_id)) {
-      await this.storage.put('qualityEvent',{...record,phase:'excluded',policy});
-      return;
-    }
     let claimed=false;
+    let policy:string;
     try{
+      try{policy=await promotedController(reader,deployment,this.env);}
+      catch(error){
+        if(!(error instanceof PendingPromotion))throw error;
+        await promotionMessage(this.env,deployment,'wait',{policy:deployment,key:qualityKey(record),kind:'quality',generation:error.generation});
+        return;
+      }
+      if(!await approvedQualityRepository(reader,policy,record.target.repository_id)) {
+        await this.storage.put('qualityEvent',{...record,phase:'excluded',policy});
+        return;
+      }
       await dispatchFixed(reader,CENTRAL.id,'quality-language-summary.yml',policy,{...record.target,policy_sha:policy},async()=>{
         claimed=await this.storage.transaction(async t=>{
           const current=await t.get<QualityRecord>('qualityEvent');
@@ -118,12 +118,15 @@ export class QualityEvent {
       if(error instanceof GitHubRetryError && error.httpStatus===503 && error.dispatchAttempted)throw error;
       const now=Date.now();
       const retryAt=retryAfterTime(error,now,now+60000-1);
-      if(claimed && (retryAt!==undefined || /^GITHUB_HTTP_(400|401|403|404|409|410|422|429)$/.test(message))){
+      if(retryAt!==undefined || (claimed && /^GITHUB_HTTP_(400|401|403|404|409|410|422|429)$/.test(message))){
         const rateLimited=message==='GITHUB_HTTP_429'||retryAt!==undefined;
         const next=rateLimited ? Math.max(now+1000,retryAt??now+60000) : undefined;
         await this.storage.transaction(async t=>{
-          await t.put('qualityEvent',{...record,phase:'pending',retryAt:next??0});
-          if(next)await t.setAlarm(next);
+          const current=await t.get<QualityRecord>('qualityEvent');
+          if(!current || current.phase!==(claimed?'reserved':'pending'))return;
+          const retryAt=Math.max(current.retryAt??0,next??0);
+          await t.put('qualityEvent',{...current,phase:'pending',retryAt});
+          if(retryAt)await t.setAlarm(retryAt);
         });
       }
       throw error;
