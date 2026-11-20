@@ -210,4 +210,11 @@ export async function main(env=process.env) {
       cycleId:result.cycleId??null,publishInvoked:result.publishInvoked===true})+'\n',{flag:'wx'});
   } finally {await rm(root,{recursive:true,force:true});}
 }
-if (process.argv[1] && import.meta.url===pathToFileURL(process.argv[1]).href) main().catch(error=>{console.error(/^CYCLE_[A-Z_]+$/.test(error.message)?error.message:'CYCLE_EVENT_STOPPED');process.exitCode=1;});
+export function publicCycleError(error) {
+  const code=error?.message;
+  if (typeof code==='string' && (/^CYCLE_[A-Z_]+$/.test(code) || [
+    'BOUNDED_RUN_SOURCE','CANDIDATE_REF_DRIFT','CANDIDATE_PR_HEAD_DRIFT','CANDIDATE_STATE_CONFLICT',
+  ].includes(code))) return code;
+  return 'CYCLE_EVENT_STOPPED';
+}
+if (process.argv[1] && import.meta.url===pathToFileURL(process.argv[1]).href) main().catch(error=>{console.error(publicCycleError(error));process.exitCode=1;});
