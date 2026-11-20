@@ -1,10 +1,10 @@
-import { createHmac, generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { extractManagedPullRequestBlock, renderManagedBody } from "../support/core/automation.js";
 import worker, { type Env } from "../src/index.js";
-import { bodyOutsideManagedRegionDigest, pullRequestBodyDigest, PullRequestBodyWriteIntentStore } from "../src/pr-body-write-intents.js";
+import { pullRequestBodyDigest, PullRequestBodyWriteIntentStore } from "../src/pr-body-write-intents.js";
 
 
 describe.each([undefined, 'true'])('shared runtime with retirement=%s', retirement => {
@@ -65,12 +65,6 @@ const env = (database: SqliteD1): Env => ({
   STEWARDSHIP_REPOSITORY: "splrad/steward", POLICY_SHA: "a".repeat(40), STEWARD_APP_PRIVATE_KEY: privateKey,
   STEWARD_WEBHOOK_SECRET: "webhook-secret", ISSUE_SNAPSHOTS: database.binding(),
 });
-
-function signedRequest(event: string, payload: unknown): Request {
-  const body = JSON.stringify(payload);
-  const signature = createHmac("sha256", "webhook-secret").update(body).digest("hex");
-  return new Request("https://example.test/github/webhook", { method: "POST", body, headers: { "x-github-event": event, "x-github-delivery": "delivery-1", "x-hub-signature-256": `sha256=${signature}` } });
-}
 
 function installAuthorization(fetchIssue?: (url: string) => Response | undefined, repositories: any[] = [repository()], installationId = 145952003, viewerLogin = "splrad-steward[bot]") {
   const targetRepository = repositories[0] ?? repository();

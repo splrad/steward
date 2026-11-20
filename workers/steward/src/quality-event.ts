@@ -72,6 +72,15 @@ export class QualityEvent {
     });
     await this.forward();
   }
+  async alarm(){
+    const current=await this.storage.get<QualityRecord>('qualityEvent');
+    if(current?.phase!=='pending'||!current.retryAt||this.env.BOUNDED_RECHECK_ENABLED!=='true')return;
+    if(current.retryAt>Date.now()){
+      await this.storage.setAlarm(current.retryAt);
+      return;
+    }
+    await this.forward();
+  }
   async forward(){
     const record=await this.storage.get<QualityRecord>('qualityEvent');
     if(!record||record.phase==='sent'||record.phase==='excluded')return;
@@ -98,7 +107,7 @@ export class QualityEvent {
       await dispatchFixed(reader,CENTRAL.id,'quality-language-summary.yml',policy,{...record.target,policy_sha:policy},async()=>{
         claimed=await this.storage.transaction(async t=>{
           const current=await t.get<QualityRecord>('qualityEvent');
-          if(current?.phase!=='pending')return false;
+          if(current?.phase!=='pending'||(current.retryAt&&Date.now()<current.retryAt))return false;
           await t.put('qualityEvent',{...current,phase:'reserved',policy});return true;
         });
         return claimed;
@@ -107,7 +116,13 @@ export class QualityEvent {
       const message=error instanceof Error?error.message:'';
       const retryAt=retryAfterTime(error,Date.now(),Number.MAX_SAFE_INTEGER-1);
       if(claimed && (retryAt!==undefined || /^GITHUB_HTTP_(400|401|403|404|409|410|422|429)$/.test(message))){
-        await this.storage.put('qualityEvent',{...record,phase:'pending',retryAt:retryAt??0});
+        const now=Date.now();
+        const rateLimited=message==='GITHUB_HTTP_429'||retryAt!==undefined;
+        const next=rateLimited && retryAt!==Number.MAX_SAFE_INTEGER ? Math.max(now+1000,retryAt??now+60000) : undefined;
+        await this.storage.transaction(async t=>{
+          await t.put('qualityEvent',{...record,phase:'pending',retryAt:next??retryAt??0});
+          if(next)await t.setAlarm(next);
+        });
       }
       throw error;
     }

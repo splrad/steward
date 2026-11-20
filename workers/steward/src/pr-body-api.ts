@@ -30,16 +30,6 @@ function noStoreResponse(status: number, body?: unknown): Response {
   return new Response(serialized, { status, headers });
 }
 
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-async function requireEmptyBody(request: Request): Promise<void> {
-  const length = request.headers.get("content-length");
-  if (length !== null && length !== "0") throw new Error("内部请求正文必须为空");
-  if ((await request.arrayBuffer()).byteLength !== 0) throw new Error("内部请求正文必须为空");
-}
-
 async function readJsonObject(request: Request): Promise<Record<string, unknown>> {
   const declared = Number(request.headers.get("content-length") ?? "0");
   if (declared > 512 * 1024) throw new Error("内部请求正文过大");

@@ -9,7 +9,6 @@ import {BoundedGitHub,CENTRAL,type GitReader} from './bounded-recheck-github.js'
 import {acceptNativeCandidateEvent,acceptNativeCandidateCompletion} from './bounded-native-event.js';
 import { handleBoundedRecheckRequest } from './bounded-recheck-api.js';
 export { BoundedRecheckCoordinator } from './bounded-recheck-do.js';
-import { assertLegacyReleaseDispatchActive } from './release-retirement.js';
 import { legacyValidationRetired } from './validation-retirement.js';
 import { SerialTaskQueue } from './serial-task-queue.js';
 import { settledPool } from "./settled-pool.js";

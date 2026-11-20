@@ -53,6 +53,7 @@ export class BoundedRecheckCoordinator {
   return Response.json(value,{headers:{'Cache-Control':'no-store'}});
  }
  async alarm(){
+  if(await this.state.storage.get('qualityEvent')){await new QualityEvent(this.state.storage,this.env).alarm();return;}
   if(await this.state.storage.get('promotionPolicy')){await new ReleasePromotion(this.state.storage,this.env).alarm();return;}
   if(await this.state.storage.get('wingetSubmit')){await new WingetSubmit(this.state.storage,this.env).alarm();return;}
   if(await this.state.storage.get('releaseCycle')){await new ReleaseRelay(this.state.storage,this.env).alarm();return;}

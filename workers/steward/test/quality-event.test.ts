@@ -80,7 +80,7 @@ it.each(['created','edited','deleted'])('discards a signed private review commen
  }finally{external.mockRestore();for(const log of logs)log.mockRestore();}
 });
 
-it.each([['GITHUB_HTTP_422',2],['unconfirmed transport failure',1]] as const)('redelivers only an explicitly rejected quality POST (%s)',async(message,expected)=>{
+it.each([['GITHUB_HTTP_422',2],['RETRY_AFTER:3',2],['unconfirmed transport failure',1]] as const)('redelivers only an explicitly rejected quality POST (%s)',async(message,expected)=>{
  const {SqliteDurableStorage}=await import('./bounded-storage.js');
  const storage=new SqliteDurableStorage(),config=Buffer.from(JSON.stringify({schemaVersion:1,enabled:true,deploymentSha:sha}));
  let posts=0;
@@ -94,7 +94,14 @@ it.each([['GITHUB_HTTP_422',2],['unconfirmed transport failure',1]] as const)('r
  const object=new QualityEvent(storage as any,{BOUNDED_RECHECK_ENABLED:'true',RELEASE_RELAY_DEPLOYMENT_SHA:sha} as any,()=>({json} as any));
  const record={delivery:'one-delivery',event:'workflow_run',target,phase:'pending' as const};
  await expect(object.register(record)).rejects.toThrow(message);
- if(expected===2)await object.register(record);
+ if(message==='RETRY_AFTER:3'){
+   const next=await storage.get<number>('__alarm');
+   expect(next).toBeGreaterThan(Date.now());
+   await object.alarm();
+   expect(posts).toBe(1);
+   const clock=vi.spyOn(Date,'now').mockReturnValue(next!);
+   try{await object.alarm();await object.alarm();}finally{clock.mockRestore();}
+ }else if(expected===2)await object.register(record);
  else await expect(object.register(record)).rejects.toThrow('QUALITY_POST_UNCONFIRMED');
  expect(posts).toBe(expected);
 });
