@@ -828,12 +828,12 @@
       "attempts": [
         {
           "startedAt": "2026-11-20T13:43:32.300Z",
-          "status": "UNKNOWN",
+          "status": "FAILED",
           "model": null,
           "usage": null
         }
       ],
-      "nextCheckAt": "2026-11-20T13:44:32.300Z",
+      "nextCheckAt": "2026-11-20T13:44:50.635Z",
       "errorCode": "RESPONSE_UNKNOWN"
     }
   },
