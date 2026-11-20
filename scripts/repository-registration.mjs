@@ -526,14 +526,21 @@ export async function runRegistration(mode, env, {
     };
   },
   extract,
+  markStage = () => {},
   output = process.stdout
 } = {}) {
+  if (mode === 'consume') markStage('event');
   const event = JSON.parse(await readFile(env.GITHUB_EVENT_PATH, 'utf8'));
   if (mode === 'consume') {
     const requestId = readWake(event, env);
+    markStage('credential');
     const {withAdmin,project} = await openAdmin();
-    const requested = await withAdmin('registration-read', (api, admin, token) =>
-      loadPrivateRequest(api, admin, token, requestId, extract));
+    const requested = await withAdmin('registration-read', async (api, admin, token) => {
+      const request = await loadPrivateRequest(api, admin, token, requestId, extract, markStage);
+      markStage('credential');
+      return request;
+    });
+    markStage('apply');
     const ids=selectRegistrationTargets(requested.repositoryIds,env.REGISTRATION_ALLOWED_IDS);
     const result=await applyRequests(ids,withGovernance,withAdmin,project,requested.event==='push');
     output.write('REGISTRATION_PROCESSED\n');
@@ -564,11 +571,13 @@ export async function runRegistration(mode, env, {
 }
 
 export async function registrationEntry(mode, env, options = {}) {
+  let stage;
   try {
-    await runRegistration(mode, env, options);
+    await runRegistration(mode, env, {...options,markStage:value=>{stage=value;}});
     return 0;
   } catch {
-    (options.errorOutput ?? process.stderr).write('REGISTRATION_UNAVAILABLE\n');
+    // Stages are fixed source literals. Never expose exception messages from private operations.
+    (options.errorOutput ?? process.stderr).write('REGISTRATION_UNAVAILABLE'+(stage?' '+stage:'')+'\n');
     return 1;
   }
 }

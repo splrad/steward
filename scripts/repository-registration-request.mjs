@@ -63,8 +63,9 @@ export async function extractPrivateRequest(artifact, admin, token) {
   }
 }
 
-export async function loadPrivateRequest(api, admin, token, requestId, extract = extractPrivateRequest) {
+export async function loadPrivateRequest(api, admin, token, requestId, extract = extractPrivateRequest, markStage = () => {}) {
   const name = 'repository-registration-' + wakePayload(requestId).requestId;
+  markStage('artifact_lookup');
   const { data: found } = await api.rest.actions.listArtifactsForRepo({ ...api.target, name, per_page: 100 });
   must(found.total_count === 1 && found.artifacts?.length === 1, 'Registration request missing or ambiguous');
   const artifact = found.artifacts[0];
@@ -74,6 +75,7 @@ export async function loadPrivateRequest(api, admin, token, requestId, extract =
     artifact.size_in_bytes > 0 && artifact.size_in_bytes <= maxRequestBytes &&
     producer?.repository_id === adminId && producer.head_repository_id === adminId &&
     producer.head_branch === 'main' && sha(producer.head_sha) && positive(producer.id), 'Invalid private registration artifact');
+  markStage('producer_source');
   const { data: workflow } = await api.rest.actions.getWorkflow({ ...api.target,
     workflow_id: registrationWorkflow.split('/').at(-1) });
   must(workflow.path === registrationWorkflow && workflow.state === 'active' && positive(workflow.id),
@@ -85,11 +87,13 @@ export async function loadPrivateRequest(api, admin, token, requestId, extract =
       basehead: producer.head_sha + '...' + main.commit.sha });
     must(compare.merge_base_commit?.sha === producer.head_sha, 'Registration producer commit is outside main');
   }
+  markStage('artifact_content');
   const request = await extract(artifact, admin, token);
   must(exact(request, ['schemaVersion', 'requestId', 'repositoryIds', 'sourceSha', 'runId', 'attempt', 'event']) &&
     request.schemaVersion === 1 && request.requestId === requestId && request.sourceSha === producer.head_sha &&
     request.runId === producer.id && types.includes(request.event) &&
     Number.isSafeInteger(request.attempt) && request.attempt > 0, 'Registration request provenance mismatch');
+  markStage('producer_run');
   const { data: run } = await api.rest.actions.getWorkflowRunAttempt({ ...api.target,
     run_id: request.runId, attempt_number: request.attempt });
   must(run.id === request.runId && run.run_attempt === request.attempt && run.workflow_id === workflow.id &&
