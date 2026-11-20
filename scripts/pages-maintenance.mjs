@@ -74,7 +74,8 @@ export async function sourceOptions(reader,repository,controllerSha,appBotId) {
     check(branch.ref==='refs/heads/'+repository.default_branch && branch.object?.type==='commit' && /^[a-f0-9]{40}$/.test(branch.object.sha),'DEFAULT_HEAD');
     const workflow=YAML.parse((await pagesContent(reader,pagesWorkflow,branch.object.sha)).toString('utf8'));
     const source=workflow?.env?.STEWARD_DOCS_SOURCE;
-    const declared=source!==undefined && source!=='' && source!=='${{ vars.STEWARD_DOCS_SOURCE }}';
+    const declared=source!==undefined && source!=='' &&
+      !['${{ vars.STEWARD_DOCS_SOURCE }}',"${{ vars.STEWARD_DOCS_SOURCE || 'default-branch' }}"].includes(source);
     if(declared && source!==mode)return {status:'SOURCE_MODE_CONFLICT'};
     if(mode==='release') {
       unitId=await read('STEWARD_DOCS_UNIT');
