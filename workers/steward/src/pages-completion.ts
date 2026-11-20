@@ -7,6 +7,7 @@ type Site={repositoryId:number;repository:string;workflowId:number};
 type Locator={id:number;run_attempt:number;head_sha:string;conclusion:string};
 type Retry={site:Site;hint:Locator;policy:string;reservation:string;due:number;expires:number};
 type Watch=Pick<Retry,'site'|'hint'|'policy'|'expires'>;
+type StoredWatch=Watch & {startedAt?:number};
 const probeInterval=5*60000;
 const failed=new Set(['failure','cancelled','timed_out','action_required','startup_failure']);
 const positive=(n:unknown)=>typeof n==='number'&&Number.isSafeInteger(n)&&n>0;
@@ -25,6 +26,24 @@ export async function forwardPagesCompletion(env:BoundedEnv,event:string,p:any,g
   ensure(positive(hint.id)&&positive(hint.run_attempt),'PAGES_LOCATOR');
   await forward(env,site,{id:hint.id,run_attempt:hint.run_attempt,head_sha:hint.head_sha,conclusion:hint.conclusion},g);
 }
+async function recordReceipt(db:D1Database,g:GitReader,site:Site,hint:Locator,policySha:string,reservedAt:string){
+  const key=[site.repositoryId,site.workflowId,hint.id,hint.run_attempt];
+  const title=`Pages completion ${site.repositoryId} ${hint.id} ${hint.run_attempt}`;
+  // Permit ordinary clock skew between the GitHub event and the worker clock.
+  const since=new Date(Date.parse(reservedAt)-60000).toISOString();
+  const until=new Date(Date.parse(reservedAt)+5*60000).toISOString();
+  const window=encodeURIComponent(since+'..'+until);
+  const list=await g.json(CENTRAL.id,`/repos/${CENTRAL.name}/actions/workflows/${receiver}/runs?event=workflow_dispatch&head_sha=${policySha}&created=${window}&per_page=100`);
+  ensure(Array.isArray(list.workflow_runs)&&list.total_count===list.workflow_runs.length,'PAGES_RECEIPT_WINDOW');
+  const matches=list.workflow_runs.filter((r:any)=>r.path==='.github/workflows/'+receiver&&r.display_title===title&&r.event==='workflow_dispatch'
+    &&r.actor?.id===301115370&&r.repository?.id===CENTRAL.id&&r.head_repository?.id===CENTRAL.id&&r.head_branch==='main'&&r.head_sha===policySha);
+  ensure(matches.length<=1,'PAGES_RECEIPT_AMBIGUOUS');
+  if(!matches.length)return false;
+  ensure(positive(matches[0].id),'PAGES_RECEIPT_ID');
+  const saved=await db.prepare('UPDATE pages_completion_dispatches SET central_run_id=? WHERE repository_id=? AND workflow_id=? AND run_id=? AND attempt=? AND controller_sha=? AND reserved_at=? AND retry_after IS NULL AND (central_run_id IS NULL OR central_run_id=?)')
+    .bind(matches[0].id,...key,policySha,reservedAt,matches[0].id).run();
+  ensure(saved.success&&saved.meta.changes===1,'PAGES_RECEIPT_STORE');return true;
+}
 async function forward(env:BoundedEnv,site:Site,hint:Locator,g:GitReader,retry?:Retry,schedule?:(ticket:Retry)=>Promise<void>){
   const db=env.ISSUE_SNAPSHOTS;
   ensure(db,'PAGES_DISPATCH_STORAGE');
@@ -38,23 +57,6 @@ async function forward(env:BoundedEnv,site:Site,hint:Locator,g:GitReader,retry?:
     existing.retry_after!==null && Date.now()>=existing.retry_after && existing.controller_sha===retry.policy && env.BOUNDED_CONTROLLER_SHA===retry.policy;
   const reservedAt=retrying?new Date(Math.max(Date.now(),Date.parse(retry!.reservation)+1)).toISOString():
     existing?.reserved_at??new Date().toISOString();
-  const title=`Pages completion ${site.repositoryId} ${hint.id} ${hint.run_attempt}`;
-  const receipt=async(policySha:string)=>{
-    // Permit ordinary clock skew between the GitHub event and the worker clock.
-    const since=new Date(Date.parse(reservedAt)-60000).toISOString();
-    const until=new Date(Date.parse(reservedAt)+5*60000).toISOString();
-    const window=encodeURIComponent(since+'..'+until);
-    const list=await g.json(CENTRAL.id,`/repos/${CENTRAL.name}/actions/workflows/${receiver}/runs?event=workflow_dispatch&head_sha=${policySha}&created=${window}&per_page=100`);
-    ensure(Array.isArray(list.workflow_runs)&&list.total_count===list.workflow_runs.length,'PAGES_RECEIPT_WINDOW');
-    const matches=list.workflow_runs.filter((r:any)=>r.path==='.github/workflows/'+receiver&&r.display_title===title&&r.event==='workflow_dispatch'
-      &&r.actor?.id===301115370&&r.repository?.id===CENTRAL.id&&r.head_repository?.id===CENTRAL.id&&r.head_branch==='main'&&r.head_sha===policySha);
-    ensure(matches.length<=1,'PAGES_RECEIPT_AMBIGUOUS');
-    if(!matches.length)return false;
-    ensure(positive(matches[0].id),'PAGES_RECEIPT_ID');
-    const saved=await db.prepare('UPDATE pages_completion_dispatches SET central_run_id=? WHERE repository_id=? AND workflow_id=? AND run_id=? AND attempt=? AND controller_sha=? AND (central_run_id IS NULL OR central_run_id=?)')
-      .bind(matches[0].id,...key,policySha,matches[0].id).run();
-    ensure(saved.success&&saved.meta.changes===1,'PAGES_RECEIPT_STORE');return true;
-  };
   const scheduleRetry=async(ticket:Retry)=>{
     if(schedule){await schedule(ticket);return;}
     ensure(env.BOUNDED_RECHECK,'PAGES_RETRY_STORAGE');
@@ -69,7 +71,7 @@ async function forward(env:BoundedEnv,site:Site,hint:Locator,g:GitReader,retry?:
         reservation:existing.reserved_at,due:existing.retry_after,expires:Date.parse(existing.run_created_at)+30*86400_000});
       return;
     }
-    ensure(await receipt(existing.controller_sha),'PAGES_DISPATCH_UNCONFIRMED');return;
+    ensure(await recordReceipt(db,g,site,hint,existing.controller_sha,reservedAt),'PAGES_DISPATCH_UNCONFIRMED');return;
   }
   const base='/repos/'+TARGET.name;
   const workflow=await g.json(TARGET.id,base+'/actions/workflows/pages.yml');
@@ -129,10 +131,10 @@ async function forward(env:BoundedEnv,site:Site,hint:Locator,g:GitReader,retry?:
       ensure(saved.success&&saved.meta.changes===1,'PAGES_REJECTION_STORE');
       await scheduleRetry(ticket);return;
     }
-    if(ownsClaim&&await receipt(pin))return;
+    if(ownsClaim&&await recordReceipt(db,g,site,hint,pin,reservedAt))return;
     throw error; // Keep the reservation even if the POST response or the worker was interrupted.
   }
-  if(ownsClaim)ensure(await receipt(pin),'PAGES_DISPATCH_UNCONFIRMED');
+  if(ownsClaim)ensure(await recordReceipt(db,g,site,hint,pin,reservedAt),'PAGES_DISPATCH_UNCONFIRMED');
 }
 
 
@@ -144,13 +146,15 @@ export class PagesRetry {
   async watch(watch:Watch){
     await this.store.transaction(async t=>{
       if(await t.get('pagesWatch'))return;
-      await t.put('pagesWatch',watch);
+      await t.put('pagesWatch',{...watch,startedAt:Date.now()});
       if(!await t.get('pagesRetry'))await t.setAlarm(Math.min(watch.expires,Date.now()+probeInterval));
     });
   }
   private async reconcileWatch(){
-    const watch=await this.store.get<Watch>('pagesWatch');if(!watch)return;
-    if(this.env.BOUNDED_RECHECK_ENABLED!=='true'||this.env.BOUNDED_CONTROLLER_SHA!==watch.policy)return;
+    const watch=await this.store.get<StoredWatch>('pagesWatch');if(!watch)return;
+    if(Date.now()<watch.expires && (this.env.BOUNDED_RECHECK_ENABLED!=='true'||this.env.BOUNDED_CONTROLLER_SHA!==watch.policy)){
+      await this.store.setAlarm(Math.min(watch.expires,Date.now()+probeInterval));return;
+    }
     const {site,hint,policy,expires}=watch;
     const active=this.sites.some(s=>s.repositoryId===site.repositoryId&&s.workflowId===site.workflowId&&s.repository===site.repository);
     if(active && Date.now()<expires){
@@ -158,10 +162,15 @@ export class PagesRetry {
       const db=this.env.ISSUE_SNAPSHOTS;ensure(db,'PAGES_DISPATCH_STORAGE');
       const row=await db.prepare('SELECT reserved_at,retry_after,central_run_id,controller_sha FROM pages_completion_dispatches WHERE repository_id=? AND workflow_id=? AND run_id=? AND attempt=?')
         .bind(site.repositoryId,site.workflowId,hint.id,hint.run_attempt).first<{reserved_at:string;retry_after:number|null;central_run_id:number|null;controller_sha:string}>();
-      if(!row)return;
-      if(row.central_run_id===null&&row.controller_sha===policy){
-        if(row.retry_after!==null)await this.schedule({...watch,reservation:row.reserved_at,due:row.retry_after});
-        return;
+      if(!row && Date.now()<(watch.startedAt??0)+3*probeInterval)return;
+      if(row?.central_run_id===null&&row.controller_sha===policy){
+        if(row.retry_after!==null){
+          await this.schedule({...watch,reservation:row.reserved_at,due:row.retry_after});return;
+        }
+        // Probe only the original receipt window. Keep the reservation after the
+        // bounded observation period so a later webhook can still confirm it.
+        if(Date.now()<=Date.parse(row.reserved_at)+3*probeInterval &&
+          !await recordReceipt(db,this.reader(),site,hint,policy,row.reserved_at))return;
       }
     }
     await this.store.transaction(async t=>{
@@ -182,7 +191,9 @@ export class PagesRetry {
     const ticket=await this.store.get<Retry>('pagesRetry');if(!ticket){await this.reconcileWatch();return;}
     const now=Date.now();if(now<ticket.due){await this.store.setAlarm(ticket.due);return;}
     const site=this.sites.find(s=>s.repositoryId===ticket.site.repositoryId&&s.repository===ticket.site.repository&&s.workflowId===ticket.site.workflowId);
-    if(this.env.BOUNDED_RECHECK_ENABLED!=='true'||this.env.BOUNDED_CONTROLLER_SHA!==ticket.policy)return;
+    if(Date.now()<ticket.expires && (this.env.BOUNDED_RECHECK_ENABLED!=='true'||this.env.BOUNDED_CONTROLLER_SHA!==ticket.policy)){
+      await this.store.setAlarm(Math.min(ticket.expires,Date.now()+probeInterval));return;
+    }
     let again:number|undefined;
     if(site && now<ticket.expires){
       // Arm recovery before I/O. A crash after acquiring the D1 reservation

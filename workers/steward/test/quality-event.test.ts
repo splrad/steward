@@ -153,9 +153,22 @@ it('stores a signed quality locator without GitHub reads, then recovers the init
  }};
  const env={BOUNDED_RECHECK_ENABLED:'true',RELEASE_RELAY_DEPLOYMENT_SHA:sha};
  const first=new QualityEvent(storage as any,env as any,()=>reader as any);
- vi.spyOn(first,'forward').mockRejectedValueOnce(Error('simulated interruption'));
- await expect(first.register(record)).rejects.toThrow('simulated interruption');
- expect(await storage.get('__alarm')).toBeTypeOf('number');
- const resumed=new QualityEvent(storage as any,env as any,()=>reader as any);await resumed.alarm();await resumed.register(record);
- expect(sends).toBe(1);expect(await storage.get('__alarm')).toBeUndefined();
+ const clock=vi.spyOn(Date,'now').mockReturnValue(Date.now());
+ try{
+   await first.register(record);
+   await first.register({...record,delivery:'another-review'});
+   const resumed=()=>new QualityEvent(storage as any,env as any,()=>reader as any);
+   clock.mockReturnValue((await storage.get<number>('__alarm'))!);
+   env.BOUNDED_RECHECK_ENABLED='false';await resumed().alarm();expect(sends).toBe(0);
+   env.BOUNDED_RECHECK_ENABLED='true';clock.mockReturnValue((await storage.get<number>('__alarm'))!);
+   await resumed().alarm();await resumed().register(record);expect(sends).toBe(1);
+   for(const change of ['edited','deleted']){
+     const update={...record,delivery:'comment-'+change,event:'pull_request_review_comment'};
+     await resumed().register(update);await resumed().register(update);
+     clock.mockReturnValue((await storage.get<number>('__alarm'))!);await resumed().alarm();
+   }
+   expect(sends).toBe(3);
+   clock.mockReturnValue((await storage.get<number>('__alarm'))!);await resumed().alarm();
+   expect(await storage.get('qualityEvent')).toBeUndefined();expect(await storage.get('qualityDeliveries')).toBeUndefined();
+ }finally{clock.mockRestore();}
 });

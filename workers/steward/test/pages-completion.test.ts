@@ -172,6 +172,27 @@ it('does not issue a retry ticket for an ordinary permission-denied 403',async()
  expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(1);
 });
 
+it.each([false,true])('bounds receipt-only alarm recovery when the receipt becomes visible: %s',async visible=>{
+ const f=fixture(),store=new SqliteDurableStorage();
+ const object=()=>new PagesRetry(store as any,f.config,()=>f.g,[f.site]);
+ f.config.BOUNDED_RECHECK.get=()=>({fetch:async(req:Request)=>{
+   await object().watch(await req.json() as any);return Response.json({});
+ }});
+ f.result.visible=false;await expect(f.forward()).rejects.toThrow('PAGES_DISPATCH_UNCONFIRMED');
+ if(visible)Object.assign(f.prior,{total_count:1,workflow_runs:[f.receipt]});
+ const clock=vi.spyOn(Date,'now');
+ try{
+   for(let i=0;i<5;i++){
+     const alarm=await store.get<number>('__alarm');if(alarm===undefined)break;
+     clock.mockReturnValue(alarm);await object().alarm();
+   }
+ }finally{clock.mockRestore();}
+ expect(await store.get('__alarm')).toBeUndefined();
+ expect(await store.get('pagesWatch')).toBeUndefined();
+ expect(f.db.database.prepare('SELECT central_run_id FROM pages_completion_dispatches').get()?.central_run_id).toBe(visible?99:null);
+ expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(1);
+});
+
 it('requires a durable watch before reserving or dispatching',async()=>{
  const f=fixture();
  f.config.BOUNDED_RECHECK.get=()=>({fetch:async()=>new Response(null,{status:503})});
@@ -212,6 +233,27 @@ it('keeps a reservation unconfirmed if writing the rejection proof fails',async(
  await expect(f.forward()).rejects.toThrow('PAGES_DISPATCH_UNCONFIRMED');
  expect(f.db.database.prepare('SELECT retry_after FROM pages_completion_dispatches').get()).toEqual({retry_after:null});
  expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(1);
+});
+
+it.each(['quiesced','other pin'])('rearms a rejected Pages dispatch while %s and resumes at its original pin',async mode=>{
+ const f=fixture(),store=new SqliteDurableStorage();
+ const object=()=>new PagesRetry(store as any,f.config,()=>f.g,[f.site]);
+ f.config.BOUNDED_RECHECK.get=()=>({fetch:async(req:Request)=>{
+   if(new URL(req.url).pathname==='/pages-watch')await object().watch(await req.json() as any);
+   else await object().schedule(await req.json() as any);
+   return Response.json({});
+ }});
+ f.result.rejections=1;await f.forward();
+ const clock=vi.spyOn(Date,'now').mockReturnValue((await store.get<number>('__alarm'))!);
+ try{
+   if(mode==='quiesced')f.config.BOUNDED_RECHECK_ENABLED='false';else f.config.BOUNDED_CONTROLLER_SHA=source;
+   await object().alarm();
+   expect(await store.get<number>('__alarm')).toBeGreaterThan(Date.now());
+   expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(1);
+   f.config.BOUNDED_RECHECK_ENABLED='true';f.config.BOUNDED_CONTROLLER_SHA=pin;
+   clock.mockReturnValue((await store.get<number>('__alarm'))!);await object().alarm();
+   expect(f.db.database.prepare('SELECT central_run_id FROM pages_completion_dispatches').get()?.central_run_id).toBe(99);
+ }finally{clock.mockRestore();}
 });
 
 it('recovers a newer D1 rejection when the second alarm ticket could not be persisted',async()=>{

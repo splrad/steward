@@ -34,8 +34,9 @@ export function qualityLocator(event:string, payload:any, installationId:number)
 }
 
 type Target=NonNullable<ReturnType<typeof qualityLocator>>;
-type QualityRecord={repositoryName?:string;delivery:string;event:string;target:Target;phase:'pending'|'reserved'|'sent'|'excluded';policy?:string;retryAt?:number};
-function qualityKey(r:QualityRecord){return digest(JSON.stringify([r.delivery,r.event,r.target.repository_id,r.target.pull_number,r.target.head_sha])).slice(7);}
+type QualityRecord={repositoryName?:string;delivery:string;event:string;target:Target;phase:'pending'|'reserved'|'sent'|'excluded';policy?:string;retryAt?:number;aggregate?:boolean;expires?:number};
+const debounce=60_000,retention=30*86400_000;
+function qualityKey(r:QualityRecord){return digest(JSON.stringify([...(r.aggregate?[]:[r.delivery,r.event]),r.target.repository_id,r.target.pull_number,r.target.head_sha])).slice(7);}
 async function approvedQualityRepository(reader:GitReader,policy:string,id:string) {
   const path='config/review/quality-language.json';
   const file=await reader.json(CENTRAL.id,`/repos/${CENTRAL.name}/contents/${path}?ref=${policy}`);
@@ -55,7 +56,7 @@ export async function dispatchQualityEvent(env:BoundedEnv,event:string,payload:a
   ensure(env.BOUNDED_RECHECK&&/^[a-zA-Z0-9-]{1,128}$/.test(delivery),'QUALITY_DELIVERY');
   const repositoryName=payload.repository.full_name;
   if(typeof repositoryName!=='string'||!/^splrad\/[A-Za-z0-9_.-]+$/.test(repositoryName))return;
-  const record:QualityRecord={delivery,event,target,repositoryName,phase:'pending'};
+  const record:QualityRecord={delivery,event,target,repositoryName,phase:'pending',aggregate:true};
   const ns=env.BOUNDED_RECHECK,stub=ns.get(ns.idFromName('quality:v1:'+qualityKey(record)));
   const response=await stub.fetch(new Request('https://bounded.internal/quality-event',{method:'POST',body:JSON.stringify(record)}));
   ensure(response.ok,'QUALITY_REGISTRATION');
@@ -63,6 +64,21 @@ export async function dispatchQualityEvent(env:BoundedEnv,event:string,payload:a
 export class QualityEvent {
   constructor(private storage:DurableObjectStorage,private env:BoundedEnv,private reader:()=>GitReader=()=>new BoundedGitHub(env)){}
   async register(record:QualityRecord){
+    if(record.aggregate){
+      await this.storage.transaction(async t=>{
+        const seen=await t.get<string[]>('qualityDeliveries')??[];
+        if(seen.includes(record.delivery))return;
+        await t.put('qualityDeliveries',[...seen.slice(-127),record.delivery]);
+        const current=await t.get<QualityRecord>('qualityEvent'),now=Date.now();
+        if(current?.phase==='pending' && current.retryAt){
+          await t.put('qualityEvent',{...current,expires:now+retention});return;
+        }
+        const retryAt=now+debounce;
+        await t.put('qualityEvent',{...record,retryAt,expires:now+retention});
+        await t.setAlarm(retryAt);
+      });
+      return;
+    }
     await this.storage.transaction(async t=>{
       if(!await t.get('qualityEvent')){
         const retryAt=Date.now();
@@ -74,11 +90,30 @@ export class QualityEvent {
   }
   async alarm(){
     const current=await this.storage.get<QualityRecord>('qualityEvent');
-    if(current?.phase!=='pending'||!current.retryAt||this.env.BOUNDED_RECHECK_ENABLED!=='true')return;
+    if(!current)return;
+    const now=Date.now();
+    if(current.expires && now>=current.expires){
+      await this.storage.transaction(async t=>{
+        const latest=await t.get<QualityRecord>('qualityEvent');
+        if(latest?.expires && Date.now()>=latest.expires){
+          await t.delete('qualityEvent');await t.delete('qualityDeliveries');await t.deleteAlarm();
+        }
+      });return;
+    }
+    if(current.phase!=='pending'||!current.retryAt)return;
+    if(this.env.BOUNDED_RECHECK_ENABLED!=='true'){
+      const expires=current.expires??now+retention;
+      await this.storage.transaction(async t=>{
+        const latest=await t.get<QualityRecord>('qualityEvent');
+        if(latest?.delivery!==current.delivery||latest.phase!=='pending')return;
+        await t.put('qualityEvent',{...latest,expires});await t.setAlarm(Math.min(expires,now+5*debounce));
+      });return;
+    }
     if(current.retryAt>Date.now()){
       await this.storage.setAlarm(current.retryAt);
       return;
     }
+    if(current.expires)await this.storage.setAlarm(current.expires);
     await this.forward();
   }
   async forward(){
@@ -103,16 +138,17 @@ export class QualityEvent {
       const name=await approvedQualityRepository(reader,policy,record.target.repository_id);
       if(!name || (record.repositoryName!==undefined && name!==record.repositoryName)) {
         await this.storage.transaction(async t=>{
-          if((await t.get<QualityRecord>('qualityEvent'))?.phase!=='pending')return;
-          await t.put('qualityEvent',{...record,phase:'excluded',policy});await t.deleteAlarm();
+          const current=await t.get<QualityRecord>('qualityEvent');
+          if(current?.phase!=='pending'||current.delivery!==record.delivery)return;
+          await t.put('qualityEvent',{...current,phase:'excluded',policy});if(current.expires)await t.setAlarm(current.expires);else await t.deleteAlarm();
         });
         return;
       }
       await dispatchFixed(reader,CENTRAL.id,'quality-language-summary.yml',policy,{...record.target,policy_sha:policy},async()=>{
         claimed=await this.storage.transaction(async t=>{
           const current=await t.get<QualityRecord>('qualityEvent');
-          if(current?.phase!=='pending'||(current.retryAt&&Date.now()<current.retryAt))return false;
-          await t.put('qualityEvent',{...current,phase:'reserved',policy});await t.deleteAlarm();return true;
+          if(current?.phase!=='pending'||current.delivery!==record.delivery||(current.retryAt&&Date.now()<current.retryAt))return false;
+          await t.put('qualityEvent',{...current,phase:'reserved',policy});if(current.expires)await t.setAlarm(current.expires);else await t.deleteAlarm();return true;
         });
         return claimed;
       });
@@ -127,14 +163,17 @@ export class QualityEvent {
         const next=rateLimited ? Math.max(now+1000,retryAt??now+60000) : undefined;
         await this.storage.transaction(async t=>{
           const current=await t.get<QualityRecord>('qualityEvent');
-          if(!current || current.phase!==(claimed?'reserved':'pending'))return;
+          if(!current || current.delivery!==record.delivery || current.phase!==(claimed?'reserved':'pending'))return;
           const retryAt=next===undefined?0:Math.max(current.retryAt??0,next);
           await t.put('qualityEvent',{...current,phase:'pending',retryAt});
-          if(retryAt)await t.setAlarm(retryAt);else await t.deleteAlarm();
+          if(retryAt||current.expires)await t.setAlarm(retryAt||current.expires!);else await t.deleteAlarm();
         });
       }
       throw error;
     }
-    if(claimed)await this.storage.put('qualityEvent',{...record,phase:'sent',policy});
+    if(claimed)await this.storage.transaction(async t=>{
+      const current=await t.get<QualityRecord>('qualityEvent');
+      if(current?.delivery===record.delivery&&current.phase==='reserved')await t.put('qualityEvent',{...current,phase:'sent',policy});
+    });
   }
 }

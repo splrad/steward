@@ -156,7 +156,7 @@ export class NativeCandidateCoordinator {
    }
    if(latest.status==='PAUSED'){await t.put('nativeEvent',latest);return;}
    if(latest.retryAfter>=latest.deadline){latest.status='NEEDS_ATTENTION';latest.reason='RATE_LIMIT_WINDOW_EXHAUSTED';latest.nextAt=null;}
-   else if(receiptAttempt){if(latest.receiptRetryUsed){latest.status='NEEDS_ATTENTION';latest.reason='RECEIPT_RATE_LIMIT_EXHAUSTED';latest.nextAt=null;latest.receiptDeferred=false;}else{latest.receiptRetryUsed=true;latest.receiptDeferred=true;latest.status='AWAITING_RECEIPT';latest.reason='RECEIPT_RATE_LIMIT_DEFERRED';latest.nextAt=latest.retryAfter;}}
+   else if(receiptAttempt || (latest.knownRunId!==null && latest.confirmations>=confirmOffsets.length)){if(latest.receiptRetryUsed){latest.status='NEEDS_ATTENTION';latest.reason='RECEIPT_RATE_LIMIT_EXHAUSTED';latest.nextAt=null;latest.receiptDeferred=false;}else{latest.receiptRetryUsed=true;latest.receiptDeferred=true;latest.status='AWAITING_RECEIPT';latest.reason='RECEIPT_RATE_LIMIT_DEFERRED';latest.nextAt=latest.retryAfter;}}
    else if(latest.dispatchedAt===null&&latest.preparations<prepareOffsets.length){latest.status='PREPARING';latest.nextAt=Math.max(latest.nextAt??now,latest.retryAfter);}
    else if(latest.dispatchedAt!==null&&latest.confirmations<confirmOffsets.length){latest.status='CONFIRMING';latest.nextAt=Math.max(latest.nextAt??now,latest.retryAfter);}
    else if(latest.knownRunId!==null){latest.status='AWAITING_RECEIPT';latest.nextAt=latest.receiptDeferred?latest.retryAfter:latest.deadline;}
