@@ -17,6 +17,7 @@ function fixture(){
   const payload={repository:repo,installation:{id:41},organization:{id:42},workflow_run:structuredClone(run),action:'completed'};
   const db=new ReleaseTestDb();
   db.database.exec(readFileSync(new URL('../../../packages/runtime/migrations/0020_pages_completion_dispatches.sql',import.meta.url),'utf8'));
+  db.database.exec(readFileSync(new URL('../../../packages/runtime/migrations/0021_pages_completion_retry_after.sql',import.meta.url),'utf8'));
   const config={...env,ISSUE_SNAPSHOTS:db.binding()};
   const result={lost:false,visible:true,rejections:0,rejectionStatus:429,denied:false};
   const receipt={id:99,path:'.github/workflows/'+receiver,display_title:'Pages completion '+TARGET.id+' 12 1',event:'workflow_dispatch',
@@ -125,15 +126,14 @@ it.each([429,403])('recovers explicit rate limit %s at its floor with one accept
  const clock=vi.spyOn(Date,'now').mockReturnValue(now);
  const object=()=>new PagesRetry(storage as any,f.config,()=>f.g,[f.site]);
  f.config.BOUNDED_RECHECK={idFromName:(x:string)=>x,get:()=>({fetch:async(req:Request)=>{
-   if(new URL(req.url).pathname==='/pages-retry')await object().schedule(await req.json() as any);
-   else await object().wake();
+   expect(new URL(req.url).pathname).toBe('/pages-retry');await object().schedule(await req.json() as any);
    return Response.json({});
  }})};
  try{
    const posts=()=>f.json.mock.calls.filter(c=>c[2]==='POST').length;
    f.result.rejectionStatus=status;f.result.rejections=2;await f.forward();
    expect(await storage.get('__alarm')).toBe(now+180000);expect(posts()).toBe(1);
-   await expect(f.forward()).rejects.toThrow('PAGES_DISPATCH_UNCONFIRMED');
+   await f.forward();
    await object().alarm();expect(posts()).toBe(1);
    clock.mockReturnValue(now+180000);await object().alarm();
    expect(posts()).toBe(2);expect(await storage.get('__alarm')).toBe(now+360000);
@@ -166,5 +166,33 @@ it('does not issue a retry ticket for an ordinary permission-denied 403',async()
  const f=fixture();f.result.denied=true;f.result.visible=false;
  await expect(f.forward()).rejects.toThrow('GITHUB_HTTP_403');
  await expect(f.forward()).rejects.toThrow('PAGES_DISPATCH_UNCONFIRMED');
+ expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(1);
+});
+
+it('reconstructs a rejected ticket from the D1 row after the DO was unavailable',async()=>{
+ const f=fixture(),storage=new SqliteDurableStorage();let unavailable=true;
+ const object=()=>new PagesRetry(storage as any,f.config,()=>f.g,[f.site]);
+ f.config.BOUNDED_RECHECK={idFromName:(k:string)=>k,get:()=>({fetch:async(req:Request)=>{
+  if(unavailable)throw Error('DO_UNAVAILABLE');
+  await object().schedule(await req.json() as any);return Response.json({});
+ }})};
+ f.result.rejections=1;await expect(f.forward()).rejects.toThrow('DO_UNAVAILABLE');
+ const row=f.db.database.prepare('SELECT reserved_at,retry_after FROM pages_completion_dispatches').get()!;
+ expect(row.retry_after).toBeGreaterThan(Date.now());expect(await storage.get('pagesRetry')).toBeUndefined();
+ unavailable=false;await f.forward();await object().alarm();
+ expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(1);
+ const clock=vi.spyOn(Date,'now').mockReturnValue(Number(row.retry_after));
+ try{await object().alarm();await object().alarm();}finally{clock.mockRestore();}
+ expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(2);
+ expect(f.db.database.prepare('SELECT retry_after,central_run_id FROM pages_completion_dispatches').get()).toEqual({retry_after:null,central_run_id:99});
+});
+
+it('keeps a reservation unconfirmed if writing the rejection proof fails',async()=>{
+ const f=fixture();f.result.rejections=1;f.result.visible=false;
+ f.db.database.exec("CREATE TRIGGER fail_marker BEFORE UPDATE OF retry_after ON pages_completion_dispatches BEGIN SELECT RAISE(ABORT,'injected failure'); END;");
+ await expect(f.forward()).rejects.toThrow('injected failure');
+ f.db.database.exec('DROP TRIGGER fail_marker');
+ await expect(f.forward()).rejects.toThrow('PAGES_DISPATCH_UNCONFIRMED');
+ expect(f.db.database.prepare('SELECT retry_after FROM pages_completion_dispatches').get()).toEqual({retry_after:null});
  expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(1);
 });

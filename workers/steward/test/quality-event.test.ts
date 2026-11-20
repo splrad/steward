@@ -1,6 +1,6 @@
 import {expect,it,vi} from 'vitest';
 import {GitHubRetryError} from '../src/bounded-retry-after.js';
-import {QualityEvent,qualityLocator} from '../src/quality-event.js';
+import {QualityEvent,qualityLocator,dispatchQualityEvent} from '../src/quality-event.js';
 const sha='a'.repeat(40),id=1296724484,install=123;
 function qualityFile(repositories:Record<string,unknown>) {
  const content=Buffer.from(JSON.stringify({schemaVersion:1,repositories}));
@@ -81,12 +81,12 @@ it.each(['created','edited','deleted'])('discards a signed private review commen
  }finally{external.mockRestore();for(const log of logs)log.mockRestore();}
 });
 
-it.each([['GITHUB_HTTP_422',2],['RETRY_AFTER:3',2],['RETRY_AFTER:unknown',2],['proxy503',1],['unconfirmed transport failure',1]] as const)('redelivers only an explicitly rejected quality POST (%s)',async(message,expected)=>{
+it.each([['GITHUB_HTTP_422',2],['RETRY_AFTER:3',2],['RETRY_AFTER:unknown',2],['proxy503',1],['limit-then-denied',2],['unconfirmed transport failure',1]] as const)('redelivers only an explicitly rejected quality POST (%s)',async(message,expected)=>{
  const {SqliteDurableStorage}=await import('./bounded-storage.js');
  const storage=new SqliteDurableStorage(),config=Buffer.from(JSON.stringify({schemaVersion:1,enabled:true,deploymentSha:sha}));
  let posts=0;
  const json=async(_id:number,path:string,method?:string)=>{
-   if(method==='POST'){if(++posts===1)throw message==='proxy503'?new GitHubRetryError(503,'unknown',true):Error(message);return {};}
+   if(method==='POST'){if(++posts===1 && message==='limit-then-denied')throw new GitHubRetryError(429,'3',true);if(message==='limit-then-denied')throw Error('GITHUB_HTTP_403');if(posts===1)throw message==='proxy503'?new GitHubRetryError(503,'unknown',true):Error(message);return {};}
    if(path.includes('/git/ref/'))return {ref:'refs/'+path.split('/git/ref/')[1],object:{type:'commit',sha}};
    if(path.includes('quality-language.json'))return qualityFile({[id]:'splrad/steward'});
    if(path.includes('/contents/'))return {type:'file',path:'config/bounded-recheck.json',encoding:'base64',size:config.length,content:config.toString('base64')};
@@ -94,8 +94,16 @@ it.each([['GITHUB_HTTP_422',2],['RETRY_AFTER:3',2],['RETRY_AFTER:unknown',2],['p
  };
  const object=new QualityEvent(storage as any,{BOUNDED_RECHECK_ENABLED:'true',RELEASE_RELAY_DEPLOYMENT_SHA:sha} as any,()=>({json} as any));
  const record={delivery:'one-delivery',event:'workflow_run',target,phase:'pending' as const};
- await expect(object.register(record)).rejects.toThrow(message==='proxy503'?'RETRY_AFTER:unknown':message);
- if(message.startsWith('RETRY_AFTER:')){
+ await expect(object.register(record)).rejects.toThrow(message==='limit-then-denied'?'RETRY_AFTER:3':message==='proxy503'?'RETRY_AFTER:unknown':message);
+ if(message==='limit-then-denied'){
+   const due=await storage.get<number>('__alarm'),clock=vi.spyOn(Date,'now').mockReturnValue(due!);
+   try{
+     await expect(object.alarm()).rejects.toThrow('GITHUB_HTTP_403');
+     expect(await storage.get('__alarm')).toBeUndefined();
+     expect(await storage.get('qualityEvent')).toMatchObject({phase:'pending',retryAt:0});
+     await object.alarm();await object.alarm();
+   }finally{clock.mockRestore();}
+ }else if(message.startsWith('RETRY_AFTER:')){
    const next=await storage.get<number>('__alarm');
    expect(next).toBeGreaterThan(Date.now());
    await object.alarm();
@@ -126,4 +134,28 @@ it.each(['/git/ref/heads/main','/contents/config/review/quality-language.json','
  const clock=vi.spyOn(Date,'now').mockReturnValue(next!);
  try{await object().alarm();await object().alarm();}finally{clock.mockRestore();}
  expect(posts).toBe(1);expect(await storage.get('qualityEvent')).toMatchObject({phase:'sent'});
+});
+
+it('stores a signed quality locator without GitHub reads, then recovers the initial alarm after interruption',async()=>{
+ const {SqliteDurableStorage}=await import('./bounded-storage.js');
+ const storage=new SqliteDurableStorage();let record:any;
+ const capture={idFromName:(k:string)=>k,get:()=>({fetch:async(r:Request)=>{record=await r.json();return Response.json({});}})};
+ await dispatchQualityEvent({BOUNDED_RECHECK_ENABLED:'true',INSTALLATION_ID:String(install),BOUNDED_RECHECK:capture} as any,
+  'workflow_run',{...base,repository:{...repo,full_name:'splrad/steward'},workflow_run:run},'quality-delivery');
+ expect(record).toMatchObject({repositoryName:'splrad/steward',target});
+ const config=Buffer.from(JSON.stringify({schemaVersion:1,enabled:true,deploymentSha:sha}));let sends=0;
+ const reader={json:async(_id:number,path:string,method?:string)=>{
+  if(method==='POST'){sends++;return {};}
+  if(path.includes('/git/ref/'))return {ref:'refs/'+path.split('/git/ref/')[1],object:{type:'commit',sha}};
+  if(path.includes('quality-language.json'))return qualityFile({[id]:'splrad/steward'});
+  if(path.includes('/contents/'))return {type:'file',path:'config/bounded-recheck.json',encoding:'base64',size:config.length,content:config.toString('base64')};
+  return {path:'.github/workflows/quality-language-summary.yml',state:'active'};
+ }};
+ const env={BOUNDED_RECHECK_ENABLED:'true',RELEASE_RELAY_DEPLOYMENT_SHA:sha};
+ const first=new QualityEvent(storage as any,env as any,()=>reader as any);
+ vi.spyOn(first,'forward').mockRejectedValueOnce(Error('simulated interruption'));
+ await expect(first.register(record)).rejects.toThrow('simulated interruption');
+ expect(await storage.get('__alarm')).toBeTypeOf('number');
+ const resumed=new QualityEvent(storage as any,env as any,()=>reader as any);await resumed.alarm();await resumed.register(record);
+ expect(sends).toBe(1);expect(await storage.get('__alarm')).toBeUndefined();
 });

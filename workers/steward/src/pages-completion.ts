@@ -1,5 +1,5 @@
 import registry from '../../../config/pages-completion.json' with {type:'json'};
-import {GitHubRetryError,retryAfterTime} from './bounded-retry-after.js';
+import {rejectedDispatch,retryAfterTime} from './bounded-retry-after.js';
 import {BoundedGitHub,CENTRAL,TARGET,ensure,type BoundedEnv,type GitReader} from './bounded-recheck-github.js';
 import {dispatchFixed} from './bounded-recheck-effects.js';
 
@@ -29,11 +29,11 @@ async function forward(env:BoundedEnv,site:Site,hint:Locator,g:GitReader,retry?:
   const key=[site.repositoryId,site.workflowId,hint.id,hint.run_attempt];
   // This primary key deliberately excludes the delivery ID, D and M. A redelivery or
   // a rollout cannot acquire a fresh right to send for the same product attempt.
-  const existing=await db.prepare('SELECT controller_sha,reserved_at,central_run_id FROM pages_completion_dispatches WHERE repository_id=? AND workflow_id=? AND run_id=? AND attempt=?')
-    .bind(...key).first<{controller_sha:string;reserved_at:string;central_run_id:number|null}>();
+  const existing=await db.prepare('SELECT controller_sha,reserved_at,run_created_at,retry_after,central_run_id FROM pages_completion_dispatches WHERE repository_id=? AND workflow_id=? AND run_id=? AND attempt=?')
+    .bind(...key).first<{controller_sha:string;reserved_at:string;run_created_at:string;retry_after:number|null;central_run_id:number|null}>();
   if(existing?.central_run_id)return;
   const retrying=!!retry && !!existing && existing.reserved_at===retry.reservation &&
-    existing.controller_sha===retry.policy && env.BOUNDED_CONTROLLER_SHA===retry.policy;
+    existing.retry_after!==null && Date.now()>=existing.retry_after && existing.controller_sha===retry.policy && env.BOUNDED_CONTROLLER_SHA===retry.policy;
   if(retry && !retrying)return; // A newer reservation or receipt already owns this attempt.
   const reservedAt=retrying?new Date(Math.max(Date.now(),Date.parse(retry!.reservation)+1)).toISOString():
     existing?.reserved_at??new Date().toISOString();
@@ -54,14 +54,20 @@ async function forward(env:BoundedEnv,site:Site,hint:Locator,g:GitReader,retry?:
       .bind(matches[0].id,...key,policySha,matches[0].id).run();
     ensure(saved.success&&saved.meta.changes===1,'PAGES_RECEIPT_STORE');return true;
   };
+  const scheduleRetry=async(ticket:Retry)=>{
+    if(schedule){await schedule(ticket);return;}
+    ensure(env.BOUNDED_RECHECK,'PAGES_RETRY_STORAGE');
+    const object=env.BOUNDED_RECHECK.get(env.BOUNDED_RECHECK.idFromName('pages-retry:v1:'+key.join(':')));
+    const result=await object.fetch(new Request('https://bounded.internal/pages-retry',{method:'POST',body:JSON.stringify(ticket)}));
+    ensure(result.ok,'PAGES_RETRY_REGISTRATION');
+  };
   if(existing&&!retrying){
-    if(await receipt(existing.controller_sha))return;
-    if(env.BOUNDED_RECHECK){
-      const stub=env.BOUNDED_RECHECK.get(env.BOUNDED_RECHECK.idFromName('pages-retry:v1:'+key.join(':')));
-      const result=await stub.fetch(new Request('https://bounded.internal/pages-retry-wake',{method:'POST',body:'{}'}));
-      ensure(result.ok,'PAGES_RETRY_WAKE');
+    if(existing.retry_after!==null){
+      if(existing.controller_sha===env.BOUNDED_CONTROLLER_SHA)await scheduleRetry({site,hint,policy:existing.controller_sha,
+        reservation:existing.reserved_at,due:existing.retry_after,expires:Date.parse(existing.run_created_at)+30*86400_000});
+      return;
     }
-    throw Error('PAGES_DISPATCH_UNCONFIRMED');
+    ensure(await receipt(existing.controller_sha),'PAGES_DISPATCH_UNCONFIRMED');return;
   }
   const base='/repos/'+TARGET.name;
   const workflow=await g.json(TARGET.id,base+'/actions/workflows/pages.yml');
@@ -94,8 +100,8 @@ async function forward(env:BoundedEnv,site:Site,hint:Locator,g:GitReader,retry?:
     const current=await g.json(TARGET.id,base);
     ensure(current.id===site.repositoryId&&current.full_name===site.repository,'PAGES_REPOSITORY_CHANGED');
     if(current.private!==false||current.fork!==false||current.has_pages!==true||current.archived!==false||current.disabled!==false)return false;
-    const result=retrying?await db.prepare('UPDATE pages_completion_dispatches SET reserved_at=? WHERE repository_id=? AND workflow_id=? AND run_id=? AND attempt=? AND controller_sha=? AND reserved_at=? AND central_run_id IS NULL')
-      .bind(reservedAt,...key,pin,retry!.reservation).run():await db.prepare('INSERT INTO pages_completion_dispatches(repository_id,workflow_id,run_id,attempt,controller_sha,reserved_at,run_created_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(repository_id,workflow_id,run_id,attempt) DO NOTHING')
+    const result=retrying?await db.prepare('UPDATE pages_completion_dispatches SET reserved_at=?,retry_after=NULL WHERE repository_id=? AND workflow_id=? AND run_id=? AND attempt=? AND controller_sha=? AND reserved_at=? AND retry_after=? AND central_run_id IS NULL')
+      .bind(reservedAt,...key,pin,retry!.reservation,existing!.retry_after).run():await db.prepare('INSERT INTO pages_completion_dispatches(repository_id,workflow_id,run_id,attempt,controller_sha,reserved_at,run_created_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(repository_id,workflow_id,run_id,attempt) DO NOTHING')
       .bind(...key,pin,reservedAt,new Date(created).toISOString()).run();
     ensure(result.success&&[0,1].includes(result.meta.changes),'PAGES_DISPATCH_CLAIM');
     ownsClaim=result.meta.changes===1;
@@ -106,14 +112,13 @@ async function forward(env:BoundedEnv,site:Site,hint:Locator,g:GitReader,retry?:
       repository_id:String(site.repositoryId),workflow_id:String(site.workflowId),run_id:String(run.id),attempt:String(run.run_attempt),policy_sha:pin,
     },reserve);
   }catch(error) {
-    if(ownsClaim && error instanceof GitHubRetryError && error.dispatchAttempted && [403,429].includes(error.httpStatus)){
+    if(ownsClaim && rejectedDispatch(error)){
       const now=Date.now(),due=Math.max(now+1000,retryAfterTime(error,now,now+60000-1)??now+60000);
       const ticket:Retry={site,hint,policy:pin,reservation:reservedAt,due,expires:created+30*86400_000};
-      if(schedule){await schedule(ticket);return;}
-      ensure(env.BOUNDED_RECHECK,'PAGES_RETRY_STORAGE');
-      const object=env.BOUNDED_RECHECK.get(env.BOUNDED_RECHECK.idFromName('pages-retry:v1:'+key.join(':')));
-      const result=await object.fetch(new Request('https://bounded.internal/pages-retry',{method:'POST',body:JSON.stringify(ticket)}));
-      ensure(result.ok,'PAGES_RETRY_REGISTRATION');return;
+      const saved=await db.prepare('UPDATE pages_completion_dispatches SET retry_after=? WHERE repository_id=? AND workflow_id=? AND run_id=? AND attempt=? AND controller_sha=? AND reserved_at=? AND central_run_id IS NULL')
+        .bind(due,...key,pin,reservedAt).run();
+      ensure(saved.success&&saved.meta.changes===1,'PAGES_REJECTION_STORE');
+      await scheduleRetry(ticket);return;
     }
     if(ownsClaim&&await receipt(pin))return;
     throw error; // Keep the reservation even if the POST response or the worker was interrupted.
@@ -134,13 +139,6 @@ export class PagesRetry {
       if(prior?.reservation===ticket.reservation)ticket.due=Math.max(prior.due,ticket.due);
       if(ticket.due>=ticket.expires){await t.delete('pagesRetry');await t.deleteAlarm();return;}
       await t.put('pagesRetry',ticket);await t.setAlarm(ticket.due);
-    });
-  }
-  async wake(){
-    await this.store.transaction(async t=>{
-      const ticket=await t.get<Retry>('pagesRetry');
-      if(ticket && this.env.BOUNDED_RECHECK_ENABLED==='true' && ticket.policy===this.env.BOUNDED_CONTROLLER_SHA)
-        await t.setAlarm(Math.max(Date.now(),ticket.due));
     });
   }
   async alarm(){

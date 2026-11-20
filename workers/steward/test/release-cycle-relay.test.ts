@@ -1,3 +1,4 @@
+import {GitHubRetryError} from '../src/bounded-retry-after.js';
 import {describe,expect,it} from 'vitest';
 import {ReleaseRelay,releaseHint,relayKey,acceptReleaseHint} from '../src/release-cycle-relay.js';
 import {CENTRAL,TARGET} from '../src/bounded-recheck-github.js';
@@ -165,4 +166,22 @@ it('rechecks the native workflow ID for a signed product completion before dispa
  expect(await f.storage.get('releaseIntake')).toBeDefined();await relay().alarm();
  expect(f.state.posts).toBe(0);expect(await f.storage.get('releaseCycle')).toMatchObject({stage:'prepare',reserved:0});
  run.workflow_id=444;f.state.now=(await f.storage.get<number>('__alarm'))!;await relay().alarm();expect(f.state.posts).toBe(1);
+});
+
+it.each([429,403,503])('distinguishes release dispatch HTTP %s from an unknown delivery',async status=>{
+ const f=fixture();f.state.promoted=pin;let posts=0;
+ const reader={...f.g,json:async(id:number,path:string,method?:string)=>{
+  if(method==='POST'){if(++posts===1)throw new GitHubRetryError(status,'180',true);return {};}
+  return f.g.json(id,path,method);
+ }};
+ const object=()=>new ReleaseRelay(f.storage as any,f.env as any,()=>reader as any,()=>f.state.now);
+ await object().register(hint);await object().alarm();
+ const current=await f.storage.get<any>('releaseCycle');
+ if(status===503){
+  expect(current.stage).toBe('confirm');f.state.now=current.next;await object().alarm();expect(posts).toBe(1);
+ }else{
+  expect(current).toMatchObject({stage:'prepare',reserved:0,next:f.state.now+180000});
+  await object().register(hint);await object().alarm();expect(posts).toBe(1);
+  f.state.now=current.next;await object().alarm();await object().alarm();expect(posts).toBe(2);
+ }
 });

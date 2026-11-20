@@ -1,4 +1,4 @@
-import {GitHubRetryError,retryAfterTime} from './bounded-retry-after.js';
+import {GitHubRetryError,rejectedDispatch,retryAfterTime} from './bounded-retry-after.js';
 import {PendingPromotion,promotionMessage} from './release-promotion.js';
 import {promotedController} from './bounded-controller.js';
 import {readCycle} from './bounded-winget-evidence.js';
@@ -246,7 +246,24 @@ export class ReleaseRelay {
         await g.prepareDispatch?.(CENTRAL.id);
         const reserved = this.now();
         if (!await save({stage:'confirm',tries:0,policy,reserved,next:reserved+60000})) return;
-        await g.json(CENTRAL.id,prefix+'/actions/workflows/'+workflow+'/dispatches','POST',{ref:'main',inputs:{event_json:JSON.stringify(r.hint),request_key:key,policy_sha:policy}});
+        try{
+          await g.json(CENTRAL.id,prefix+'/actions/workflows/'+workflow+'/dispatches','POST',{ref:'main',inputs:{event_json:JSON.stringify(r.hint),request_key:key,policy_sha:policy}});
+        }catch(error){
+          if(!rejectedDispatch(error))throw error;
+          const now=this.now(),due=retryAfterTime(error,now,now+60000-1)!;
+          await this.storage.transaction(async t=>{
+            const current=await t.get<Relay>('releaseCycle');
+            if(current?.stage!=='confirm'||current.reserved!==reserved||current.policy!==policy||current.runId)return;
+            current.reserved=0;current.tries=r.tries;
+            delete current.waitingFor;
+            if(r.tries>=(r.resumedFor?5:4)){
+              current.stage='unknown';current.reason='DISPATCH_RATE_LIMIT_EXHAUSTED';await t.deleteAlarm();
+            }else{
+              current.stage='prepare';current.next=Math.max(r.next,due);await t.setAlarm(current.next);
+            }
+            await t.put('releaseCycle',current);
+          });
+        }
         return;
       }
       const window = encodeURIComponent(new Date(r.reserved-60000).toISOString()+'..'+new Date(r.reserved+300000).toISOString());

@@ -1,6 +1,9 @@
 export class GitHubRetryError extends Error {
  constructor(readonly httpStatus:number,retry:string,readonly dispatchAttempted:boolean){super('RETRY_AFTER:'+retry);}
 }
+export function rejectedDispatch(error:unknown):error is GitHubRetryError {
+ return error instanceof GitHubRetryError && error.dispatchAttempted && [403,429].includes(error.httpStatus);
+}
 /** Provider retry lower bound; invalid headers fail closed beyond the original window. */
 export function retryAfterTime(error:unknown,now:number,deadline:number):number|undefined {
  const message=error instanceof Error?error.message:'';if(!message.startsWith('RETRY_AFTER:'))return undefined;

@@ -1,6 +1,6 @@
 import {PendingPromotion,promotionMessage} from './release-promotion.js';
 import {promotedController} from './bounded-controller.js';
-import {retryAfterTime} from './bounded-retry-after.js';
+import {rejectedDispatch,retryAfterTime} from './bounded-retry-after.js';
 import {manualProjectionBefore} from './bounded-manual-evidence.js';
 import type {VerifiedWakeContext} from './bounded-initial-wake.js';
 import {BoundedGitHub,candidateReader,TARGET,CENTRAL,digest,ensure,type BoundedEnv,type GitReader} from './bounded-recheck-github.js';
@@ -144,7 +144,17 @@ export class NativeCandidateCoordinator {
  }
  private async deferRateLimit(r:NativeEventRecord,error:unknown,receiptAttempt=false){
   const now=this.clock(),at=retryAfterTime(error,now,r.deadline);if(at===undefined)return;
-  await this.storage.transaction(async t=>{const latest=await t.get<NativeEventRecord>('nativeEvent');if(!latest||latest.claim!==r.claim||latest.handoff||['REGISTERED','PREVIOUSLY_COMPLETED','PROTECTED'].includes(latest.status))return;latest.retryAfter=Math.max(latest.retryAfter??0,at);if(latest.status==='PAUSED'){await t.put('nativeEvent',latest);return;}
+  await this.storage.transaction(async t=>{const latest=await t.get<NativeEventRecord>('nativeEvent');if(!latest||latest.claim!==r.claim||latest.handoff||['REGISTERED','PREVIOUSLY_COMPLETED','PROTECTED'].includes(latest.status))return;latest.retryAfter=Math.max(latest.retryAfter??0,at);
+   if(!receiptAttempt && r.dispatchedAt===null && latest.dispatchedAt!==null && latest.knownRunId===null && rejectedDispatch(error)){
+    latest.dispatchedAt=null;latest.prepared=null;latest.confirmations=0;
+    if(latest.preparations>=prepareOffsets.length){
+     latest.status='NEEDS_ATTENTION';latest.reason='DISPATCH_RATE_LIMIT_EXHAUSTED';latest.nextAt=null;
+     await this.save(t,latest);return;
+    }
+    latest.reason='DISPATCH_REJECTED';
+    if(latest.status==='PAUSED')latest.pausedFrom={status:'PREPARING',nextAt:latest.retryAfter};
+   }
+   if(latest.status==='PAUSED'){await t.put('nativeEvent',latest);return;}
    if(latest.retryAfter>=latest.deadline){latest.status='NEEDS_ATTENTION';latest.reason='RATE_LIMIT_WINDOW_EXHAUSTED';latest.nextAt=null;}
    else if(receiptAttempt){if(latest.receiptRetryUsed){latest.status='NEEDS_ATTENTION';latest.reason='RECEIPT_RATE_LIMIT_EXHAUSTED';latest.nextAt=null;latest.receiptDeferred=false;}else{latest.receiptRetryUsed=true;latest.receiptDeferred=true;latest.status='AWAITING_RECEIPT';latest.reason='RECEIPT_RATE_LIMIT_DEFERRED';latest.nextAt=latest.retryAfter;}}
    else if(latest.dispatchedAt===null&&latest.preparations<prepareOffsets.length){latest.status='PREPARING';latest.nextAt=Math.max(latest.nextAt??now,latest.retryAfter);}

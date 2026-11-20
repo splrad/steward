@@ -34,7 +34,7 @@ export function qualityLocator(event:string, payload:any, installationId:number)
 }
 
 type Target=NonNullable<ReturnType<typeof qualityLocator>>;
-type QualityRecord={delivery:string;event:string;target:Target;phase:'pending'|'reserved'|'sent'|'excluded';policy?:string;retryAt?:number};
+type QualityRecord={repositoryName?:string;delivery:string;event:string;target:Target;phase:'pending'|'reserved'|'sent'|'excluded';policy?:string;retryAt?:number};
 function qualityKey(r:QualityRecord){return digest(JSON.stringify([r.delivery,r.event,r.target.repository_id,r.target.pull_number,r.target.head_sha])).slice(7);}
 async function approvedQualityRepository(reader:GitReader,policy:string,id:string) {
   const path='config/review/quality-language.json';
@@ -53,13 +53,9 @@ export async function dispatchQualityEvent(env:BoundedEnv,event:string,payload:a
   const target=qualityLocator(event,payload,Number(env.INSTALLATION_ID));
   if(!target||env.BOUNDED_RECHECK_ENABLED!=='true')return;
   ensure(env.BOUNDED_RECHECK&&/^[a-zA-Z0-9-]{1,128}$/.test(delivery),'QUALITY_DELIVERY');
-  const reader=new BoundedGitHub(env);
-  const ref=await reader.json(CENTRAL.id,`/repos/${CENTRAL.name}/git/ref/heads/steward/validated-controller`);
-  ensure(ref.ref==='refs/heads/steward/validated-controller' && ref.object?.type==='commit' &&
-    /^[a-f0-9]{40}$/.test(ref.object.sha),'QUALITY_CONTROLLER_REF');
-  const name=await approvedQualityRepository(reader,ref.object.sha,target.repository_id);
-  if(typeof name!=='string' || name!==payload.repository.full_name)return;
-  const record:QualityRecord={delivery,event,target,phase:'pending'};
+  const repositoryName=payload.repository.full_name;
+  if(typeof repositoryName!=='string'||!/^splrad\/[A-Za-z0-9_.-]+$/.test(repositoryName))return;
+  const record:QualityRecord={delivery,event,target,repositoryName,phase:'pending'};
   const ns=env.BOUNDED_RECHECK,stub=ns.get(ns.idFromName('quality:v1:'+qualityKey(record)));
   const response=await stub.fetch(new Request('https://bounded.internal/quality-event',{method:'POST',body:JSON.stringify(record)}));
   ensure(response.ok,'QUALITY_REGISTRATION');
@@ -68,7 +64,11 @@ export class QualityEvent {
   constructor(private storage:DurableObjectStorage,private env:BoundedEnv,private reader:()=>GitReader=()=>new BoundedGitHub(env)){}
   async register(record:QualityRecord){
     await this.storage.transaction(async t=>{
-      if(!await t.get('qualityEvent'))await t.put('qualityEvent',{...record,phase:'pending'});
+      if(!await t.get('qualityEvent')){
+        const retryAt=Date.now();
+        await t.put('qualityEvent',{...record,phase:'pending',retryAt});
+        await t.setAlarm(retryAt);
+      }
     });
     await this.forward();
   }
@@ -100,15 +100,19 @@ export class QualityEvent {
         await promotionMessage(this.env,deployment,'wait',{policy:deployment,key:qualityKey(record),kind:'quality',generation:error.generation});
         return;
       }
-      if(!await approvedQualityRepository(reader,policy,record.target.repository_id)) {
-        await this.storage.put('qualityEvent',{...record,phase:'excluded',policy});
+      const name=await approvedQualityRepository(reader,policy,record.target.repository_id);
+      if(!name || (record.repositoryName!==undefined && name!==record.repositoryName)) {
+        await this.storage.transaction(async t=>{
+          if((await t.get<QualityRecord>('qualityEvent'))?.phase!=='pending')return;
+          await t.put('qualityEvent',{...record,phase:'excluded',policy});await t.deleteAlarm();
+        });
         return;
       }
       await dispatchFixed(reader,CENTRAL.id,'quality-language-summary.yml',policy,{...record.target,policy_sha:policy},async()=>{
         claimed=await this.storage.transaction(async t=>{
           const current=await t.get<QualityRecord>('qualityEvent');
           if(current?.phase!=='pending'||(current.retryAt&&Date.now()<current.retryAt))return false;
-          await t.put('qualityEvent',{...current,phase:'reserved',policy});return true;
+          await t.put('qualityEvent',{...current,phase:'reserved',policy});await t.deleteAlarm();return true;
         });
         return claimed;
       });
@@ -124,9 +128,9 @@ export class QualityEvent {
         await this.storage.transaction(async t=>{
           const current=await t.get<QualityRecord>('qualityEvent');
           if(!current || current.phase!==(claimed?'reserved':'pending'))return;
-          const retryAt=Math.max(current.retryAt??0,next??0);
+          const retryAt=next===undefined?0:Math.max(current.retryAt??0,next);
           await t.put('qualityEvent',{...current,phase:'pending',retryAt});
-          if(retryAt)await t.setAlarm(retryAt);
+          if(retryAt)await t.setAlarm(retryAt);else await t.deleteAlarm();
         });
       }
       throw error;

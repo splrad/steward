@@ -1,3 +1,4 @@
+import {GitHubRetryError} from '../src/bounded-retry-after.js';
 import {promotedControllerFixture} from './promoted-controller-fixture.js';
 import {generatedProjectionPreview,generatedStatusBody,verifyGeneratedProjection} from '../src/bounded-candidate-projection.js';
 import {NativeCandidateCoordinator,acceptNativeCandidateEvent,nativeHintKey,type NativeHint} from '../src/bounded-native-event.js';
@@ -212,3 +213,16 @@ it.each(['lost-response','deadline'])('handoff %s retains evidence without repla
 it('crash after handoff reservation leaves original deadline alarm that ends without external replay',async()=>{const f=await normalFixture();await f.coordinator().register({hint:f.hint,deliveryId:'d'});await f.coordinator().alarm();const get=f.env.BOUNDED_RECHECK.get;let entered!:()=>void;const arrived=new Promise<void>(r=>{entered=r;});f.env.BOUNDED_RECHECK.get=(id:string)=>{const original=get(id);return {async fetch(req:Request){if(new URL(req.url).pathname==='/status'){entered();return new Promise<Response>(()=>{});}return original.fetch(req);}};};f.time(f.clock()+60000);void f.coordinator().alarm();await arrived;const r=await f.eventStorage.get<any>('nativeEvent');expect(await f.eventStorage.get('__alarm')).toBe(r.deadline);f.time(r.deadline);await f.coordinator().alarm();expect((await f.eventStorage.get<any>('nativeEvent')).reason).toBe('HANDOFF_WINDOW_EXHAUSTED');expect(await f.eventStorage.get('__alarm')).toBeUndefined();expect(f.posts()).toBe(1);});
 
 it('handoff keeps target expectedGeneration CAS and never retries a stale resume with a fresh generation',async()=>{const f=await normalFixture();await f.engine.register(f.f.registration);await f.coordinator().register({hint:f.hint,deliveryId:'d'});await f.coordinator().alarm();const get=f.env.BOUNDED_RECHECK.get;let changed=false;f.env.BOUNDED_RECHECK.get=(id:string)=>{const original=get(id);return {async fetch(req:Request){const response=await original.fetch(req);if(!changed&&new URL(req.url).pathname==='/status'){changed=true;const old=await response.clone().json() as any;await f.engine.control('resume',old.generation);await f.engine.control('pause',old.generation+1);}return response;}};};f.time(f.clock()+60000);await f.coordinator().alarm();const r=await f.eventStorage.get<any>('nativeEvent');expect(r.status).toBe('NEEDS_ATTENTION');expect(r.handoff.steps.at(-1).action).toBe('resume');expect(r.handoff.steps.at(-1).expectedGeneration).toBe(2);expect(r.handoff.steps.at(-1).state).toBe('INTENT');expect((await f.store.read())?.generation).toBe(4);expect((await f.store.read())?.status).toBe('PAUSED');expect(f.posts()).toBe(1);});
+
+it.each([429,403,503])('preserves native dispatch identity across HTTP %s and restart',async status=>{
+ const f=await normalFixture(),json=f.g.json.bind(f.g);let posts=0;
+ f.g.json=async(id,path,method,body)=>{
+  if(method==='POST'&&++posts===1)throw new GitHubRetryError(status,'180',true);
+  return json(id,path,method,body);
+ };
+ await f.coordinator().register({hint:f.hint,deliveryId:'native-dispatch'});await f.coordinator().alarm();
+ const state=await f.eventStorage.get<any>('nativeEvent');expect(state.nextAt).toBe(f.clock()+180000);
+ expect(state.status).toBe(status===503?'CONFIRMING':'PREPARING');
+ f.time(state.nextAt);await f.coordinator().alarm();await f.coordinator().alarm();
+ expect(posts).toBe(status===503?1:2);
+});

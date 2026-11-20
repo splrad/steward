@@ -28,7 +28,6 @@ export class BoundedRecheckCoordinator {
  async fetch(request:Request){
   ensure(request.method==='POST','INTERNAL_METHOD');const b=await request.json() as any;const action=new URL(request.url).pathname;
   let value:unknown;
-  if(action==='/pages-retry-wake'){await new PagesRetry(this.state.storage,this.env).wake();return Response.json({accepted:true});}
   if(action==='/pages-retry'){await new PagesRetry(this.state.storage,this.env).schedule(b);return Response.json({accepted:true});}
   if(action==='/quality-event'){await new QualityEvent(this.state.storage,this.env).register(b);return Response.json({accepted:true});}
   if(action==='/quality-promoted'){await new QualityEvent(this.state.storage,this.env).forward();return Response.json({accepted:true});}
