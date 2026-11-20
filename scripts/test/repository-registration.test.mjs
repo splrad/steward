@@ -983,6 +983,9 @@ test('private workflow to public controller replays registration without exposin
           await expectFailure('producer_source');
           currentArtifact.workflow_run.head_branch='main';
           await expectFailure('artifact_content',{extract:privateError});
+          await expectFailure('artifact_content',{extract:async(...args)=>({
+            ...await options.extract(...args),repositoryIds:[repo.id,repo.id]
+          })});
           const merged={...(await propose(repo,files)).policy,adoption:'central',productCi:[ci,'.github/workflows/stale.yml']};
           const registry=state.trees.get(base);
           registry.set(registrationPath(repo),JSON.stringify(merged));

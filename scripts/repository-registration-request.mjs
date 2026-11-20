@@ -99,6 +99,7 @@ export async function loadPrivateRequest(api, admin, token, requestId, extract =
     request.schemaVersion === 1 && request.requestId === requestId && request.sourceSha === producer.head_sha &&
     request.runId === producer.id && types.includes(request.event) &&
     Number.isSafeInteger(request.attempt) && request.attempt > 0, 'Registration request provenance mismatch');
+  const repositoryIds = validIds(request.repositoryIds);
   markStage('producer_run');
   const { data: run } = await api.rest.actions.getWorkflowRunAttempt({ ...api.target,
     run_id: request.runId, attempt_number: request.attempt });
@@ -109,5 +110,5 @@ export async function loadPrivateRequest(api, admin, token, requestId, extract =
       (run.actor?.type === 'User' || request.event === 'push' && run.actor?.type === 'Bot') &&
       Number.isSafeInteger(run.actor.id) && run.actor.id > 0),
   'Untrusted registration producer run');
-  return {repositoryIds:validIds(request.repositoryIds),event:request.event};
+  return {repositoryIds,event:request.event};
 }
