@@ -8,8 +8,80 @@ on:
 permissions:
   contents: read
 jobs:
-  test:
+  plan:
     if: github.event_name == 'pull_request' || github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      profile: ${{ steps.select.outputs.profile }}
+      runners: ${{ steps.select.outputs.runners }}
+    steps:
+      - if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ github.event.repository.full_name }}
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: policy
+          persist-credentials: false
+      - if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: target
+          fetch-depth: 0
+          persist-credentials: false
+      - id: select
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          profile=full
+          if [[ -n "$BASE" && -f policy/scripts/steward-ci-profile.py ]]; then
+            profile=$(python policy/scripts/steward-ci-profile.py "$BASE" "$HEAD")
+          fi
+          case "$profile" in
+            full|title) runners='["ubuntu-24.04"]' ;;
+            tool) runners='["ubuntu-24.04","windows-2025"]' ;;
+            *) exit 1 ;;
+          esac
+          echo "profile=$profile" >> "$GITHUB_OUTPUT"
+          echo "runners=$runners" >> "$GITHUB_OUTPUT"
+          echo "Selected Steward profile: $profile"
+  candidate:
+    needs: plan
+    if: needs.plan.outputs.profile != 'full'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ${{ fromJSON(needs.plan.outputs.runners) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ github.event.repository.full_name }}
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: policy
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: target
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify candidate against the trusted base contract
+        shell: bash
+        env:
+          PROFILE: ${{ needs.plan.outputs.profile }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: python policy/scripts/steward-ci-candidate.py "$PROFILE" "$BASE" "$HEAD"
+  test:
+    needs: plan
+    if: needs.plan.outputs.profile == 'full'
     strategy:
       fail-fast: false
       matrix:
@@ -41,6 +113,16 @@ jobs:
           cache: false
           env: false
           persist_github_token: false
+      - name: Verify changed candidate lock assets on this platform
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [[ -f policy/scripts/steward-ci-candidate.py ]] && ! cmp -s policy/mise.lock target/mise.lock; then
+            python policy/scripts/steward-ci-candidate.py full-lock "$BASE" "$HEAD"
+          fi
       - name: Activate trusted policy tool paths
         working-directory: policy
         shell: bash
@@ -70,3 +152,21 @@ jobs:
           npm ci --prefix tools/quality-language --ignore-scripts --no-audit --no-fund
           npm test --prefix tools/quality-language
           npm run typecheck --prefix tools/quality-language
+  result:
+    needs: [plan, candidate, test]
+    if: always() && (github.event_name == 'pull_request' || github.ref_name == github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require successful execution of the selected suite
+        shell: bash
+        env:
+          PROFILE: ${{ needs.plan.outputs.profile }}
+          PLAN: ${{ needs.plan.result }}
+          FULL: ${{ needs.test.result }}
+          CANDIDATE: ${{ needs.candidate.result }}
+        run: |
+          case "$PLAN/$PROFILE/$FULL/$CANDIDATE" in
+            success/full/success/skipped|success/title/skipped/success|success/tool/skipped/success) exit 0 ;;
+            *) exit 1 ;;
+          esac
