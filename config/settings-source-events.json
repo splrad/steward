@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "actions": {
+    "repository": [
+      "created",
+      "edited",
+      "unarchived"
+    ],
+    "create": [
+      "default_branch_created"
+    ],
+    "label": [
+      "created",
+      "edited",
+      "deleted"
+    ],
+    "installation": [
+      "created",
+      "unsuspend",
+      "new_permissions_accepted"
+    ],
+    "installation_repositories": [
+      "added",
+      "removed"
+    ]
+  }
+}
