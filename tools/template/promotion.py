@@ -26,7 +26,7 @@ def template_tag_plan(central, commit):
         require(versions,'TEMPLATE_INITIAL_ADOPTION_REQUIRED')
         latest=max(versions); previous=versions[latest]
         require(previous['reachable'],'TEMPLATE_NEWER_TAG_OUTSIDE_MAIN')
-        paths=['copier.yml','templates/repository']
+        paths=['copier.yml','templates/repository','config/review/security-common.md']
         before=git(central,['ls-tree','-rz',previous['commit'],'--',*paths],env)
         after=git(central,['ls-tree','-rz',commit,'--',*paths],env)
         require(after,'TEMPLATE_SOURCE_MISSING')

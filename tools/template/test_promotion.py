@@ -41,6 +41,17 @@ class PromotionTests(unittest.TestCase):
         self.git('tag',plan['tag'],current)
         self.assertEqual(template_tag_plan(self.root,current)['status'],'UNCHANGED')
 
+    def test_first_and_later_security_policy_changes_publish_without_other_template_changes(self):
+        policy=self.root/'config/review/security-common.md'
+        policy.parent.mkdir(parents=True)
+        for expected, body in [('v1.2.4','first'), ('v1.2.5','updated')]:
+            policy.write_text(body+'\n',encoding='utf-8')
+            current=self.commit()
+            plan=template_tag_plan(self.root,current)
+            self.assertEqual((plan['status'],plan['tag'],plan['commit']),('CREATE',expected,current))
+            self.git('tag',expected,current)
+            self.assertEqual(template_tag_plan(self.root,current)['status'],'UNCHANGED')
+
     def test_missing_initial_adoption_and_newer_unreachable_template_fail(self):
         self.git('tag','-d','v1.2.3')
         with self.assertRaisesRegex(Exception,'INITIAL_ADOPTION'):template_tag_plan(self.root,self.old)

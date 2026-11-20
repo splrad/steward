@@ -10,7 +10,8 @@ const source = 'config/review/security-common.md';
 const answers = '.copier-answers.yml';
 const begin = '<!-- BEGIN SPLRAD COMMON SECURITY -->';
 const end = '<!-- END SPLRAD COMMON SECURITY -->';
-const releaseTag = /^v?\d+(?:\.\d+)+$/;
+// Copier selects final and post releases, including PEP 440 epochs and local versions.
+const releaseTag = /^v?(?:\d+!)?\d+(?:\.\d+)*(?:-\d+|[-_.]?(?:post|rev|r)[-_.]?\d*)?(?:\+[a-z0-9]+(?:[-_.][a-z0-9]+)*)?$/i;
 export const securityPolicyController = fileURLToPath(new URL('../', import.meta.url));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 

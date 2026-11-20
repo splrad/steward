@@ -42,7 +42,8 @@ test('checks adoption against trusted Git tags, preserves outside bytes on sync 
   writeFileSync(join(root,'copier.yml'),'_subdirectory: templates/repository\n');
   writeFileSync(join(root,'README.md'),'first');commit();git('tag','v1.0.0');
   writeFileSync(common,body);commit();git('tag','v2.0.0');
-  writeFileSync(common,newer);const controller = commit();git('tag','v3.0.0');
+  const release = 'v1!3.0.0.post2';
+  writeFileSync(common,newer);const controller = commit();git('tag',release);
   const pin = tag => writeFileSync(join(root,'.copier-answers.yml'), '_src_path: https://github.com/splrad/steward.git\n_commit: '+tag+'\n');
   const policy = join(root,'SECURITY.md');
   pin('v1.0.0');const legacy = commit();
@@ -72,7 +73,7 @@ test('checks adoption against trusted Git tags, preserves outside bytes on sync 
   check(legacy,first,true);
   writeFileSync(policy,Buffer.concat([initial,Buffer.from('\nAdministrator text.\n')]));const human = commit();
   check(first,human);assert.throws(()=>check(first,human,true),/OUTSIDE_CHANGED/);
-  pin('v3.0.0');writeFileSync(policy,updated(readFileSync(policy),body,newer));const upgraded = commit();
+  pin(release);writeFileSync(policy,updated(readFileSync(policy),body,newer));const upgraded = commit();
   check(human,upgraded,true);
   writeFileSync(policy,diff(readFileSync(policy),'Updated','Wrong'));const wrong = commit();
   assert.throws(()=>check(upgraded,wrong),/COMMON_MISMATCH/);
