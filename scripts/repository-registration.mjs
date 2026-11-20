@@ -5,16 +5,18 @@ import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { createAppAuth } from '@octokit/auth-app';
 import { Octokit } from '@octokit/rest';
-import { nativeReleaseApp, parseDeliveryConfig } from '../packages/runner/dist/index.js';
+import { NativeEvidenceReader, nativeEvidenceTransport, nativeReleaseApp, parseDeliveryConfig } from '../packages/runner/dist/index.js';
 import apiVersion from '../config/github-api.json' with { type: 'json' };
 import contract from '../config/settings-source-events.json' with { type: 'json' };
 import { revisionReader } from './configuration-authorization.mjs';
 import { commitFiles, must, positive, sha } from './configuration-native.mjs';
 import { ciPath, deliveryPath, effectiveChannels, inspectRepository, jsonFile, pagesChoices, pagesPath,
   publishPath, versionsPath } from './configuration-view.mjs';
-import { productWorkflows, selectableProductCI } from './validation-input.mjs';
+import { productWorkflows, requiresProductCI, selectableProductCI } from './validation-input.mjs';
+import { dependencyMode, loadPolicy } from './private-dependency-policy.mjs';
 import { checkedRegistration,configurationConflicts,parseRegistration } from './repository-registration-policy.mjs';
 import { projectMergedRepositoryPolicy } from './repository-policy-publish.mjs';
+import { readRepositoryProjection } from './repository-policy-projection.mjs';
 import { adminId, centralId, isGovernanceBot, loadPrivateRequest, makePrivateRequest, readWake,
   registrationEvent, wakePayload } from './repository-registration-request.mjs';
 
@@ -163,7 +165,7 @@ export function releaseRegistration(model, pending) {
   return release;
 }
 
-export async function registrationProposal(repo, read) {
+export async function registrationProposal(repo, read, productPaths) {
   const paths = [ciPath, deliveryPath, publishPath, versionsPath, pagesPath];
   const files = new Map((await Promise.all(paths.map(async path => [path, await read(path)])))
     .filter(([, text]) => text !== null));
@@ -175,9 +177,15 @@ export async function registrationProposal(repo, read) {
   }
   const model = inspectRepository(files);
   const pending = [];
+  let productCiApplicable=files.has(ciPath);
+  if(productPaths&&!productCiApplicable) {
+    const policy=await loadPolicy();
+    productCiApplicable=requiresProductCI(productPaths,dependencyMode({repository:repo},policy),
+      policy.administrators.find(item=>item.repositoryId===repo.id));
+  }
   const productCi = ciPaths.filter(path => model.workflows.some(workflow =>
     workflow.path === path && selectableProductCI(workflow, repo.default_branch)));
-  if (productCi.length !== ciPaths.length) pending.push('复核产品 CI 工作流或触发条件');
+  if ((productCiApplicable&&!ciPaths.length)||productCi.length!==ciPaths.length) pending.push('复核产品 CI 工作流或触发条件');
   const priorPending=pending.length;
   const release = releaseRegistration(model, pending);
   const releaseIncomplete=pending.length>priorPending;
@@ -201,7 +209,7 @@ export async function registrationProposal(repo, read) {
     targets: rows.filter(row => row?.unit === unit.id && typeof row.target === 'string' && row.target).map(row => row.target)
   }]));
   return { policy: checkedRegistration({ schemaVersion: 1, repositoryId: repo.id, repository: repo.full_name,
-    productCi, release, site }, repo.id), pending, releaseDetails, productCiDeclared:files.has(ciPath), releaseIncomplete };
+    productCi, release, site }, repo.id), pending, releaseDetails, productCiApplicable, releaseIncomplete };
 }
 
 export function renderRegistrationPull(repo, source, proposal, current=null, policy=current ? {...current,repository:repo.full_name} : proposal.policy) {
@@ -216,14 +224,15 @@ export function renderRegistrationPull(repo, source, proposal, current=null, pol
     '请在这张私有管理员仓 PR 中确认目标仓的治理选择。需要调整时，在 PR 分支编辑 '+quote(path)+
       ' 并提交修改，再从 **Files changed** 核对最终 JSON'+(needsReview?'，并处理下列待确认项':'')+
       '。确认后将草稿转为待审，按本仓流程审查合并。',
-    '', '修改后可在本仓运行 `SPLRAD Settings / Repository Registration`，填入仓库数字 ID 复核草稿。'
-      +'当前发行流程按产品默认分支的已审声明冻结渠道和文件。调整发布范围时，先让产品声明体现所需选择。',
+    '', '提交调整后，请查看 `SPLRAD Validation` 的逐仓配置复核。公开目标仓会自动核对产品声明。'
+      +'需要受信读取或恢复时，可用仓库数字 ID 运行本仓登记工作流。当前发行流程按产品默认分支的已审声明冻结渠道和文件。'
+      +'调整发布范围时，先让产品声明体现所需选择。',
     '', '## 仓库与配置', '',
     '- 目标仓 '+quote(repo.full_name)+'（'+repo.id+'）',
     '- 目标仓默认分支提交 '+quote(source),
     '- 配置文件 '+quote(path),
     '- 本次修改 '+list(changed),
-    '- 产品 CI '+(list(policy.productCi)||'沿用组织公共检查'),
+    '- 产品 CI '+(list(policy.productCi)||(proposal.productCiApplicable?'待补产品原生 CI 入口':'沿用组织公共检查')),
     '', '## 发行与产物', ''
   ];
   if(policy.release) {
@@ -458,14 +467,17 @@ async function applyRequests(ids, withGovernance, withAdmin, project, registryPu
   const errors = [];
   for (const id of ids) {
     try {
-      const outcome = await withGovernance(id, { metadata: 'read', contents: 'read' }, async (sourceApi, repo) => {
+      const outcome = await withGovernance(id, { metadata: 'read', contents: 'read' }, async (sourceApi, repo, sourceToken) => {
         if (repo.archived || repo.disabled) return { result: 'inactive' };
         const ref = () => readHead(sourceApi, repo.default_branch, true);
         const source = await ref();
         if (!source) return { result: 'awaiting-default-branch' };
         const read = revisionReader(sourceApi, source);
         let proposal;
-        const observe = () => proposal ??= registrationProposal(repo, read);
+        const observe = () => proposal ??= (async()=>{
+          const {data:tree}=await sourceApi.rest.git.getTree({...sourceApi.target,tree_sha:source,recursive:'1'});
+          return registrationProposal(repo,read,registrationProductPaths(tree));
+        })();
         const currentSource=async()=>{
           const { data } = await sourceApi.request('GET /repositories/{id}', { id });
           const fresh = checkRepository(data, id);
@@ -473,9 +485,14 @@ async function applyRequests(ids, withGovernance, withAdmin, project, registryPu
             fresh.default_branch !== repo.default_branch) return null;
           return ref();
         };
+        const hasResidualProjection=async()=>{
+          const reader=new NativeEvidenceReader(nativeEvidenceTransport(sourceToken),repo.full_name);
+          const projection=await readRepositoryProjection(reader,id);
+          return projection!==null&&projection.adoption!=='legacy';
+        };
         let projectionConflict;
         try {
-          if(project)await project(repo,source,observe,read,{currentSource,revokeMissing:registryPush});
+          if(project)await project(repo,source,observe,read,{currentSource,revokeMissing:registryPush,hasResidualProjection});
         } catch(error) {
           if(!['REPOSITORY_POLICY_PROJECTION_PRODUCT_CI','REPOSITORY_POLICY_PROJECTION_PAGES',
             'REPOSITORY_POLICY_PROJECTION_RELEASE'].includes(error.message))throw error;
@@ -491,6 +508,11 @@ async function applyRequests(ids, withGovernance, withAdmin, project, registryPu
   }
   if (errors.length) throw new AggregateError(errors, 'Registration requests incomplete');
   return outcomes;
+}
+
+export function registrationProductPaths(tree) {
+  must(tree.truncated===false&&Array.isArray(tree.tree),'Incomplete product registration tree');
+  return tree.tree.filter(entry=>entry.type!=='tree').map(entry=>entry.path);
 }
 
 export async function runRegistration(mode, env, {

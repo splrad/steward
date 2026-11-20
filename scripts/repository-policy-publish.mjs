@@ -17,7 +17,8 @@ export async function projectMergedRepositoryPolicy(app, repository, source, obs
   const readMerged=()=>getPolicy(app,repository,{allowRegisteredRename:true});
   const adopted=await readMerged();
   const selected=adopted.policy;
-  if(selected ? selected.repository!==repository.full_name : !ports.revokeMissing)return;
+  if(selected&&selected.repository!==repository.full_name)return;
+  if(!selected&&!ports.revokeMissing&&!await ports.hasResidualProjection?.())return;
   if(selected?.adoption==='central') {
     const proposal=await observe();
     const [conflict]=configurationConflicts(selected,proposal);
@@ -39,7 +40,13 @@ export async function projectMergedRepositoryPolicy(app, repository, source, obs
       const unchanged=selected?latest.policy?.repository===repository.full_name&&projectionBytes(latest.policy)===content:
         latest.policy===null;
       check(unchanged&&latest.commit===adopted.commit&&await ports.currentSource()===source,'MOVED');
-      if((!selected&&current===null)||current?.toString('utf8')===content)return 'UNCHANGED';
+      if(!selected&&current===null&&!ports.revokeMissing) {
+        check(!(await refresh()).snapshot.currentPaths.includes(repositoryPolicyPath),'MOVED');
+        return 'UNCHANGED';
+      }
+      // An approved removal writes legacy even when the path was absent. The
+      // existing writer's previous digest then rejects an older central write.
+      if(current?.toString('utf8')===content)return 'UNCHANGED';
       const directory=await mkdtemp(join(root,'write-'));
       const result=await (ports.write??writeReleaseRecords)({directory:join(directory,'checkout'),remote:state.remote,
         repositoryId:repository.id,defaultBranch:repository.default_branch,targetRef:repositoryPolicyBranch,writer:'configuration',

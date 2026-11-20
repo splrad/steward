@@ -140,6 +140,108 @@ it('private dependency entry binds candidate Git input using only its existing G
     expect(JSON.parse(await readFile(join(evidence,'summary.json'),'utf8')).identity).toMatchObject({repositoryId:repository.id,base,head});
   }finally{vi.unstubAllGlobals();await rm(root,{recursive:true,force:true});}
 },30000);
+it('the private registration PR check rejects an unsupported edit and accepts its correction on the same pull',async()=>{
+  const {main}=await script('validation-input'),root=await mkdtemp(join(tmpdir(),'registry-validation-'));
+  registerOfflineFixtureRoot(root);
+  const git=(...args:string[])=>execFileSync('git',args,{cwd:root,encoding:'utf8'}).trim();
+  try{
+    git('init','--initial-branch=main');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid');
+    await writeFile(join(root,'README.md'),'registry\n');git('add','.');git('commit','--signoff','--no-gpg-sign','-m','base');
+    const base=git('rev-parse','HEAD');git('update-ref','refs/remotes/origin/main',base);
+    const organization={id:302208797,login:'splrad'};
+    const repository={id:1447987054,full_name:'splrad/steward-settings',private:true,default_branch:'main',owner:organization};
+    const product={id:91,full_name:'splrad/fixture',private:false,default_branch:'main',owner:organization};
+    const ci='.github/workflows/product-ci.yml',build='.github/workflows/steward-release-publish.yml';
+    const source='b'.repeat(40),object='c'.repeat(40);
+    const channel={id:'github-release',required:true,location:'https://github.com/splrad/fixture/releases',
+      artifactIds:['bundle','extras'],metadata:['release-notes.md']};
+    const asset=(id:string)=>({id,name:id+'.zip',mediaType:'application/zip'});
+    const productFiles=new Map([
+      ['.github/product-ci.json',JSON.stringify([ci])],[ci,'on: [push, pull_request]\njobs: {build: {}}'],
+      ['release-please-config.json',JSON.stringify({packages:{'.':{}}})],
+      ['.github/delivery.json',JSON.stringify({schemaVersion:2,repositoryAuthors:[{id:1,evidence:'fixture'}],
+        units:[{id:'fixture',path:'.',notesPath:'.release-notes/fixture.md',assets:['bundle','extras'].map(asset),channels:[channel]}]})],
+      [build,'jobs: {build: {strategy: {matrix: {include: [{unit: fixture, target: windows-x64}]}}}}'],
+    ]);
+    let publicReadable=true;
+    vi.stubGlobal('fetch',vi.fn(async(url:string,request:RequestInit)=>{
+      const path=new URL(url).pathname;
+      if(path==='/repositories/91'){
+        expect(new Headers(request.headers).get('authorization')).toBeNull();
+        return publicReadable?Response.json(product):new Response(null,{status:404});
+      }
+      if(path.startsWith('/repos/'+repository.full_name)) {
+        const route=path.slice(('/repos/'+repository.full_name).length);
+        if(route==='')return Response.json(repository);
+        if(route==='/branches/main')return Response.json({name:'main',protected:true,commit:{sha:base}});
+        if(route==='/git/trees/'+base)return Response.json({truncated:false,tree:[]});
+        if(route==='/git/ref/heads/steward/governance-state')return new Response(null,{status:404});
+        if(route==='/git/matching-refs/heads/steward/governance-state')return Response.json([]);
+        throw Error(route);
+      }
+      expect(new Headers(request.headers).get('authorization')).toBeNull();
+      const prefix='/repos/'+product.full_name;
+      expect(path.startsWith(prefix)).toBe(true);
+      const route=path.slice(prefix.length);
+      if(route==='')return Response.json(product);
+      if(route==='/branches/main')return Response.json({name:'main',protected:true,commit:{sha:source}});
+      if(route==='/git/trees/'+source)return Response.json({truncated:false,tree:[...productFiles.keys()].map(path=>({path,type:'blob',sha:object}))});
+      if(route==='/git/ref/heads/steward/governance-state')return new Response(null,{status:404});
+      if(route==='/git/matching-refs/heads/steward/governance-state')return Response.json([]);
+      const file=route.slice('/contents/'.length),bytes=productFiles.get(file);
+      expect(bytes).toBeDefined();
+      expect(new URL(url).searchParams.get('ref')).toBe(source);
+      return Response.json({path:file,sha:object,type:'file',encoding:'base64',content:Buffer.from(bytes!).toString('base64')});
+    }));
+    const event=join(root,'event.json'),summary=join(root,'summary.md'),output=join(root,'outputs.txt');
+    const env={VALIDATION_WORKSPACE:root,GITHUB_EVENT_PATH:event,GITHUB_EVENT_NAME:'pull_request',
+      GITHUB_REPOSITORY_ID:String(repository.id),GITHUB_REPOSITORY:repository.full_name,GITHUB_ACTIONS:'true',
+      WORKFLOW_REPOSITORY:'splrad/steward',WORKFLOW_PATH:'.github/workflows/pr-validation-native.yml',
+      WORKFLOW_SHA:S,REPOSITORY_POLICY_TOKEN:'workflow-read',GITHUB_STEP_SUMMARY:summary,GITHUB_OUTPUT:output};
+    await mkdir(join(root,'repositories'));
+    const update=async(artifactIds:string[],name=product.full_name,adoption?:string)=>{
+      await writeFile(join(root,'repositories','91.json'),JSON.stringify({schemaVersion:1,repositoryId:91,
+        repository:name,adoption,productCi:[ci],release:{buildWorkflow:build,units:[{id:'fixture',channels:[{...channel,artifactIds}]}]},site:null}));
+      git('add','repositories/91.json');git('commit','--signoff','--no-gpg-sign','-m','adjust selection');
+      await writeFile(event,JSON.stringify({repository,pull_request:{number:25,base:{repo:{id:repository.id},ref:'main',sha:base},
+        head:{sha:git('rev-parse','HEAD')}}}));
+    };
+    await update(['bundle']);
+    await expect(main(env)).rejects.toThrow('VALIDATION_REGISTRATION_PREVIEW_SELECTION');
+    expect(await readFile(summary,'utf8')).toContain('先让产品声明体现计划发布的范围');
+    await expect(readFile(output)).rejects.toMatchObject({code:'ENOENT'});
+    await update(channel.artifactIds,'splrad/misspelled-fixture');
+    await expect(main(env)).rejects.toThrow('VALIDATION_REGISTRATION_PREVIEW_IDENTITY');
+    await rm(summary);
+    await update(channel.artifactIds);
+    await expect(main(env)).resolves.toMatchObject({dependencyMode:'private-administrator'});
+    expect(await readFile(summary,'utf8')).toContain('的声明相符');
+    publicReadable=false;await rm(summary);
+    await main(env);
+    expect(await readFile(summary,'utf8')).toContain('无法读取目标仓的公开声明');
+    expect(await readFile(summary,'utf8')).not.toContain('的声明相符');
+    const unadopted=git('rev-parse','HEAD');
+    git('rm','repositories/91.json');git('commit','--signoff','--no-gpg-sign','-m','remove unadopted registration');
+    git('update-ref','refs/remotes/origin/main',unadopted);
+    await writeFile(event,JSON.stringify({repository,pull_request:{number:25,base:{repo:{id:repository.id},ref:'main',sha:unadopted},
+      head:{sha:git('rev-parse','HEAD')}}}));
+    await expect(main(env)).resolves.toMatchObject({dependencyMode:'private-administrator'});
+    expect(await readFile(summary,'utf8')).toContain('登记历史中没有已采用的中央投影');
+    git('checkout','--detach',unadopted);
+    git('update-ref','refs/remotes/origin/main',base);
+    await update(channel.artifactIds,product.full_name,'central');
+    await update(channel.artifactIds,product.full_name,'legacy');
+    const removalBase=git('rev-parse','HEAD');
+    git('rm','repositories/91.json');git('commit','--signoff','--no-gpg-sign','-m','remove registration');
+    git('update-ref','refs/remotes/origin/main',removalBase);
+    await writeFile(event,JSON.stringify({repository,pull_request:{number:25,base:{repo:{id:repository.id},ref:'main',sha:removalBase},
+      head:{sha:git('rev-parse','HEAD')}}}));
+    await expect(main(env)).rejects.toThrow('VALIDATION_REGISTRATION_PREVIEW_SELECTION');
+    expect(await readFile(summary,'utf8')).toContain('无法确认目标仓的撤回状态');
+    publicReadable=true;
+    await expect(main(env)).resolves.toMatchObject({dependencyMode:'private-administrator'});
+  }finally{vi.unstubAllGlobals();await rm(root,{recursive:true,force:true});}
+},30000);
 it('summary rejects failed, cancelled, missing and unexpectedly skipped required jobs',async()=>{
   const {validationSummary}=await script('validation-summary');
   const jobs=Object.fromEntries(['scope','source','governance','dependency','docs'].map(k=>[k,{result:'success'}])) as any;

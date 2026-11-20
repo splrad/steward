@@ -22,9 +22,9 @@ export function parseRegistration(bytes,id) {
   return checkedRegistration(decodeBuildJson(typeof bytes==='string'?Buffer.from(bytes):bytes),id);
 }
 
-export function configurationConflicts(selected,{policy:observed,productCiDeclared,releaseIncomplete}) {
+export function configurationConflicts(selected,{policy:observed,productCiApplicable,releaseIncomplete}) {
   const conflicts=[];
-  const requiresCi=productCiDeclared||observed.productCi.length>0;
+  const requiresCi=productCiApplicable||observed.productCi.length>0;
   if((requiresCi&&!selected.productCi.length)||selected.productCi.some(path=>!observed.productCi.includes(path)))
     conflicts.push('PRODUCT_CI');
   if(selected.release&&(releaseIncomplete||!isDeepStrictEqual(selected.release,observed.release)))

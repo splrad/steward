@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
-import { registrationEntry, registrationIds, pushRegistrationIds, selectRegistrationTargets, registrationProposal, reconcileRegistration } from '../repository-registration.mjs';
+import { registrationEntry, registrationIds, pushRegistrationIds, selectRegistrationTargets, registrationProposal, reconcileRegistration, renderRegistrationPull } from '../repository-registration.mjs';
 import { requestFile } from '../repository-registration-request.mjs';
 import { checkedRegistration,parseRegistration } from '../repository-registration-policy.mjs';
 import { assertInputScope, assertGovernanceOnlyScope } from '../private-dependency-policy.mjs';
@@ -47,7 +47,7 @@ const productFiles = new Map([
   [publish,'jobs: {build: {strategy: {matrix: {include: [{unit: layerscape, target: windows-x64}]}}}}'],
   [pages,'env: {STEWARD_DOCS_SOURCE: "${{ vars.STEWARD_DOCS_SOURCE }}"}\njobs: {build: {}, deploy: {}}']
 ]);
-const propose = (repo, files = new Map()) => registrationProposal(repo, async path => files.get(path) ?? null);
+const propose = (repo, files = new Map()) => registrationProposal(repo, async path => files.get(path) ?? null,[...files.keys()]);
 const body = (event, action, repository_ids) => ({
   delivery:'12345678-1234-4321-8123-123456789012',body_sha256:'f'.repeat(64),event,action,
   ...(repository_ids === undefined ? {} : {repository_ids})
@@ -194,13 +194,18 @@ test('projection writer uses one path, scoped credentials and reads back only ap
   assert.equal(writes,1);
   bytes=null;
   await assert.rejects(run({currentSource:async()=>candidate}),/PROJECTION_MOVED/);
-  const absent={revokeMissing:true,getPolicy:async()=>({commit:base,policy:null})};
+  const absent={hasResidualProjection:async()=>true,getPolicy:async()=>({commit:base,policy:null})};
   assert.equal(await run(absent),'UNCHANGED');
   reads=0;
   await assert.rejects(run({...absent,getPolicy:async()=>reads++===0?{commit:base,policy:null}:
     {commit:candidate,policy:selected}}),/PROJECTION_MOVED/);
   await assert.rejects(run({...absent,currentSource:async()=>candidate}),/PROJECTION_MOVED/);
+  reads=0;
+  await assert.rejects(run({...absent,getState:async()=>({snapshot:{currentPaths:reads++?[path]:[]}})}),/PROJECTION_MOVED/);
   assert.equal(writes,1);
+  assert.equal(await run({...absent,revokeMissing:true}),'APPLIED');
+  assert.equal(JSON.parse(bytes).adoption,'legacy');
+  assert.equal(writes,2);
 });
 
 test('an approved rollback replaces the central projection when product declarations drift',async()=>{
@@ -220,7 +225,12 @@ test('an approved rollback replaces the central projection when product declarat
   });
   await assert.rejects(publish('central',async()=>({policy:{...policy,productCi:[]}})),/PROJECTION_PRODUCT_CI/);
   await assert.rejects(publish('central',async()=>({policy}),{productCi:[]}),/PROJECTION_PRODUCT_CI/);
-  await assert.rejects(publish('central',async()=>({policy:{...policy,productCi:[]},productCiDeclared:true}),{productCi:[]}),/PROJECTION_PRODUCT_CI/);
+  await assert.rejects(publish('central',async()=>({policy:{...policy,productCi:[]},productCiApplicable:true}),{productCi:[]}),/PROJECTION_PRODUCT_CI/);
+  const missingDeclaration=await propose(product,new Map([['src/main.ts','export {};']]));
+  assert.equal(missingDeclaration.productCiApplicable,true);
+  assert.deepEqual(missingDeclaration.pending,['复核产品 CI 工作流或触发条件']);
+  assert.match(renderRegistrationPull(product,source,missingDeclaration).body,/待补产品原生 CI 入口/);
+  await assert.rejects(publish('central',async()=>missingDeclaration,{productCi:[],release:null}),/PROJECTION_PRODUCT_CI/);
   const invalidRelease=structuredClone(policy.release);
   invalidRelease.units[0].channels[0].artifactIds=['unknown-asset'];
   await assert.rejects(publish('central',async()=>({policy}),{release:invalidRelease}),/PROJECTION_RELEASE/);
@@ -295,6 +305,23 @@ test('native projection writer preserves concurrent state and retries revocation
       {schemaVersion:1,repositoryId:product.id,adoption:'legacy',productCi:[],site:null,sourceDigest:undefined});
     assert.equal(await revoke(async()=>assert.fail('Already revoked')), 'UNCHANGED');
     assert.equal(state('show',branch+':quality/1/'+source+'.md'),'existing quality result');
+
+    local('fetch',remote,'refs/heads/'+branch);
+    local('checkout','--detach','FETCH_HEAD');
+    local('rm','configuration/repository.json');commit('fixture without a projection');
+    local('push',remote,'HEAD:refs/heads/'+branch);
+    const stale=projectMergedRepositoryPolicy(app,product,source,async()=>({policy}),path=>productFiles.get(path),{
+      getPolicy:async()=>({commit:base,policy:{...policy,adoption:'central'}}),currentSource:async()=>source,getState,
+      write:async request=>{
+        assert.equal(request.changes[0].previousSha256,null);
+        assert.equal(await revoke(writeReleaseRecords),'APPLIED');
+        const blocked=await writeReleaseRecords(request);
+        assert.equal(blocked.status,'CONFLICT');
+        return blocked;
+      }
+    });
+    await assert.rejects(stale,/PROJECTION_WRITE/);
+    assert.equal(projection().adoption,'legacy');
   } finally {
     await rm(root,{recursive:true,force:true});
   }
@@ -708,7 +735,8 @@ function productApi(repo, files) {
     rest:{
       git:{
         async getRef({ref}) {return {data:{ref:'refs/'+ref,object:{type:'commit',sha:source}}};},
-        async getTree({tree_sha}) {
+        async getTree({tree_sha,recursive}) {
+          if(recursive==='1')return {data:{tree:[...files.keys()].map(path=>({path,type:'blob',sha:'blob:'+path})),truncated:false}};
           const prefix=tree_sha===source?'':tree_sha.slice('tree:'.length);
           const entries=new Map();
           for(const path of files.keys()) {

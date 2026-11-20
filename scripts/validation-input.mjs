@@ -163,6 +163,10 @@ export function selectedProductWorkflows(selection,available,productApplicable) 
 }
 export async function main(env=process.env) {
   const workspace=resolve(env.VALIDATION_WORKSPACE??'target'),value=await validationInput(workspace,env);
+  if(value.dependencyMode==='private-administrator'&&env.GITHUB_EVENT_NAME==='pull_request') {
+    const {validateRegistrationPreview}=await import('./repository-registration-preview.mjs');
+    await validateRegistrationPreview(workspace,value,env);
+  }
   if(env.GITHUB_OUTPUT)await appendFile(env.GITHUB_OUTPUT,Object.entries({productApplicable:value.productApplicable,workflows:JSON.stringify(value.workflows),boundNames:JSON.stringify(value.boundNames),dependencyMode:value.dependencyMode,base:value.input.base,head:value.input.head}).map(([k,v])=>`${k}=${v}\n`).join(''));
   if(env.VALIDATION_EVIDENCE)await writeFile(env.VALIDATION_EVIDENCE,JSON.stringify(value,null,2)+'\n',{flag:'wx'});
   if(env.GITHUB_STEP_SUMMARY)await appendFile(env.GITHUB_STEP_SUMMARY,'```json\n'+JSON.stringify({identity:value.input,workflows:value.workflows},null,2)+'\n```\n');
