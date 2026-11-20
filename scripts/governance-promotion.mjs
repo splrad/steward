@@ -133,6 +133,10 @@ async function assertMaintenanceBranchAbsent(io){
     &&row.object?.type==='commit'&&sha(row.object.sha)),'MAINTENANCE_REF_READBACK');
   check(!refs.some(row=>row.ref===maintenanceRef),'MAINTENANCE_BRANCH_STILL_PRESENT');
 }
+async function assertMaintenanceRetired(io,id){
+  check(await get(io,`/orgs/splrad/rulesets/${id}`,true)===null,'MAINTENANCE_RULE_REAPPEARED');
+  await assertMaintenanceBranchAbsent(io);
+}
 async function promoteWorkflowTarget(io,target,assertCurrent,record,descriptor) {
   const rulePath=`/orgs/splrad/rulesets/${descriptor.id}`,binding=descriptor.binding;
   check(sha(target),'TARGET');
@@ -164,11 +168,6 @@ export async function promoteRequiredWorkflows(io,target,assertCurrent,record,ma
   const targets=[coreTarget],baseline=new Map(),results=[];
   if(maintenanceBefore)targets.push(maintenance);
   else await assertMaintenanceBranchAbsent(io);
-  const assertMaintenanceRetired=async()=>{
-    if(maintenanceBefore)return;
-    check(await get(io,`/orgs/splrad/rulesets/${maintenanceId}`,true)===null,'MAINTENANCE_RULE_REAPPEARED');
-    await assertMaintenanceBranchAbsent(io);
-  };
   const withoutSha=(body,descriptor)=>{const copy=structuredClone(body);descriptor.binding(copy).sha=null;return copy;};
   // Validate every active target before any write, even if the core pin already matches.
   for(const descriptor of targets){
@@ -178,7 +177,7 @@ export async function promoteRequiredWorkflows(io,target,assertCurrent,record,ma
   }
   const guard=async()=>{
     await assertCurrent();
-    await assertMaintenanceRetired();
+    if(!maintenanceBefore)await assertMaintenanceRetired(io,maintenanceId);
     for(const descriptor of targets){
       const {body}=await readRule(io,descriptor);
       check(same(withoutSha(body,descriptor),baseline.get(descriptor.id)),'TARGET_PROTECTION_CHANGED');
@@ -209,7 +208,7 @@ export async function promoteRequiredWorkflows(io,target,assertCurrent,record,ma
   // Separate API reads cannot provide an atomic cross-ruleset snapshot.
   await assertCurrent();
   await verifyTargets();
-  await assertMaintenanceRetired();
+  if(!maintenanceBefore)await assertMaintenanceRetired(io,maintenanceId);
   await assertCurrent();
   return {status:results.every(r=>r.status==='ALREADY_ADOPTED')?'ALREADY_ADOPTED':'ADOPTED',sha:target,targets:results};
 }
@@ -299,6 +298,20 @@ export async function recordPromotionFailure(error,record) {
   await record({kind:'failure',code});throw Error(code);
 }
 
+export async function publishPromotedSources(io,plan,adopted,{appId,maintenanceId},assertCurrent,record){
+  const maintenanceRetired=!adopted.targets.some(target=>target.rulesetId===maintenanceId);
+  const guard=maintenanceRetired?async()=>{
+    await assertCurrent();
+    await assertMaintenanceRetired(io,maintenanceId);
+  }:assertCurrent;
+  const published=await publishTemplateTag(io,plan,guard,record);
+  await record({kind:'template-result',...published});
+  const controller=await publishControllerSource(io,adopted.sha,appId,guard,record);
+  await record({kind:'controller-source-result',...controller});
+  await wakePublishedTemplate(io,published,guard,record);
+  if(maintenanceRetired)await guard();
+}
+
 export async function main(env=process.env,transport=fetch) {
   const output=resolve(env.PROMOTION_EVIDENCE_DIRECTORY??'promotion-evidence');await mkdir(output,{recursive:true});
   const record=value=>appendFile(join(output,'observations.jsonl'),JSON.stringify(value)+'\n',{mode:0o600});
@@ -319,13 +332,11 @@ export async function main(env=process.env,transport=fetch) {
   await assertCurrent();
   await withGovernanceCredential(env,async io=>{
     // The source namespace must be protected before any promotion write occurs.
-    const guard=createSourceGuard(io,Number(env.GOVERNANCE_APP_ID),assertCurrent);
+    const appId=Number(env.GOVERNANCE_APP_ID);
+    const guard=createSourceGuard(io,appId,assertCurrent);
     await guard();
     const adopted=await promoteRequiredWorkflows(io,source.sha,guard,record,maintenanceRuleId);await record({kind:'rules-result',...adopted});
-    const published=await publishTemplateTag(io,plan,guard,record);await record({kind:'template-result',...published});
-    const controller=await publishControllerSource(io,source.sha,Number(env.GOVERNANCE_APP_ID),guard,record);
-    await record({kind:'controller-source-result',...controller});
-    await wakePublishedTemplate(io,published,guard,record);
+    await publishPromotedSources(io,plan,adopted,{appId,maintenanceId:maintenanceRuleId},guard,record);
   },transport);
   process.stdout.write('Promotion: adopted and reconciled\n');
   }catch(error){

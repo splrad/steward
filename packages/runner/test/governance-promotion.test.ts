@@ -284,6 +284,31 @@ it.each(['branch','ruleset'])('rejects final adoption if the maintenance %s reap
   expect(f.writes).toEqual([18883080]);
   expect(f.records.some(record=>record.kind==='maintenance-retired')).toBe(false);
 });
+it.each(['branch before tag write','ruleset after tag write'])('rechecks retired maintenance during publication: %s',async(when)=>{
+  const {promoteRequiredWorkflows,publishPromotedSources}=await module(),f=multipleRules();
+  f.rules.delete(maintenanceId);f.maintenanceRefs.value=[];
+  const adopted=await promoteRequiredWorkflows(f,M,async()=>{},f.record,maintenanceId);
+  const plan={status:'CREATE',commit:M,tag:'v1.0.1',tags:{}},tagRef={ref:'refs/tags/v1.0.1',object:{type:'commit',sha:M}};
+  const writes:string[]=[];
+  const io={async request(method:string,path:string,body?:any){
+    if(path.endsWith('/git/matching-refs/tags/'))return {status:200,value:writes.length?[tagRef]:[]};
+    if(path.endsWith('/git/ref/tags/v1.0.1')){
+      if(when==='branch before tag write')f.maintenanceRefs.value=[maintenanceHead];
+      return writes.length?{status:200,value:tagRef}:{status:404,value:{}};
+    }
+    if(method==='POST'){
+      writes.push(path);
+      if(when==='ruleset after tag write')f.rules.set(maintenanceId,maintenanceRule());
+      return {status:201,value:tagRef};
+    }
+    return f.request(method,path,body);
+  }};
+  await expect(publishPromotedSources(io,plan,adopted,{appId:123,maintenanceId},async()=>{},f.record)).rejects.toThrow(
+    when==='branch before tag write'?'MAINTENANCE_BRANCH_STILL_PRESENT':'MAINTENANCE_RULE_REAPPEARED',
+  );
+  expect(writes).toEqual(when==='branch before tag write'?[]:['/repos/splrad/steward/git/refs']);
+  expect(f.records.some(record=>['controller-source-result','template-wake'].includes(record.kind))).toBe(false);
+});
 it.each(['disabled','repository','ref','bypass','path','source','extra-workflow','mutable-ref','id'])('rejects invalid maintenance target before any core write: %s',async kind=>{
   const f=multipleRules(),r=f.rules.get(maintenanceId);
   if(kind==='disabled')r.enforcement='disabled';if(kind==='repository')r.conditions.repository_id.repository_ids.push(42);
