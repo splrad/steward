@@ -906,7 +906,17 @@
         "originalIdentifiers": []
       },
       "configVersion": "quality-native-comments-v1",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4643121569",
+        "sourceCommit": "634c350649a34670326cf279746fd9ae427d41dd",
+        "sourceUrl": "https://github.com/splrad/steward/pull/396#discussion_r4643121569",
+        "severity": "原文未说明",
+        "originalIdentifiers": [],
+        "segmentIndex": 0,
+        "problemZh": "原文指出：嵌套运算符周围的空白写法与运算符优先级相矛盾。",
+        "impactZh": "原文未说明。",
+        "suggestionZh": "原文未说明。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-20T13:43:32.300Z",
@@ -922,13 +932,26 @@
         },
         {
           "startedAt": "2026-11-20T14:16:04.089Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 3030,
+                "outputTokens": 320
+              }
+            ],
+            "totalNanoAiu": 978250000,
+            "aiCredits": 0.97825,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
       "nextCheckAt": null,
-      "errorCode": "RESPONSE_UNKNOWN"
+      "errorCode": null
     }
   },
   "cursor": 0
