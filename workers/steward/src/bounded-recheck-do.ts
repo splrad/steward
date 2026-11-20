@@ -28,6 +28,7 @@ export class BoundedRecheckCoordinator {
  async fetch(request:Request){
   ensure(request.method==='POST','INTERNAL_METHOD');const b=await request.json() as any;const action=new URL(request.url).pathname;
   let value:unknown;
+  if(action==='/pages-watch'){await new PagesRetry(this.state.storage,this.env).watch(b);return Response.json({accepted:true});}
   if(action==='/pages-retry'){await new PagesRetry(this.state.storage,this.env).schedule(b);return Response.json({accepted:true});}
   if(action==='/quality-event'){await new QualityEvent(this.state.storage,this.env).register(b);return Response.json({accepted:true});}
   if(action==='/quality-promoted'){await new QualityEvent(this.state.storage,this.env).forward();return Response.json({accepted:true});}
@@ -55,7 +56,7 @@ export class BoundedRecheckCoordinator {
   return Response.json(value,{headers:{'Cache-Control':'no-store'}});
  }
  async alarm(){
-  if(await this.state.storage.get('pagesRetry')){await new PagesRetry(this.state.storage,this.env).alarm();return;}
+  if(await this.state.storage.get('pagesRetry')||await this.state.storage.get('pagesWatch')){await new PagesRetry(this.state.storage,this.env).alarm();return;}
   if(await this.state.storage.get('qualityEvent')){await new QualityEvent(this.state.storage,this.env).alarm();return;}
   if(await this.state.storage.get('promotionPolicy')){await new ReleasePromotion(this.state.storage,this.env).alarm();return;}
   if(await this.state.storage.get('wingetSubmit')){await new WingetSubmit(this.state.storage,this.env).alarm();return;}

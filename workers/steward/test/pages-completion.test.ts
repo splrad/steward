@@ -18,7 +18,9 @@ function fixture(){
   const db=new ReleaseTestDb();
   db.database.exec(readFileSync(new URL('../../../packages/runtime/migrations/0020_pages_completion_dispatches.sql',import.meta.url),'utf8'));
   db.database.exec(readFileSync(new URL('../../../packages/runtime/migrations/0021_pages_completion_retry_after.sql',import.meta.url),'utf8'));
-  const config={...env,ISSUE_SNAPSHOTS:db.binding()};
+  const config={...env,ISSUE_SNAPSHOTS:db.binding(),BOUNDED_RECHECK:{idFromName:(x:string)=>x,get:()=>({
+    fetch:async(req:Request)=>{expect(new URL(req.url).pathname).toBe('/pages-watch');return Response.json({});}
+  })}};
   const result={lost:false,visible:true,rejections:0,rejectionStatus:429,denied:false};
   const receipt={id:99,path:'.github/workflows/'+receiver,display_title:'Pages completion '+TARGET.id+' 12 1',event:'workflow_dispatch',
     actor:{id:301115370},repository:{id:CENTRAL.id},head_repository:{id:CENTRAL.id},head_branch:'main',head_sha:pin};
@@ -126,6 +128,7 @@ it.each([429,403])('recovers explicit rate limit %s at its floor with one accept
  const clock=vi.spyOn(Date,'now').mockReturnValue(now);
  const object=()=>new PagesRetry(storage as any,f.config,()=>f.g,[f.site]);
  f.config.BOUNDED_RECHECK={idFromName:(x:string)=>x,get:()=>({fetch:async(req:Request)=>{
+   if(new URL(req.url).pathname==='/pages-watch')return Response.json({});
    expect(new URL(req.url).pathname).toBe('/pages-retry');await object().schedule(await req.json() as any);
    return Response.json({});
  }})};
@@ -153,10 +156,10 @@ it('retains the D1 reservation after an uncertain 503 and reconciles on redelive
 });
 it('a restored retry ticket cannot reacquire a newer reservation after rollback or restart',async()=>{
  const f=fixture(),storage=new SqliteDurableStorage();let ticket:any;
- f.config.BOUNDED_RECHECK={idFromName:(x:string)=>x,get:()=>({fetch:async(req:Request)=>{ticket=await req.json();return Response.json({});}})};
+ f.config.BOUNDED_RECHECK={idFromName:(x:string)=>x,get:()=>({fetch:async(req:Request)=>{if(new URL(req.url).pathname==='/pages-retry')ticket=await req.json();return Response.json({});}})};
  f.result.rejections=1;await f.forward();
  const obj=()=>new PagesRetry(storage as any,f.config,()=>f.g,[f.site]);await obj().schedule(ticket);
- f.db.database.prepare('UPDATE pages_completion_dispatches SET reserved_at=?').run(new Date(ticket.due).toISOString());
+ f.db.database.prepare('UPDATE pages_completion_dispatches SET reserved_at=?,retry_after=NULL').run(new Date(ticket.due).toISOString());
  const clock=vi.spyOn(Date,'now').mockReturnValue(ticket.due);
  try{await obj().alarm();await obj().alarm();}finally{clock.mockRestore();}
  expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(1);expect(await storage.get('pagesRetry')).toBeUndefined();
@@ -169,20 +172,34 @@ it('does not issue a retry ticket for an ordinary permission-denied 403',async()
  expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(1);
 });
 
-it('reconstructs a rejected ticket from the D1 row after the DO was unavailable',async()=>{
+it('requires a durable watch before reserving or dispatching',async()=>{
+ const f=fixture();
+ f.config.BOUNDED_RECHECK.get=()=>({fetch:async()=>new Response(null,{status:503})});
+ await expect(f.forward()).rejects.toThrow('PAGES_WATCH_REGISTRATION');
+ expect(f.db.database.prepare('SELECT COUNT(*) AS n FROM pages_completion_dispatches').get()?.n).toBe(0);
+ expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(0);
+});
+
+it('reconstructs a rejected ticket from D1 without redelivery when the first ticket write failed',async()=>{
  const f=fixture(),storage=new SqliteDurableStorage();let unavailable=true;
  const object=()=>new PagesRetry(storage as any,f.config,()=>f.g,[f.site]);
  f.config.BOUNDED_RECHECK={idFromName:(k:string)=>k,get:()=>({fetch:async(req:Request)=>{
+  if(new URL(req.url).pathname==='/pages-watch'){await object().watch(await req.json() as any);return Response.json({});}
   if(unavailable)throw Error('DO_UNAVAILABLE');
   await object().schedule(await req.json() as any);return Response.json({});
  }})};
  f.result.rejections=1;await expect(f.forward()).rejects.toThrow('DO_UNAVAILABLE');
  const row=f.db.database.prepare('SELECT reserved_at,retry_after FROM pages_completion_dispatches').get()!;
  expect(row.retry_after).toBeGreaterThan(Date.now());expect(await storage.get('pagesRetry')).toBeUndefined();
- unavailable=false;await f.forward();await object().alarm();
- expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(1);
- const clock=vi.spyOn(Date,'now').mockReturnValue(Number(row.retry_after));
- try{await object().alarm();await object().alarm();}finally{clock.mockRestore();}
+ unavailable=false;
+ const probe=await storage.get<number>('__alarm');expect(probe).toBeGreaterThan(Date.now());
+ const clock=vi.spyOn(Date,'now').mockReturnValue(probe!);
+ try{
+   await object().alarm();
+   expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(1);
+   const retry=await storage.get<number>('__alarm');expect(retry).toBeGreaterThanOrEqual(Number(row.retry_after));
+   clock.mockReturnValue(Math.max(probe!,retry!));await object().alarm();await object().alarm();
+ }finally{clock.mockRestore();}
  expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(2);
  expect(f.db.database.prepare('SELECT retry_after,central_run_id FROM pages_completion_dispatches').get()).toEqual({retry_after:null,central_run_id:99});
 });
@@ -195,4 +212,31 @@ it('keeps a reservation unconfirmed if writing the rejection proof fails',async(
  await expect(f.forward()).rejects.toThrow('PAGES_DISPATCH_UNCONFIRMED');
  expect(f.db.database.prepare('SELECT retry_after FROM pages_completion_dispatches').get()).toEqual({retry_after:null});
  expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(1);
+});
+
+it('recovers a newer D1 rejection when the second alarm ticket could not be persisted',async()=>{
+ const f=fixture(),store=new SqliteDurableStorage(),now=Date.now();
+ const clock=vi.spyOn(Date,'now').mockReturnValue(now);
+ const object=()=>new PagesRetry(store as any,f.config,()=>f.g,[f.site]);
+ f.config.BOUNDED_RECHECK={idFromName:(k:string)=>k,get:()=>({fetch:async(req:Request)=>{
+  if(new URL(req.url).pathname==='/pages-watch')await object().watch(await req.json() as any);
+  else await object().schedule(await req.json() as any);return Response.json({});
+ }})};
+ try{
+   f.result.rejections=2;await f.forward();const first=await store.get<any>('pagesRetry');
+   const put=store.put.bind(store);let fail=true;
+   store.put=async(key,value)=>{
+     if(key==='pagesRetry'&&fail&&(value as any).reservation!==first.reservation){fail=false;throw Error('DO_STORAGE_INTERRUPTED');}
+     return put(key,value);
+   };
+   clock.mockReturnValue(first.due);await object().alarm();
+   const next=f.db.database.prepare('SELECT reserved_at,retry_after FROM pages_completion_dispatches').get()!;
+   expect(next.reserved_at).not.toBe(first.reservation);expect(await store.get<any>('pagesRetry')).toMatchObject({reservation:first.reservation});
+   clock.mockReturnValue((await store.get<number>('__alarm'))!);await object().alarm();
+   expect(await store.get('pagesRetry')).toMatchObject({reservation:next.reserved_at,due:next.retry_after});
+   expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(2);
+   clock.mockReturnValue(Number(next.retry_after));await object().alarm();await object().alarm();
+   expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(3);
+   expect(f.db.database.prepare('SELECT central_run_id FROM pages_completion_dispatches').get()?.central_run_id).toBe(99);
+ }finally{clock.mockRestore();}
 });

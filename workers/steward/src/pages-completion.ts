@@ -6,6 +6,8 @@ import {dispatchFixed} from './bounded-recheck-effects.js';
 type Site={repositoryId:number;repository:string;workflowId:number};
 type Locator={id:number;run_attempt:number;head_sha:string;conclusion:string};
 type Retry={site:Site;hint:Locator;policy:string;reservation:string;due:number;expires:number};
+type Watch=Pick<Retry,'site'|'hint'|'policy'|'expires'>;
+const probeInterval=5*60000;
 const failed=new Set(['failure','cancelled','timed_out','action_required','startup_failure']);
 const positive=(n:unknown)=>typeof n==='number'&&Number.isSafeInteger(n)&&n>0;
 const path='.github/workflows/pages.yml';
@@ -34,7 +36,6 @@ async function forward(env:BoundedEnv,site:Site,hint:Locator,g:GitReader,retry?:
   if(existing?.central_run_id)return;
   const retrying=!!retry && !!existing && existing.reserved_at===retry.reservation &&
     existing.retry_after!==null && Date.now()>=existing.retry_after && existing.controller_sha===retry.policy && env.BOUNDED_CONTROLLER_SHA===retry.policy;
-  if(retry && !retrying)return; // A newer reservation or receipt already owns this attempt.
   const reservedAt=retrying?new Date(Math.max(Date.now(),Date.parse(retry!.reservation)+1)).toISOString():
     existing?.reserved_at??new Date().toISOString();
   const title=`Pages completion ${site.repositoryId} ${hint.id} ${hint.run_attempt}`;
@@ -61,6 +62,7 @@ async function forward(env:BoundedEnv,site:Site,hint:Locator,g:GitReader,retry?:
     const result=await object.fetch(new Request('https://bounded.internal/pages-retry',{method:'POST',body:JSON.stringify(ticket)}));
     ensure(result.ok,'PAGES_RETRY_REGISTRATION');
   };
+  if(!retrying && retry && (!existing || existing.retry_after===null))return;
   if(existing&&!retrying){
     if(existing.retry_after!==null){
       if(existing.controller_sha===env.BOUNDED_CONTROLLER_SHA)await scheduleRetry({site,hint,policy:existing.controller_sha,
@@ -100,6 +102,13 @@ async function forward(env:BoundedEnv,site:Site,hint:Locator,g:GitReader,retry?:
     const current=await g.json(TARGET.id,base);
     ensure(current.id===site.repositoryId&&current.full_name===site.repository,'PAGES_REPOSITORY_CHANGED');
     if(current.private!==false||current.fork!==false||current.has_pages!==true||current.archived!==false||current.disabled!==false)return false;
+    if(!retrying){
+      ensure(env.BOUNDED_RECHECK,'PAGES_RETRY_STORAGE');
+      const stub=env.BOUNDED_RECHECK.get(env.BOUNDED_RECHECK.idFromName('pages-retry:v1:'+key.join(':')));
+      const response=await stub.fetch(new Request('https://bounded.internal/pages-watch',{method:'POST',
+        body:JSON.stringify({site,hint,policy:pin,expires:created+30*86400_000})}));
+      ensure(response.ok,'PAGES_WATCH_REGISTRATION');
+    }
     const result=retrying?await db.prepare('UPDATE pages_completion_dispatches SET reserved_at=?,retry_after=NULL WHERE repository_id=? AND workflow_id=? AND run_id=? AND attempt=? AND controller_sha=? AND reserved_at=? AND retry_after=? AND central_run_id IS NULL')
       .bind(reservedAt,...key,pin,retry!.reservation,existing!.retry_after).run():await db.prepare('INSERT INTO pages_completion_dispatches(repository_id,workflow_id,run_id,attempt,controller_sha,reserved_at,run_created_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(repository_id,workflow_id,run_id,attempt) DO NOTHING')
       .bind(...key,pin,reservedAt,new Date(created).toISOString()).run();
@@ -132,6 +141,34 @@ async function forward(env:BoundedEnv,site:Site,hint:Locator,g:GitReader,retry?:
 export class PagesRetry {
   constructor(private store:DurableObjectStorage,private env:BoundedEnv,private reader:()=>GitReader=()=>new BoundedGitHub(env),
     private sites:readonly Site[]=registry.publicSites){}
+  async watch(watch:Watch){
+    await this.store.transaction(async t=>{
+      if(await t.get('pagesWatch'))return;
+      await t.put('pagesWatch',watch);
+      if(!await t.get('pagesRetry'))await t.setAlarm(Math.min(watch.expires,Date.now()+probeInterval));
+    });
+  }
+  private async reconcileWatch(){
+    const watch=await this.store.get<Watch>('pagesWatch');if(!watch)return;
+    if(this.env.BOUNDED_RECHECK_ENABLED!=='true'||this.env.BOUNDED_CONTROLLER_SHA!==watch.policy)return;
+    const {site,hint,policy,expires}=watch;
+    const active=this.sites.some(s=>s.repositoryId===site.repositoryId&&s.workflowId===site.workflowId&&s.repository===site.repository);
+    if(active && Date.now()<expires){
+      await this.store.setAlarm(Math.min(expires,Date.now()+probeInterval));
+      const db=this.env.ISSUE_SNAPSHOTS;ensure(db,'PAGES_DISPATCH_STORAGE');
+      const row=await db.prepare('SELECT reserved_at,retry_after,central_run_id,controller_sha FROM pages_completion_dispatches WHERE repository_id=? AND workflow_id=? AND run_id=? AND attempt=?')
+        .bind(site.repositoryId,site.workflowId,hint.id,hint.run_attempt).first<{reserved_at:string;retry_after:number|null;central_run_id:number|null;controller_sha:string}>();
+      if(!row)return;
+      if(row.central_run_id===null&&row.controller_sha===policy){
+        if(row.retry_after!==null)await this.schedule({...watch,reservation:row.reserved_at,due:row.retry_after});
+        return;
+      }
+    }
+    await this.store.transaction(async t=>{
+      await t.delete('pagesWatch');
+      if(!await t.get('pagesRetry'))await t.deleteAlarm();
+    });
+  }
   async schedule(ticket:Retry){
     await this.store.transaction(async t=>{
       const prior=await t.get<Retry>('pagesRetry');
@@ -142,7 +179,7 @@ export class PagesRetry {
     });
   }
   async alarm(){
-    const ticket=await this.store.get<Retry>('pagesRetry');if(!ticket)return;
+    const ticket=await this.store.get<Retry>('pagesRetry');if(!ticket){await this.reconcileWatch();return;}
     const now=Date.now();if(now<ticket.due){await this.store.setAlarm(ticket.due);return;}
     const site=this.sites.find(s=>s.repositoryId===ticket.site.repositoryId&&s.repository===ticket.site.repository&&s.workflowId===ticket.site.workflowId);
     if(this.env.BOUNDED_RECHECK_ENABLED!=='true'||this.env.BOUNDED_CONTROLLER_SHA!==ticket.policy)return;
@@ -159,7 +196,10 @@ export class PagesRetry {
       if(current?.reservation!==ticket.reservation||current.due!==ticket.due)return;
       if(again!==undefined && again<ticket.expires){
         current.due=again;await t.put('pagesRetry',current);await t.setAlarm(again);
-      }else{await t.delete('pagesRetry');await t.deleteAlarm();}
+      }else{
+        await t.delete('pagesRetry');
+        if(await t.get('pagesWatch'))await t.setAlarm(Date.now()+probeInterval);else await t.deleteAlarm();
+      }
     });
   }
 }
