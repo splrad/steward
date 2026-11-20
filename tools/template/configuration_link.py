@@ -7,7 +7,7 @@ import yaml
 
 def add_link(directory, repository):
     # The organization community-health repository supplies defaults to unrelated repositories.
-    if repository.endswith('/.github'):
+    if repository.lower().endswith('/.github'):
         return
     path = Path(directory) / '.github/ISSUE_TEMPLATE/config.yml'
     if path.is_symlink() or any(parent.is_symlink() for parent in path.parents):

@@ -43,7 +43,11 @@ const scripts={
 };
 const requestPath='.github/workflows/repository-configuration.yml',trialPath='.github/workflows/repository-configuration-trial.yml';
 
-for(const mode of ['reviewed scripts','native container, service and dynamic matrix','native archive bound anew for each run']) test('same configuration PR binds two entries and selects individual files · '+mode,async t=>{
+for(const [mode,hasIssues] of [
+  ['reviewed scripts',false],
+  ['native container, service and dynamic matrix',true],
+  ['native archive bound anew for each run',false]
+]) test('same configuration PR binds two entries and selects individual files · '+mode,async t=>{
   const complex=mode!=='reviewed scripts',runNamed=mode==='native archive bound anew for each run';
   const dir=await mkdtemp(join(tmpdir(),'steward-config-test-')), product=join(dir,'product');
   t.after(()=>rm(dir,{recursive:true,force:true}));
@@ -71,7 +75,7 @@ for(const mode of ['reviewed scripts','native container, service and dynamic mat
   await put(reviewedChannel,channelFixture);
   await put('.github/release-template.md.mustache','{{{upgradeNotices}}}');
   git('add','-A');git('-c','commit.gpgsign=false','commit','-m','Adopt protected trial and declare product documentation');
-  const base=git('rev-parse','HEAD'),repo={id:15,name:'map-tools',full_name:'splrad/map-tools',owner:{login:'splrad'},default_branch:'trunk'};
+  const base=git('rev-parse','HEAD'),repo={id:15,name:'map-tools',full_name:'splrad/map-tools',owner:{login:'splrad'},default_branch:'trunk',has_issues:hasIssues};
   const load=async(api,ref)=>{
     const paths=git('ls-tree','-r','--name-only',ref).split('\n').filter(Boolean),files=new Map();
     for(const p of paths)files.set(p,execFileSync('git',['-C',product,'show',ref+':'+p],{encoding:'utf8'}));

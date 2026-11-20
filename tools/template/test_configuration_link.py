@@ -32,4 +32,5 @@ class ConfigurationLinkTests(unittest.TestCase):
     def test_organization_repository_does_not_install_an_org_wide_chooser(self):
         with tempfile.TemporaryDirectory() as workspace:
             add_link(workspace, 'splrad/.github')
+            add_link(workspace, 'splrad/.GitHub')
             self.assertFalse((Path(workspace) / '.github/ISSUE_TEMPLATE/config.yml').exists())

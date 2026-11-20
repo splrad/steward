@@ -1,5 +1,6 @@
 """Real Copier/Git fixtures: no GitHub writes, no hand-written adopted answers."""
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -9,6 +10,7 @@ from unittest.mock import patch
 
 import yaml
 import copier_bridge as bridge
+from configuration_link import add_link
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -83,7 +85,23 @@ class CopierTests(unittest.TestCase):
         self.assertNotIn(b'\r',expected);self.assertTrue(expected.endswith(b'\n'));self.assertFalse(expected.endswith(b'\n\n'))
         for name in ['steward','LayerScape','.github','new-repository']:
             seed=self.root/(name+'-seed')
-            rendered=bridge.render(self.central,seed,self.old,'copy')
+            repository = 'splrad/' + name
+            rendered=bridge.render(self.central,seed,self.old,'copy',{'product_repository': repository})
+            guide = seed / 'CONTRIBUTING.md'
+            content = guide.read_text(encoding='utf-8')
+            if name == '.github':
+                self.assertNotIn('[仓库配置](', content)
+                self.assertIn('已接入仓库配置的项目', content)
+            else:
+                link, = re.findall(r'\[仓库配置\]\(([^)]+)\)', content)
+                page = guide.parent / link
+                self.assertTrue(page.is_file())
+                workflow = 'actions/workflows/repository-configuration.yml'
+                self.assertIn(f'https://github.com/{repository}/{workflow}', page.read_text(encoding='utf-8'))
+                self.assertTrue((seed / '.github/workflows/repository-configuration.yml').is_file())
+                add_link(seed, repository)
+                chooser = yaml.safe_load((seed / '.github/ISSUE_TEMPLATE/config.yml').read_bytes())
+                self.assertEqual(chooser['contact_links'][0]['url'], f'https://github.com/{repository}/blob/HEAD/{link}')
             self.assertEqual((seed/'AGENTS.md').read_bytes(),expected)
             self.assertEqual(rendered['answers']['_src_path'],bridge.SOURCE)
             self.assertFalse((seed/'config/review').exists())
