@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {Octokit} from '@octokit/rest';
-import {checkedRegistration} from './repository-registration-policy.mjs';
+import {parseRegistration} from './repository-registration-policy.mjs';
 import {adminId} from './repository-registration-request.mjs';
 import apiVersion from '../config/github-api.json' with {type:'json'};
 
@@ -40,7 +40,7 @@ export async function readRepositoryPolicy(api, repository, {allowRegisteredRena
       check(file.path===path&&file.type==='file'&&file.sha===blob.sha&&file.encoding==='base64');
       const bytes=Buffer.from(file.content,'base64');
       check(bytes.length===file.size&&createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')===blob.sha);
-      policy=checkedRegistration(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)),repository.id);
+      policy=parseRegistration(bytes,repository.id);
       // A rename cannot reopen a paused writer. Reconcile the registered name before further operations.
       check(allowRegisteredRename||policy.repository===name);
     }

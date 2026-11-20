@@ -13,7 +13,7 @@ import { commitFiles, must, positive, sha } from './configuration-native.mjs';
 import { ciPath, deliveryPath, effectiveChannels, inspectRepository, jsonFile, pagesChoices, pagesPath,
   publishPath, versionsPath } from './configuration-view.mjs';
 import { productWorkflows, selectableProductCI } from './validation-input.mjs';
-import { checkedRegistration } from './repository-registration-policy.mjs';
+import { checkedRegistration,parseRegistration } from './repository-registration-policy.mjs';
 import { projectMergedRepositoryPolicy } from './repository-policy-publish.mjs';
 import { adminId, centralId, isGovernanceBot, loadPrivateRequest, makePrivateRequest, readWake,
   registrationEvent, wakePayload } from './repository-registration-request.mjs';
@@ -277,7 +277,7 @@ export async function reconcileRegistration(api, admin, repo, source, proposal, 
   const base = await readHead(api, admin.default_branch);
   const read = revisionReader(api, base);
   const merged = await read(path);
-  const current = merged === null ? null : checkedRegistration(JSON.parse(merged), id);
+  const current = merged === null ? null : parseRegistration(merged, id);
   const differences = fields.filter(key => !current || !isDeepStrictEqual(current[key], proposal.policy[key]));
   const open = await matchingPull(api, admin, id, path);
   if (open) return { result: 'reused', number: open.number, differences, pending: proposal.pending };

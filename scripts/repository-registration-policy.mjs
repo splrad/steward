@@ -1,5 +1,6 @@
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import schema from '../schema/repository-registration.schema.json' with { type: 'json' };
+import {decodeBuildJson} from '../packages/runner/dist/index.js';
 
 export const registrationPath = /^repositories\/([1-9][0-9]*)\.json$/;
 export const registrationWorkflow = '.github/workflows/repository-registration.yml';
@@ -14,4 +15,8 @@ export function checkedRegistration(value, id) {
     value.site?.source === 'release' && !value.release?.units.some(unit => unit.id === value.site.unit))
     throw Error('Invalid central repository registration');
   return value;
+}
+
+export function parseRegistration(bytes,id) {
+  return checkedRegistration(decodeBuildJson(typeof bytes==='string'?Buffer.from(bytes):bytes),id);
 }

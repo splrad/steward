@@ -28,7 +28,11 @@ export async function readRepositoryProjection(reader, repositoryId) {
     return fact.object.sha;
   };
   const commit=await head();
-  if(!commit)return null;
+  const absent=async()=>{
+    check(await head()===commit,'MOVED');
+    return null;
+  };
+  if(!commit)return absent();
   const entry=async(treeSha,name)=>{
     const tree=await reader.json('git/trees/'+treeSha);
     check(tree.truncated===false&&Array.isArray(tree.tree));
@@ -37,10 +41,10 @@ export async function readRepositoryProjection(reader, repositoryId) {
     return matches[0];
   };
   const directory=await entry(commit,'configuration');
-  if(!directory)return null;
+  if(!directory)return absent();
   check(directory.mode==='040000'&&directory.type==='tree'&&sha(directory.sha));
   const blob=await entry(directory.sha,'repository.json');
-  if(!blob)return null;
+  if(!blob)return absent();
   check(blob.mode==='100644'&&blob.type==='blob'&&sha(blob.sha));
   const rules=await reader.json('rules/branches/'+encodeURIComponent(repositoryPolicyBranch)+'?per_page=100');
   check(Array.isArray(rules),'PROTECTION');

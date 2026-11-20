@@ -6,7 +6,7 @@ import {readFile,appendFile,writeFile,lstat,realpath} from 'node:fs/promises';
 import {resolve,join,sep} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {loadPolicy,dependencyMode,assertGovernanceOnlyScope,configurationCallers} from './private-dependency-policy.mjs';
-import {checkedRegistration,registrationPath,registrationWorkflow} from './repository-registration-policy.mjs';
+import {parseRegistration,registrationPath,registrationWorkflow} from './repository-registration-policy.mjs';
 import {assertLifecycleScope} from './private-lifecycle-policy.mjs';
 import {NativeEvidenceReader,nativeEvidenceTransport} from '../packages/runner/dist/index.js';
 import {readRepositoryProjection} from './repository-policy-projection.mjs';
@@ -114,10 +114,10 @@ export async function validationInput(workspace,env=process.env) {
   if(dependency==='private-administrator') {
     for(const path of files) {
       const registered=registrationPath.exec(path);
-      if(registered)checkedRegistration(JSON.parse(await readFile(await regular(workspace,path),'utf8')),Number(registered[1]));
+      if(registered)parseRegistration(await readFile(await regular(workspace,path)),Number(registered[1]));
     }
     for(const path of changedPaths.filter(path=>registrationPath.test(path)&&!files.includes(path))) {
-      const previous=checkedRegistration(JSON.parse(git(workspace,['show',base+':'+path]).toString('utf8')),Number(registrationPath.exec(path)[1]));
+      const previous=parseRegistration(git(workspace,['show',base+':'+path]),Number(registrationPath.exec(path)[1]));
       check(!previous.adoption||previous.adoption==='legacy','REPOSITORY_POLICY_ROLLBACK_REQUIRED');
     }
   }

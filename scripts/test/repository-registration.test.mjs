@@ -7,7 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { registrationEntry, registrationIds, pushRegistrationIds, selectRegistrationTargets, registrationProposal, reconcileRegistration } from '../repository-registration.mjs';
 import { requestFile } from '../repository-registration-request.mjs';
-import { checkedRegistration } from '../repository-registration-policy.mjs';
+import { checkedRegistration,parseRegistration } from '../repository-registration-policy.mjs';
 import { assertInputScope, assertGovernanceOnlyScope } from '../private-dependency-policy.mjs';
 import { requiresProductCI, selectedProductWorkflows } from '../validation-input.mjs';
 import {readRepositoryPolicy} from '../repository-policy-read.mjs';
@@ -107,6 +107,9 @@ test('product reads only selected CI and Pages from protected state, with digest
   await assert.rejects(readRepositoryProjection(reader,product.id),/PROJECTION_PROTECTION/);
   protectedRules=true;drift=true;
   await assert.rejects(readRepositoryProjection(reader,product.id),/PROJECTION_MOVED/);
+  reads=0;
+  await assert.rejects(readRepositoryProjection({...reader,json:async()=>({truncated:false,tree:[]})},product.id),
+    /PROJECTION_MOVED/);
 });
 
 test('projection writer uses one path, scoped credentials and reads back only approved bytes',async()=>{
@@ -154,6 +157,8 @@ test('registry rejects workflow selections the native consumers cannot execute',
   ];
   for(const attempted of attempts)
     assert.throws(()=>checkedRegistration(attempted,product.id),/Invalid central repository registration/);
+  assert.throws(()=>parseRegistration('{"adoption":"central","adoption":"legacy",'+JSON.stringify(policy).slice(1),product.id),
+    /RN_BUILD_INVALID/);
 });
 
 test('native projection writer preserves a concurrent quality record on the same branch',async()=>{
