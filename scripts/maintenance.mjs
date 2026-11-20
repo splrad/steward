@@ -34,7 +34,10 @@ export async function maintenanceDefinition(file) {
     const needs=Array.isArray(j.needs)?j.needs:j.needs?[j.needs]:[];
     check(key==='automation-health'?needs.length===0:!needs.includes('automation-health'),'HEALTH_DEPENDENCY');
   }
-  return {file,names,events:Object.keys(d.on)};
+  // Runs created before retirement still occur in the maintenance lookback and saved records.
+  const events = Object.keys(d.on);
+  if (file === 'sync-managed.yml') events.push('push', 'schedule');
+  return {file,names,events};
 }
 function source(run,workflow,definition,branch) {
   check(positive(run.id)&&positive(run.run_attempt)&&run.repository?.id===repositoryId&&run.head_repository?.id===repositoryId
@@ -104,6 +107,9 @@ export async function recoverMaintenanceRun({reader,io,workflow,definition,branc
     ||r.coordinatorRunId===coordinator.runId&&r.coordinatorRunAttempt===coordinator.runAttempt
     ||expectedRun&&r.coordinatorRunId!==coordinator.runId)))return {status:'UNKNOWN'};
   if(!maintenanceFailed(run.conclusion))return {status:'UNKNOWN'};
+  // A native failed-jobs rerun executes the original workflow revision.
+  const retiredJob = record.jobs.findLast(job => job.key === 'automation-health');
+  if (retiredJob && !['success', 'skipped'].includes(retiredJob.conclusion)) return {status:'UNKNOWN'};
   if(beforePost)await beforePost();
   const claim=structuredClone(record);
   claim.requests.push({fromAttempt:run.run_attempt,requestedAt:new Date(now()).toISOString(),coordinatorRunId:coordinator.runId,coordinatorRunAttempt:coordinator.runAttempt,responseStatus:null});

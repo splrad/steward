@@ -15,8 +15,8 @@ function job(id:number,name:string,attempt=1,conclusion='failure') {
 }
 async function fixture(file='quality-language-summary.yml') {
   const definition=await api.maintenanceDefinition(file),workflow={id:5,path:'.github/workflows/'+file,state:'active'};
-  const run:any={id:12,run_attempt:1,workflow_id:5,path:workflow.path,repository:{id:1296724484},head_repository:{id:1296724484},head_sha:S,head_branch:'main',event:file==='quality-language-summary.yml'?'workflow_dispatch':'schedule',created_at:'2026-10-30T00:00:00Z',updated_at:'2026-10-30T00:01:00Z',status:'completed',conclusion:'failure'};
-  const f:any={definition,workflow,run,jobs:Object.entries(definition.names).map(([key,name],i)=>job(i+1,key==='update'?'update (0)':name as string)),calls:[],records:new Map(),saves:0,mode:'accepted'};
+  const run:any={id:12,run_attempt:1,workflow_id:5,path:workflow.path,repository:{id:1296724484},head_repository:{id:1296724484},head_sha:S,head_branch:'main',event:file==='sync-managed.yml'?'repository_dispatch':file==='quality-language-summary.yml'?'workflow_dispatch':'schedule',created_at:'2026-10-30T00:00:00Z',updated_at:'2026-10-30T00:01:00Z',status:'completed',conclusion:'failure'};
+  const f:any={definition,workflow,run,jobs:Object.entries(definition.names).map(([key,name],i)=>job(i+1,key==='update'?'update (0)':name as string,1,key==='automation-health'?'success':'failure')),calls:[],records:new Map(),saves:0,mode:'accepted'};
   f.io={request:async(method:string,path:string)=>{
     f.calls.push([method,path]);
     if(method==='POST') {
@@ -55,6 +55,12 @@ it.each(['sync-managed.yml'])('reads a business Run without a health job for %s'
   const f=await fixture(file);f.jobs=f.jobs.filter((j:any)=>j.name!=='automation-health');
   expect((await f.execute()).status).toBe('ACCEPTED');expect(f.posts()).toHaveLength(1);
 });
+it.each(['push','schedule'])('reads a historical Sync %s without rerunning its retired failed job',async event=>{
+  const f=await fixture('sync-managed.yml');f.run.event=event;
+  f.jobs.find((j:any)=>j.name==='automation-health').conclusion='failure';
+  expect((await f.execute()).status).toBe('UNKNOWN');expect(f.posts()).toHaveLength(0);
+  expect(f.records.get(12).event).toBe(event);
+});
 it('stops after two recoveries and three actual failed business waves',async()=>{
   const f=await fixture();expect((await f.execute()).status).toBe('ACCEPTED');
   f.run.status='completed';f.run.conclusion='failure';f.jobs.push(job(2,'quality-summary',2));
@@ -75,8 +81,8 @@ it('counts earlier manual business failures rather than resetting budget when no
   const f=await fixture();f.run.run_attempt=3;f.jobs.push(job(2,'quality-summary',2),job(3,'quality-summary',3));
   expect((await f.execute()).status).toBe('EXHAUSTED');expect(f.posts()).toHaveLength(0);
 });
-it('does not charge health-only attempts against the first business recovery',async()=>{
-  const f=await fixture('sync-managed.yml');f.run.run_attempt=3;f.jobs.push(job(4,'automation-health',2),job(5,'automation-health',3));
+it('does not charge historical successful health attempts against the first business recovery',async()=>{
+  const f=await fixture('sync-managed.yml');f.run.run_attempt=3;f.jobs.push(job(4,'automation-health',2,'success'),job(5,'automation-health',3,'success'));
   expect((await f.execute()).status).toBe('ACCEPTED');expect(f.records.get(12).requests[0].fromAttempt).toBe(3);expect(f.posts()).toHaveLength(1);
 });
 it.each(['repository','fork','workflow','path','branch','pr','head','attempt','job-run','job-head','job-future','job-name','job-duplicate','missing-steps','running-job'])('refuses incomplete or foreign %s evidence before POST',async kind=>{
@@ -96,11 +102,12 @@ it('preserves unknown evidence for a missing attempt without recovery',async()=>
 it.each(['health-only','both-failed','health-rerun'])('keeps sync-managed business recovery separate from %s',async kind=>{
   const f=await fixture('sync-managed.yml');
   for(const j of f.jobs)if(j.name!=='automation-health')j.conclusion='success';
+  f.jobs.find((j:any)=>j.name==='automation-health').conclusion='failure';
   if(kind==='both-failed')f.jobs.find((j:any)=>j.name==='templates').conclusion='failure';
   if(kind==='health-rerun'){f.run.run_attempt=2;f.jobs.push(job(4,'automation-health',2));}
   const result=await f.execute();
-  expect(result.status).toBe(kind==='both-failed'?'ACCEPTED':'SATISFIED');
-  expect(f.posts()).toHaveLength(kind==='both-failed'?1:0);
+  expect(result.status).toBe(kind==='both-failed'?'UNKNOWN':'SATISFIED');
+  expect(f.posts()).toHaveLength(0);
   if(kind!=='both-failed')expect(f.saves).toBe(0);
 });
 it.each(['jobs','archive','run-changed','claim-changed','disabled','stale-source'])('withholds POST after %s changes at the native/archive boundary',async kind=>{
@@ -143,7 +150,7 @@ it('keeps the native maintenance record closed, central-only, monotonic and sepa
   const lost=structuredClone(record);lost.jobs=[];expect(()=>assertMaintenanceProgress(record,lost)).toThrow('JOB_REMOVED');
 });
 it('supports many health-only attempts without an invented platform attempt cap',async()=>{
-  const f=await fixture('sync-managed.yml');f.run.run_attempt=101;f.jobs.push(...Array.from({length:100},(_,i)=>job(10+i,'automation-health',i+2)));
+  const f=await fixture('sync-managed.yml');f.run.run_attempt=101;f.jobs.push(...Array.from({length:100},(_,i)=>job(10+i,'automation-health',i+2,'success')));
   expect((await f.execute()).status).toBe('ACCEPTED');expect(maintenanceDisposition(f.records.get(12))).toBe('FAILED');
 });
 it('reports maintenance failure independently and still services product work in the same bounded wake',async()=>{
@@ -190,7 +197,7 @@ it('keeps incomplete shared business jobs unknown and preserves pagination witho
   const missing=await fixture('sync-managed.yml');missing.jobs=missing.jobs.filter((j:any)=>j.name!=='templates');
   expect((await missing.execute()).status).toBe('UNKNOWN');expect(missing.posts()).toHaveLength(0);
   const f=await fixture('sync-managed.yml');f.run.run_attempt=101;
-  f.jobs.push(...Array.from({length:100},(_,i)=>({...job(10+i,'automation-health',i+2),steps:[{name:'private/hidden',conclusion:'failure'}]})));
+  f.jobs.push(...Array.from({length:100},(_,i)=>({...job(10+i,'automation-health',i+2,'success'),steps:[{name:'private/hidden',conclusion:'failure'}]})));
   expect((await f.execute()).status).toBe('ACCEPTED');expect(f.calls.some(([,p]:string[])=>p?.includes('page=2'))).toBe(true);
   expect(JSON.stringify(f.records.get(12))).not.toContain('private/hidden');
 });
