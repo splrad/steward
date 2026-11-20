@@ -6,6 +6,7 @@ const fail = code => { throw Error(`GOVERNANCE_DRAFT_${code}`); };
 const id = value => Number.isSafeInteger(value) && value > 0;
 const digest = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 const allRepositories = { include: ['~ALL'], exclude: [], protected: false };
+const independentApprovalRuleId = 26650622;
 const actor = actorId => ({ actor_id: actorId, actor_type: 'Integration', bypass_mode: 'always' });
 const rule = type => type === 'update' ? { type, parameters: { update_allows_fetch_and_merge: false } } : { type };
 const approval = (count, threads) => ({ type: 'pull_request', parameters: {
@@ -61,7 +62,7 @@ export function prepareGovernance(snapshot) {
   foundation.rules.push(approval(0, true), { type: 'required_status_checks', parameters: {
     ...(status?.parameters ?? {}), strict_required_status_checks_policy: true, required_status_checks: checks,
   } }, { type: 'workflows', parameters: { ...(workflows?.parameters ?? {}), do_not_enforce_on_create: true, workflows: workflowRows } });
-  const independent = nativeRule('SPLRAD PR Approval', ['~DEFAULT_BRANCH'], [], [
+  const independent = nativeRule('SPLRAD 拉取请求审批', ['~DEFAULT_BRANCH'], [], [
     { actor_id: team.id, actor_type: 'Team', bypass_mode: 'pull_request' },
   ]);
   independent.rules = [approval(1, false)];
@@ -70,11 +71,11 @@ export function prepareGovernance(snapshot) {
   const build = ['refs/heads/steward/build/*'];
   const pr = ['refs/heads/steward/managed-sync', 'refs/heads/steward/release-candidate'];
   const runtime = [
-    nativeRule('steward-state-writer', state, ['creation', 'update'], [actor(4243096)]),
-    nativeRule('steward-governance-writer', governance, ['creation', 'update'], [actor(4243096), actor(governanceApp.id)]),
-    nativeRule('steward-ref-creator', [...build, ...pr], ['creation'], [actor(4243096)]),
-    nativeRule('steward-ref-integrity', [...state, ...governance, ...pr], ['non_fast_forward', 'deletion'], []),
-    nativeRule('steward-build-immutable', build, ['update', 'deletion'], []),
+    nativeRule('Steward 运行状态写入限制', state, ['creation', 'update'], [actor(4243096)]),
+    nativeRule('Steward 治理状态写入限制', governance, ['creation', 'update'], [actor(4243096), actor(governanceApp.id)]),
+    nativeRule('Steward 自动化分支创建限制', [...build, ...pr], ['creation'], [actor(4243096)]),
+    nativeRule('Steward 自动化分支完整性保护', [...state, ...governance, ...pr], ['non_fast_forward', 'deletion'], []),
+    nativeRule('Steward 构建分支不可变', build, ['update', 'deletion'], []),
   ];
   const legacy = []; const seen = new Set();
   for (const item of legacyCandidates) {
@@ -82,8 +83,8 @@ export function prepareGovernance(snapshot) {
       || item.branch.includes('..') || item.branch.split('/').some(part => !part || part.startsWith('.') || part.endsWith('.') || part.endsWith('.lock'))
       || pr.includes(`refs/heads/${item.branch}`) || seen.has(`${item.repositoryId}:${item.branch}`)) fail('LEGACY_BRANCH');
     seen.add(`${item.repositoryId}:${item.branch}`);
-    for (const [suffix, types, bypass] of [['creator', ['creation'], [actor(4243096)]], ['integrity', ['non_fast_forward', 'deletion'], []]]) {
-      const entry = nativeRule(`steward-legacy-pr-${item.repositoryId}-${legacy.length}-${suffix}`, [`refs/heads/${item.branch}`], types, bypass);
+    for (const [suffix, types, bypass] of [['创建限制', ['creation'], [actor(4243096)]], ['完整性保护', ['non_fast_forward', 'deletion'], []]]) {
+      const entry = nativeRule(`Steward 旧版拉取请求分支${suffix}（${item.repositoryId}-${legacy.length}）`, [`refs/heads/${item.branch}`], types, bypass);
       entry.conditions = { repository_id: { repository_ids: [item.repositoryId] }, ref_name: entry.conditions.ref_name };
       legacy.push(entry);
     }
@@ -96,7 +97,7 @@ export function assertApprovalUnion(effectiveRulesets, branchProtection, expecte
   if (!Array.isArray(effectiveRulesets) || !id(expectedTeamId)) fail('EFFECTIVE_RULES');
   const active = effectiveRulesets.filter(entry => entry.enforcement === 'active');
   const bases = active.filter(entry => entry.id === 18883080);
-  const independent = active.filter(entry => entry.name === 'SPLRAD PR Approval' && entry.source === 'splrad' && entry.source_type === 'Organization');
+  const independent = active.filter(entry => entry.id === independentApprovalRuleId && entry.source === 'splrad' && entry.source_type === 'Organization');
   if (bases.length !== 1 || independent.length !== 1 || !Array.isArray(bases[0].bypass_actors) || bases[0].bypass_actors.length
     || bases[0].source !== 'splrad' || bases[0].source_type !== 'Organization'
     || independent[0].bypass_actors?.length !== 1 || independent[0].bypass_actors[0].actor_id !== expectedTeamId

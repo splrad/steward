@@ -20,7 +20,7 @@ const same=(a:unknown,b:unknown)=>digest(a)===digest(b);
 const commit=(value:unknown)=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
 const positive=(value:unknown)=>Number.isSafeInteger(value)&&Number(value)>0;
 
-/** A trusted binding covers rule responsibility, never the mutable repository exclusions. */
+/** The policy digest covers enforcement fields. The caller binds the native ruleset ID separately. */
 export function bootstrapRulePolicyDigest(rule:any,controllerSha?:string):string {
   const value=structuredClone(rule.conditions);
   check(value?.repository_name&&Array.isArray(value.repository_name.exclude),'RULE_CONDITIONS');
@@ -35,7 +35,7 @@ export function bootstrapRulePolicyDigest(rule:any,controllerSha?:string):string
     check(workflow.repository_id===1296724484&&workflow.path==='.github/workflows/pr-validation-native.yml'&&workflow.sha===controllerSha,'CONTROLLER_WORKFLOW');
     workflow.sha='<controller-sha>';
   }
-  return digest({name:rule.name,target:rule.target,enforcement:rule.enforcement,bypass_actors:rule.bypass_actors,rules,conditions:value});
+  return digest({target:rule.target,enforcement:rule.enforcement,bypass_actors:rule.bypass_actors,rules,conditions:value});
 }
 
 export function decodeBootstrapRecovery(raw:string,repository:BootstrapRepository):BootstrapRecovery {

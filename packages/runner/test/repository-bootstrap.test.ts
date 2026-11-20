@@ -69,12 +69,13 @@ it('refuses a foreign required workflow pin before recovery or rule writes',asyn
   f.rules[7].rules[1].parameters.workflows[0].sha='e'.repeat(40);
   await expect(f.run()).rejects.toThrow('CONTROLLER_WORKFLOW');expect(f.state.writes).toEqual([]);
 });
-it('resumes recorded recovery after trusted controller promotion without changing rule responsibility',async()=>{
+it('resumes recorded recovery after controller promotion and a ruleset rename',async()=>{
   const f=fixture();f.rules[7].rules.push({type:'workflows',parameters:{workflows:[{repository_id:1296724484,path:'.github/workflows/pr-validation-native.yml',sha:f.source.controllerSha}]}});
   Object.assign(f.bindings[0]!,{policyDigest:bootstrapRulePolicyDigest(f.rules[7],f.source.controllerSha),controllerWorkflow:true});
   f.state.badArchive=true;await expect(f.run()).rejects.toThrow();expect(f.state.variable).not.toBeNull();
   const oldSource=JSON.parse(f.state.variable).controllerSha;
   f.source.controllerSha='d'.repeat(40);f.rules[7].rules[1].parameters.workflows[0].sha=f.source.controllerSha;
+  f.rules[7].name='默认分支保护';
   f.state.badArchive=false;expect((await f.run()).status).toBe('READY');
   expect(f.state.sourceChecks.some((s:any)=>s.controllerSha===oldSource)).toBe(true);
   expect(f.state.variable).toBeNull();expect(f.state.commits).toHaveLength(1);

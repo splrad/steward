@@ -14,11 +14,13 @@ import {createSourceGuard,publishControllerSource} from './controller-source.mjs
 
 const repo='/repos/splrad/steward';
 const maintenanceRuleId=26975344;
+const maintenanceBranch='maintenance/legacy-runtime-e990eda';
+const maintenanceRef=`refs/heads/${maintenanceBranch}`;
 const coreTarget={id:18883080,binding};
 function maintenanceTarget(id){
   check(positive(id)&&id!==18883080,'MAINTENANCE_RULE_ID');
   return {id,binding(body){
-    check(same(body.conditions,{repository_id:{repository_ids:[1296724484]},ref_name:{include:['refs/heads/maintenance/legacy-runtime-e990eda'],exclude:[]}})
+    check(same(body.conditions,{repository_id:{repository_ids:[1296724484]},ref_name:{include:[maintenanceRef],exclude:[]}})
       &&same(body.bypass_actors,[]),'MAINTENANCE_SCOPE');
     const rows=body.rules.filter(r=>r.type==='workflows');
     check(rows.length===1&&rows[0].parameters?.do_not_enforce_on_create===true,'MAINTENANCE_BINDING');
@@ -47,7 +49,9 @@ export function promotionIO(token,transport=fetch) {
 }
 async function get(io,path,absent=false) {
   const r=await io.request('GET',path);if(absent&&r.status===404)return null;
-  check(r.status===200,`NATIVE_READ_${Number.isInteger(r.status)?r.status:'UNKNOWN'}`);return r.value;
+  check(r.status===200,`NATIVE_READ_${Number.isInteger(r.status)?r.status:'UNKNOWN'}`);
+  check(r.value!=null,'NATIVE_PAYLOAD');
+  return r.value;
 }
 async function pages(io,path,key) {
   const values=[];let total;
@@ -117,9 +121,17 @@ function mutable(rule,target=coreTarget) {
 export async function promoteRequiredWorkflow(io,target,assertCurrent,record) {
   return promoteWorkflowTarget(io,target,assertCurrent,record,coreTarget);
 }
-async function readRule(io,descriptor){
-  const rule=await completeNativeRuleParameters(io,await get(io,`/orgs/splrad/rulesets/${descriptor.id}`));
+async function readRule(io,descriptor,allowMissing=false){
+  const observed=await get(io,`/orgs/splrad/rulesets/${descriptor.id}`,allowMissing);
+  if(observed===null)return null;
+  const rule=await completeNativeRuleParameters(io,observed);
   const body=mutable(rule,descriptor);descriptor.binding(body);return {rule,body};
+}
+async function assertMaintenanceBranchAbsent(io){
+  const refs=await get(io,`${repo}/git/matching-refs/heads/${encodeURIComponent(maintenanceBranch)}`);
+  check(Array.isArray(refs)&&refs.every(row=>typeof row?.ref==='string'&&row.ref.startsWith(maintenanceRef)
+    &&row.object?.type==='commit'&&sha(row.object.sha)),'MAINTENANCE_REF_READBACK');
+  check(!refs.some(row=>row.ref===maintenanceRef),'MAINTENANCE_BRANCH_STILL_PRESENT');
 }
 async function promoteWorkflowTarget(io,target,assertCurrent,record,descriptor) {
   const rulePath=`/orgs/splrad/rulesets/${descriptor.id}`,binding=descriptor.binding;
@@ -147,15 +159,26 @@ async function promoteWorkflowTarget(io,target,assertCurrent,record,descriptor) 
 /** Ruleset writes are sequential, not atomic. Re-entry reconciles each target independently. */
 export async function promoteRequiredWorkflows(io,target,assertCurrent,record,maintenanceId) {
   check(sha(target),'TARGET');
-  const targets=[coreTarget,maintenanceTarget(maintenanceId)],baseline=new Map(),results=[];
+  const maintenance=maintenanceTarget(maintenanceId);
+  const maintenanceBefore=await readRule(io,maintenance,true);
+  const targets=[coreTarget],baseline=new Map(),results=[];
+  if(maintenanceBefore)targets.push(maintenance);
+  else await assertMaintenanceBranchAbsent(io);
+  const assertMaintenanceRetired=async()=>{
+    if(maintenanceBefore)return;
+    check(await get(io,`/orgs/splrad/rulesets/${maintenanceId}`,true)===null,'MAINTENANCE_RULE_REAPPEARED');
+    await assertMaintenanceBranchAbsent(io);
+  };
   const withoutSha=(body,descriptor)=>{const copy=structuredClone(body);descriptor.binding(copy).sha=null;return copy;};
-  // Validate both complete rules before any write, even if the core pin already matches.
+  // Validate every active target before any write, even if the core pin already matches.
   for(const descriptor of targets){
-    const {rule,body}=await readRule(io,descriptor);baseline.set(descriptor.id,withoutSha(body,descriptor));
+    const {rule,body}=descriptor===maintenance?maintenanceBefore:await readRule(io,descriptor);
+    baseline.set(descriptor.id,withoutSha(body,descriptor));
     await record({kind:'workflow-target-before',rulesetId:descriptor.id,target,before:rule});
   }
   const guard=async()=>{
     await assertCurrent();
+    await assertMaintenanceRetired();
     for(const descriptor of targets){
       const {body}=await readRule(io,descriptor);
       check(same(withoutSha(body,descriptor),baseline.get(descriptor.id)),'TARGET_PROTECTION_CHANGED');
@@ -181,10 +204,12 @@ export async function promoteRequiredWorkflows(io,target,assertCurrent,record,ma
   await guard();
   const observed=await verifyTargets();
   for(const event of observed)await record(event);
+  if(!maintenanceBefore)await record({kind:'maintenance-retired',rulesetId:maintenanceId,ref:maintenanceRef});
   // Recheck the complete set after collecting and recording the first snapshot.
   // Separate API reads cannot provide an atomic cross-ruleset snapshot.
   await assertCurrent();
   await verifyTargets();
+  await assertMaintenanceRetired();
   await assertCurrent();
   return {status:results.every(r=>r.status==='ALREADY_ADOPTED')?'ALREADY_ADOPTED':'ADOPTED',sha:target,targets:results};
 }

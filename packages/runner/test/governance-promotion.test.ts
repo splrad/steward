@@ -192,15 +192,24 @@ it('does not include arbitrary exception content in failure evidence',async()=>{
 });
 
 const maintenanceId=9001; // Isolated API fixture; production binds the separately read-back rule ID.
+const maintenanceRef='refs/heads/maintenance/legacy-runtime-e990eda';
+const matchingMaintenanceRefs='/repos/splrad/steward/git/matching-refs/heads/maintenance%2Flegacy-runtime-e990eda';
+const maintenanceHead={ref:maintenanceRef,object:{type:'commit',sha:P}};
 function maintenanceRule(){return {...rule(),id:maintenanceId,name:'maintenance',bypass_actors:[],
-  conditions:{repository_id:{repository_ids:[1296724484]},ref_name:{include:['refs/heads/maintenance/legacy-runtime-e990eda'],exclude:[]}},
+  conditions:{repository_id:{repository_ids:[1296724484]},ref_name:{include:[maintenanceRef],exclude:[]}},
   rules:[{type:'workflows',parameters:{do_not_enforce_on_create:true,workflows:[{repository_id:1296724484,path:'.github/workflows/maintenance-validation.yml',sha:P}]}}]};}
 function multipleRules(){
   const rules=new Map<number,any>([[18883080,rule()],[maintenanceId,maintenanceRule()]]),writes:number[]=[],records:any[]=[];
   const fixture={rules,writes,records,failMaintenance:false,lostResponse:false,afterWrite:(_id:number)=>{},
+    maintenanceRefs:{status:200,value:[maintenanceHead] as unknown},
+    maintenanceRead:null as {status:number;value:unknown}|null,
     record:async(value:any)=>{records.push(value);},request:async(method:string,url:string,body?:any)=>{
-      const id=Number(url.split('/').at(-1));expect(rules.has(id)).toBe(true);
-      if(method==='GET')return {status:200,value:structuredClone(rules.get(id))};
+      if(url===matchingMaintenanceRefs){expect(method).toBe('GET');return fixture.maintenanceRefs;}
+      const id=Number(url.split('/').at(-1));expect([18883080,maintenanceId]).toContain(id);
+      if(method==='GET'){
+        if(id===maintenanceId&&fixture.maintenanceRead)return fixture.maintenanceRead;
+        return rules.has(id)?{status:200,value:structuredClone(rules.get(id))}:{status:404,value:{}};
+      }
       expect(method).toBe('PUT');expect(Object.keys(body)).toEqual(['rules']);writes.push(id);
       if(id===maintenanceId&&fixture.failMaintenance)return {status:503};
       rules.get(id).rules=structuredClone(body.rules);fixture.afterWrite(id);
@@ -217,6 +226,49 @@ it('promotes both required sources, preserves all other fields, and re-enters wi
   expect(f.records.filter(r=>r.kind==='workflow-target-final')).toHaveLength(2);
   expect(await promoteRequiredWorkflows(f,M,guard,f.record,maintenanceId)).toMatchObject({status:'ALREADY_ADOPTED'});
   expect(f.writes).toEqual([18883080,maintenanceId]);
+});
+it('promotes only the core after the rule and exact maintenance branch are gone',async()=>{
+  const {promoteRequiredWorkflows}=await module(),f=multipleRules();
+  f.rules.delete(maintenanceId);
+  f.maintenanceRefs.value=[{...maintenanceHead,ref:maintenanceRef+'-other'}];
+  const expected=structuredClone(f.rules.get(18883080));shaBinding(expected).sha=M;
+  expect(await promoteRequiredWorkflows(f,M,async()=>{},f.record,maintenanceId)).toMatchObject({
+    status:'ADOPTED',targets:[{rulesetId:18883080,status:'ADOPTED'}],
+  });
+  expect(f.rules.get(18883080)).toEqual(expected);
+  expect(f.records).toContainEqual({kind:'maintenance-retired',rulesetId:maintenanceId,ref:maintenanceRef});
+  expect(await promoteRequiredWorkflows(f,M,async()=>{},f.record,maintenanceId)).toMatchObject({status:'ALREADY_ADOPTED'});
+  expect(f.writes).toEqual([18883080]);
+});
+it('blocks the core write when the rule is missing and the maintenance branch still exists',async()=>{
+  const {promoteRequiredWorkflows}=await module(),f=multipleRules();f.rules.delete(maintenanceId);
+  await expect(promoteRequiredWorkflows(f,M,async()=>{},f.record,maintenanceId)).rejects.toThrow('MAINTENANCE_BRANCH_STILL_PRESENT');
+  expect(f.writes).toEqual([]);
+});
+it.each([
+  ['ruleset permission',{status:403,value:{}},null,'NATIVE_READ_403'],
+  ['ruleset payload',{status:200,value:null},null,'NATIVE_PAYLOAD'],
+  ['ref read',{status:404,value:{}},{status:503,value:{}},'NATIVE_READ_503'],
+  ['ref payload',{status:404,value:{}},{status:200,value:[{ref:maintenanceRef}]},'MAINTENANCE_REF_READBACK'],
+] as const)('rejects unconfirmed retirement: %s',async(_name,ruleResponse,refResponse,code)=>{
+  const {promoteRequiredWorkflows}=await module(),f=multipleRules();
+  f.maintenanceRead=ruleResponse;
+  if(refResponse)f.maintenanceRefs=refResponse;
+  await expect(promoteRequiredWorkflows(f,M,async()=>{},f.record,maintenanceId)).rejects.toThrow(code);
+  expect(f.writes).toEqual([]);
+});
+it.each(['branch','ruleset'])('rejects final adoption if the maintenance %s reappears during the operation',async(kind)=>{
+  const {promoteRequiredWorkflows}=await module(),f=multipleRules();
+  f.rules.delete(maintenanceId);f.maintenanceRefs.value=[];
+  f.afterWrite=()=>{
+    if(kind==='branch')f.maintenanceRefs.value=[maintenanceHead];
+    else f.rules.set(maintenanceId,maintenanceRule());
+  };
+  await expect(promoteRequiredWorkflows(f,M,async()=>{},f.record,maintenanceId)).rejects.toThrow(
+    kind==='branch'?'MAINTENANCE_BRANCH_STILL_PRESENT':'MAINTENANCE_RULE_REAPPEARED',
+  );
+  expect(f.writes).toEqual([18883080]);
+  expect(f.records.some(record=>record.kind==='maintenance-retired')).toBe(false);
 });
 it.each(['disabled','repository','ref','bypass','path','source','extra-workflow','mutable-ref','id'])('rejects invalid maintenance target before any core write: %s',async kind=>{
   const f=multipleRules(),r=f.rules.get(maintenanceId);
