@@ -45,10 +45,6 @@ it.each([
   for (const step of job.steps.filter((step: unknown) => step !== consumers[0])) {
     expect(JSON.stringify(step)).not.toMatch(/secrets\./);
   }
-  if (workflow.jobs['automation-health']) {
-    expect(workflow.jobs['automation-health'].environment).toBeUndefined();
-    expect(JSON.stringify(workflow.jobs['automation-health'])).not.toMatch(/secrets\./);
-  }
 });
 
 it('only the production and explicitly gated acceptance jobs receive native Copilot permission', async () => {

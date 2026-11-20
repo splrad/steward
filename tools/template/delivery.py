@@ -257,7 +257,9 @@ def deliver(request, api, central_api, *, read_token=None, renderer=copier.rende
             copier.prepare_adoption(central, work, root/'seed', template_sha, expected_report=expected_report,
                                     data=repository_inputs(template_sha))
         if (work / '.github/repository-configuration.md').is_file() and repository_inputs(template_sha):
-            add_link(work, repository)
+            source = copier.git(central, ['show', template_sha + ':templates/repository/.github/workflows/repository-configuration.yml'], env)
+            triggers = yaml.load(source, Loader=yaml.BaseLoader)['on']
+            add_link(work, repository, retire='issues' in triggers)
         require(lock_runner is not None, 'ACTION_LOCK_RUNNER_REQUIRED')
         actions_lock.prepare(work, before_copier, lock_runner)
         if string('status', '--porcelain', '--untracked-files=all'):

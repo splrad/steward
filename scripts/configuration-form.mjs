@@ -2,7 +2,7 @@ import {productCITriggerGap,selectableProductCI,workflowEvent} from './validatio
 import {createHash} from 'node:crypto';
 import {posix} from 'node:path';
 import {matrixValue,staticMatrixRows,supportedArchiveName} from './configuration-build.mjs';
-import {channelWorkflowPath,effectiveChannels,renderConfiguration} from './configuration-view.mjs';
+import {channelWorkflowPath,effectiveChannels,pagesChoices,renderConfiguration} from './configuration-view.mjs';
 const key=text=>createHash('sha256').update(text).digest('hex').slice(0,16);
 const display=text=>String(text??'').replace(/[\r\n<>`]/g,' ');
 const token=field=>'<!-- cfg '+field+' -->';
@@ -62,7 +62,11 @@ function unitDefaults(model,entry,values) {
 }
 
 export function configurationForm(model,head,state={}) {
-  const values=state.values??{},items=[], lines=[];
+  const values={...state.values},items=[], lines=[];
+  const site=pagesChoices(model.pages);
+  for(const [field,env] of [['source','STEWARD_DOCS_SOURCE'],['unit','STEWARD_DOCS_UNIT']]) {
+    if(!site[field] && values['site.'+field]===model.pages?.env?.[env])delete values['site.'+field];
+  }
   const field=(id,label,initial='',type='text')=>{
     const value=values[id]??initial;
     items.push({id,type,value});
@@ -161,11 +165,11 @@ export function configurationForm(model,head,state={}) {
   }
   if(model.pages) {
     const build=model.pages.jobs?.build, deploy=model.pages.jobs?.deploy;
-    if(build) field('site.build','构建文档站',!/^\(?false\b/.test(String(build.if)),'check');
-    if(deploy) field('site.deploy','允许公开部署（须启用 Pages，运维批准的来源模式须一致，release 模式还须匹配同一非空单元）',!/^\(?false\b/.test(String(deploy.if)),'check');
+    if(build) field('site.build','选择构建文档站',site.build??false,'check');
+    if(deploy) field('site.deploy','选择允许公开部署（须启用 Pages，运维批准的来源模式须一致，release 模式还须匹配同一非空单元）',site.deploy??false,'check');
     lines.push('仅构建可直接使用下方来源。公开部署条件未满足时，已启用的构建仍可运行。');
-    field('site.source','站点来源（default-branch 或 release）',model.pages.env?.STEWARD_DOCS_SOURCE??'');
-    field('site.unit','正式 Release 来源单元',model.pages.env?.STEWARD_DOCS_UNIT??'');
+    field('site.source','站点来源（default-branch 或 release）',site.source);
+    field('site.unit','正式 Release 来源单元',site.unit);
   }
   const hasReleaseEntry=entries.some(entry=>values[entry.id+'.use']);
   if(!model.delivery && hasReleaseEntry) {
@@ -270,7 +274,9 @@ export function planFromForm(model,state,operation) {
   const changed=model.workflows.some(w=>selectableProductCI(w,model.defaultBranch) && Object.hasOwn(v,'ci.'+key(w.path))
     && Boolean(v['ci.'+key(w.path)])!==model.ci.includes(w.path));
   if(changed)settings.ci=ci;
-  if(model.pages && ['default-branch','release'].includes(v['site.source']))
+  const site=pagesChoices(model.pages);
+  const changedSite=['build','deploy','source','unit'].some(k=>Object.hasOwn(v,'site.'+k) && v['site.'+k] !== (site[k]??false));
+  if(model.pages && changedSite && ['default-branch','release'].includes(v['site.source']))
     settings.site={build:v['site.build'],deploy:v['site.deploy'],source:v['site.source'],unit:v['site.unit']};
   return settings;
 }

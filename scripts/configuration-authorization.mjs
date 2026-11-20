@@ -23,17 +23,23 @@ export async function fileText(api,path,ref) {
   return Buffer.from(value.content,'base64').toString('utf8');
 }
 
+export async function configurationAccess(api,base) {
+  const bytes=await fileText(api,delegatesPath,base);
+  const value=bytes===null?[]:JSON.parse(bytes);
+  const policy=Array.isArray(value)?{delegates:value,requestAccess:'administrators'}:value;
+  if(!policy || !Array.isArray(policy.delegates) || !policy.delegates.every(id=>Number.isSafeInteger(id) && id>0) ||
+     !['administrators','public'].includes(policy.requestAccess) || Object.keys(policy).some(k=>!['delegates','requestAccess'].includes(k)))
+    throw Error('Invalid administrator-managed configuration access');
+  return policy;
+}
+
 export async function authorized(api, actor, base, adminOnly=false) {
   if(actor?.type!=='User' || !Number.isSafeInteger(actor.id) || !actor.login) return false;
   const {data} = await api.rest.repos.getCollaboratorPermissionLevel({...api.target,username:actor.login});
   if(data.user?.id !== actor.id) return false;
   if(data.permission==='admin') return true;
   if(adminOnly) return false;
-  const bytes = await fileText(api,delegatesPath,base);
-  if(!bytes) return false;
-  const delegates = JSON.parse(bytes);
-  if(!Array.isArray(delegates) || !delegates.every(id=>Number.isSafeInteger(id) && id>0))
-    throw Error('Invalid administrator-managed configuration delegate IDs');
+  const {delegates}=await configurationAccess(api,base);
   return delegates.includes(actor.id);
 }
 
