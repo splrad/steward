@@ -1,12 +1,13 @@
 import {readFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
+import {pathToFileURL} from 'node:url';
 import YAML from 'yaml';
 import {verify as verifySecurityPolicy, securityPolicyController} from './security-policy.mjs';
-import {validationInput,git,regular} from './validation-input.mjs';
+import {validationFileInputs,git,regular} from './validation-input.mjs';
 import {assertRepositoryInstructions,discoverWorkflowFiles,scanWorkflows} from '../packages/runner/dist/index.js';
-const workspace=resolve(process.env.VALIDATION_WORKSPACE??'target');
-try {
-const {input,files}=await validationInput(workspace);
+export async function main(env=process.env) {
+  const workspace=resolve(env.VALIDATION_WORKSPACE??'target');
+  const {input,files}=await validationFileInputs(workspace,env);
   git(workspace,['-c','core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol','diff','--check',input.base,input.head]);
   for(const path of files.filter(p=>/\.(?:json|ya?ml)$/.test(p))){
     const text=await readFile(await regular(workspace,path),'utf8');
@@ -14,8 +15,9 @@ const {input,files}=await validationInput(workspace);
   }
   const legacy=JSON.parse(await readFile(new URL('../config/review/legacy-instructions.json',import.meta.url),'utf8'));
   await assertRepositoryInstructions(workspace,await readFile(new URL('../templates/repository/AGENTS.md',import.meta.url)),
-    {repositoryId:input.repositoryId,legacy,templateSource:process.env.GITHUB_REPOSITORY===process.env.WORKFLOW_REPOSITORY});
+    {repositoryId:input.repositoryId,legacy,templateSource:env.GITHUB_REPOSITORY===env.WORKFLOW_REPOSITORY});
   verifySecurityPolicy(workspace,input.base,input.head,securityPolicyController,input.workflowSha,
-    process.env.GITHUB_HEAD_REF === 'steward/managed-sync',process.env.GITHUB_REPOSITORY === process.env.WORKFLOW_REPOSITORY);
+    env.GITHUB_HEAD_REF === 'steward/managed-sync',env.GITHUB_REPOSITORY === env.WORKFLOW_REPOSITORY);
   console.log(JSON.stringify(await scanWorkflows(workspace,await discoverWorkflowFiles(workspace,true),undefined,input.repositoryId),null,2));
-}catch(error){console.error(error.message);process.exitCode=1;}
+}
+if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href)main().catch(error=>{console.error(error.message);process.exitCode=1;});

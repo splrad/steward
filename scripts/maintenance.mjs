@@ -5,6 +5,7 @@ import {createHash} from 'node:crypto';
 import YAML from 'yaml';
 import {NativeEvidenceReader,jobFact,originalJobExecutions,activeMaintenanceWorkflows,maintenanceJobKeys,maintenanceDisposition,maintenanceFailed,decodeMaintenanceRecord,assertMaintenanceProgress} from '../packages/runner/dist/index.js';
 import {writeReleaseRecords} from './release-record.mjs';
+import {centralRegistrationWorkflow, registrationRunName} from './repository-registration-policy.mjs';
 
 const repository='splrad/steward',repositoryId=1296724484;
 const policyRoot=resolve(dirname(fileURLToPath(import.meta.url)),'..');
@@ -16,12 +17,17 @@ const sha=value=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
 const utc=value=>{check(typeof value==='string'&&/(?:Z|[+-]\d\d:\d\d)$/.test(value)&&Number.isFinite(Date.parse(value)),'TIME');return new Date(value).toISOString();};
 const identity=r=>[r.id,r.workflow_id,r.repository?.id,r.head_repository?.id,r.path,r.head_sha,r.head_branch,r.event,r.created_at];
 const observation=r=>[...identity(r),r.run_attempt,r.status,r.conclusion,r.updated_at];
+const isRegistrationRun=run=>run.path===centralRegistrationWorkflow&&run.event==='repository_dispatch'
+  &&run.display_title===registrationRunName;
 
 export async function maintenanceDefinition(file) {
   check(activeMaintenanceWorkflows.includes(file),'WORKFLOW');
   const parsed=YAML.parseDocument(await readFile(join(policyRoot,'.github/workflows',file),'utf8'));
   check(!parsed.errors.length,'DEFINITION');const d=parsed.toJS({maxAliasCount:100}),keys=maintenanceJobKeys(file);
+  const registrationName=file==='sync-managed.yml'&&Object.hasOwn(d.jobs,'register')?'register':null;
+  if(registrationName)check(!d.jobs.register.name&&!d.jobs.register.needs,'REGISTRATION_DEFINITION');
   const currentKeys=keys.filter(key=>key!=='automation-health'||Object.hasOwn(d.jobs,key));
+  if(registrationName)currentKeys.push(registrationName);
   check(same(Object.keys(d.jobs).sort(),[...currentKeys].sort()),'DEFINITION_JOBS');
   const names={};
   for(const key of keys) {
@@ -37,7 +43,7 @@ export async function maintenanceDefinition(file) {
   // Runs created before retirement still occur in the maintenance lookback and saved records.
   const events = Object.keys(d.on);
   if (file === 'sync-managed.yml') events.push('push', 'schedule');
-  return {file,names,events};
+  return {file,names,events,registrationName};
 }
 function source(run,workflow,definition,branch) {
   check(positive(run.id)&&positive(run.run_attempt)&&run.repository?.id===repositoryId&&run.head_repository?.id===repositoryId
@@ -49,6 +55,12 @@ function source(run,workflow,definition,branch) {
 function jobsProjection(raw,run,definition) {
   check(Array.isArray(raw)&&raw.length>0&&new Set(raw.map(j=>j.id)).size===raw.length,'JOBS');
   for(const j of raw) check(j.run_id===run.id&&j.head_sha===run.head_sha&&positive(j.run_attempt)&&j.run_attempt<=run.run_attempt,'JOB_SOURCE');
+  // Template runs still report the skipped sibling job. Registration runs use their own recovery entry.
+  if(definition.registrationName)raw=raw.filter(j=>{
+    if(j.name!==definition.registrationName)return true;
+    check(j.status==='completed'&&j.conclusion==='skipped','REGISTRATION_ROUTE');
+    return false;
+  });
   const originals=new Set(originalJobExecutions(Array.from({length:run.run_attempt},(_,i)=>({attempt:i+1,
     jobs:raw.filter(j=>j.run_attempt===i+1).map(jobFact)}))).map(j=>j.id));
   return raw.filter(j=>originals.has(j.id)).map(j=>{
@@ -85,6 +97,7 @@ export async function recoverMaintenanceRun({reader,io,workflow,definition,branc
     if(run.status==='completed')check(run.conclusion===expectedRun.conclusion,'EVENT_CONCLUSION');
   }
   if(run.status!=='completed')return {status:'WAIT'};
+  if(isRegistrationRun(run))return {status:'REGISTRATION'};
   const jobs=jobsProjection(await reader.pages(`actions/runs/${runId}/jobs?filter=all`,'jobs'),run,definition);
   const after=await reader.json(`actions/runs/${runId}`);source(after,workflow,definition,branch);
   if(!same(observation(run),observation(after)))return {status:'WAIT'};
@@ -178,7 +191,7 @@ export async function serviceMaintenance({io,store,defaultBranch,coordinator},no
       check(positive(workflow.id)&&workflow.path===`.github/workflows/${file}`,'WORKFLOW_ID');
       if(workflow.state!=='active'){counts.waiting++;continue;}
       const runs=await maintenanceRunWindow(reader,workflow.id,defaultBranch,start,end);
-      const ids=new Set(runs.filter(r=>r.status==='completed'&&maintenanceFailed(r.conclusion)).map(r=>r.id));
+      const ids=new Set(runs.filter(r=>r.status==='completed'&&maintenanceFailed(r.conclusion)&&!isRegistrationRun(r)).map(r=>r.id));
       for(const r of known)if(r.workflowFile===file){check(r.workflowId===workflow.id,'WORKFLOW_REPLACED');ids.add(r.runId);}
       for(const runId of ids)candidates.push({workflow,definition,runId,lastObserved:known.find(r=>r.runId===runId)?.observedAt??'1970-01-01T00:00:00.000Z'});
     }catch{counts.unknown++;errors.add('MAINTENANCE_DISCOVERY_UNAVAILABLE');}

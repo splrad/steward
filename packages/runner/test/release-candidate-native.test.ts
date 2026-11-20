@@ -22,6 +22,7 @@ vi.setConfig({ testTimeout: process.platform === 'win32' ? 1_200_000 : 360_000 }
 setLogger({ debug() {}, info() {}, warn() {}, error() {}, trace() {} });
 vi.mock('../dist/index.js', async () => import('../src/index.js'));
 const { nativeReleaseCandidate, mergedContributorIdentity } = await import(pathToFileURL(resolve('scripts/release-candidate.mjs')).href);
+const { advanceEvent } = await import(pathToFileURL(resolve('scripts/release-cycle-event.mjs')).href);
 
 it('projects legacy web-flow cache at merge while preserving original actors and rejecting other drift', () => {
   const bot = {id:19864447, login:'web-flow', type:'User', profileUrl:'https://github.com/web-flow', avatarUrl:'https://avatars.githubusercontent.com/u/19864447?v=4'};
@@ -153,6 +154,13 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   if(pinCase==='old-source') {
     const originalState=await head('steward/release-state');
     await expect(nativeReleaseCandidate(request,{...options,expectedSourceSha:'0'.repeat(40)})).rejects.toThrow('CANDIDATE_EVENT_SOURCE_CHANGED');
+    const beforeAdmission=requests.length;
+    const result=await nativeReleaseCandidate(request,{...options,checkRepositoryPolicy:async (read:(path:string)=>Promise<string>)=>{
+      expect(JSON.parse(await read('.github/delivery.json'))).toEqual(delivery);
+      throw Error('CANDIDATE_REPOSITORY_POLICY_MOVED');
+    }});
+    expect(result).toEqual({status:'WAIT',reason:'CANDIDATE_REPOSITORY_POLICY_MOVED'});
+    expect(requests.slice(beforeAdmission).every(request=>request.method==='GET')).toBe(true);
     expect(modelCalls).toBe(0);expect(pr).toBeNull();expect(await head('steward/release-state')).toBe(originalState);
   }
   const refresh = async () => { await git('fetch', '--no-tags', '--no-recurse-submodules', remote, 'refs/heads/steward/release-state'); await git('update-ref', 'refs/heads/steward/release-state', await git('rev-parse', 'FETCH_HEAD')); };
@@ -272,6 +280,39 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
       .rejects.toThrow(pinCase === 'missing-pin' ? 'CANDIDATE_CONTROLLER_PIN_REQUIRED' : 'CANDIDATE_CONTROLLER_PIN_CONFLICT');
     expect(await head('steward/release-state')).toBe(before);expect(modelCalls).toBe(firstCalls);
     return;
+  }
+  if(pinCase==='old-source') {
+    const before=await head('steward/release-state');
+    await expect(releaseCommand('candidate',{...request,cycleId:null,runId:null,writeDirectory:join(root,'denied-handoff')},{
+      token:options.token,candidateReadToken:options.readToken,controllerSha:options.controllerSha,now:options.now,io,
+      candidateRuntime:{checkRepositoryPolicy:async (read:(path:string)=>Promise<string>)=>{
+        expect(JSON.parse(await read('.github/delivery.json'))).toEqual(delivery);
+        throw Error('CANDIDATE_REPOSITORY_POLICY_DISABLED');
+      }}
+    })).rejects.toThrow('CANDIDATE_REPOSITORY_POLICY_DISABLED');
+    const beforeAdmission=requests.length;
+    const result=await advanceEvent({kind:'push',repositoryId:1,sourceSha:S},{
+      registry:[{id:1,name:request.repository,defaultBranch:request.defaultBranch}],
+      snapshot:async()=>({head:before,cycles:[]}),
+      get:async(path:string)=>{
+        expect(path).toBe('git/ref/heads/main');
+        return {object:{sha:await head('main')}};
+      },
+      candidate:async(expectedSourceSha:string,expectedStateSha:string)=>releaseCommand('candidate',{
+        ...request,cycleId:null,runId:null,writeDirectory:join(root,'moved-handoff'),
+      },{
+        token:options.token,candidateReadToken:options.readToken,controllerSha:options.controllerSha,now:options.now,io,
+        candidateRuntime:{expectedSourceSha,expectedStateSha,checkRepositoryPolicy:async(read:(path:string)=>Promise<string>)=>{
+          expect(JSON.parse(await read('.github/delivery.json'))).toEqual(delivery);
+          throw Error('CANDIDATE_REPOSITORY_POLICY_MOVED');
+        }}
+      }),
+      invoke:vi.fn(()=>{throw Error('UNEXPECTED_BUILD_DISPATCH');}),
+    });
+    expect(result).toEqual({status:'WAIT',reason:'CANDIDATE_REPOSITORY_POLICY_MOVED'});
+    expect(requests.slice(beforeAdmission).every(request=>request.method==='GET')).toBe(true);
+    expect(await head('steward/release-state')).toBe(before);
+    expect(modelCalls).toBe(firstCalls);
   }
   const handed=await releaseCommand('candidate',{...request,cycleId:null,runId:null,writeDirectory:join(root,'merge-writes')},
     {token:options.token,candidateReadToken:options.readToken,controllerSha:options.controllerSha,now:options.now,io});

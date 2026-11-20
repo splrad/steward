@@ -4,6 +4,7 @@ import { decodePagesMaintenance } from './pages-maintenance.js';
 import { decodeCompletionArchive } from './release-history.js';
 import { decodeQualityCache } from './quality-language-summary.js';
 import { decodeCandidateArchive } from './release-candidate-record.js';
+import { decodeRepositoryPolicyProjection, repositoryPolicyPath } from './repository-policy-projection.js';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import addFormatsModule from 'ajv-formats';
 import schema from '../../../schema/release-state.schema.json' with { type: 'json' };
@@ -146,7 +147,7 @@ export function decodeReleaseRecord<K extends keyof RecordKinds>(kind: K, bytes:
 }
 
 /** Fixed path ownership is a caller boundary, not a replacement for native App permissions. */
-export function stateRecordOwner(targetRef: string, path: string): 'release' | 'quality' | 'settings' | 'bootstrap' | 'pages' | 'health' | 'maintenance' {
+export function stateRecordOwner(targetRef: string, path: string): 'release' | 'quality' | 'settings' | 'bootstrap' | 'pages' | 'health' | 'maintenance' | 'configuration' {
   assertDeliveryPath(path);
   if(path.split('/').some(part=>/^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(part))) return fail('state device path');
   if (targetRef==='steward/release-state') {
@@ -160,6 +161,7 @@ export function stateRecordOwner(targetRef: string, path: string): 'release' | '
     if (/^maintenance\/[A-Za-z0-9_-]+\.json$/.test(path)) return 'maintenance';
   }
   if (targetRef==='steward/governance-state') {
+    if (path===repositoryPolicyPath) return 'configuration';
     if (/^quality\/[1-9][0-9]*(?:\/[a-f0-9]{40}\.md|\.json)$/.test(path)) return 'quality';
     if (/^settings\/[1-9][0-9]*-[1-9][0-9]*\.(?:md|json)$/.test(path)) return 'settings';
     if (/^bootstrap\/[1-9][0-9]*-[1-9][0-9]*\.json$/.test(path)) return 'bootstrap';
@@ -238,6 +240,7 @@ export function decodeStateFile(targetRef: string, path: string, bytes: Uint8Arr
   if(owner==='settings') return decodeSettingsReport(decodeBuildJson(bytes),repositoryId,path);
   if(owner==='maintenance') return decodeMaintenanceRecord(bytes,repositoryId,path);
   if(owner==='pages') return decodePagesMaintenance(bytes,repositoryId,path);
+  if(owner==='configuration') return decodeRepositoryPolicyProjection(bytes,repositoryId);
   if(owner==='quality') {
     // Source Markdown, identifiers and translations are content. Validate the
     // complete JSON envelope first, then keep strict checks on its metadata.

@@ -91,6 +91,36 @@ it('rejects widened template credentials before invoking delivery',async()=>{
   expect(calls).toBe(0);expect(f.revoked).toHaveLength(2);
 });
 
+it('scopes registry reads, registration request reads and PR writes to separate admin-repository tokens',async()=>{
+  const f=fixture(),app=await nativeReleaseApp(key,f.fetcher);
+  await expect(app.forRepository(12,async()=>{},'registration-write')).rejects.toThrow('REGISTRATION_ADMIN_REPOSITORY_ID');
+  await expect(app.forRepository(12,async()=>{},'registry-read')).rejects.toThrow('REGISTRATION_ADMIN_REPOSITORY_ID');
+  const registry=await app.forRepository(1447987054,async token=>token,'registry-read');
+  const read=await app.forRepository(1447987054,async token=>token,'registration-read');
+  expect(registry).not.toBe(read);
+  await app.forRepository(1447987054,async token=>expect(token).not.toBe(read),'registration-write');
+  expect(f.minted).toEqual([
+    {repository_ids:[1447987054],permissions:{metadata:'read',contents:'read'}},
+    {repository_ids:[1447987054],permissions:{metadata:'read',contents:'read',actions:'read'}},
+    {repository_ids:[1447987054],permissions:{metadata:'read',contents:'write',pull_requests:'write'}}
+  ]);
+  expect(f.revoked).toHaveLength(3);
+});
+
+it('scopes the projection writer to Contents and revokes the rule reader independently',async()=>{
+  const f=fixture(),app=await nativeReleaseApp(key,f.fetcher);
+  await app.forRepository(12,async writer=>{
+    await app.forRepository(12,async reader=>expect(reader).not.toBe(writer),'maintenance-rules');
+    expect(f.revoked).toHaveLength(1);
+    expect(f.revoked).not.toContain(writer);
+  },'registry-projection');
+  expect(f.minted).toEqual([
+    {repository_ids:[12],permissions:{metadata:'read',contents:'write'}},
+    {repository_ids:[12],permissions:{metadata:'read',organization_administration:'write'}}
+  ]);
+  expect(f.revoked).toHaveLength(2);
+});
+
 it.each([false,true])('borrows only candidate-read capability and revokes it, operation fails=%s',async fails=>{
   const f=fixture(),app=await nativeReleaseApp(key,f.fetcher);
   const operation=app.forCandidateReadRepository(12,async read=>{expect(read).toBeTruthy();if(fails)throw Error('read failed');return 'read complete';});

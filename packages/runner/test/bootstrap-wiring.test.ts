@@ -84,8 +84,8 @@ const nativeRule=(id:number)=>({id,source:'splrad',source_type:'Organization',en
   bypass_actors:id===1?actors:[]});
 
 it('bootstrap and template jobs enumerate independently, separate keys and keep failure/cancellation semantics',async()=>{
-  const raw=await readFile('.github/workflows/sync-managed.yml','utf8'),workflow=YAML.parse(raw),{bootstrap,templates}=workflow.jobs;
-  expect(Object.keys(workflow.jobs)).toEqual(['bootstrap','templates']);expect(workflow.permissions).toEqual({contents:'read',actions:'read'});
+  const raw=await readFile('.github/workflows/sync-managed.yml','utf8'),workflow=YAML.parse(raw),{bootstrap,templates,register}=workflow.jobs;
+  expect(Object.keys(workflow.jobs)).toEqual(['bootstrap','templates','register']);expect(workflow.permissions).toEqual({contents:'read',actions:'read'});
   expect(bootstrap.concurrency).toEqual({group:'steward-governance-mutation','cancel-in-progress':false,queue:'max'});
   expect(templates.needs).toBe('bootstrap');expect(templates.if).toContain('!cancelled()');expect(templates.if).not.toMatch(/success\(/);
   expect(templates.concurrency['cancel-in-progress']).toBe(false);
@@ -96,16 +96,22 @@ it('bootstrap and template jobs enumerate independently, separate keys and keep 
   expect(bootstrap.steps.at(-1).env.STEWARD_BOOTSTRAP_ONLY).toContain('inputs.bootstrap_only');
   expect(Object.keys(workflow.on.workflow_dispatch.inputs)).toEqual(['bootstrap_only']);
   expect(Object.keys(workflow.on).sort()).toEqual(['repository_dispatch','workflow_dispatch']);
-  expect(workflow.on.repository_dispatch.types).toEqual(['steward-template-event']);
+  expect(workflow.on.repository_dispatch.types).toEqual(['steward-template-event','steward-registration-request']);
   expect(templates.if).toContain("vars.STEWARD_TEMPLATE_APPLY == 'true'");
   expect(templates.if).not.toContain('STEWARD_BOOTSTRAP_APPLY');
   for(const job of [bootstrap,templates]) {
+    expect(job.if).toContain("github.event.action == 'steward-template-event'");
+    expect(job.if).not.toContain('steward-registration-request');
     expect(job.environment.name).toBe('steward-automation');
     expect(job.steps[0].with).toEqual({ref:'${{ github.workflow_sha }}','fetch-depth':0,'persist-credentials':false});
     expect(job.steps[2].env).toBeUndefined();expect(job.steps[2].run).toContain('npm ci --ignore-scripts');
   }
   expect(bootstrap.steps.at(-1).env).toHaveProperty('GOVERNANCE_APP_PRIVATE_KEY');expect(bootstrap.steps.at(-1).env).not.toHaveProperty('STEWARD_APP_PRIVATE_KEY');
   expect(templates.steps.at(-1).env).toHaveProperty('STEWARD_APP_PRIVATE_KEY');expect(templates.steps.at(-1).env).not.toHaveProperty('GOVERNANCE_APP_PRIVATE_KEY');
+  expect(register.if).toContain("github.event_name == 'repository_dispatch' && github.event.action == 'steward-registration-request'");
+  expect(register.if).not.toContain('workflow_dispatch');
+  expect(register.needs).toBeUndefined();
+  expect(register.concurrency).toEqual({group:'steward-repository-registration','cancel-in-progress':false,queue:'max'});
   expect(raw).not.toMatch(/matrix:|outputs:|upload-artifact|create-pull-request|managed-sync (targets|preview|apply|preflight)/);
 });
 it('a failed or pending repository does not hide failure or stop independent repositories and exposes only counts',async()=>{

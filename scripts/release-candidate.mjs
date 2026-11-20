@@ -36,7 +36,7 @@ export function mergedContributorIdentity(identity, authors) {
 }
 
 /** Fixed candidate adapter. Credentials never enter archived data or model/RP payloads. */
-export async function nativeReleaseCandidate(request, { token, readToken, copilotToken, controllerSha, controllerDirectory = process.cwd(), now = () => new Date().toISOString(), fetcher = fetch, generator, language, expectedStateSha, expectedSourceSha, temporaryRoot = tmpdir(),verifyHandoff,contentRecovery,observation,manualCandidateProducer,reselectUnits=false } = {}) {
+export async function nativeReleaseCandidate(request, { token, readToken, copilotToken, controllerSha, controllerDirectory = process.cwd(), now = () => new Date().toISOString(), fetcher = fetch, generator, language, expectedStateSha, expectedSourceSha, temporaryRoot = tmpdir(),verifyHandoff,contentRecovery,observation,manualCandidateProducer,reselectUnits=false,checkRepositoryPolicy } = {}) {
   if (!readToken || readToken === token) return { status: 'WAIT', reason: 'CANDIDATE_SCOPED_READ_CREDENTIAL_REQUIRED' };
   if (!validSha(controllerSha)) return { status: 'WAIT', reason: 'CANDIDATE_CONTROLLER_IDENTITY_REQUIRED' };
   if(expectedStateSha!==undefined&&!validSha(expectedStateSha))fail('CANDIDATE_EXPECTED_STATE_INVALID');
@@ -135,6 +135,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     const source = async () => {
       const baseSha = await fetchBranch(request.defaultBranch); if (!baseSha) fail('CANDIDATE_DEFAULT_BRANCH_UNAVAILABLE');
       if(expectedSourceSha!==undefined&&baseSha!==expectedSourceSha)fail('CANDIDATE_EVENT_SOURCE_CHANGED');
+      await checkRepositoryPolicy?.(path=>fileAt(baseSha,path));
       const config = await fileAt(baseSha, 'release-please-config.json'), manifest = await fileAt(baseSha, '.release-please-manifest.json');
       delivery = parseDeliveryConfig(JSON.parse(await fileAt(baseSha, '.github/delivery.json')));
       assertProductDelivery(delivery,request.repository);
@@ -503,6 +504,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         if(!eligible||history.inventoryComplete!==true||history.pendingHandoff!==cycle.id
           ||history.defaultHead!==defaultSha||history.stateHead!==expectedHead)
           return {status:'WAIT',reason:'MERGED_CANDIDATE_SOURCE_UNVERIFIED',history};
+        await checkRepositoryPolicy?.(path=>fileAt(sourceSha,path));
         if(await fetchBranch(request.defaultBranch)!==defaultSha||await fetchBranch('steward/release-state')!==expectedHead)
           return {status:'WAIT',reason:'MERGED_CANDIDATE_SOURCE_MOVED'};
         session.repository.activeCycleId = cycle.id; session.repository.candidate = null; session.repository.revision++; session.repository.lastProgressAt = now();
@@ -512,5 +514,8 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       }
     }
     return await advanceReleaseCandidate(session, runtime);
+  } catch (error) {
+    if (error?.message === 'CANDIDATE_REPOSITORY_POLICY_MOVED') return { status: 'WAIT', reason: error.message };
+    throw error;
   } finally { await rm(root, { recursive: true, force: true }); }
 }

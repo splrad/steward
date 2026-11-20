@@ -8,12 +8,14 @@ import {createHash,generateKeyPairSync} from 'node:crypto';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
-test('registered native entry uses a single Pages token, both governance writers and the product Git ledger',async t=>{
+test('registered native entry separates Pages writes from administrator policy reads and uses the product Git ledger',async t=>{
   const root=await fs.mkdtemp(join(tmpdir(),'pages-native-entry-'));
   const remote=join(root,'product.git'),seed=join(root,'seed'),branch='steward/governance-state';
   const originalExec=child.execFile,exec=promisify(originalExec);
   const git=async(...args)=>(await exec('git',args,{cwd:root,encoding:'utf8',windowsHide:true})).stdout.trim();
   const repo={id:1187527897,full_name:'splrad/LayerScape',default_branch:'main',has_pages:true,private:false,fork:false,disabled:false,archived:false};
+  const admin={id:1447987054,full_name:'splrad/steward-settings',default_branch:'main',private:true,
+    disabled:false,archived:false,owner:{id:302208797}};
   const central=1296724484,bot=301115370,pin='b'.repeat(40),sha='a'.repeat(40),target='.github/workflows/pages.yml';
   const site={repositoryId:repo.id,repository:repo.full_name,workflowId:8};
   const wf=await fs.readFile(new URL('../../templates/release/pages.yml',import.meta.url));
@@ -56,11 +58,19 @@ test('registered native entry uses a single Pages token, both governance writers
       if(p==='/users/splrad-steward[bot]')return json(botFact);
       if(p==='/app/installations/145952003/access_tokens'&&method==='POST'){
         const request=JSON.parse(init.body);tokenRequests.push(request);
-        assert.deepEqual(request.repository_ids,[repo.id]);
+        assert.ok([repo.id,admin.id].includes(request.repository_ids[0]));
         return json({token:'ghs_offline_'+tokenRequests.length,expires_at:new Date(Date.now()+3600000).toISOString(),permissions:request.permissions});
       }
-      if(p==='/installation/repositories')return json({total_count:1,repositories:[repo]});
+      const tokenIndex=/ghs_offline_([1-9][0-9]*)$/.exec(new Headers(init.headers).get('authorization')??'');
+      const scope=tokenRequests[Number(tokenIndex?.[1])-1]?.repository_ids[0];
+      if(p==='/installation/repositories')return json({total_count:1,repositories:[scope===admin.id?admin:repo]});
       if(p==='/installation/token'&&method==='DELETE'){revoked++;return new Response(null,{status:204});}
+      if(p==='/repos/'+admin.full_name||p.startsWith('/repos/'+admin.full_name+'/')){
+        assert.equal(scope,admin.id);assert.equal(method,'GET');
+        if(p==='/repos/'+admin.full_name)return json(admin);
+        if(p.endsWith('/branches/main'))return json({name:'main',protected:true,commit:{sha:pin}});
+        if(p.endsWith('/git/trees/'+pin))return json({truncated:false,tree:[]});
+      }
       if(p==='/repos/splrad/steward')return json({id:central,default_branch:'main'});
       if(p.startsWith('/repos/splrad/steward/')){
         const k=p.slice('/repos/splrad/steward'.length);
@@ -107,9 +117,12 @@ test('registered native entry uses a single Pages token, both governance writers
       assert.equal(await head(),original);assert.deepEqual(actions,[]);
     }
     ruleProblem='';await main(env);
-    assert.deepEqual(actions,['/actions/runs/12/rerun']);assert.equal(revoked,4);assert.equal(tokenRequests.length,4);
-    for(const request of tokenRequests)assert.deepEqual(request.permissions,{metadata:'read',contents:'write',actions:'write',administration:'read',
-      actions_variables:'read',deployments:'read',attestations:'read',organization_administration:'write'});
+    assert.deepEqual(actions,['/actions/runs/12/rerun']);assert.equal(revoked,tokenRequests.length);
+    assert.equal(tokenRequests.filter(request=>request.repository_ids[0]===repo.id).length,4);
+    assert.ok(tokenRequests.some(request=>request.repository_ids[0]===admin.id));
+    for(const request of tokenRequests)assert.deepEqual(request.permissions,request.repository_ids[0]===admin.id
+      ?{metadata:'read',contents:'read'}:{metadata:'read',contents:'write',actions:'write',administration:'read',
+        actions_variables:'read',deployments:'read',attestations:'read',organization_administration:'write'});
     const record=JSON.parse(await git('--git-dir='+remote,'show',branch+':maintenance/pages/12.json'));
     assert.equal(record.runId,12);assert.equal(record.requests[0].responseStatus,201);
   }finally {child.execFile=originalExec;t.mock.restoreAll();syncBuiltinESMExports();await fs.rm(root,{recursive:true,force:true});}

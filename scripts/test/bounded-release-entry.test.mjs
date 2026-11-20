@@ -225,6 +225,17 @@ test('normal event does not label unknown result as completion',async()=>{
   const v=await processNormalCandidateEvent(normalInput(head),{get:f.get,invoke:async()=>({status:'WAIT',reason:'WRITE_UNKNOWN'})});
   assert.equal(v.outcome,'needs_attention');
 });
+test('normal event preserves the reason and state when release policy moves during admission',async()=>{
+  const f=candidateFixture();
+  const result=await processNormalCandidateEvent(normalInput(head),{
+    get:f.get,
+    invoke:async()=>({status:'WAIT',reason:'CANDIDATE_REPOSITORY_POLICY_MOVED'})
+  });
+  assert.equal(result.status,'WAIT');
+  assert.equal(result.reason,'CANDIDATE_REPOSITORY_POLICY_MOVED');
+  assert.equal(result.outcome,'needs_attention');
+  assert.deepEqual(result.stateAfter,result.stateBefore);
+});
 for(const kind of ['closed','editing','human-head'])test(`normal rechecks ${kind} after candidate processing`,async()=>{
   const f=candidateFixture(),pr=f.data[`${f.prefix}/pulls/192`];
   const task=processNormalCandidateEvent(normalInput(head),{get:f.get,invoke:async()=>{

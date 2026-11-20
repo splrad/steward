@@ -47,6 +47,25 @@ it.each(['sync-managed.yml','quality-language-summary.yml','governance-promotion
   const f=await fixture(file);expect(await f.execute()).toEqual({status:'ACCEPTED'});expect(f.posts()).toHaveLength(1);
   expect(f.records.get(12).requests).toHaveLength(1);expect(f.records.get(12).requests[0].responseStatus).toBe(201);
 });
+it('leaves registration runs to the private registration recovery path',async()=>{
+  const f=await fixture('sync-managed.yml');
+  f.run.display_title='SPLRAD Steward / Repository Registration';
+  f.jobs=[job(20,'register'),job(21,'bootstrap',1,'skipped'),job(22,'templates',1,'skipped')];
+  expect(await f.execute()).toEqual({status:'REGISTRATION'});
+  expect(f.calls).toEqual([['GET','/repos/splrad/steward/actions/runs/12']]);
+  expect(f.saves).toBe(0);
+});
+it('preserves template recovery with a skipped registration sibling and rejects a mixed route',async()=>{
+  const f=await fixture('sync-managed.yml');
+  f.jobs.push(job(20,'register',1,'skipped'));
+  expect(await f.execute()).toEqual({status:'ACCEPTED'});
+  expect(f.records.get(12).jobs.some((entry:any)=>entry.key==='register')).toBe(false);
+  const mixed=await fixture('sync-managed.yml');
+  mixed.jobs.push(job(20,'register',1,'failure'));
+  await expect(mixed.execute()).rejects.toThrow('MAINTENANCE_REGISTRATION_ROUTE');
+  expect(mixed.posts()).toHaveLength(0);
+  expect(mixed.saves).toBe(0);
+});
 it.each(['lost','unknown'])('reconciles a %s response without a second POST from the same attempt',async mode=>{
   const f=await fixture();f.mode=mode;expect((await f.execute()).status).toBe(mode==='lost'?'ACCEPTED':'UNKNOWN');
   expect((await f.execute()).status).toBe(mode==='lost'?'WAIT':'UNKNOWN');expect(f.posts()).toHaveLength(1);
