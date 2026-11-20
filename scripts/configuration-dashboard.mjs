@@ -34,7 +34,7 @@ async function syncIssue(api,repo,summary,pr,lastClosed,publicRequests) {
   const pins=repository.pinnedIssues;
   const pinned=issue && pins.nodes.some(p=>p.issue.number===issue.number);
   const full=!pinned && pins.totalCount>=3;
-  const body=[marker(repo.id),summary,pr?'[打开配置 PR #'+pr.number+']('+pullUrl(repo,pr.number)+')':'当前没有开放的配置 PR。',
+  const body=[marker(repo.id),summary,...(pr?['[打开配置 PR #'+pr.number+']('+pullUrl(repo,pr.number)+')']:[]),
     ...(!pr && lastClosed?['[配置 PR #'+lastClosed.number+']('+pullUrl(repo,lastClosed.number)+')'+
       (lastClosed.merged_at?' 已合并。':' 已关闭，变更未采用。')]:[]),
     publicRequests?'任何用户均可在此评论 `/configure` 请求配置 PR。配置选择由管理员或受托维护者修改。':'管理员或受托维护者可在此评论 `/configure` 请求配置 PR。',

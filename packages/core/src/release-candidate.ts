@@ -54,7 +54,7 @@ export function candidatePhase(candidate: { prNumber: number | null; pendingWrit
 }
 export function candidateCreationBody(id: string, upstreamBody: string) {
   if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('CANDIDATE_IDENTITY_INVALID');
-  return `${upstreamBody}\n\n<!-- steward:candidate:${id} -->\n\n此处版本与说明是创建时的快照；当前内容见本 PR 的发布说明文件和 Steward 状态评论。\n`;
+  return `${upstreamBody}\n\n当前文稿的预览见本 PR 的 Steward 状态评论。\n\n<!-- steward:candidate:${id} -->\n`;
 }
 export function renderReleaseContributors(contributors: readonly ReleaseContributor[]): string {
   return Mustache.render('{{#hasContributors}}\n## 贡献者\n\n{{#contributors}}<a href="{{profileUrl}}"><img src="{{avatarUrl}}" alt="{{alt}}" width="32" height="32" /></a> {{/contributors}}\n{{/hasContributors}}',

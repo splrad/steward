@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
+import {zip} from '../../packages/runner/test/fixtures/artifact-envelope.ts';
 import { registrationEntry, registrationIds, pushRegistrationIds, selectRegistrationTargets, registrationProposal, reconcileRegistration, renderRegistrationPull } from '../repository-registration.mjs';
 import { requestFile } from '../repository-registration-request.mjs';
 import { checkedRegistration,parseRegistration } from '../repository-registration-policy.mjs';
@@ -275,7 +276,7 @@ test('an approved rollback replaces the central projection when product declarat
   const missingDeclaration=await propose(product,new Map([['src/main.ts','export {};']]));
   assert.equal(missingDeclaration.productCiApplicable,true);
   assert.deepEqual(missingDeclaration.pending,['复核产品 CI 工作流或触发条件']);
-  assert.match(renderRegistrationPull(product,source,missingDeclaration).body,/待补产品原生 CI 入口/);
+  assert.match(renderRegistrationPull(product,source,missingDeclaration).body,/复核产品 CI 工作流或触发条件/);
   await assert.rejects(publish('central',async()=>missingDeclaration,{productCi:[],release:null}),/PROJECTION_PRODUCT_CI/);
   const invalidRelease=structuredClone(policy.release);
   invalidRelease.units[0].channels[0].artifactIds=['unknown-asset'];
@@ -429,6 +430,94 @@ test('an actual Octokit policy read failure emits no private details to process 
   assert.equal(child.status,0,child.stderr);
   assert.equal(child.stderr,'');
   assert.equal(child.stdout,'');
+});
+
+test('the registration command reaches the native state reader for an approved projection',async()=>{
+  const directory=await mkdtemp(join(await nativeTemporaryParent('REGISTRATION_FIXTURE_TEMP_LINK'),'registration-cli-'));
+  try {
+    const repo={...governance,private:false,archived:false,disabled:false};
+    const registry={...admin,name:'steward-settings',owner:org,archived:false,disabled:false};
+    const policy=Buffer.from(JSON.stringify({schemaVersion:1,repositoryId:repo.id,repository:repo.full_name,
+      adoption:'central',productCi:[],release:null,site:null}));
+    const blob=createHash('sha1').update(`blob ${policy.length}\0`).update(policy).digest('hex');
+    const requestId='12345678-1234-4321-8123-123456789012';
+    const producer={repository_id:admin.id,head_repository_id:admin.id,head_branch:'main',head_sha:base,id:78};
+    const archive=zip(requestFile,Buffer.from(JSON.stringify({schemaVersion:1,requestId,repositoryIds:[repo.id],
+      sourceSha:base,runId:78,attempt:1,event:'push'})));
+    const artifact={id:79,workflow_run:producer,name:'repository-registration-'+requestId,expired:false,size_in_bytes:archive.length,
+      digest:'sha256:'+createHash('sha256').update(archive).digest('hex')};
+    const eventPath=join(directory,'event.json'),receipt=join(directory,'projection-read');
+    await writeFile(eventPath,JSON.stringify({action:'steward-registration-request',client_payload:{schemaVersion:1,requestId},
+      repository:{id:1296724484,full_name:'splrad/steward',private:false,default_branch:'main'},
+      sender:{id:353238212,login:'splrad-governance[bot]',type:'Bot'}}));
+    const transport=`
+      import assert from 'node:assert/strict';
+      import {writeFile} from 'node:fs/promises';
+      const {repo,registry,base,source,candidate,policy,blob,artifact,archive,receipt}=JSON.parse(process.env.REGISTRATION_CLI_FIXTURE);
+      const scope=new Map(),admin='/repos/'+registry.full_name,product='/repos/'+repo.full_name;
+      const branch={name:'main',protected:true,commit:{sha:base}},workflow='.github/workflows/repository-registration.yml';
+      const json=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{'content-type':'application/json'}});
+      globalThis.fetch=async (input, init)=>{
+        const url=new URL(input),path=decodeURIComponent(url.pathname),method=init?.method??'GET';
+        const key=new Headers(init?.headers).get('authorization')?.split(' ').at(-1);
+        if(url.hostname==='fixture.blob.core.windows.net')return new Response(Buffer.from(archive,'base64'));
+        assert.equal(url.origin,'https://api.github.com');
+        if(path==='/app')return json({id:4243096,client_id:'Iv23liuSr0qd4WLJdZhH',slug:'splrad-steward'});
+        if(path==='/users/splrad-steward[bot]')return json({id:301115370,type:'Bot'});
+        if(path==='/orgs/splrad/installation'){
+          const {iss}=JSON.parse(Buffer.from(key.split('.')[1],'base64url'));
+          const governance=String(iss)==='5639432';
+          return json({id:governance?179184801:145952003,app_id:governance?5639432:4243096,account:{id:302208797},suspended_at:null});
+        }
+        if(path.endsWith('/access_tokens')&&method==='POST'){
+          const grant=JSON.parse(init.body),token='fixture-'+scope.size;
+          scope.set(token,grant);
+          return json({token,permissions:grant.permissions,expires_at:new Date(Date.now()+3600000).toISOString()});
+        }
+        const grant=scope.get(key);
+        assert.ok(grant);
+        if(path==='/installation/repositories')return json({total_count:1,repositories:grant.repository_ids.map(id=>({id}))});
+        if(path==='/installation/token'&&method==='DELETE')return new Response(null,{status:204});
+        assert.equal(method,'GET');
+        if(path==='/repositories/'+registry.id||path===admin)return json(registry);
+        if(path==='/repositories/'+repo.id)return json(repo);
+        if(path===admin+'/actions/artifacts')return json({total_count:1,artifacts:[artifact]});
+        if(path===admin+'/actions/artifacts/'+artifact.id)return json(artifact);
+        if(path===admin+'/actions/artifacts/'+artifact.id+'/zip')return new Response(null,{status:302,
+          headers:{location:'https://fixture.blob.core.windows.net/request'}});
+        if(path===admin+'/actions/workflows/repository-registration.yml')return json({id:9,path:workflow,state:'active'});
+        if(path===admin+'/actions/runs/78/attempts/1')return json({id:78,run_attempt:1,workflow_id:9,path:workflow,event:'push',
+          repository:{id:registry.id},head_repository:{id:registry.id},head_branch:'main',head_sha:base,actor:{id:5,type:'User'}});
+        if(path===admin+'/branches/main')return json(branch);
+        if(path===admin+'/git/trees/'+base)return json({truncated:false,tree:[{type:'tree',mode:'040000',path:'repositories',sha:candidate}]});
+        if(path===admin+'/git/trees/'+candidate)return json({truncated:false,tree:[{type:'blob',mode:'100644',path:repo.id+'.json',sha:blob}]});
+        if(path===admin+'/contents/repositories/'+repo.id+'.json')return json({type:'file',path:'repositories/'+repo.id+'.json',
+          encoding:'base64',sha:blob,size:Buffer.from(policy,'base64').length,content:policy});
+        if(path===product+'/git/ref/heads/main')return json({ref:'refs/heads/main',object:{type:'commit',sha:source}});
+        if(path===product+'/git/trees/'+source)return json({truncated:false,tree:[]});
+        if(path===product+'/rules/branches/steward/governance-state'){
+          assert.deepEqual(grant.permissions,{metadata:'read',organization_administration:'write'});
+          await writeFile(receipt,'rule lookup reached');
+          return json({},403);
+        }
+        assert.fail('Unexpected fixture route');
+      };
+    `;
+    const preload='data:text/javascript;base64,'+Buffer.from(transport).toString('base64');
+    const key=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs8',format:'pem'}).toString();
+    const child=spawnSync(process.execPath,['--import',preload,'scripts/repository-registration.mjs','consume'],{
+      encoding:'utf8',windowsHide:true,timeout:30_000,env:{...process.env,STEWARD_APP_PRIVATE_KEY:key,GOVERNANCE_APP_PRIVATE_KEY:key,
+        GITHUB_EVENT_PATH:eventPath,GITHUB_EVENT_NAME:'repository_dispatch',GITHUB_REF:'refs/heads/main',GITHUB_SHA:base,
+        REGISTRATION_WORKFLOW_SHA:base,GITHUB_WORKFLOW_REF:'splrad/steward/.github/workflows/sync-managed.yml@refs/heads/main',
+        REGISTRATION_ALLOWED_IDS:String(repo.id),REGISTRATION_CLI_FIXTURE:JSON.stringify({repo,registry,base,source,candidate,
+          blob,policy:policy.toString('base64'),artifact,archive:archive.toString('base64'),receipt})}
+    });
+    assert.equal(child.status,1,child.stderr);
+    assert.equal(child.stderr,'REGISTRATION_UNAVAILABLE apply\n');
+    assert.equal(await readFile(receipt,'utf8'),'rule lookup reached');
+  } finally {
+    await rm(directory,{recursive:true,force:true});
+  }
 });
 
 test('legacy workflow stops before acquiring product write credentials for paused and central targets',async()=>{
@@ -615,12 +704,11 @@ test('initial .github and LayerScape drafts contain their actual selection shape
     assert.equal(pull.title,'chore: 登记 '+repo.name+' 逐仓配置');
     assert.match(pull.body,new RegExp(source));
     assert.ok(pull.body.includes('在 PR 分支编辑 `'+registrationPath(repo)+'` 并提交修改'));
-    assert.match(pull.body,/本次登记未启用站点/);
+    assert.doesNotMatch(pull.body,/站点/);
     assert.deepEqual(state.writes.map(([kind])=>kind),['ref','commit','pull']);
     if(repo===governance) {
       assert.deepEqual([proposal.policy.productCi,proposal.policy.release,proposal.pending],[[],null,[]]);
-      assert.match(pull.body,/沿用组织公共检查/);
-      assert.match(pull.body,/发行渠道未配置/);
+      assert.doesNotMatch(pull.body,/产品 CI|发行与产物|修改渠道/);
       assert.ok(!pull.body.includes('LayerScape')&&!pull.body.includes('构建目标'));
     }
     else {
@@ -645,6 +733,17 @@ test('initial .github and LayerScape drafts contain their actual selection shape
   }
 });
 
+test('registration lists files only for channels that publish them',async()=>{
+  const files=new Map(productFiles),delivery=JSON.parse(files.get('.github/delivery.json'));
+  delivery.units[0].channels=[{...channel,id:'ghcr-assets',location:'ghcr.io/example/product'}];
+  files.set('.github/delivery.json',JSON.stringify(delivery));
+  const proposal=await propose(product,files);
+  assert.ok(proposal.policy.release.units[0].channels.some(c=>c.id==='github-release' && !c.required));
+  const {body}=renderRegistrationPull(product,source,proposal);
+  assert.match(body,/ghcr-assets/);
+  assert.doesNotMatch(body,/github-release/);
+});
+
 test('only selected Pages operations prompt for their missing inputs',async()=>{
   const selected=async(sourceMode,build,deploy)=>{
     const files=new Map(productFiles);
@@ -657,8 +756,13 @@ test('only selected Pages operations prompt for their missing inputs',async()=>{
   assert.deepEqual((await selected('',true,false)).pending,['确认站点构建来源']);
   assert.deepEqual((await selected('release',true,false)).pending,['确认站点的正式 Release 单元']);
   const local=await selected('default-branch',true,false);
+  assert.match(renderRegistrationPull(product,source,local).body,/## 站点[\s\S]*仅构建[\s\S]*默认分支/);
   assert.equal(local.policy.site.mode,'build-only');
   assert.deepEqual(local.pending,[]);
+  const deployed={...local.policy,site:{workflow:pages,mode:'build-and-deploy',source:'release',unit:'layerscape'}};
+  const text=renderRegistrationPull(product,source,local,null,deployed).body;
+  assert.match(text,/构建并部署/);
+  assert.match(text,/正式 Release 单元 `layerscape`/);
   const requested=await selected('default-branch',true,true);
   assert.equal(requested.policy.site.mode,'build-only');
   assert.deepEqual(requested.pending,['确认公开部署授权']);
