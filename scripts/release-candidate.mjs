@@ -36,7 +36,7 @@ export function mergedContributorIdentity(identity, authors) {
 }
 
 /** Fixed candidate adapter. Credentials never enter archived data or model/RP payloads. */
-export async function nativeReleaseCandidate(request, { token, readToken, copilotToken, controllerSha, controllerDirectory = process.cwd(), now = () => new Date().toISOString(), fetcher = fetch, generator, language, expectedStateSha, expectedSourceSha, temporaryRoot = tmpdir(),verifyHandoff,contentRecovery,observation,manualCandidateProducer } = {}) {
+export async function nativeReleaseCandidate(request, { token, readToken, copilotToken, controllerSha, controllerDirectory = process.cwd(), now = () => new Date().toISOString(), fetcher = fetch, generator, language, expectedStateSha, expectedSourceSha, temporaryRoot = tmpdir(),verifyHandoff,contentRecovery,observation,manualCandidateProducer,reselectUnits=false } = {}) {
   if (!readToken || readToken === token) return { status: 'WAIT', reason: 'CANDIDATE_SCOPED_READ_CREDENTIAL_REQUIRED' };
   if (!validSha(controllerSha)) return { status: 'WAIT', reason: 'CANDIDATE_CONTROLLER_IDENTITY_REQUIRED' };
   if(expectedStateSha!==undefined&&!validSha(expectedStateSha))fail('CANDIDATE_EXPECTED_STATE_INVALID');
@@ -363,6 +363,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     };
     const manualBlobs=new Map(),manualFetched=new Set();
     const manualIO={
+      product:{id:request.repositoryId,name:request.repository,defaultBranch:request.defaultBranch},
       pull:()=>native(`pulls/${session.repository.candidate.prNumber}`),
       changedPaths:async(base,head)=>{
         if(!validSha(base)||!validSha(head))fail('MANUAL_SOURCE');
@@ -409,7 +410,9 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         verify:()=>validateManualCandidate(session,cache.producer,manualIO)});
     }
     // Validate before old conflict handling can regress an already completed manual projection.
-    if(manualCandidateProducer&&session.repository.candidate?.prNumber&&session.generated) {
+    // A declaration change invalidates the old manual proof. Normal generation owns the next snapshot.
+    if(reselectUnits&&manualCandidateProducer)session.manualValidation=null;
+    if(!reselectUnits&&manualCandidateProducer&&session.repository.candidate?.prNumber&&session.generated) {
       const pull=await manualIO.pull(),currentSource=await manualIO.source();
       if(session.manualValidation&&pull.labels?.some(label=>label.name==='release:editing'))return {status:'WAIT',reason:'EDITING',head:pull.head.sha};
       if(session.manualValidation||!session.pending&&!session.repository.candidate.pendingWrite

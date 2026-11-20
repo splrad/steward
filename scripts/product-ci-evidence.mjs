@@ -58,6 +58,33 @@ export async function evidence(paths,runs,event,type,loadJobs,boundNames=[],load
   return receipts;
 }
 
+// Retry only idempotent evidence reads. Callers retain validation and terminal-error handling.
+export async function readEvidenceResponse(read,deadline,wait=delay) {
+  for(let attempt=0;;attempt++) {
+    let response,networkError;
+    try {response=await read();}
+    catch(error) {
+      if(attempt>=2||!['ECONNRESET','ETIMEDOUT','EAI_AGAIN','UND_ERR_SOCKET','UND_ERR_CONNECT_TIMEOUT',
+        'UND_ERR_HEADERS_TIMEOUT'].includes(error?.cause?.code))throw error;
+      networkError=error;
+    }
+    const header=response?.headers.get('retry-after')??null;
+    if(response) {
+      const transient=[429,500,502,503,504].includes(response.status)||response.status===403&&header!==null;
+      if(!transient||attempt>=2)return response;
+    }
+    const now=Date.now(),minimum=header===null?0:/^\d+$/.test(header)?Number(header)*1000:Date.parse(header)-now;
+    const pause=Math.max(1000*2**attempt,Number.isNaN(minimum)?0:minimum);
+    if(now+pause>=deadline) {
+      if(networkError)throw networkError;
+      return response;
+    }
+    await response?.body?.cancel();
+    await wait(pause);
+    if(Date.now()>=deadline)throw Error('Product CI evidence read deadline reached');
+  }
+}
+
 async function main(){
   const event=JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH,'utf8'));
   const type=process.env.GITHUB_EVENT_NAME,paths=JSON.parse(process.env.PRODUCT_WORKFLOWS);
@@ -68,8 +95,8 @@ async function main(){
     for(let page=1;;page++){
       const url=new URL(root+route);
       url.searchParams.set('page',page);url.searchParams.set('per_page','100');
-      const response=await fetch(url,{redirect:'error',headers:{Authorization:'Bearer '+process.env.GH_TOKEN,
-        Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}});
+      const response=await readEvidenceResponse(()=>fetch(url,{redirect:'error',headers:{Authorization:'Bearer '+process.env.GH_TOKEN,
+        Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}}),deadline);
       if(!response.ok)throw Error('Product CI evidence HTTP '+response.status);
       const data=await response.json();
       if(!Array.isArray(data[key]))throw Error('Product CI response missing '+key);
@@ -82,9 +109,9 @@ async function main(){
   const fileCache=new Map();
   async function loadFile(id){
     if(!fileCache.has(id)){
-      const response=await fetch(process.env.GITHUB_GRAPHQL_URL,{method:'POST',redirect:'error',
+      const response=await readEvidenceResponse(()=>fetch(process.env.GITHUB_GRAPHQL_URL,{method:'POST',redirect:'error',
         headers:{Authorization:'Bearer '+process.env.GH_TOKEN,'Content-Type':'application/json'},
-        body:JSON.stringify({query:'query($id:ID!){node(id:$id){... on WorkflowRun{file{path repositoryFileUrl}}}}',variables:{id}})});
+        body:JSON.stringify({query:'query($id:ID!){node(id:$id){... on WorkflowRun{file{path repositoryFileUrl}}}}',variables:{id}})}),deadline);
       if(!response.ok)throw Error('Workflow file provenance HTTP '+response.status);
       const data=await response.json();
       if(data.errors)throw Error('Workflow file provenance unavailable');
