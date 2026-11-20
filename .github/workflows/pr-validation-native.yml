@@ -23,7 +23,7 @@ jobs:
       dependency: ${{ startsWith(steps.identity.outputs.dependencyMode, 'private-') && 'true' || steps.scope.outputs.dependency }}
       dependency-mode: ${{ steps.identity.outputs.dependencyMode }}
       docs: ${{ steps.scope.outputs.docs }}
-      governance: ${{ steps.scope.outputs.governance }}
+      governance: ${{ steps.scope.outputs.security_policy == 'true' && 'true' || steps.scope.outputs.governance }}
       bound-names: ${{ steps.identity.outputs.boundNames }}
       workflows: ${{ steps.identity.outputs.workflows }}
       base: ${{ steps.identity.outputs.base }}
@@ -43,7 +43,7 @@ jobs:
           path: target
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d
         env:
           MISE_SAFE: '1'
           MISE_NODE_COMPILE: 'false'
@@ -96,6 +96,11 @@ jobs:
               - '{.github,templates,schema,config,scripts,tools}/**'
               - '**/{AGENTS.md,AGENTS.override.md,CONTRIBUTING.md,copilot-instructions.md,*.instructions.md}'
             governance: *source
+            security_policy:
+              - 'SECURITY.md'
+              - '.github/SECURITY.md'
+              - 'docs/SECURITY.md'
+              - '.copier-answers.yml'
             dependency:
               - '.mise/**'
               - '**/{package.json,package-lock.json,npm-shrinkwrap.json,mise.toml,mise.lock,pyproject.toml,requirements*.txt,*.lock,*.lock.json,global.json,Directory.Build.props,Directory.Packages.props,*.csproj,*.sln,*.slnx,go.mod,go.sum,Cargo.toml,pom.xml,CMakeLists.txt}'
@@ -151,6 +156,7 @@ jobs:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           path: policy
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -158,7 +164,7 @@ jobs:
           path: target
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d
         env:
           MISE_SAFE: '1'
           MISE_NODE_COMPILE: 'false'
@@ -238,7 +244,7 @@ jobs:
           path: target
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d
         if: startsWith(needs.scope.outputs.dependency-mode, 'private-')
         env:
           MISE_SAFE: '1'
@@ -342,7 +348,7 @@ jobs:
           path: target
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d
         env:
           MISE_SAFE: '1'
           MISE_NODE_COMPILE: 'false'
@@ -396,7 +402,7 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: policy
           persist-credentials: false
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d
         env:
           MISE_SAFE: '1'
           MISE_NODE_COMPILE: 'false'

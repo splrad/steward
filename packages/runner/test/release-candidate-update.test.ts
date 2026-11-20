@@ -82,7 +82,38 @@ it('state failure sends no push and an unaccepted response remains pending', asy
   const f = writer(); f.port.persistPending = async () => { throw new Error('state unavailable'); };
   await expect(resumeCandidateWrite(f.prepared, f.port)).rejects.toThrow('state unavailable'); expect(f.events).toEqual([]);
   f.port.persistPending = async () => {}; f.port.push = async () => { throw new Error('not accepted'); };
-  expect((await resumeCandidateWrite(f.prepared, f.port)).status).toBe('UNKNOWN');
+  expect((await resumeCandidateWrite(f.prepared, f.port, async () => {})).status).toBe('UNKNOWN');
+});
+it('reconciles an accepted push after stale REST, PR and Git reads without replaying the write', async () => {
+  const f = writer(), delays: number[] = [];
+  let postPushReads = 0;
+  f.port.read = async () => {
+    if (f.events.includes('push')) {
+      switch (++postPushReads) {
+        case 1: throw Error('CANDIDATE_REF_DRIFT');
+        case 2: return { ...f.state, head: f.prepared.expectedHead };
+        case 3: throw Error('CANDIDATE_PR_HEAD_DRIFT');
+      }
+    }
+    return { ...f.state };
+  };
+  expect(await resumeCandidateWrite(f.prepared, f.port, async ms => { delays.push(ms); }))
+    .toEqual({ status: 'APPLIED', head: f.proposed });
+  expect(delays).toEqual([1000, 3000, 8000]);
+  expect(f.events).toEqual(['pending', 'push', 'finish']);
+});
+it('keeps the archived intent after persistent or unrelated post-push read failures', async () => {
+  for (const [code, expectedReads] of [['CANDIDATE_PR_HEAD_DRIFT', 4], ['CANDIDATE_PR_IDENTITY', 1]] as const) {
+    const f = writer();
+    let reads = 0;
+    f.port.read = async () => {
+      if (f.events.includes('push')) { reads++; throw Error(code); }
+      return { ...f.state };
+    };
+    await expect(resumeCandidateWrite(f.prepared, f.port, async () => {})).rejects.toThrow(code);
+    expect(reads).toBe(expectedReads);
+    expect(f.events).toEqual(['pending', 'push']);
+  }
 });
 it('restores archived Git objects after directory loss and recovers a real accepted push followed by a human commit', async () => {
   const f = await fixture(), remote = join(f.root, 'remote.git'); await f.git('init', '--bare', remote); await f.git('push', '--porcelain', remote, 'HEAD:refs/heads/main');

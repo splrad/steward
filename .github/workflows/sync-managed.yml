@@ -2,11 +2,6 @@ name: SPLRAD Steward / Sync Managed Files
 on:
   workflow_dispatch:
     inputs:
-      health_only:
-        description: 'Observe entry health without repository or template writes'
-        required: false
-        type: boolean
-        default: false
       bootstrap_only:
         description: 'One-time bootstrap using the reviewed private acceptance target; no template delivery'
         required: false
@@ -14,25 +9,12 @@ on:
         default: false
   repository_dispatch:
     types: [steward-template-event]
-  schedule:
-    - cron: '37 * * * *'
-  push:
-    branches: [main]
-    paths:
-      - config/**
-      - templates/**
-      - tools/template/**
-      - scripts/**
-      - copier.yml
-      - schema/**
-      - .github/workflows/**
-      - packages/runner/dist/**
 permissions:
   contents: read
   actions: read
 jobs:
   bootstrap:
-    if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && !inputs.health_only && (github.event_name == 'workflow_dispatch' || (github.event_name == 'repository_dispatch' && github.event.sender.id == 353238212 && github.event.sender.login == 'splrad-governance[bot]' && github.event.sender.type == 'Bot' && github.event.client_payload.schemaVersion == 1)) && (vars.STEWARD_BOOTSTRAP_APPLY == 'true' || (github.event_name == 'workflow_dispatch' && inputs.bootstrap_only))
+    if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'workflow_dispatch' || (github.event_name == 'repository_dispatch' && github.event.sender.id == 353238212 && github.event.sender.login == 'splrad-governance[bot]' && github.event.sender.type == 'Bot' && github.event.client_payload.schemaVersion == 1)) && (vars.STEWARD_BOOTSTRAP_APPLY == 'true' || (github.event_name == 'workflow_dispatch' && inputs.bootstrap_only))
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment:
@@ -48,7 +30,7 @@ jobs:
           ref: ${{ github.workflow_sha }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         env:
           MISE_SAFE: '1'
           MISE_NODE_COMPILE: 'false'
@@ -71,7 +53,7 @@ jobs:
         run: node scripts/repository-bootstrap.mjs
   templates:
     needs: bootstrap
-    if: ${{ !cancelled() && github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && !inputs.health_only && (github.event_name == 'workflow_dispatch' || (github.event_name == 'repository_dispatch' && github.event.sender.id == 353238212 && github.event.sender.login == 'splrad-governance[bot]' && github.event.sender.type == 'Bot' && github.event.client_payload.schemaVersion == 1)) && vars.STEWARD_TEMPLATE_APPLY == 'true' && !inputs.bootstrap_only }}
+    if: ${{ !cancelled() && github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'workflow_dispatch' || (github.event_name == 'repository_dispatch' && github.event.sender.id == 353238212 && github.event.sender.login == 'splrad-governance[bot]' && github.event.sender.type == 'Bot' && github.event.client_payload.schemaVersion == 1)) && vars.STEWARD_TEMPLATE_APPLY == 'true' && !inputs.bootstrap_only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment:
@@ -87,7 +69,7 @@ jobs:
           ref: ${{ github.workflow_sha }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         env:
           MISE_SAFE: '1'
           MISE_NODE_COMPILE: 'false'
@@ -108,115 +90,3 @@ jobs:
           STEWARD_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           STEWARD_CONTROLLER_SHA: ${{ github.workflow_sha }}
         run: node scripts/template-delivery.mjs
-
-  automation-health:
-    if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && !inputs.bootstrap_only && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      actions: write
-      issues: write
-    concurrency:
-      group: steward-automation-health
-      cancel-in-progress: false
-    steps:
-      - name: automation-health-native
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          CURRENT_RUN_ID: ${{ github.run_id }}
-          CURRENT_ATTEMPT: ${{ github.run_attempt }}
-          HEALTH_ISSUE: ${{ vars.STEWARD_HEALTH_ISSUE }}
-          HEALTH_SOURCE_SHA: ${{ github.workflow_sha }}
-          EXPECTED_PAUSED_RELEASE: ${{ vars.STEWARD_EXPECTED_PAUSED_RELEASE }}
-        run: |
-          set -euo pipefail
-          shopt -s inherit_errexit
-          [[ "$HEALTH_SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
-          api_version=$(curl --fail --silent --show-error --proto '=https' --tlsv1.2 "https://raw.githubusercontent.com/splrad/steward/$HEALTH_SOURCE_SHA/config/github-api.json" | jq -er '.version | select(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$"))')
-          api() { gh api --method GET -H "X-GitHub-Api-Version: $api_version" "$1" 2>/dev/null; }
-          [[ "$HEALTH_ISSUE" =~ ^[1-9][0-9]*$ ]]
-          repo=$(api repos/splrad/steward)
-          jq -e --arg branch "$DEFAULT_BRANCH" '.id==1296724484 and .full_name=="splrad/steward" and .default_branch==$branch and .archived==false and .disabled==false' <<<"$repo" >/dev/null
-          current=$(api "repos/splrad/steward/actions/runs/$CURRENT_RUN_ID")
-          jq -e --argjson id "$CURRENT_RUN_ID" --argjson attempt "$CURRENT_ATTEMPT" --arg branch "$DEFAULT_BRANCH" '.id==$id and .run_attempt==$attempt and .repository.id==1296724484 and .head_repository.id==1296724484 and .head_branch==$branch and (.path==".github/workflows/release.yml" or .path==".github/workflows/sync-managed.yml") and (.event=="schedule" or .event=="workflow_dispatch" or .event=="push")' <<<"$current" >/dev/null
-          issue=$(api "repos/splrad/steward/issues/$HEALTH_ISSUE")
-          jq -e --argjson number "$HEALTH_ISSUE" '.number==$number and .pull_request==null' <<<"$issue" >/dev/null
-          bot=$(api 'users/github-actions%5Bbot%5D' | jq -er 'select(.type=="Bot")|.id')
-          marker='<!-- splrad-automation-health:v2 -->'
-          read_codes() {
-            gh api --method GET --paginate --slurp -H "X-GitHub-Api-Version: $api_version" "repos/splrad/steward/issues/$HEALTH_ISSUE/comments?per_page=100" 2>/dev/null |
-              jq -ce --arg marker "$marker" --argjson bot "$bot" 'if all(.[];type=="array") then add else error("comments unavailable") end | [.[]|select(.user.id==$bot and (.body//""|startswith($marker+"\n")))] | sort_by(.id)|last | if .==null then [] else .body|split("\n")[1]|fromjson end | if type=="array" and all(.[];type=="string" and test("^(release\\.yml|sync-managed\\.yml):(WORKFLOW_UNAVAILABLE|WORKFLOW_DISABLED|WORKFLOW_PAUSED|ENABLE_UNCONFIRMED|RUN_UNAVAILABLE|WAKE_UNKNOWN|ENTRY_OVERDUE)$")) then sort|unique else error("health state unavailable") end'
-          }
-          previous=$(read_codes)
-          codes='[]'
-          record() { codes=$(jq -cn --argjson codes "$codes" --arg code "$file:$1" '$codes+[$code]'); }
-          record_disabled() {
-            if [[ "$file" == release.yml && "$workflow_id" == 311600220 && "$state" == disabled_manually && "${EXPECTED_PAUSED_RELEASE:-}" == 311600220 ]]; then
-              record WORKFLOW_PAUSED
-            else
-              record WORKFLOW_DISABLED
-            fi
-          }
-          latest_run() {
-            gh run list --repo splrad/steward --workflow "$file" --branch "$DEFAULT_BRANCH" --limit 1 --json databaseId,createdAt,status,conclusion 2>/dev/null |
-              jq -ce 'if type=="array" and length<=1 and all(.[]; (.databaseId|type)=="number" and .databaseId>0 and (.databaseId|floor)==.databaseId and (.createdAt|type)=="string" and (.status=="completed" or .status=="in_progress" or .status=="queued" or .status=="waiting" or .status=="pending" or .status=="requested")) then . else error("recent Run unavailable") end'
-          }
-          workflow_matches() {
-            jq -e --arg path ".github/workflows/$file" --argjson id "$workflow_id" '.id==$id and .path==$path' <<<"$1" >/dev/null
-          }
-          for file in release.yml sync-managed.yml; do
-            if ! workflow=$(api "repos/splrad/steward/actions/workflows/$file") ||
-               ! workflow_id=$(jq -er --arg path ".github/workflows/$file" 'select(.path==$path and (.id|type)=="number" and .id>0 and (.id|floor)==.id)|.id' <<<"$workflow"); then
-              record WORKFLOW_UNAVAILABLE; continue
-            fi
-            state=$(jq -r '.state' <<<"$workflow")
-            if [[ "$state" == disabled_inactivity ]]; then
-              # Recheck the current state immediately before the only enable request.
-              if ! workflow=$(api "repos/splrad/steward/actions/workflows/$workflow_id") || ! workflow_matches "$workflow"; then record WORKFLOW_UNAVAILABLE; continue; fi
-              state=$(jq -r '.state' <<<"$workflow")
-              if [[ "$state" == disabled_inactivity ]]; then
-                gh api --method PUT -H "X-GitHub-Api-Version: $api_version" "repos/splrad/steward/actions/workflows/$workflow_id/enable" >/dev/null 2>&1 || true
-                if ! workflow=$(api "repos/splrad/steward/actions/workflows/$workflow_id") || ! workflow_matches "$workflow"; then record ENABLE_UNCONFIRMED; continue; fi
-                state=$(jq -r '.state' <<<"$workflow")
-                if [[ "$state" == disabled_inactivity ]]; then record ENABLE_UNCONFIRMED; continue; fi
-              fi
-            fi
-            if [[ "$state" != active ]]; then record_disabled; continue; fi
-            if ! runs=$(latest_run); then record RUN_UNAVAILABLE; continue; fi
-            created=$(jq -r '.[0].createdAt//"1970-01-01T00:00:00Z"' <<<"$runs")
-            if ! created_epoch=$(date -u -d "$created" +%s); then record RUN_UNAVAILABLE; continue; fi
-            now=$(date -u +%s)
-            if ((created_epoch>now)); then record RUN_UNAVAILABLE; continue; fi
-            if ((now-created_epoch<=2*3600)); then continue; fi
-            # A recent Run does not prove that older Runs have finished. Native concurrency
-            # serializes this observation wake; business records retain their own budgets.
-            if ! workflow=$(api "repos/splrad/steward/actions/workflows/$workflow_id") || ! workflow_matches "$workflow"; then record WORKFLOW_UNAVAILABLE; continue; fi
-            state=$(jq -r '.state' <<<"$workflow")
-            if [[ "$state" != active ]]; then record_disabled; continue; fi
-            response_known=true
-            wake_args=()
-            if [[ "$file" == sync-managed.yml ]]; then wake_args+=(--field health_only=true); fi
-            gh workflow run "$file" --repo splrad/steward --ref "$DEFAULT_BRANCH" "${wake_args[@]}" >/dev/null 2>&1 || response_known=false
-            # Read once after the write, including a lost response. Retry only on a later
-            # fixed wake after it has read native state again.
-            if ! observed=$(latest_run); then record WAKE_UNKNOWN; continue; fi
-            observed_created=$(jq -r '.[0].createdAt//"1970-01-01T00:00:00Z"' <<<"$observed")
-            if ! observed_epoch=$(date -u -d "$observed_created" +%s); then record WAKE_UNKNOWN; continue; fi
-            if ((observed_epoch>=now && observed_epoch<=$(date -u +%s))); then continue; fi
-            if [[ "$response_known" == true ]]; then record ENTRY_OVERDUE; else record WAKE_UNKNOWN; fi
-          done
-          codes=$(jq -c 'sort|unique' <<<"$codes")
-          if [[ "$codes" != "$previous" ]]; then
-            body=$(printf '%s\n%s\n\n中央入口观察：%s\nhttps://github.com/splrad/steward/actions/runs/%s\n' "$marker" "$codes" "$codes" "$CURRENT_RUN_ID")
-            payload=$(jq -cn --arg body "$body" '{body:$body}')
-            gh api --method POST -H "X-GitHub-Api-Version: $api_version" "repos/splrad/steward/issues/$HEALTH_ISSUE/comments" --input - <<<"$payload" >/dev/null 2>&1 || true
-            [[ "$(read_codes)" == "$codes" ]]
-          fi
-          # Expected maintenance remains visible and never enables or dispatches Release.
-          if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
-            printf '入口观察：%s\n\nWORKFLOW_PAUSED 表示已批准的 Release 人工暂停，不代表发行验收通过。\n' "$codes" >> "$GITHUB_STEP_SUMMARY"
-          fi
-          jq -e 'all(.[]; .=="release.yml:WORKFLOW_PAUSED")' <<<"$codes" >/dev/null
