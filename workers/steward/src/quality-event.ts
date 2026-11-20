@@ -1,7 +1,7 @@
-import {retryAfterTime} from './bounded-retry-after.js';
+import {GitHubRetryError,retryAfterTime} from './bounded-retry-after.js';
 import {promotedController} from './bounded-controller.js';
 import {PendingPromotion,promotionMessage} from './release-promotion.js';
-import { GitHubRetryError, BoundedGitHub, CENTRAL, digest, ensure, type BoundedEnv, type GitReader } from './bounded-recheck-github.js';
+import { BoundedGitHub, CENTRAL, digest, ensure, type BoundedEnv, type GitReader } from './bounded-recheck-github.js';
 import { dispatchFixed } from './bounded-recheck-effects.js';
 
 const qualityUser = 223894421;
@@ -115,7 +115,7 @@ export class QualityEvent {
     }catch(error){
       const message=error instanceof Error?error.message:'';
       // A 503 after the POST may have come from a proxy after GitHub accepted it.
-      if(error instanceof GitHubRetryError && error.httpStatus===503)throw error;
+      if(error instanceof GitHubRetryError && error.httpStatus===503 && error.dispatchAttempted)throw error;
       const now=Date.now();
       const retryAt=retryAfterTime(error,now,now+60000-1);
       if(claimed && (retryAt!==undefined || /^GITHUB_HTTP_(400|401|403|404|409|410|422|429)$/.test(message))){

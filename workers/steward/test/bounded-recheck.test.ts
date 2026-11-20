@@ -1,3 +1,4 @@
+import {GitHubRetryError} from '../src/bounded-retry-after.js';
 import {mkdtempSync,rmSync,rmdirSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -36,6 +37,23 @@ describe('bounded recheck faults with actual SQLite transactions',()=>{
  it('rejects invalid repository IDs, executor fields, future timestamps',async()=>{const f=fixture();await expect(f.engine().register({...input(),identity:{...input().identity,repositoryId:0}})).rejects.toThrow('FIXED_TARGET');await expect(f.engine().register({...input(),url:'https://evil'} as any)).rejects.toThrow('CLOSED_SCHEMA');await expect(f.engine().register({...input(),t0:t0+1})).rejects.toThrow('ORIGINAL_T0');});
  it('merged PR atomically replaces its alarm with one index stage at native merge time',async()=>{const f=fixture({kind:'index',mergedAt:t0+5*m,evidence:'native-pr'});await f.engine().register(input('winget-pr'));f.time(t0+6*m);await f.engine().wake();let r=(await f.store.read())!;expect(r.identity.stage).toBe('winget-index');expect(r.t0).toBe(t0+5*m);expect(r.deadline).toBe(t0+5*m+48*60*m);expect(r.consumed).toBe(0);expect(r.intent).toBeNull();f.effects.observe=vi.fn(async()=>({kind:'pending'}));await f.engine().wake();r=(await f.store.read())!;expect(r.nextAt).toBe(t0+10*m);expect(f.effects.observe).toHaveBeenCalledTimes(1);});
  it('editing pause and expired resume cannot reset the original window',async()=>{const f=fixture({kind:'pause',reason:'EDITING_PAUSED'});await f.engine().register(input());await f.engine().wake();expect((await f.store.read())?.status).toBe('PAUSED');f.time(t0+121*m);await f.engine().control('resume',2);expect((await f.store.read())?.status).toBe('NEEDS_ATTENTION');expect((await f.store.read())?.t0).toBe(t0);expect(f.store.alarm()).toBeNull();});
+ it.each(['candidate','winget-index'] as const)('resumes %s observation after a pre-dispatch read was limited',async stage=>{
+  const f=fixture({kind:'unknown'});
+  vi.mocked(f.effects.observe).mockRejectedValueOnce(new GitHubRetryError(429,'120',false));
+  await f.engine().register(input(stage));await f.engine().wake();
+  expect((await f.store.read())?.intent).toBeNull();
+  const due=f.store.alarm()!;expect(due).toBeGreaterThanOrEqual(t0+2*m);
+  f.time(due);await f.engine().wake();
+  expect(f.effects.observe).toHaveBeenCalledTimes(2);expect(f.effects.confirm).not.toHaveBeenCalled();
+ });
+ it('confirms an uncertain dispatch after the retry floor without repeating the observation',async()=>{
+  const f=fixture({kind:'unknown'});
+  vi.mocked(f.effects.observe).mockRejectedValueOnce(new GitHubRetryError(503,'120',true));
+  await f.engine().register(input());await f.engine().wake();
+  expect((await f.store.read())?.intent).not.toBeNull();
+  f.time(t0+2*m);await f.engine().wake();
+  expect(f.effects.confirm).toHaveBeenCalledOnce();expect(f.effects.observe).toHaveBeenCalledOnce();
+ });
  it('rate-limited confirmation retains unknown POST and respects Retry-After',async()=>{const f=fixture({kind:'unknown'});await f.engine().register(input());await f.engine().wake();f.effects.confirm=vi.fn(async()=>{throw Error('RETRY_AFTER:600');});f.time(t0+m);await f.engine().wake();expect(f.store.alarm()).toBe(t0+11*m);expect((await f.store.read())?.intent).not.toBeNull();f.time(t0+5*m);await f.engine().wake();expect(f.effects.observe).toHaveBeenCalledTimes(1);expect(f.effects.confirm).toHaveBeenCalledTimes(1);});
 
  it('third confirmation merge clears conservative unknown marker and wakes index',async()=>{const f=fixture({kind:'unknown'});await f.engine().register(input('winget-pr'));await f.engine().wake();for(const n of [1,5]){f.time(t0+n*m);await f.engine().wake();}f.effects.confirm=vi.fn(async()=>({kind:'index',mergedAt:t0+10*m,evidence:'third-get'}));f.time(t0+15*m);await f.engine().wake();const r=(await f.store.read())!;expect(r.status).toBe('PENDING');expect(r.notificationPending).toBe(false);expect(r.identity.stage).toBe('winget-index');expect(r.nextAt).toBe(t0+15*m);f.effects.observe=vi.fn(async()=>({kind:'pending'}));await f.engine().wake();expect(f.effects.observe).toHaveBeenCalledTimes(1);});

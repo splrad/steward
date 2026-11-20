@@ -1,3 +1,4 @@
+import {GitHubRetryError} from './bounded-retry-after.js';
 import { createHash } from 'node:crypto';
 import { inflateRawSync } from 'node:zlib';
 import { createAppJwt } from '../support/github/index.js';
@@ -26,16 +27,13 @@ export async function candidateReader(g:GitReader,id:number):Promise<GitReader> 
  const scoped=g.forCandidate?await g.forCandidate(id):id===TARGET.id?g:undefined;
  ensure(scoped,'CANDIDATE_NOT_REGISTERED');return scoped;
 }
-export class GitHubRetryError extends Error {
- constructor(readonly httpStatus:number,retry:string){super('RETRY_AFTER:'+retry);}
-}
-function rateLimitError(res:Response){
+function rateLimitError(res:Response,dispatchAttempted=false){
  const retry=res.headers.get('retry-after'),reset=res.headers.get('x-ratelimit-reset');
  const validRetry=retry!==null&&(/^[0-9]+(?:\.[0-9]+)?$/.test(retry)||Number.isFinite(Date.parse(retry)));
  const resetDate=new Date(Number(reset)*1000);
  const validReset=reset!==null&&Number(reset)>0&&Number.isFinite(resetDate.getTime());
  if(res.status===429||res.status===503||res.status===403&&(res.headers.get('x-ratelimit-remaining')==='0'||validRetry))
-  throw new GitHubRetryError(res.status,validRetry?retry:validReset?resetDate.toUTCString():'unknown');
+  throw new GitHubRetryError(res.status,validRetry?retry:validReset?resetDate.toUTCString():'unknown',dispatchAttempted);
 }
 async function limitedBytes(response:Response,max:number){
  rateLimitError(response);
@@ -141,7 +139,7 @@ export class BoundedGitHub implements GitReader {
   // Only fixed observation/bridge dispatches may write. No repository mutation APIs.
   if(method==='POST')ensure([`/repos/${CENTRAL.name}/actions/workflows/repository-configuration-event.yml/dispatches`,`/repos/${CENTRAL.name}/actions/workflows/quality-language-summary.yml/dispatches`,`/repos/${CENTRAL.name}/actions/workflows/release-cycle-event.yml/dispatches`,`/repos/${CENTRAL.name}/actions/workflows/pages-maintenance-event.yml/dispatches`,`/repos/${CENTRAL.name}/actions/workflows/release-candidate-event.yml/dispatches`,`/repos/${CENTRAL.name}/actions/workflows/release-observe.yml/dispatches`,`/repos/${CENTRAL.name}/actions/workflows/bounded-release-event.yml/dispatches`,`/repos/${TARGET.name}/actions/workflows/steward-release-channels.yml/dispatches`].includes(path),'FIXED_DISPATCH');
   const token=await this.token(id,method==='POST');const res=await this.transport('https://api.github.com'+path,{method,headers:{Authorization:`Bearer ${token}`,Accept:'application/vnd.github+json','X-GitHub-Api-Version':GITHUB_API_VERSION,'User-Agent':'splrad-bounded-recheck','Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:this.signal(),redirect:'manual'});
-  rateLimitError(res);
+  rateLimitError(res,method==='POST');
   ensure(res.ok,`GITHUB_HTTP_${res.status}`);if(res.status===204)return null;return JSON.parse(new TextDecoder().decode(await limitedBytes(res,2*1024*1024)));
  }
  async artifact(id:number,runId:number,name:string,file:string){

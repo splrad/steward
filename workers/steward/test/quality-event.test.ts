@@ -1,5 +1,5 @@
 import {expect,it,vi} from 'vitest';
-import {GitHubRetryError} from '../src/bounded-recheck-github.js';
+import {GitHubRetryError} from '../src/bounded-retry-after.js';
 import {QualityEvent,qualityLocator} from '../src/quality-event.js';
 const sha='a'.repeat(40),id=1296724484,install=123;
 function qualityFile(repositories:Record<string,unknown>) {
@@ -86,7 +86,7 @@ it.each([['GITHUB_HTTP_422',2],['RETRY_AFTER:3',2],['RETRY_AFTER:unknown',2],['p
  const storage=new SqliteDurableStorage(),config=Buffer.from(JSON.stringify({schemaVersion:1,enabled:true,deploymentSha:sha}));
  let posts=0;
  const json=async(_id:number,path:string,method?:string)=>{
-   if(method==='POST'){if(++posts===1)throw message==='proxy503'?new GitHubRetryError(503,'unknown'):Error(message);return {};}
+   if(method==='POST'){if(++posts===1)throw message==='proxy503'?new GitHubRetryError(503,'unknown',true):Error(message);return {};}
    if(path.includes('/git/ref/'))return {ref:'refs/'+path.split('/git/ref/')[1],object:{type:'commit',sha}};
    if(path.includes('quality-language.json'))return qualityFile({[id]:'splrad/steward'});
    if(path.includes('/contents/'))return {type:'file',path:'config/bounded-recheck.json',encoding:'base64',size:config.length,content:config.toString('base64')};
