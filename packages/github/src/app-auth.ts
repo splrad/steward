@@ -17,12 +17,13 @@ export async function nativeReleaseApp(privateKey: string, transport: typeof fet
   if(installation.account?.id!==302208797 || installation.app_id!==4243096 || installation.suspended_at)throw new Error('RELEASE_INSTALLATION_IDENTITY');
   const bot=(await new Octokit(options).request('GET /users/{username}',{username:`${appFact.slug}[bot]`})).data;
   if(bot.id!==301115370 || bot.type!=='Bot')throw new Error('RELEASE_APP_BOT_IDENTITY');
-  const token=async(repositoryId?:number,kind:'release'|'candidate'|'candidate-read'|'quality'|'template'|'template-read'|'pages'|'maintenance'|'maintenance-rules'|'configuration-actions'|'configuration-read'='release')=>{
+  const token=async(repositoryId?:number,kind:'release'|'candidate'|'candidate-read'|'quality'|'template'|'template-read'|'pages'|'maintenance'|'maintenance-rules'|'configuration-actions'|'configuration-read'|'configuration-issues'='release')=>{
     // GitHub exposes organization ruleset bypass actors only to organization rule managers.
     // Trusted rule readers request that capability explicitly; discovery and generation do not.
     const permissions=kind==='maintenance-rules'?{metadata:'read',organization_administration:'write'}
       :kind==='configuration-read'?{metadata:'read',contents:'read',pull_requests:'read',actions:'read'}
       :kind==='configuration-actions'?{metadata:'read',actions:'write'}
+      :kind==='configuration-issues'?{metadata:'read',issues:'write'}
       :kind==='maintenance'?{metadata:'read',contents:'write',actions:'write'}
       :kind==='pages'?{metadata:'read',contents:'write',actions:'write',administration:'read',actions_variables:'read',deployments:'read',attestations:'read',organization_administration:'write'}
       :kind==='quality'?{metadata:'read',contents:'write',checks:'write',pull_requests:'read',actions:'read',organization_administration:'write'}
@@ -122,7 +123,7 @@ export async function nativeReleaseApp(privateKey: string, transport: typeof fet
       }
       throw new Error('RELEASE_INSTALLATION_INCOMPLETE');
     }finally {await credential.revoke();}
-  },async forRepository<T>(repositoryId:number,operation:(token:string)=>Promise<T>,purpose:'release'|'maintenance'|'maintenance-rules'|'configuration-actions'='release'):Promise<T>{
+  },async forRepository<T>(repositoryId:number,operation:(token:string)=>Promise<T>,purpose:'release'|'maintenance'|'maintenance-rules'|'configuration-actions'|'configuration-issues'='release'):Promise<T>{
     if(!Number.isSafeInteger(repositoryId)||repositoryId<1)throw new Error('RELEASE_REPOSITORY_ID');
     if(purpose==='maintenance'&&repositoryId!==1296724484)throw new Error('MAINTENANCE_REPOSITORY_ID');
     const credential=await token(repositoryId,purpose);
