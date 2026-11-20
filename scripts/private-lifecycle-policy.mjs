@@ -116,7 +116,7 @@ export async function assertLifecycleUpdaters(files,{side}={}){
     // that carries updater configuration must use the sole current contract.
     let historicalBase=false;
     if(side==='base'&&path==='.github/renovate.json'){
-      for(const version of ['v1','v2','v3']){
+      for(const version of ['v1','v2','v3','v4']){
         const legacy=JSON.parse(await readFile(new URL(`../config/private-lifecycle/history/renovate-${version}-base.json`,import.meta.url),'utf8'));
         if(isDeepStrictEqual(actual,legacy)){historicalBase=true;break;}
       }
