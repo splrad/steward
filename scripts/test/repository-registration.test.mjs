@@ -18,6 +18,7 @@ import {projectionBytes,readRepositoryProjection} from '../repository-policy-pro
 import {projectMergedRepositoryPolicy} from '../repository-policy-publish.mjs';
 import {workflowPagesOptions} from '../select-pages-source.mjs';
 import {writeReleaseRecords} from '../release-record.mjs';
+import {nativeTemporaryParent} from '../native-scratch.mjs';
 
 const admin = { id:1447987054, full_name:'splrad/steward-settings', default_branch:'main', private:true };
 const org = { id:302208797, login:'splrad' };
@@ -132,6 +133,10 @@ test('projection writer uses one path, scoped credentials and reads back only ap
   assert.equal(await run(),'UNCHANGED');
   assert.equal(writes,1);
   assert.equal(JSON.parse(bytes).adoption,'paused');
+  let reads=0;
+  await assert.rejects(run({getPolicy:async()=>reads++===0?{commit:base,policy:selected}:
+    {commit:candidate,policy:{...selected,adoption:'central'}}}),/PROJECTION_MOVED/);
+  assert.equal(writes,1);
   assert.equal(await run({getPolicy:async()=>({commit:base,policy:{...selected,repository:'splrad/OldName'}})}),undefined);
   assert.equal(writes,1);
   bytes=null;
@@ -139,8 +144,20 @@ test('projection writer uses one path, scoped credentials and reads back only ap
   assert.equal(writes,1);
 });
 
+test('registry rejects workflow selections the native consumers cannot execute',async()=>{
+  const {policy}=await propose(product,productFiles);
+  const wrong='.github/workflows/other.yml';
+  const attempts=[
+    {...policy,productCi:['.github/workflows/pr-validation-native.yml']},
+    {...policy,release:{...policy.release,buildWorkflow:wrong}},
+    {...policy,site:{workflow:wrong,mode:'build-only',source:'default-branch'}}
+  ];
+  for(const attempted of attempts)
+    assert.throws(()=>checkedRegistration(attempted,product.id),/Invalid central repository registration/);
+});
+
 test('native projection writer preserves a concurrent quality record on the same branch',async()=>{
-  const root=await mkdtemp(join(tmpdir(),'registry-projection-git-'));
+  const root=await mkdtemp(join(await nativeTemporaryParent('PROJECTION_FIXTURE_TEMP_LINK'),'registry-projection-git-'));
   const remote=join(root,'payload.git'),checkout=join(root,'setup'),branch='steward/governance-state';
   const git=(...args)=>execFileSync('git',args,{cwd:root,encoding:'utf8',windowsHide:true}).trim();
   const state=(...args)=>git('--git-dir='+remote,...args);

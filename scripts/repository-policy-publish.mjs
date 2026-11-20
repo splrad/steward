@@ -30,9 +30,10 @@ export async function projectMergedRepositoryPolicy(app, repository, source, obs
       const refresh=()=>getState(root,repository,token,repositoryPolicyBranch,{governanceAppId:5639432,includeHistory:false});
       const state=await refresh();
       const current=state.snapshot.currentPaths.includes(repositoryPolicyPath)?await state.readBytes(repositoryPolicyPath):null;
-      if(current?.toString('utf8')===content)return 'UNCHANGED';
       const latest=await readMerged();
-      check(latest.commit===adopted.commit&&await ports.currentSource()===source,'MOVED');
+      check(latest.policy&&latest.commit===adopted.commit&&latest.policy.repository===repository.full_name&&
+        projectionBytes(latest.policy)===content&&await ports.currentSource()===source,'MOVED');
+      if(current?.toString('utf8')===content)return 'UNCHANGED';
       const directory=await mkdtemp(join(root,'write-'));
       const result=await (ports.write??writeReleaseRecords)({directory:join(directory,'checkout'),remote:state.remote,
         repositoryId:repository.id,defaultBranch:repository.default_branch,targetRef:repositoryPolicyBranch,writer:'configuration',

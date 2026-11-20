@@ -94,6 +94,20 @@ it('invokes the fixed entry sequence and recovers only native canonical Run IDs'
   const result=await serviceReleaseWake({},async()=>snapshot,async(command:string,input:any)=>{calls.push(command+(command==='rerun'?':'+input.runId:''));return {status:'WAIT',reason:'PREREQUISITE_REQUIRED',publishInvoked:false};});
   expect(calls).toEqual(['candidate','dispatch-build','publish','dispatch-channel','observe-channel','rerun:100']);expect(result.status).toBe('WAIT');
 });
+it.each(['CANDIDATE_REPOSITORY_POLICY_DISABLED','CANDIDATE_REPOSITORY_POLICY_CONFLICT','REPOSITORY_POLICY_UNAVAILABLE'])(
+  'continues frozen cycles when candidate admission waits for %s',async(reason)=>{
+    const calls:string[]=[];
+    const snapshot={repository:{activeCycleId:'cycle'},cycles:[{value:{id:'cycle',dispatches:[]}}]};
+    const invoke=async(command:string)=>{
+      calls.push(command);
+      if(command==='candidate')throw Error(reason);
+      return {status:'WAIT'};
+    };
+    expect(await serviceReleaseWake({},async()=>snapshot,invoke)).toMatchObject({status:'WAIT',reason:'REGISTERED_CYCLES_OBSERVED'});
+    expect(calls).toEqual(['candidate','dispatch-build','publish','dispatch-channel','observe-channel']);
+    const empty={...snapshot,cycles:[]};
+    expect(await serviceReleaseWake({},async()=>empty,invoke)).toMatchObject({status:'WAIT',reason});
+  });
 it('ends a repository wake after the single publish invocation',async()=>{
   const calls:string[]=[],snapshot={repository:{activeCycleId:'cycle'},cycles:[{value:{id:'cycle',dispatches:[]}}]};
   const result=await serviceReleaseWake({},async()=>snapshot,async(command:string)=>{calls.push(command);return {status:'WAIT',publishInvoked:command==='publish'};});

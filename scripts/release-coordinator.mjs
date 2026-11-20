@@ -26,7 +26,15 @@ const validMatchingRefs=(refs,target)=>Array.isArray(refs)
 export async function serviceReleaseWake(request,refresh,invoke,clock=Date.now) {
   let snapshot=await refresh();
   if(!snapshot.repository)return {status:'WAIT',reason:'RELEASE_BOOTSTRAP_REQUIRED'};
-  const candidate=await invoke('candidate',{...request,cycleId:snapshot.repository.activeCycleId,runId:null});
+  let candidate;
+  try {
+    candidate=await invoke('candidate',{...request,cycleId:snapshot.repository.activeCycleId,runId:null});
+  } catch(error) {
+    const reason=error?.message;
+    if(!['CANDIDATE_REPOSITORY_POLICY_DISABLED','CANDIDATE_REPOSITORY_POLICY_CONFLICT','REPOSITORY_POLICY_UNAVAILABLE']
+      .includes(reason))throw error;
+    candidate={status:'WAIT',reason};
+  }
   snapshot=await refresh();
   const results=[];
   for(const {value:registered} of snapshot.cycles) {
