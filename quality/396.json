@@ -56,9 +56,16 @@
       },
       "configVersion": "quality-native-comments-v1",
       "result": null,
-      "attempts": [],
-      "nextCheckAt": null,
-      "errorCode": null
+      "attempts": [
+        {
+          "startedAt": "2026-11-20T07:49:51.051Z",
+          "status": "UNKNOWN",
+          "model": null,
+          "usage": null
+        }
+      ],
+      "nextCheckAt": "2026-11-20T07:50:51.051Z",
+      "errorCode": "RESPONSE_UNKNOWN"
     },
     "1356c40bb274b8ec49991f59bb4fc589b719089b4d950b9dbff7c936402fb9ac": {
       "key": "1356c40bb274b8ec49991f59bb4fc589b719089b4d950b9dbff7c936402fb9ac",
@@ -78,9 +85,16 @@
       },
       "configVersion": "quality-native-comments-v1",
       "result": null,
-      "attempts": [],
-      "nextCheckAt": null,
-      "errorCode": null
+      "attempts": [
+        {
+          "startedAt": "2026-11-20T07:49:51.051Z",
+          "status": "UNKNOWN",
+          "model": null,
+          "usage": null
+        }
+      ],
+      "nextCheckAt": "2026-11-20T07:50:51.051Z",
+      "errorCode": "RESPONSE_UNKNOWN"
     }
   },
   "cursor": 0
