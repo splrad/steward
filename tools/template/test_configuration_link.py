@@ -27,6 +27,12 @@ class ConfigurationLinkTests(unittest.TestCase):
             self.assertIn('splrad/example/blob/HEAD/', after['contact_links'][0]['url'])
             add_link(root, 'splrad/example')
             self.assertEqual(chooser.read_text(encoding='utf-8'), text)
+            add_link(root, 'splrad/example', retire=True)
+            retired = chooser.read_text(encoding='utf-8')
+            self.assertEqual(yaml.safe_load(retired), yaml.safe_load(old))
+            self.assertIn('# custom', retired)
+            add_link(root, 'splrad/example', retire=True)
+            self.assertEqual(chooser.read_text(encoding='utf-8'), retired)
             self.assertEqual(form.read_bytes(), b'name: Report an issue\n')
 
     def test_organization_repository_does_not_install_an_org_wide_chooser(self):

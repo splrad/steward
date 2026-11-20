@@ -3,7 +3,7 @@ import {isDeepStrictEqual} from 'node:util';
 import YAML from 'yaml';
 
 const key = /^[a-z][a-z0-9-]*$/;
-const hosted = /^(ubuntu-(22\.04|24\.04|latest)|windows-(2022|2025|latest)|macos-(14|15|26|latest)(-intel)?)$/;
+export const hostedRunner = /^(ubuntu-(22\.04|24\.04|latest)|windows-(2022|2025|latest)|macos-(14|15|26|latest)(-intel)?)$/;
 const pinned = /^actions\/(setup-(node|python|dotnet|go|java))@[0-9a-f]{40}$/;
 const checkout = /^actions\/checkout@[0-9a-f]{40}$/;
 const upload = /^actions\/upload-artifact@[0-9a-f]{40}$/;
@@ -27,7 +27,7 @@ function shell(value) {
 }
 
 function runner(value) {
-  requireValue(typeof value === 'string' && hosted.test(value), 'Select a GitHub-hosted runner for build isolation');
+  requireValue(typeof value === 'string' && hostedRunner.test(value), 'Select a GitHub-hosted runner for build isolation');
   return value;
 }
 
@@ -303,7 +303,7 @@ export function adaptBuild(source,seed,targets,controllerSha) {
   const labels=nextRows.map(row=>{
     const changed=targets.find(t=>t.unit===row.unit && t.target===row.target);
     if(changed)return runner(changed.recipe.runner);
-    if(hosted.test(build['runs-on']))return build['runs-on'];
+    if(hostedRunner.test(build['runs-on']))return build['runs-on'];
     const clause="("+condition(row)+") && '";
     const matches=String(build['runs-on']).split(clause);
     if(matches.length!==2)fail();

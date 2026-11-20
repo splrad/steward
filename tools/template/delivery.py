@@ -268,7 +268,9 @@ def deliver(request, api, central_api, *, read_token=None, renderer=copier.rende
         policy_digest = policy_result.stdout.decode('ascii')
         require(not policy_digest or re.fullmatch(r'[0-9a-f]{64}', policy_digest), 'SECURITY_POLICY_DIGEST')
         if (work / '.github/repository-configuration.md').is_file() and repository_inputs(template_sha):
-            add_link(work, repository)
+            source = copier.git(central, ['show', template_sha + ':templates/repository/.github/workflows/repository-configuration.yml'], env)
+            triggers = yaml.load(source, Loader=yaml.BaseLoader)['on']
+            add_link(work, repository, retire='issues' in triggers)
         require(lock_runner is not None, 'ACTION_LOCK_RUNNER_REQUIRED')
         actions_lock.prepare(work, before_copier, lock_runner)
         if string('status', '--porcelain', '--untracked-files=all'):
