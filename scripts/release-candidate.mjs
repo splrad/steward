@@ -514,5 +514,8 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       }
     }
     return await advanceReleaseCandidate(session, runtime);
+  } catch (error) {
+    if (error?.message === 'CANDIDATE_REPOSITORY_POLICY_MOVED') return { status: 'WAIT', reason: error.message };
+    throw error;
   } finally { await rm(root, { recursive: true, force: true }); }
 }
