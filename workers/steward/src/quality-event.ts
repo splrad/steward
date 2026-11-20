@@ -83,7 +83,7 @@ export class QualityEvent {
     ensure(deployment,'QUALITY_DEPLOYMENT');
     const reader=this.reader();
     let policy:string;
-    try{policy=await promotedController(reader,deployment,undefined,this.env);}
+    try{policy=await promotedController(reader,deployment,this.env);}
     catch(error){
       if(!(error instanceof PendingPromotion))throw error;
       await promotionMessage(this.env,deployment,'wait',{policy:deployment,key:qualityKey(record),kind:'quality',generation:error.generation});

@@ -80,7 +80,7 @@ export class ReleaseRelay {
   async register(hint: Hint) {
     const prior=await this.storage.get<Relay>('releaseCycle');
     if(prior?.stage==='unknown' && !prior.reserved && prior.reason==='PREPARATION_EXHAUSTED' && prior.waitingFor){
-      const policy=await promotedController(this.reader(),this.env.RELEASE_RELAY_DEPLOYMENT_SHA??this.env.BOUNDED_DEPLOYMENT_SHA,undefined,this.env);
+      const policy=await promotedController(this.reader(),this.env.RELEASE_RELAY_DEPLOYMENT_SHA??this.env.BOUNDED_DEPLOYMENT_SHA,this.env);
       await this.wakePromoted(policy,true);return;
     }
     await this.storage.transaction(async t => {
@@ -186,7 +186,7 @@ export class ReleaseRelay {
             typeof v.publishInvoked==='boolean','PUBLICATION_ARTIFACT');
           if(!v.publishInvoked){await save({stage:'received',reason:'NO_PUBLICATION'});return;}
         }
-        const policy=await promotedController(g,this.env.RELEASE_RELAY_DEPLOYMENT_SHA??this.env.BOUNDED_DEPLOYMENT_SHA,undefined,this.env);
+        const policy=await promotedController(g,this.env.RELEASE_RELAY_DEPLOYMENT_SHA??this.env.BOUNDED_DEPLOYMENT_SHA,this.env);
         const own = await g.json(CENTRAL.id,prefix+'/actions/workflows/'+workflow);
         ensure(own.state === 'active' && own.path === '.github/workflows/'+workflow,'RELEASE_RELAY_WORKFLOW');
         const reserved = this.now();

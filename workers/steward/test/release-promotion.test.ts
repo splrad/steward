@@ -25,4 +25,7 @@ it('wakes original requests for a superseding controller including registration 
   expect(wakes.map(x=>x.id).sort()).toEqual(['cycle:v1:'+'b'.repeat(64),'native:v1:'+'a'.repeat(64),'quality:v1:'+'c'.repeat(64)]);
   expect(wakes.every(x=>x.controller===controller&&x.policy===policy)).toBe(true);
   expect(await storage.get('__alarm')).toBeUndefined();
+  await broker.update('/promoted',{policy,controller:'3'.repeat(40)});
+  await broker.alarm();
+  expect(wakes.at(-1)).toEqual({id:'native:v1:'+'f'.repeat(64),policy,controller:'3'.repeat(40)});
 });

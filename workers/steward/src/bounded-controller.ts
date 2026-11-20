@@ -4,22 +4,21 @@ const base='/repos/'+CENTRAL.name;
 const sha=(v:unknown):v is string=>typeof v==='string'&&/^[0-9a-f]{40}$/.test(v);
 
 /** Moving main can execute only after promotion and an explicit contract for this D revision. */
-export async function promotedController(g:GitReader, deployment:string|undefined, prior?:string,waitEnv?:BoundedEnv){
-  try{return await verifiedController(g,deployment,prior);}
+export async function promotedController(g:GitReader, deployment:string|undefined, waitEnv?:BoundedEnv){
+  try{return await verifiedController(g,deployment);}
   catch(error){
     if(!(error instanceof PendingPromotion)||!waitEnv?.BOUNDED_RECHECK||!deployment)throw error;
     const generation=await promotionMessage(waitEnv,deployment,'generation',{});
     // Re-read after sampling the broker. A promotion before the sample is already
     // effective, and one after the sample wakes this exact generation.
-    try{return await verifiedController(g,deployment,prior);}
+    try{return await verifiedController(g,deployment);}
     catch(pending){if(pending instanceof PendingPromotion)throw new PendingPromotion(deployment,generation);throw pending;}
   }
 }
-async function verifiedController(g:GitReader,deployment:string|undefined,prior?:string){
+async function verifiedController(g:GitReader,deployment:string|undefined){
   const main=await g.json(CENTRAL.id,base+'/git/ref/heads/main');
   const policy=main.object?.sha;
   ensure(sha(policy),'RELEASE_RELAY_MAIN');
-  if(policy===prior)return policy;
   const promoted=await g.json(CENTRAL.id,base+'/git/ref/heads/steward/validated-controller');
   ensure(main.ref==='refs/heads/main'&&main.object.type==='commit'&&promoted.ref==='refs/heads/steward/validated-controller'&&
     promoted.object?.type==='commit','RELEASE_RELAY_PROMOTION_REF');

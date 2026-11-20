@@ -1,3 +1,4 @@
+import {promotedControllerFixture} from './promoted-controller-fixture.js';
 import {BoundedGitHub} from '../src/bounded-recheck-github.js';
 import {SqliteDurableStorage} from './bounded-storage.js';
 import {handleWebhook} from '../src/index.js';
@@ -131,7 +132,7 @@ describe('native ingress across a controller or deployment change',()=>{
    if(path.endsWith('/actions/runs/101/attempts/1'))return normal;
    if(path.includes('/release-candidate-event.yml/runs?'))return {total_count:1,workflow_runs:[normal]};
    if(path.endsWith('/actions/workflows/release-candidate-event.yml'))return {path:normal.path,state:'active'};
-   if(id===CENTRAL.id&&path.endsWith('/git/ref/heads/main'))return {object:{sha:policySha}};
+   if(id===CENTRAL.id){const promoted=promotedControllerFixture(path,policySha,deploymentSha);if(promoted)return promoted;}
    if(path.includes('/issues/192/events?'))return [event];
    if(path.endsWith('/issues/events/57'))return event;
    return f.g.json(id,path,method,body);

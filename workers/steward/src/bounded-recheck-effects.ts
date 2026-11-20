@@ -25,7 +25,7 @@ export class FixedRecheckEffects implements Effects {
   const facts=await candidateFacts(g);if(identityKey(facts.identity)!==identityKey(r.identity))return {kind:'stop',reason:'SOURCE_CHANGED'};
   ensure(Array.isArray(facts.pull.labels),'CANDIDATE_LABELS_UNKNOWN');if(facts.pull.state!=='open'||facts.pull.merged)return {kind:'stop',reason:'CANDIDATE_CLOSED'};if(facts.pull.labels.some((l:any)=>l.name==='release:editing'))return {kind:'pause',reason:'EDITING_PAUSED'};
   let policy:string;
-  try{policy=await promotedController(g,this.env.RELEASE_RELAY_DEPLOYMENT_SHA??r.deploymentSha,r.policySha);}
+  try{policy=await promotedController(g,this.env.RELEASE_RELAY_DEPLOYMENT_SHA??this.env.BOUNDED_DEPLOYMENT_SHA??r.deploymentSha);}
   catch(error){if(error instanceof PendingPromotion)return {kind:'pending'};throw error;}
   await dispatchFixed(g,CENTRAL.id,'release-observe.yml',policy,{identity_json:JSON.stringify(r.identity),request_key:intent.key,policy_sha:policy},
     policy===r.policySha?undefined:async()=>{ensure(reservePolicy,'OBSERVE_POLICY_STORE');return reservePolicy(policy);});

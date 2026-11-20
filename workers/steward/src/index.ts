@@ -40,7 +40,6 @@ export interface Env {
 }
 
 const MAX_BODY = 10 * 1024 * 1024;
-const ZERO_SHA = "0".repeat(40);
 const VALIDATION_WORKFLOW_NAME = "SPLRAD Steward / PR Validation";
 const VALIDATION_WORKFLOW_PATH = ".github/workflows/pr-validation.yml";
 const VALIDATION_CHECK_NAME = "PR Validation Gate";
@@ -413,7 +412,6 @@ function validScope(payload: any, env: Env): boolean {
   const installationId = payload.installation?.id;
   return organizationId === Number(env.ORGANIZATION_ID) && (!installationId || installationId === Number(env.INSTALLATION_ID));
 }
-function repositoryInputs(repository: any) { return { repositoryId: String(repository.id), repositoryFullName: String(repository.full_name) }; }
 function repositoryConfiguration(repository: any): any {
   const override = (repositoryCatalog.repositories as Record<string, any>)[String(repository.id)];
   if (override?.fullName && override.fullName !== repository.full_name) throw new Error("仓库编号与中央目录名称不一致");
@@ -495,34 +493,6 @@ export async function forwardConfigurationCompletion(env: Env, payload: any, rea
   });
 }
 
-function repositoryBeforeEdit(repository: any, changes: any): any {
-  const previousVisibility = changes?.visibility?.from;
-  return {
-    ...repository,
-    ...(["public", "private", "internal"].includes(previousVisibility) ? { private: previousVisibility !== "public" } : {}),
-    ...(typeof changes?.has_issues?.from === "boolean" ? { has_issues: changes.has_issues.from } : {}),
-    ...(typeof changes?.archived?.from === "boolean" ? { archived: changes.archived.from } : {}),
-    ...(typeof changes?.disabled?.from === "boolean" ? { disabled: changes.disabled.from } : {}),
-  };
-}
-
-function orderedManagedRepositories(repositories: readonly any[]): any[] {
-  return [...new Map(repositories.filter(isManaged).map(repository => [Number(repository.id), repository])).values()]
-    .sort((left, right) => Number(left.id) - Number(right.id));
-}
-
-async function onboardManagedRepositories(env: Env, repositories: readonly any[], deliveryId: string, trigger: string): Promise<void> {
-  const ordered = orderedManagedRepositories(repositories);
-  let firstFailure: unknown = null;
-
-  for (const repository of ordered) {
-    try {
-      await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger, deliveryId, policySha: env.POLICY_SHA });
-    } catch (error) { if (firstFailure === null) firstFailure = error; }
-  }
-  if (firstFailure !== null) throw firstFailure;
-}
-
 export async function handleWebhook(request: Request, env: Env): Promise<Response> {
   const declared = Number(request.headers.get("content-length") ?? "0"); if (declared > MAX_BODY) return response(413);
   const bytes = await request.arrayBuffer(); if (bytes.byteLength > MAX_BODY) return response(413);
@@ -570,33 +540,6 @@ async function handleExistingEvent(env:Env,event:string,payload:any,deliveryId:s
         });
         if (["proven", "compensated", "duplicate", "blocked"].includes(outcome)) return response(202);
       }
-    }
-    if (event === "installation" && action === "created") {
-      await onboardManagedRepositories(env, payload.repositories ?? [], deliveryId, "installation-created");
-      return response(202);
-    }
-    if (event === "installation_repositories" && action === "added") {
-      await onboardManagedRepositories(env, payload.repositories_added ?? [], deliveryId, "installation-repositories-added");
-      return response(202);
-    }
-    if (event === "repository" && ["edited", "archived", "unarchived"].includes(action)) {
-      const repository = payload.repository;
-      if (!repository || !isManaged(repository) || repository.archived || repository.disabled) return response(204);
-      const previous = repositoryBeforeEdit(repository, payload.changes);
-      if (action === "unarchived" || !isManaged(previous)) {
-        await onboardManagedRepositories(env, [repository], deliveryId, action === "unarchived" ? "repository-unarchived" : "repository-visibility-changed");
-        return response(202);
-      }
-      return response(204);
-    }
-    if (event === "push") {
-      const repository = payload.repository; if (!repository || !isManaged(repository) || repository.fork || repository.archived || repository.disabled || payload.deleted || !String(payload.ref).startsWith("refs/heads/") || payload.after === ZERO_SHA) return response(204);
-      if (payload.ref === `refs/heads/${repository.default_branch}`) {
-        if (payload.before !== ZERO_SHA) return response(204);
-        await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger: "default-branch-push", deliveryId, policySha: env.POLICY_SHA });
-        return response(202);
-      }
-      return response(204);
     }
     if (event === "pull_request" && ["opened", "synchronize", "reopened", "edited"].includes(action)) {
       const repository = payload.repository; const pull = payload.pull_request;
