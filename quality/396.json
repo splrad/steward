@@ -1473,17 +1473,47 @@
         ]
       },
       "configVersion": "quality-native-comments-v1",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4644748564",
+        "sourceCommit": "ad572c546c28c671f1387afd085ccb5a03363eb8",
+        "sourceUrl": "https://github.com/splrad/steward/pull/396#discussion_r4644748564",
+        "severity": "原文未说明",
+        "originalIdentifiers": [
+          "<code>BoundedGitHub</code>",
+          "<code>workers/steward/src/index.ts</code>",
+          "<code>import {BoundedGitHub} from './bounded-recheck-github.js';</code>",
+          "workers/steward/src/index.ts",
+          "./bounded-recheck-github.js",
+          "methods/imports/definitions"
+        ],
+        "segmentIndex": 0,
+        "problemZh": "原文指出存在“Unused variable, import, function or class”问题；具体为 `workers/steward/src/index.ts` 中的命名导入 `BoundedGitHub` 未被使用。",
+        "impactZh": "原文表示这是未使用代码问题；会造成无用导入残留。原文未说明更进一步的运行时影响。",
+        "suggestionZh": "原文建议在不改变功能的前提下，删除未被引用的导入：从 `workers/steward/src/index.ts` 顶部 import 区移除 `import {BoundedGitHub} from './bounded-recheck-github.js';`（提到为第 6 行），且仅修改该文件该处，不需要新增 methods/imports/definitions。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-20T16:11:43.082Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 3273,
+                "outputTokens": 424
+              }
+            ],
+            "totalNanoAiu": 1166375000,
+            "aiCredits": 1.166375,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-20T16:12:43.082Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     }
   },
   "cursor": 0
