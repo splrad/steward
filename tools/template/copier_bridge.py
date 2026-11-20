@@ -13,11 +13,21 @@ from packaging.version import Version, InvalidVersion
 
 SOURCE = 'https://github.com/splrad/steward.git'
 INTERNAL = {'_min_copier_version', '_subdirectory', '_answers_file'}
+LEGACY_CONFIGURATION = ('.github/repository-configuration.md',
+                        '.github/workflows/repository-configuration-trial.yml',
+                        '.github/workflows/repository-configuration.yml')
 FORBIDDEN = {'VERSION', 'CHANGELOG.md', 'package.json', 'package-lock.json',
              '.github/workflows/actions.lock',
              '.release-please-manifest.json', 'release-please-config.json',
              'mise.toml', 'mise.lock', '.github/delivery.json', '.github/steward-template-adoption.md'}
 ADOPTION_REPORT = '.github/steward-template-adoption.md'
+RELEASE_NOTES_TEMPLATE = '.github/release-template.md.mustache'
+
+
+class TemplateConflict(ValueError):
+    def __init__(self, paths):
+        self.paths = sorted(paths)
+        super().__init__('TEMPLATE_CONFLICT')
 
 
 def require(condition, code):
@@ -90,6 +100,14 @@ def select_template(central, controller):
         return selected
 
 
+def configuration_excluded(config):
+    if '_exclude' not in config:
+        return False
+    require(config['_exclude'] == ['/' + path for path in LEGACY_CONFIGURATION],
+            'TEMPLATE_EXCLUSION_POLICY')
+    return True
+
+
 def contract(central, sha, data, env):
     version = revision(central, sha, env)
     raw = git(central, ['show', sha + ':copier.yml'], env)
@@ -97,10 +115,11 @@ def contract(central, sha, data, env):
     require(isinstance(config, dict) and config.get('_subdirectory') == 'templates/repository'
             and config.get('_answers_file') == '.copier-answers.yml', 'TEMPLATE_CONFIG')
     questions = {}
+    excluded = configuration_excluded(config)
     for key, value in config.items():
         require(isinstance(key, str), 'TEMPLATE_CONFIG_KEY')
         if key.startswith('_'):
-            require(key in INTERNAL, 'TEMPLATE_EXECUTION_SETTING')
+            require(key in INTERNAL or key == '_exclude', 'TEMPLATE_EXECUTION_SETTING')
         else:
             require(re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*', key) and isinstance(value, dict), 'TEMPLATE_QUESTION')
             require(set(value) <= {'type', 'default', 'help', 'choices'}, 'TEMPLATE_QUESTION_SETTING')
@@ -122,6 +141,8 @@ def contract(central, sha, data, env):
         git(central, ['cat-file', 'blob', oid], env).decode('utf-8', errors='strict')
         paths.add(target)
     require('.copier-answers.yml' in paths and 'AGENTS.md' in paths, 'TEMPLATE_REQUIRED_FILES')
+    if excluded:
+        paths.difference_update(LEGACY_CONFIGURATION)
     return version, questions, paths
 
 
@@ -181,11 +202,27 @@ def render(central, target, sha, mode, data=None):
             argv += ['--data-file', str(data_file)]
         command([sys.executable, '-m', 'copier', *argv], target if mode == 'update' else target.parent, env)
         after = paths_in_tree(target)
-        require(not any(p.endswith('.rej') for p in after), 'TEMPLATE_CONFLICT')
+        rejects = {p for p in after if p.endswith('.rej')}
+        reject = RELEASE_NOTES_TEMPLATE + '.rej'
+        release_source = 'templates/repository/' + RELEASE_NOTES_TEMPLATE
+        if (mode == 'update' and reject in rejects and reject not in before
+                and RELEASE_NOTES_TEMPLATE in before and RELEASE_NOTES_TEMPLATE in new_paths
+                and before[RELEASE_NOTES_TEMPLATE] == after.get(RELEASE_NOTES_TEMPLATE)
+                and git(central, ['ls-tree', sha, '--', release_source], env)):
+            source = git(central, ['show', sha + ':' + release_source], env)
+            if before[RELEASE_NOTES_TEMPLATE] == source:
+                (target / reject).unlink()
+                del after[reject]
+                rejects.remove(reject)
+        if rejects:
+            raise TemplateConflict(p.removesuffix('.rej') for p in rejects)
         changed = {p for p in before.keys() | after.keys() if before.get(p) != after.get(p)}
+        if new_paths.isdisjoint(LEGACY_CONFIGURATION):
+            require(changed.isdisjoint(LEGACY_CONFIGURATION), 'TEMPLATE_LEGACY_CONFIGURATION_CHANGED')
         require(changed <= old_paths | new_paths, 'TEMPLATE_DIFF_PATH')
         for path in changed & after.keys():
-            require(not re.search(rb'(?m)^(?:<{7}|={7}|>{7})(?: |$)', after[path]), 'TEMPLATE_CONFLICT')
+            if re.search(rb'(?m)^(?:<{7}|={7}|>{7})(?: |$)', after[path]):
+                raise TemplateConflict([path])
         require(new_paths <= after.keys(), 'TEMPLATE_REQUIRED_FILE_MISSING')
         generated = yaml.safe_load(after['.copier-answers.yml'])
         require(generated['_src_path'] == SOURCE, 'TEMPLATE_GENERATED_SOURCE')
@@ -204,6 +241,17 @@ def adoption_diff(seed, product):
                           for p in sorted(generated.keys() & existing.keys()) if generated[p] != existing[p]]}
 
 
+def classify_adoption_conflicts(differences):
+    # The common contribution section is complete; extra product instructions remain verbatim.
+    custom, conflicts = [], []
+    for value in differences:
+        if value['path'] == 'CONTRIBUTING.md' and value['generated'].replace('\r\n','\n').strip() in value['current'].replace('\r\n','\n'):
+            custom.append(value['path'])
+        else:
+            conflicts.append(value)
+    return custom, conflicts
+
+
 def prepare_adoption(central, product, seed, sha, *, expected_report=None, data=None):
     """Native empty-directory copy, additive first PR and a complete conflict report."""
     product, seed = Path(product).resolve(), Path(seed).resolve()
@@ -212,13 +260,7 @@ def prepare_adoption(central, product, seed, sha, *, expected_report=None, data=
         require(expected_report is not None and report.read_bytes() == expected_report, 'TEMPLATE_ADOPTION_REPORT_EDITED')
     render(central, seed, sha, 'copy', data)
     diff = adoption_diff(seed, product)
-    # The common contribution section is complete; extra product instructions remain verbatim.
-    custom, conflicts = [], []
-    for value in diff['conflicts']:
-        if value['path'] == 'CONTRIBUTING.md' and value['generated'].replace('\r\n','\n').strip() in value['current'].replace('\r\n','\n'):
-            custom.append(value['path'])
-        else:
-            conflicts.append(value)
+    custom, conflicts = classify_adoption_conflicts(diff['conflicts'])
     for path in diff['new']:
         target = product / path; target.parent.mkdir(parents=True, exist_ok=True)
         with target.open('xb') as stream: stream.write((seed/path).read_bytes())
@@ -234,21 +276,77 @@ def prepare_adoption(central, product, seed, sha, *, expected_report=None, data=
     return {'mode':'adopt','conflicts':[v['path'] for v in conflicts],'preservedCustomFiles':custom}
 
 
+def diagnose(central, target, sha, base, pending, data):
+    """Inspect an existing clone in a disposable checkout; write no repository refs or PRs."""
+    central, target = Path(central).resolve(), Path(target).resolve()
+    require(re.fullmatch(r'[a-f0-9]{40}', base or '') and
+            (not pending or re.fullmatch(r'[a-f0-9]{40}', pending)), 'TEMPLATE_DIAGNOSTIC_REFS')
+    with tempfile.TemporaryDirectory(prefix='template-diagnose-') as temporary:
+        root = Path(temporary)
+        work = root/'checkout'
+        work.mkdir()
+        env = environment(root)
+        git(work, ['init', '--quiet'], env)
+        git(work, ['fetch', '--no-tags', str(target), base], env)
+        if pending:
+            git(work, ['fetch', '--no-tags', str(target), pending], env)
+        git(work, ['checkout', '--detach', pending or base], env)
+        result = {'base': base, 'pending': pending, 'template': sha, 'paths': []}
+        if pending:
+            try:
+                git(work, ['-c', 'user.name=Diagnostic', '-c', 'user.email=diagnostic@localhost',
+                           'merge', '--no-ff', '--no-edit', base], env)
+            except ValueError:
+                paths = git(work, ['diff', '--diff-filter=U', '--name-only', '-z'], env).decode().split('\0')
+                if not any(paths):
+                    raise
+                return {**result, 'status': 'MERGE_CONFLICT', 'paths': sorted(filter(None, paths))}
+            watched = [*LEGACY_CONFIGURATION, '.github/ISSUE_TEMPLATE/config.yml']
+            changed = git(work, ['diff', '--name-only', '-z', base, 'HEAD', '--', *watched], env)
+            result['pendingConfigurationPaths'] = sorted(filter(None, changed.decode().split('\0')))
+        try:
+            if (work/ADOPTION_REPORT).is_file():
+                _, pinned, pinned_data = answers(central, work, env)
+                render(central, root/'seed', pinned, 'copy', pinned_data)
+                _, conflicts = classify_adoption_conflicts(adoption_diff(root/'seed', work)['conflicts'])
+                return {**result, 'status': 'PENDING_ADOPTION_REPORT', 'paths': [v['path'] for v in conflicts]}
+            if (work/'.copier-answers.yml').exists():
+                render(central, work, sha, 'update', data)
+            else:
+                adoption = prepare_adoption(central, work, root/'seed', sha, data=data)
+                if adoption['conflicts']:
+                    return {**result, 'status': 'ADOPTION_CONFLICT', 'paths': adoption['conflicts']}
+        except TemplateConflict as error:
+            return {**result, 'status': 'TEMPLATE_CONFLICT', 'paths': error.paths}
+        return {**result, 'status': 'RENDERED'}
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', choices=['copy', 'update', 'select'])
+    parser.add_argument('mode', choices=['copy', 'update', 'select', 'diagnose'])
     parser.add_argument('--central', required=True)
     parser.add_argument('--target')
     parser.add_argument('--template-sha', required=True)
     parser.add_argument('--data-file')
+    parser.add_argument('--base-sha')
+    parser.add_argument('--pending-sha')
     parser.add_argument('--output', required=True)
     args = parser.parse_args()
     data = json.loads(Path(args.data_file).read_text(encoding='utf-8')) if args.data_file else {}
     if args.mode=='select':
         result=select_template(args.central,args.template_sha)
+    elif args.mode=='diagnose':
+        require(args.target, 'TEMPLATE_TARGET_REQUIRED')
+        result=diagnose(args.central,args.target,args.template_sha,args.base_sha,args.pending_sha,data)
     else:
         require(args.target,'TEMPLATE_TARGET_REQUIRED')
-        result = render(args.central, args.target, args.template_sha, args.mode, data)
+        try:
+            result = render(args.central, args.target, args.template_sha, args.mode, data)
+        except TemplateConflict as error:
+            # The requested local file is for the maintainer. Paths never enter shared workflow output.
+            with open(args.output, 'x', encoding='utf-8') as stream:
+                json.dump({'status': 'TEMPLATE_CONFLICT', 'paths': error.paths}, stream, ensure_ascii=False, indent=2)
+            raise
     with open(args.output, 'x', encoding='utf-8') as stream:
         json.dump(result, stream, ensure_ascii=False, indent=2)
 
