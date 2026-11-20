@@ -1,5 +1,6 @@
 """Select a Steward PR test profile from the exact base and head trees."""
 import argparse
+import os
 import re
 import subprocess
 import tomllib
@@ -66,16 +67,29 @@ def tool_changes(before, after):
     return changed
 
 
+def changed_paths(base, head):
+    return set(git("diff", "--name-only", "--no-renames", "-z", base, head).decode().split("\0")) - {""}
+
+
 def classify(base, head):
+    if os.environ.get("GITHUB_EVENT_NAME") == "push":
+        # Only a single-parent default-branch update can reuse a narrow profile.
+        if git("rev-list", "--parents", "-n1", "HEAD").decode().split() != [head, base]:
+            return "full"
     # A stale/diverged branch needs the complete suite with ordinary base handling.
     if subprocess.run(["git", "-C", "target", "merge-base", "--is-ancestor", base, head]).returncode:
         return "full"
-    paths = set(git("diff", "--name-only", "--no-renames", "-z", base, head).decode().split("\0")) - {""}
-    if paths not in ({"mise.lock"}, {TEMPLATE_TITLE}, {ROOT_TITLE, ACTION_LOCK}):
+    paths = changed_paths(base, head)
+    # Ordinary authored guides form a subset of Native Validation's Markdown scope.
+    # Release inputs, policy instructions, templates and additions/deletions stay full.
+    docs = bool(paths) and all(re.fullmatch(r"docs/[a-z][a-z0-9-]*\.md", path) for path in paths)
+    if not docs and paths not in ({"mise.lock"}, {TEMPLATE_TITLE}, {ROOT_TITLE, ACTION_LOCK}):
         return "full"
     for path in paths:
         if not all(git("ls-tree", ref, "--", path).startswith(b"100644 blob ") for ref in (base, head)):
             return "full"
+    if docs:
+        return "docs"
     if paths == {"mise.lock"}:
         return "tool" if tool_changes(blob(base, "mise.lock"), blob(head, "mise.lock")) else "full"
     if paths not in ({TEMPLATE_TITLE}, {ROOT_TITLE, ACTION_LOCK}):

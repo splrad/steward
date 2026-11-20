@@ -173,6 +173,7 @@ def tool(key, item, root):
         subprocess.run([binary, "--offline", "--no-progress", fixture], cwd=root, env=child_env(),
                        timeout=60, check=True)
     print(f"{key} {item['version']} {asset['checksum']} {option} OK")
+    return binary
 
 
 def title(base, head, root):
@@ -232,6 +233,16 @@ if __name__ == "__main__":
         for key, item in rules.tool_changes(*(rules.blob(ref, "mise.lock") for ref in (base, head))).items():
             with tempfile.TemporaryDirectory() as directory:
                 tool(key, item, Path(directory))
+    elif profile == "docs":
+        key = "aqua:lycheeverse/lychee"
+        item, = tomllib.loads(lock_blob("policy", "HEAD", "mise.lock").decode())["tools"][key]
+        documents = [Path("target", p).resolve() for p in sorted(rules.changed_paths(base, head))]
+        with tempfile.TemporaryDirectory() as directory:
+            binary = tool(key, item, Path(directory))
+            subprocess.run([binary, "--config", Path("policy/config/linkcheck/lychee.toml").resolve(),
+                            "--root-dir", Path("target").resolve(), "--include-fragments=anchor-only",
+                            "--scheme", "file", "--offline", "--", *documents],
+                           cwd=directory, env=child_env(), check=True, timeout=120)
     elif profile == "title":
         with tempfile.TemporaryDirectory() as directory:
             title(base, head, Path(directory))

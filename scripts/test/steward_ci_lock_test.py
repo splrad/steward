@@ -1,10 +1,12 @@
 """Regression coverage for the PR lock contract and split fork checkouts."""
 import copy
+import os
 from contextlib import chdir
 import runpy
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 candidate = runpy.run_path(str(Path(__file__).resolve().parents[1] / "steward-ci-candidate.py"))
@@ -35,6 +37,36 @@ class LockContractTest(unittest.TestCase):
         new["tools"]["tool"][0]["version"] = "1.0.1"
         new["tools"]["tool"][0]["platforms.windows-x64"].update(url="new", checksum="new")
         self.assertEqual(len(list(candidate["checked_records"](base, new))), 1)
+
+    def test_docs_and_push_parent(self):
+        with tempfile.TemporaryDirectory() as directory, chdir(directory):
+            repo = Path("target")
+            subprocess.run(["git", "init", "-q", repo], check=True)
+            def commit(path, content):
+                file = repo / path
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_text(content, encoding="utf-8")
+                subprocess.run(["git", "-C", repo, "add", path], check=True)
+                subprocess.run(["git", "-C", repo, "-c", "user.name=Fixture", "-c", "user.email=t@example.com",
+                                "-c", "commit.gpgSign=false", "commit", "-qm", content], check=True)
+                return candidate["rules"].git("rev-parse", "HEAD").decode().strip()
+
+            classify = candidate["rules"].classify
+            first = commit("docs/guide.md", "guide")
+            parent = commit("docs/guide.md", "updated guide")
+            head = commit("docs/guide.md", "final guide")
+            with patch.dict(os.environ, {"GITHUB_EVENT_NAME": "push"}):
+                self.assertEqual(classify(parent, head), "docs")
+                self.assertEqual(classify(first, head), "full")
+                self.assertEqual(classify("0" * 40, head), "full")
+                self.assertEqual(classify(first, parent), "full")
+                source = commit("packages/runner/dist/index.js", "source")
+                self.assertEqual(classify(head, source), "full")
+                policy = commit("docs/SECURITY.md", "policy")
+                self.assertEqual(classify(source, policy), "full")
+            with patch.dict(os.environ, {"GITHUB_EVENT_NAME": "pull_request"}):
+                self.assertEqual(classify(first, head), "docs")
+                self.assertEqual(classify(first, source), "full")
 
     def test_base_absent_from_fork(self):
         with tempfile.TemporaryDirectory() as directory:

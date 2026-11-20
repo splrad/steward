@@ -16,15 +16,13 @@ jobs:
       profile: ${{ steps.select.outputs.profile }}
       runners: ${{ steps.select.outputs.runners }}
     steps:
-      - if: github.event_name == 'pull_request'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ${{ github.event.repository.full_name }}
           ref: ${{ github.event.pull_request.base.sha || github.sha }}
           path: policy
           persist-credentials: false
-      - if: github.event_name == 'pull_request'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -34,15 +32,15 @@ jobs:
       - id: select
         shell: bash
         env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           profile=full
           if [[ -n "$BASE" && -f policy/scripts/steward-ci-profile.py ]]; then
             profile=$(python policy/scripts/steward-ci-profile.py "$BASE" "$HEAD")
           fi
           case "$profile" in
-            full|title) runners='["ubuntu-24.04"]' ;;
+            full|title|docs) runners='["ubuntu-24.04"]' ;;
             tool) runners='["ubuntu-24.04","windows-2025"]' ;;
             *) exit 1 ;;
           esac
@@ -76,8 +74,8 @@ jobs:
         shell: bash
         env:
           PROFILE: ${{ needs.plan.outputs.profile }}
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: python policy/scripts/steward-ci-candidate.py "$PROFILE" "$BASE" "$HEAD"
   test:
     needs: plan
@@ -117,8 +115,8 @@ jobs:
         if: github.event_name == 'pull_request'
         shell: bash
         env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           if [[ -f policy/scripts/steward-ci-candidate.py ]]; then
             python policy/scripts/steward-ci-candidate.py full-lock "$BASE" "$HEAD"
@@ -168,6 +166,6 @@ jobs:
           CANDIDATE: ${{ needs.candidate.result }}
         run: |
           case "$PLAN/$PROFILE/$FULL/$CANDIDATE" in
-            success/full/success/skipped|success/title/skipped/success|success/tool/skipped/success) exit 0 ;;
+            success/full/success/skipped|success/title/skipped/success|success/docs/skipped/success|success/tool/skipped/success) exit 0 ;;
             *) exit 1 ;;
           esac
