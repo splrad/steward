@@ -10,13 +10,13 @@ function snapshot():any {return {
     {type:'required_status_checks',parameters:{required_status_checks:[{context:'existing-check',integration_id:9}]}},
     {type:'workflows',parameters:{workflows:[{repository_id:1296724484,path:'.github/workflows/pr-validation-native.yml',ref:'main'},{repository_id:1,path:'.github/workflows/other.yml',sha:'b'.repeat(40)}]}}
   ]},
-  team:{id:91,slug:'primary-account-approval-exception',organization:{id:302208797}},members:[{id:44151430,login:'axiomoth',type:'User'}],
+  team:{id:91,slug:'stewardship',organization:{id:302208797}},members:[{id:44151430,login:'axiomoth',type:'User'}],
   governanceApp:{id:92,slug:'splrad-governance'},installation:{id:93,app_id:92,account:{id:302208797},repository_selection:'all',suspended_at:null},
   validationCheck:{name:'SPLRAD Validation',head_sha:'a'.repeat(40),status:'completed',conclusion:'success',app:{id:15368,slug:'github-actions'}}
 };}
 function effective(drafts:any) {return [
   {...drafts.foundation,id:18883080,source:'splrad',source_type:'Organization'},
-  {...drafts.independent,id:2,source:'splrad',source_type:'Organization'}
+  {...drafts.independent,id:26650622,source:'splrad',source_type:'Organization'}
 ];}
 it('separates the sole approval exception from non-bypassable default-branch protections and preserves unrelated consumers',async()=>{
   const {prepareGovernance,assertApprovalUnion}=await module(),input=snapshot(),original=structuredClone(input),d=prepareGovernance(input);
@@ -25,12 +25,20 @@ it('separates the sole approval exception from non-bypassable default-branch pro
   expect(d.foundation.rules).toContainEqual({type:'required_signatures'});
   expect(d.foundation.rules.find((r:any)=>r.type==='pull_request').parameters).toMatchObject({required_approving_review_count:0,required_review_thread_resolution:true,required_reviewers:[],require_code_owner_review:false,require_last_push_approval:false,require_extra_approval_for_unattributed_changes:false});
   expect(d.independent.rules).toHaveLength(1);expect(d.independent.rules[0].parameters).toMatchObject({required_approving_review_count:1,required_review_thread_resolution:false});
+  expect(d.independent.name).toBe('SPLRAD 拉取请求审批');
   expect(d.independent.bypass_actors).toEqual([{actor_id:91,actor_type:'Team',bypass_mode:'pull_request'}]);
   expect(d.foundation.rules.find((r:any)=>r.type==='required_status_checks').parameters.required_status_checks).toEqual([{context:'existing-check',integration_id:9},{context:'SPLRAD Validation',integration_id:15368},{context:'SPLRAD PR Title',integration_id:15368}]);
   const workflows=d.foundation.rules.find((r:any)=>r.type==='workflows').parameters;
   expect(workflows.do_not_enforce_on_create).toBe(true);expect(workflows.workflows[0]).toEqual({repository_id:1296724484,path:'.github/workflows/pr-validation-native.yml',sha:input.policySha});
   expect(workflows.workflows[1]).toEqual(input.base.rules.at(-1).parameters.workflows[1]);
   expect(()=>assertApprovalUnion(effective(d),null,91)).not.toThrow();
+});
+it('validates the same independent approval ruleset under its previous name',async()=>{
+  const {prepareGovernance,assertApprovalUnion}=await module(),e=effective(prepareGovernance(snapshot()));
+  e[1].name='SPLRAD PR Approval';
+  expect(()=>assertApprovalUnion(e,null,91)).not.toThrow();
+  e[1].id=2;
+  expect(()=>assertApprovalUnion(e,null,91)).toThrow('GOVERNANCE_DRAFT_BYPASS');
 });
 it.each([
   ['extra team member',(s:any)=>s.members.push({id:5,login:'other',type:'User'})],
@@ -49,13 +57,13 @@ it('consolidates equal runtime constraints into five rules while preserving thei
   const named=(name:string)=>d.runtime.find((r:any)=>r.name===name);
   for(const r of d.runtime) {
     expect(r.conditions.repository_name).toEqual({include:['~ALL'],exclude:[],protected:false});
-    if(r.name.endsWith('-integrity')||r.name.endsWith('-immutable'))expect(r.bypass_actors).toEqual([]);
+    if(r.name.endsWith('完整性保护')||r.name.endsWith('不可变'))expect(r.bypass_actors).toEqual([]);
     else expect(r.rules.every((rule:any)=>['creation','update'].includes(rule.type))).toBe(true);
   }
-  expect(named('steward-build-immutable').rules).toEqual([{type:'update',parameters:{update_allows_fetch_and_merge:false}},{type:'deletion'}]);
-  expect(named('steward-governance-writer').bypass_actors.map((a:any)=>a.actor_id)).toEqual([4243096,92]);
-  expect(named('steward-ref-creator').conditions.ref_name.include).toEqual(['refs/heads/steward/build/*','refs/heads/steward/managed-sync','refs/heads/steward/release-candidate']);
-  expect(named('steward-ref-integrity').conditions.ref_name.include).toEqual(['refs/heads/steward/release-state','refs/heads/steward/automation-health','refs/heads/steward/governance-state','refs/heads/steward/managed-sync','refs/heads/steward/release-candidate']);
+  expect(named('Steward 构建分支不可变').rules).toEqual([{type:'update',parameters:{update_allows_fetch_and_merge:false}},{type:'deletion'}]);
+  expect(named('Steward 治理状态写入限制').bypass_actors.map((a:any)=>a.actor_id)).toEqual([4243096,92]);
+  expect(named('Steward 自动化分支创建限制').conditions.ref_name.include).toEqual(['refs/heads/steward/build/*','refs/heads/steward/managed-sync','refs/heads/steward/release-candidate']);
+  expect(named('Steward 自动化分支完整性保护').conditions.ref_name.include).toEqual(['refs/heads/steward/release-state','refs/heads/steward/automation-health','refs/heads/steward/governance-state','refs/heads/steward/managed-sync','refs/heads/steward/release-candidate']);
 });
 // This finite configuration comparison checks the request bodies, not GitHub enforcement.
 it.each([
