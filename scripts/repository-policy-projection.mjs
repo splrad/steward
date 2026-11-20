@@ -2,6 +2,7 @@ import {createHash} from 'node:crypto';
 import {decodeRepositoryPolicyProjection,repositoryPolicyDigest,repositoryPolicyPath,repositoryPolicyBranch} from '../packages/runner/dist/index.js';
 
 const ref='refs/heads/'+repositoryPolicyBranch;
+const emptyTreeSha='4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 export const repositoryPolicyAdoptionPath='.github/steward-central-policy';
 const sha=value=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
 const check=(condition,code='UNAVAILABLE')=>{if(!condition)throw Error('REPOSITORY_POLICY_PROJECTION_'+code);};
@@ -93,7 +94,10 @@ export async function readRepositoryProjection(reader, repositoryId) {
     return null;
   };
   if(!commit)return absent();
-  const directory=await treeEntry(reader,commit,'configuration');
+  const fact=await reader.json('git/commits/'+commit);
+  check(fact?.sha===commit&&sha(fact.tree?.sha));
+  if(fact.tree.sha===emptyTreeSha)return absent();
+  const directory=await treeEntry(reader,fact.tree.sha,'configuration');
   if(!directory)return absent();
   check(directory.mode==='040000'&&directory.type==='tree'&&sha(directory.sha));
   const blob=await treeEntry(reader,directory.sha,'repository.json');
