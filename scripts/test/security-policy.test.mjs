@@ -69,7 +69,11 @@ test('checks adoption against trusted Git tags, preserves outside bytes on sync 
   assert.throws(()=>check(independentUpgrade,independentRollback),/POLICY_DOWNGRADE/);
   rmSync(policy);const removed = commit();
   assert.throws(()=>check(independentUpgrade,removed),/FILE_MISSING/);
-  pin('v2.0.0');writeFileSync(policy,initial);const first = commit();
+  pin('v2.0.0');const adoptedWithoutPolicy = commit();
+  writeFileSync(policy,'Legacy project policy\n');const adoptedWithoutMarkers = commit();
+  writeFileSync(policy,initial);const first = commit();
+  assert.throws(()=>check(adoptedWithoutPolicy,first),/INITIAL_CONTENT/);
+  assert.throws(()=>check(adoptedWithoutMarkers,first),/EXISTING_POLICY_REQUIRES_MIGRATION/);
   check(legacy,first,true);
   writeFileSync(policy,Buffer.concat([initial,Buffer.from('\nAdministrator text.\n')]));const human = commit();
   check(first,human);assert.throws(()=>check(first,human,true),/OUTSIDE_CHANGED/);

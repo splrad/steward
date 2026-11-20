@@ -155,7 +155,7 @@ export function verify(target, base, head, trusted, trustedHead, sync, central) 
     if (separate && next) requirePolicy(released(next,trusted,ref), 'POLICY_BEFORE_COPIER_VERSION');
     if (changed) requirePolicy(released(old[1],trusted,ref), 'POLICY_DOWNGRADE_OR_DRIFT');
   }
-  if (sync || changed || next && !previous?.equals(next) || !old && separate) {
+  if (!old || sync || changed || next && !previous?.equals(next)) {
     if (old) {
       requirePolicy(prefix.equals(old[0]) && suffix.equals(old[2]), 'OUTSIDE_CHANGED');
     } else if (!before) {
