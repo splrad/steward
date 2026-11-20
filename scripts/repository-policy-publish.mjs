@@ -4,6 +4,7 @@ import {join} from 'node:path';
 import {repositoryPolicyPath,repositoryPolicyBranch} from '../packages/runner/dist/index.js';
 import {mergedRepositoryPolicy} from './repository-policy-read.mjs';
 import {projectionBytes} from './repository-policy-projection.mjs';
+import {configurationConflicts} from './repository-registration-policy.mjs';
 import {writeReleaseRecords} from './release-record.mjs';
 import {nativeTemporaryParent} from './native-scratch.mjs';
 
@@ -18,11 +19,12 @@ export async function projectMergedRepositoryPolicy(app, repository, source, obs
   const selected=adopted.policy;
   if(selected ? selected.repository!==repository.full_name : !ports.revokeMissing)return;
   if(selected?.adoption==='central') {
-    const observed=(await observe()).policy;
-    check(selected.productCi.every(path=>observed.productCi.includes(path)),'PRODUCT_CI');
+    const proposal=await observe();
+    const [conflict]=configurationConflicts(selected,proposal);
+    check(!conflict,conflict);
     if(selected.site) {
       check(await readSource(selected.site.workflow),'PAGES');
-      if(selected.site.source==='release')check(observed.release?.units.some(unit=>unit.id===selected.site.unit),'PAGES');
+      if(selected.site.source==='release')check(proposal.policy.release?.units.some(unit=>unit.id===selected.site.unit),'PAGES');
     }
   }
   const content=projectionBytes(selected??{repositoryId:repository.id,adoption:'legacy',productCi:[],site:null});
@@ -33,12 +35,11 @@ export async function projectMergedRepositoryPolicy(app, repository, source, obs
       const refresh=()=>getState(root,repository,token,repositoryPolicyBranch,{governanceAppId:5639432,includeHistory:false});
       const state=await refresh();
       const current=state.snapshot.currentPaths.includes(repositoryPolicyPath)?await state.readBytes(repositoryPolicyPath):null;
-      if(!selected&&current===null)return 'UNCHANGED';
       const latest=await readMerged();
       const unchanged=selected?latest.policy?.repository===repository.full_name&&projectionBytes(latest.policy)===content:
         latest.policy===null;
       check(unchanged&&latest.commit===adopted.commit&&await ports.currentSource()===source,'MOVED');
-      if(current?.toString('utf8')===content)return 'UNCHANGED';
+      if((!selected&&current===null)||current?.toString('utf8')===content)return 'UNCHANGED';
       const directory=await mkdtemp(join(root,'write-'));
       const result=await (ports.write??writeReleaseRecords)({directory:join(directory,'checkout'),remote:state.remote,
         repositoryId:repository.id,defaultBranch:repository.default_branch,targetRef:repositoryPolicyBranch,writer:'configuration',

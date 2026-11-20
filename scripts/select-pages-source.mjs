@@ -7,7 +7,7 @@ import {Version} from 'release-please/build/src/version.js';
 import {TagName} from 'release-please/build/src/util/tag-name.js';
 import {NativeEvidenceReader,nativeEvidenceTransport,nativeGhCommand,nativeReleaseDownload,NativeGitHubRelease,
   parseDeliveryConfig,deliveryAssetNames,validateProductManifest} from '../packages/runner/dist/index.js';
-import {assertCentralProjection,readRequiredRepositoryProjection,readRepositoryProjection} from './repository-policy-projection.mjs';
+import {readRepositoryPolicySelection} from './repository-policy-projection.mjs';
 
 const check=(ok,code)=>{if(!ok)throw Error('PAGES_'+code);};
 const positive=n=>Number.isSafeInteger(n)&&n>0;
@@ -153,7 +153,7 @@ export async function selectPagesSource(options,event,ports) {
   const desired=await desiredPagesSource(options,ports);
   return desired.status==='READY'?admitPagesEvent(desired.source,event):desired;
 }
-export async function workflowPagesOptions(reader,env,read=readRepositoryProjection,readRequired=readRequiredRepositoryProjection) {
+export async function workflowPagesOptions(reader,env,read,readAdoption) {
   const options={reader,repositoryId:Number(env.GITHUB_REPOSITORY_ID),mode:env.STEWARD_DOCS_SOURCE??'',
     unitId:env.STEWARD_DOCS_UNIT??'',controllerSha:env.STEWARD_CONTROLLER_SHA,
     buildOnly:env.STEWARD_PAGES_BUILD_ONLY==='true'};
@@ -163,17 +163,15 @@ export async function workflowPagesOptions(reader,env,read=readRepositoryProject
     (mode!=='release'||unit&&unit===approvedUnit));
   let publicAllowed=isApproved(options.mode,options.unitId)&&!options.buildOnly;
   const organizationRepository=reader.repository.startsWith('splrad/');
-  const projectionRequired=organizationRepository&&await readRequired(reader,options.repositoryId);
-  if(organizationRepository&&(projectionRequired||env.STEWARD_REPOSITORY_POLICY==='true')) {
-    const projection=await read(reader,options.repositoryId);
-    assertCentralProjection(projection,projectionRequired);
-    if(projection?.adoption==='central') {
-      const site=projection.site;
-      publicAllowed=Boolean(site&&site.mode==='build-and-deploy'&&!options.buildOnly&&isApproved(site.source,site.unit));
-      options.mode=site?.source??'';
-      options.unitId=site?.unit??'';
-      options.buildOnly=!publicAllowed;
-    }
+  const projection=organizationRepository?await readRepositoryPolicySelection(reader,options.repositoryId,{
+    useOptionalProjection:env.STEWARD_REPOSITORY_POLICY==='true',read,readAdoption
+  }):null;
+  if(projection?.adoption==='central') {
+    const site=projection.site;
+    publicAllowed=Boolean(site&&site.mode==='build-and-deploy'&&!options.buildOnly&&isApproved(site.source,site.unit));
+    options.mode=site?.source??'';
+    options.unitId=site?.unit??'';
+    options.buildOnly=!publicAllowed;
   }
   if(options.mode==='release') {
     // Same confirmed App bot identity as nativeReleaseApp; the repository transport is deliberately repo-scoped.

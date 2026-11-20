@@ -1,4 +1,5 @@
 import { Ajv2020 } from 'ajv/dist/2020.js';
+import { isDeepStrictEqual } from 'node:util';
 import schema from '../schema/repository-registration.schema.json' with { type: 'json' };
 import {decodeBuildJson} from '../packages/runner/dist/index.js';
 
@@ -19,4 +20,14 @@ export function checkedRegistration(value, id) {
 
 export function parseRegistration(bytes,id) {
   return checkedRegistration(decodeBuildJson(typeof bytes==='string'?Buffer.from(bytes):bytes),id);
+}
+
+export function configurationConflicts(selected,{policy:observed,productCiDeclared,releaseIncomplete}) {
+  const conflicts=[];
+  const requiresCi=productCiDeclared||observed.productCi.length>0;
+  if((requiresCi&&!selected.productCi.length)||selected.productCi.some(path=>!observed.productCi.includes(path)))
+    conflicts.push('PRODUCT_CI');
+  if(selected.release&&(releaseIncomplete||!isDeepStrictEqual(selected.release,observed.release)))
+    conflicts.push('RELEASE');
+  return conflicts;
 }

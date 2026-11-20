@@ -9,7 +9,7 @@ import {loadPolicy,dependencyMode,assertGovernanceOnlyScope,configurationCallers
 import {parseRegistration,registrationPath,registrationWorkflow} from './repository-registration-policy.mjs';
 import {assertLifecycleScope} from './private-lifecycle-policy.mjs';
 import {NativeEvidenceReader,nativeEvidenceTransport} from '../packages/runner/dist/index.js';
-import {assertCentralProjection,assertRepositoryPolicyMarker,readRequiredRepositoryProjection,readRepositoryProjection,
+import {assertRepositoryPolicyMarker,readRepositoryPolicySelection,
   repositoryPolicyAdoptionPath} from './repository-policy-projection.mjs';
 const check=(ok,code)=>{if(!ok)throw Error('VALIDATION_'+code);};
 export function git(workspace,args) {
@@ -142,9 +142,8 @@ export async function validationInput(workspace,env=process.env) {
   if(organizationRepository&&env.GITHUB_ACTIONS==='true')check(env.REPOSITORY_POLICY_TOKEN,'REPOSITORY_POLICY_TOKEN');
   const policyReader=env.REPOSITORY_POLICY_TOKEN&&organizationRepository
     ? new NativeEvidenceReader(nativeEvidenceTransport(env.REPOSITORY_POLICY_TOKEN),event.repository.full_name) : null;
-  const projectionRequired=policyReader?await readRequiredRepositoryProjection(policyReader,repositoryId):false;
-  const selection=policyReader?await readRepositoryProjection(policyReader,repositoryId):null;
-  const workflows=selectedProductWorkflows(selection,available,productApplicable,projectionRequired);
+  const selection=policyReader?await readRepositoryPolicySelection(policyReader,repositoryId,{useOptionalProjection:true}):null;
+  const workflows=selectedProductWorkflows(selection,available,productApplicable);
   const boundNames=[];
   for(const path of workflows){
     const workflow=YAML.parse(await readFile(await regular(workspace,path),'utf8'));
@@ -157,8 +156,7 @@ export async function validationInput(workspace,env=process.env) {
   return {input,files,productApplicable,workflows,boundNames,dependencyMode:dependency,
     ...(selection?{repositoryPolicy:{adoption:selection.adoption,sourceDigest:selection.sourceDigest}}:{})};
 }
-export function selectedProductWorkflows(selection,available,productApplicable,projectionRequired=false) {
-  assertCentralProjection(selection,projectionRequired);
+export function selectedProductWorkflows(selection,available,productApplicable) {
   if(selection?.adoption!=='central')return available;
   check(selection.productCi.every(path=>available.includes(path))&&(!productApplicable||selection.productCi.length>0),'PRODUCT_CI_REPOSITORY_POLICY');
   return selection.productCi;

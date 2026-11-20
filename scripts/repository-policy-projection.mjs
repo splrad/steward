@@ -6,10 +6,6 @@ export const repositoryPolicyAdoptionPath='.github/steward-central-policy';
 const sha=value=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
 const check=(condition,code='UNAVAILABLE')=>{if(!condition)throw Error('REPOSITORY_POLICY_PROJECTION_'+code);};
 
-export function assertCentralProjection(projection,required) {
-  check(!required||projection?.adoption==='central','REQUIRED');
-}
-
 export function assertRepositoryPolicyMarker(bytes) {
   const body=bytes.toString('utf8');
   check(body==='central\n'||body==='central\r\n','ADOPTION');
@@ -32,7 +28,7 @@ async function verifiedFile(reader,path,commit,blob) {
   return bytes;
 }
 
-export async function readRequiredRepositoryProjection(reader,repositoryId) {
+async function readRepositoryAdoption(reader,repositoryId) {
   const repo=await reader.json('');
   check(repo.id===repositoryId&&repo.full_name===reader.repository&&typeof repo.default_branch==='string'&&repo.default_branch);
   const branch=async()=>{
@@ -51,8 +47,22 @@ export async function readRequiredRepositoryProjection(reader,repositoryId) {
       required=true;
     }
   }
-  check(await branch()===initial,'MOVED');
-  return required;
+  const assertCurrent=async()=>{
+    const current=await reader.json('');
+    check(current.id===repo.id&&current.full_name===repo.full_name&&current.default_branch===repo.default_branch&&
+      await branch()===initial,'MOVED');
+  };
+  return {required,assertCurrent};
+}
+
+export async function readRepositoryPolicySelection(reader,repositoryId,{
+  useOptionalProjection=false,read=readRepositoryProjection,readAdoption=readRepositoryAdoption
+}={}) {
+  const {required,assertCurrent}=await readAdoption(reader,repositoryId);
+  const projection=required||useOptionalProjection?await read(reader,repositoryId):null;
+  await assertCurrent();
+  check(!required||projection?.adoption==='central','REQUIRED');
+  return projection;
 }
 
 // No repository names, private repository positions, channels or comments enter product state.

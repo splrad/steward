@@ -14,7 +14,7 @@ import {readRepositoryPolicy} from '../repository-policy-read.mjs';
 import {main as runLegacyConfiguration} from '../repository-configuration.mjs';
 import {releasePolicyGuard} from '../release-repository-policy.mjs';
 import {servicePages} from '../pages-maintenance.mjs';
-import {projectionBytes,readRequiredRepositoryProjection,readRepositoryProjection,repositoryPolicyAdoptionPath} from '../repository-policy-projection.mjs';
+import {projectionBytes,readRepositoryPolicySelection,readRepositoryProjection,repositoryPolicyAdoptionPath} from '../repository-policy-projection.mjs';
 import {projectMergedRepositoryPolicy} from '../repository-policy-publish.mjs';
 import {workflowPagesOptions} from '../select-pages-source.mjs';
 import {writeReleaseRecords} from '../release-record.mjs';
@@ -96,7 +96,7 @@ test('product reads only selected CI and Pages from protected state, with digest
   assert.throws(()=>selectedProductWorkflows(selection,[],true),/PRODUCT_CI_REPOSITORY_POLICY/);
   assert.deepEqual(selectedProductWorkflows({...selection,adoption:'paused'},[ci,'draft'],true),[ci,'draft']);
   const env={STEWARD_REPOSITORY_POLICY:'true',GITHUB_REPOSITORY_ID:String(product.id)};
-  const options=(env,read,required=false)=>workflowPagesOptions(reader,env,read,async()=>required);
+  const options=(env,read,required=false)=>workflowPagesOptions(reader,env,read,async()=>({required,assertCurrent:async()=>{}}));
   const built=await options(env,async()=>selection);
   assert.equal(built.options.mode,'default-branch');
   assert.equal(built.publicAllowed,false);
@@ -107,13 +107,12 @@ test('product reads only selected CI and Pages from protected state, with digest
   assert.equal((await options({...env,STEWARD_DOCS_SOURCE:'default-branch'},async()=>({...selection,site:null}))).options.mode,'');
   const required={...env,STEWARD_DOCS_SOURCE:'default-branch'};
   for(const pending of [null,{...selection,adoption:'paused'},{...selection,adoption:'legacy'}]) {
-    assert.throws(()=>selectedProductWorkflows(pending,[ci],true,true),/PROJECTION_REQUIRED/);
     await assert.rejects(options(required,async()=>pending,true),/PROJECTION_REQUIRED/);
   }
   await assert.rejects(options(required,async()=>{throw Error('PROJECTION_READ_DENIED');},true),/PROJECTION_READ_DENIED/);
   const revised={...selection,site:null};
   assert.equal((await options(required,async()=>selection,true)).publicAllowed,true);
-  assert.deepEqual(selectedProductWorkflows(selection,[ci,'.github/workflows/unselected.yml'],true,true),[ci]);
+  assert.deepEqual(selectedProductWorkflows(selection,[ci,'.github/workflows/unselected.yml'],true),[ci]);
   assert.equal((await options(required,async()=>revised,true)).publicAllowed,false);
   const restored={...selection,adoption:'legacy',productCi:[],site:null};
   assert.equal((await options(required,async()=>restored)).publicAllowed,true);
@@ -131,9 +130,9 @@ test('product reads only selected CI and Pages from protected state, with digest
 test('the adoption marker is independent of Pages and Issues and comes only from protected default Git bytes',async()=>{
   const adopted=Buffer.from('central\n');
   const digest=createHash('sha1').update(`blob ${adopted.length}\0`).update(adopted).digest('hex');
-  let present=true,protectedBranch=true,moves=false,refs=0;
+  let present=true,protectedBranch=true,moves=false,refs=0,defaultBranch='main';
   const reader={repository:product.full_name,json:async route=>{
-    if(route==='')return {...product,has_issues:false,has_pages:false};
+    if(route==='')return {...product,default_branch:defaultBranch,has_issues:false,has_pages:false};
     if(route==='branches/main')return {name:'main',protected:protectedBranch,commit:{sha:moves&&refs++?source:base}};
     if(route==='git/trees/'+base)return {truncated:false,tree:[{path:'.github',type:'tree',mode:'040000',sha:candidate}]};
     if(route==='git/trees/'+candidate)return {truncated:false,tree:present?
@@ -141,15 +140,26 @@ test('the adoption marker is independent of Pages and Issues and comes only from
     assert.equal(route,`contents/${repositoryPolicyAdoptionPath}?ref=${base}`);
     return {path:repositoryPolicyAdoptionPath,type:'file',encoding:'base64',sha:digest,size:adopted.length,content:adopted.toString('base64')};
   }};
-  assert.equal(await readRequiredRepositoryProjection(reader,product.id),true);
+  const selected={adoption:'central',site:null};
+  const read=async()=>selected;
+  assert.equal(await readRepositoryPolicySelection(reader,product.id,{read}),selected);
   await assert.rejects(workflowPagesOptions(reader,{GITHUB_REPOSITORY_ID:String(product.id)},async()=>null),/PROJECTION_REQUIRED/);
-  assert.throws(()=>selectedProductWorkflows(null,[ci],true,true),/PROJECTION_REQUIRED/);
+  await assert.rejects(workflowPagesOptions(reader,{GITHUB_REPOSITORY_ID:String(product.id)},async()=>{
+    present=false;moves=true;refs=1;return selected;
+  }),/PROJECTION_MOVED/);
+  moves=false;
   present=false;
-  assert.equal(await readRequiredRepositoryProjection(reader,product.id),false);
+  assert.equal(await readRepositoryPolicySelection(reader,product.id,{read:async()=>assert.fail('Unexpected optional projection')}),null);
+  await assert.rejects(readRepositoryPolicySelection(reader,product.id,{useOptionalProjection:true,read:async()=>{
+    present=true;moves=true;refs=1;return null;
+  }}),/PROJECTION_MOVED/);
+  moves=false;
+  await assert.rejects(readRepositoryPolicySelection(reader,product.id,{read:async()=>{
+    defaultBranch='develop';return selected;
+  }}),/PROJECTION_MOVED/);
+  defaultBranch='main';
   protectedBranch=false;
-  await assert.rejects(readRequiredRepositoryProjection(reader,product.id),/DEFAULT_BRANCH/);
-  protectedBranch=true;moves=true;
-  await assert.rejects(readRequiredRepositoryProjection(reader,product.id),/PROJECTION_MOVED/);
+  await assert.rejects(readRepositoryPolicySelection(reader,product.id,{read}),/DEFAULT_BRANCH/);
 });
 
 test('projection writer uses one path, scoped credentials and reads back only approved bytes',async()=>{
@@ -184,6 +194,12 @@ test('projection writer uses one path, scoped credentials and reads back only ap
   assert.equal(writes,1);
   bytes=null;
   await assert.rejects(run({currentSource:async()=>candidate}),/PROJECTION_MOVED/);
+  const absent={revokeMissing:true,getPolicy:async()=>({commit:base,policy:null})};
+  assert.equal(await run(absent),'UNCHANGED');
+  reads=0;
+  await assert.rejects(run({...absent,getPolicy:async()=>reads++===0?{commit:base,policy:null}:
+    {commit:candidate,policy:selected}}),/PROJECTION_MOVED/);
+  await assert.rejects(run({...absent,currentSource:async()=>candidate}),/PROJECTION_MOVED/);
   assert.equal(writes,1);
 });
 
@@ -193,8 +209,8 @@ test('an approved rollback replaces the central projection when product declarat
   const app={forRepository:(_id,operation)=>operation('fixture')};
   const path='configuration/repository.json';
   let bytes=Buffer.from(projectionBytes(selected));
-  const publish=(adoption,observe)=>projectMergedRepositoryPolicy(app,product,source,observe,async()=>null,{
-    getPolicy:async()=>({commit:base,policy:{...selected,adoption}}),currentSource:async()=>source,
+  const publish=(adoption,observe,change={})=>projectMergedRepositoryPolicy(app,product,source,observe,async()=>null,{
+    getPolicy:async()=>({commit:base,policy:{...selected,adoption,...change}}),currentSource:async()=>source,
     getState:async()=>({remote:'/fixture',snapshot:{head:base,currentPaths:[path]},readBytes:async()=>bytes}),
     write:async request=>{
       assert.equal(request.changes[0].previousSha256,createHash('sha256').update(bytes).digest('hex'));
@@ -203,6 +219,12 @@ test('an approved rollback replaces the central projection when product declarat
     }
   });
   await assert.rejects(publish('central',async()=>({policy:{...policy,productCi:[]}})),/PROJECTION_PRODUCT_CI/);
+  await assert.rejects(publish('central',async()=>({policy}),{productCi:[]}),/PROJECTION_PRODUCT_CI/);
+  await assert.rejects(publish('central',async()=>({policy:{...policy,productCi:[]},productCiDeclared:true}),{productCi:[]}),/PROJECTION_PRODUCT_CI/);
+  const invalidRelease=structuredClone(policy.release);
+  invalidRelease.units[0].channels[0].artifactIds=['unknown-asset'];
+  await assert.rejects(publish('central',async()=>({policy}),{release:invalidRelease}),/PROJECTION_RELEASE/);
+  await assert.rejects(publish('central',async()=>({policy,releaseIncomplete:true})),/PROJECTION_RELEASE/);
   await assert.rejects(publish('central',async()=>({policy})),/PROJECTION_PAGES/);
   assert.equal(JSON.parse(bytes).adoption,'central');
   for(const adoption of ['paused','legacy']) {
@@ -342,6 +364,10 @@ test('new release candidates consume the approved release selections and preserv
   modified.release.units[0].channels[0].artifactIds.pop();
   selection=modified;
   await assert.rejects(guard(async path=>productFiles.get(path)),/CANDIDATE_REPOSITORY_POLICY_CONFLICT/);
+  const declaredDelivery=JSON.parse(productFiles.get('.github/delivery.json'));
+  declaredDelivery.units[0].channels[0].artifactIds=modified.release.units[0].channels[0].artifactIds;
+  customized.set('.github/delivery.json',JSON.stringify(declaredDelivery));
+  await guard(async path=>customized.get(path));
   selection={...policy,release:null};
   await assert.rejects(guard(async()=>assert.fail('Disabled release should not load product inputs')),/CANDIDATE_REPOSITORY_POLICY_DISABLED/);
   adoption='legacy';
@@ -441,11 +467,13 @@ function fake({ files = new Map(), open = [], closed = [], failCreate = false } 
       pulls:{
         list:args=>args.state==='open'?open:closed.filter(pull=>!args.head||args.head==='splrad:'+pull.head.ref),
         listFiles:({pull_number})=>[...open,...closed].find(pull=>pull.number===pull_number).files??[],
+        async get({pull_number}) { return ok([...open,...closed].find(pull=>pull.number===pull_number)); },
         async create({head,title,body,draft}) {
           assert.ok(draft);
           if (state.failCreate) throw Error('response ambiguous');
           state.writes.push(['pull',head]);
-          const pull={number:42,head:{ref:head,repo:{id:admin.id}},user:bot,title,body};
+          const pull={number:42,state:'open',base:{ref:'main',repo:{id:admin.id}},
+            head:{ref:head,sha:state.refs.get(head),repo:{id:admin.id}},user:bot,title,body};
           open.push(pull);
           return ok(pull);
         }
@@ -503,7 +531,8 @@ test('initial .github and LayerScape drafts contain their actual selection shape
     assert.equal((await reconcileRegistration(api,admin,repo,source,async()=>proposal,async()=>source)).result,'reused');
     assert.equal(state.trees.get(candidate).get(registrationPath(repo)),'人工正在编辑');
     assert.match(state.open[0].body,/人工改稿/);
-    assert.equal(state.writes.length,3);
+    assert.deepEqual(state.writes.at(-1),['comment',42]);
+    assert.match(state.comments[0].body,/未通过结构校验/);
   }
 });
 
@@ -581,6 +610,41 @@ test('an adjustment draft changes only compatible selections and preserves the e
   assert.match(state.comments[0].body,/"实际读回": null/);
   assert.deepEqual(state.writes.slice(-2),[['comment',42],['update-comment',42]]);
   assert.equal(state.comments.length,1);
+});
+
+test('an empty registered CI selection receives the actual available workflows in an adjustment draft',async()=>{
+  const proposal=await propose(product,productFiles);
+  const current={...proposal.policy,adoption:'central',productCi:[]};
+  const {api,state}=fake({files:new Map([[registrationPath(product),JSON.stringify(current)]])});
+  const outcome=await reconcileRegistration(api,admin,product,source,async()=>proposal,async()=>source);
+  assert.equal(outcome.result,'created');
+  assert.deepEqual(outcome.differences,['productCi']);
+  assert.deepEqual(JSON.parse(state.trees.get(candidate).get(registrationPath(product))),{...current,productCi:[ci]});
+});
+
+test('an edited private draft reports unsupported choices against its current head',async()=>{
+  const proposal=await propose(product,productFiles),path=registrationPath(product);
+  const {api,state}=fake();
+  const reconcile=()=>reconcileRegistration(api,admin,product,source,async()=>proposal,async()=>source);
+  assert.equal((await reconcile()).result,'created');
+  const pull=state.open[0],edited='d'.repeat(40),corrected='e'.repeat(40);
+  const selection=structuredClone(proposal.policy);
+  selection.release.units[0].channels[0].artifactIds.pop();
+  pull.head.sha=edited;
+  state.trees.set(edited,new Map([[path,JSON.stringify(selection)]]));
+  const get=api.rest.pulls.get;
+  api.rest.pulls.get=async()=>({data:{...pull,head:{...pull.head,sha:corrected}}});
+  await assert.rejects(reconcile(),/Registration review pull moved/);
+  assert.deepEqual(state.comments,[]);
+  api.rest.pulls.get=get;
+  assert.equal((await reconcile()).result,'reused');
+  assert.match(state.comments[0].body,/产品默认分支的已审声明/);
+  assert.match(state.comments[0].body,new RegExp(edited));
+  pull.head.sha=corrected;
+  state.trees.set(corrected,new Map([[path,JSON.stringify(proposal.policy)]]));
+  await reconcile();
+  assert.equal(state.comments.length,1);
+  assert.match(state.comments[0].body,/当前配置 PR 的选择与产品声明相符/);
 });
 
 test('a merged registry removal cannot create a replacement registration draft',async()=>{
@@ -758,7 +822,7 @@ test('private workflow to public controller replays both registration cases with
         state.open[0].body += '\n人工备注 Private case';
         state.trees.get(candidate).set(registrationPath(repo),'维护者正在编辑');
         assert.equal(await registrationEntry('consume',publicEnv,options),0);
-        assert.deepEqual(state.writes.map(([kind])=>kind),['ref','commit','pull']);
+        assert.deepEqual(state.writes.map(([kind])=>kind),['ref','commit','pull','comment']);
         assert.match(state.open[0].body,/人工备注/);
         assert.equal(state.trees.get(candidate).get(registrationPath(repo)),'维护者正在编辑');
 
@@ -777,7 +841,7 @@ test('private workflow to public controller replays both registration cases with
         assert.deepEqual(logs,['REGISTRATION_PROCESSED\n','REGISTRATION_PROCESSED\n']);
         assert.deepEqual(errors,['REGISTRATION_UNAVAILABLE\n','REGISTRATION_UNAVAILABLE\n',
           'REGISTRATION_UNAVAILABLE\n','REGISTRATION_UNAVAILABLE\n']);
-        assert.equal(state.writes.length,3);
+        assert.equal(state.writes.length,4);
         if(manual) {
           await writeFile(publicPath,JSON.stringify(wake));
           producerPath='.github/workflows/repository-registration.yml';
@@ -788,12 +852,12 @@ test('private workflow to public controller replays both registration cases with
           const conflictOptions={...options,openAdmin:async()=>({...await originalAdmin(),
             project:async()=>{throw Error('REPOSITORY_POLICY_PROJECTION_PRODUCT_CI');}})};
           assert.equal(await registrationEntry('consume',publicEnv,conflictOptions),1);
-          assert.deepEqual(state.writes.at(-1),['comment',42]);
+          assert.deepEqual(state.writes.at(-1),['update-comment',42]);
           assert.match(state.comments[0].body,/stale\.yml/);
           assert.equal(errors.at(-1),'REGISTRATION_UNAVAILABLE\n');
           assert.doesNotMatch(logs.join('')+errors.join(''),/LayerScape|stale\.yml|待确认/);
           assert.equal(await registrationEntry('consume',{...publicEnv,REGISTRATION_ALLOWED_IDS:''},conflictOptions),1);
-          assert.equal(state.writes.length,4);
+          assert.equal(state.writes.length,5);
 
           registry.delete(registrationPath(repo));
           request={...request,event:'push'};
@@ -806,7 +870,7 @@ test('private workflow to public controller replays both registration cases with
             }})};
           assert.equal(await registrationEntry('consume',publicEnv,removalOptions),0);
           assert.equal(revoked,1);
-          assert.equal(state.writes.length,4);
+          assert.equal(state.writes.length,5);
         }
       } finally {
         await rm(requestPath,{force:true});
