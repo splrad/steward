@@ -9,7 +9,7 @@ const sha=value=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
 const check=value=>{if(!value)throw Error('REPOSITORY_POLICY_UNAVAILABLE');};
 
 // A missing file is accepted only after verifying both native directory inventories.
-export async function readRepositoryPolicy(api, repository) {
+export async function readRepositoryPolicy(api, repository, {allowRegisteredRename=false}={}) {
   const name=repository.full_name;
   check(Number.isSafeInteger(repository.id)&&repository.id>0&&/^splrad\/[\w.-]+$/.test(name));
   const {data:admin}=await api.rest.repos.get(target);
@@ -42,17 +42,17 @@ export async function readRepositoryPolicy(api, repository) {
       check(bytes.length===file.size&&createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')===blob.sha);
       policy=checkedRegistration(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)),repository.id);
       // A rename cannot reopen a paused writer. Reconcile the registered name before further operations.
-      check(policy.repository===name);
+      check(allowRegisteredRename||policy.repository===name);
     }
   }
   check(await head()===commit);
   return {commit,policy,adoption:policy?.adoption??'legacy'};
 }
 
-export async function mergedRepositoryPolicy(app,repository) {
+export async function mergedRepositoryPolicy(app,repository,options) {
   try {
     return await app.forRepository(adminId,token=>readRepositoryPolicy(new Octokit({auth:token,
-      request:{headers:{'x-github-api-version':apiVersion.version}}}),repository),'registry-read');
+      request:{headers:{'x-github-api-version':apiVersion.version}}}),repository,options),'registry-read');
   } catch {
     throw Error('REPOSITORY_POLICY_UNAVAILABLE');
   }

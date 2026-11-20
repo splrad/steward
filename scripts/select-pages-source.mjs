@@ -157,13 +157,16 @@ export async function workflowPagesOptions(reader,env,read=readRepositoryProject
   const options={reader,repositoryId:Number(env.GITHUB_REPOSITORY_ID),mode:env.STEWARD_DOCS_SOURCE??'',
     unitId:env.STEWARD_DOCS_UNIT??'',controllerSha:env.STEWARD_CONTROLLER_SHA,
     buildOnly:env.STEWARD_PAGES_BUILD_ONLY==='true'};
-  let publicAllowed=Boolean(options.mode)&&!options.buildOnly;
+  const approvedSource=env.STEWARD_DOCS_APPROVED_SOURCE??options.mode;
+  const approvedUnit=env.STEWARD_DOCS_APPROVED_UNIT??options.unitId;
+  const isApproved=(mode,unit)=>Boolean(mode&&mode===approvedSource&&
+    (mode!=='release'||unit&&unit===approvedUnit));
+  let publicAllowed=isApproved(options.mode,options.unitId)&&!options.buildOnly;
   if(env.STEWARD_REPOSITORY_POLICY==='true') {
     const projection=await read(reader,options.repositoryId);
     if(projection?.adoption==='central') {
       const site=projection.site;
-      publicAllowed=Boolean(site&&site.mode==='build-and-deploy'&&!options.buildOnly&&site.source===options.mode
-        &&(site.source!=='release'||site.unit===options.unitId));
+      publicAllowed=Boolean(site&&site.mode==='build-and-deploy'&&!options.buildOnly&&isApproved(site.source,site.unit));
       options.mode=site?.source??'';
       options.unitId=site?.unit??'';
       options.buildOnly=!publicAllowed;

@@ -109,7 +109,9 @@ test('site build takes its output from the product and public deployment require
   assert.equal(build.steps.find(step=>step.id==='artifact').with.path,'${{ steps.output.outputs.directory }}');
   assert.equal(deploy.if,"needs.select.outputs.ready == 'true' && needs.select.outputs.public_source == 'true'");
   assert.equal(workflowDoc.jobs.select.if,undefined);
-  assert.equal(workflowDoc.jobs.select.outputs.public_source,'${{ steps.authorization.outputs.matches }}');
+  assert.equal(workflowDoc.jobs.select.outputs.public_source,'${{ steps.source.outputs.public_source || steps.authorization.outputs.matches }}');
+  assert.equal(workflowDoc.env.STEWARD_REPOSITORY_POLICY,'true');
+  assert.equal(workflowDoc.env.STEWARD_DOCS_APPROVED_SOURCE,'${{ vars.STEWARD_DOCS_SOURCE }}');
   assert.equal(workflowDoc.jobs.select.steps.find(step=>step.id==='source').env.STEWARD_PAGES_BUILD_ONLY,
     "${{ steps.authorization.outputs.matches != 'true' }}");
   assert.equal(build.if,"needs.select.outputs.ready == 'true'");

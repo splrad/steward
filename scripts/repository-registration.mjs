@@ -296,8 +296,7 @@ async function applyRequests(ids, withGovernance, withAdmin, project) {
         if (!source) return { result: 'awaiting-default-branch' };
         const read = revisionReader(sourceApi, source);
         const proposal = await registrationProposal(repo, read);
-        if(project)await project(repo, source, proposal.policy, read, {currentSource:ref});
-        return withAdmin('registration-write', (api, admin) =>
+        const outcome=await withAdmin('registration-write', (api, admin) =>
           reconcileRegistration(api, admin, repo, source, proposal, async () => {
             const { data } = await sourceApi.request('GET /repositories/{id}', { id });
             const fresh = checkRepository(data, id);
@@ -305,6 +304,8 @@ async function applyRequests(ids, withGovernance, withAdmin, project) {
               fresh.default_branch !== repo.default_branch) return null;
             return ref();
           }));
+        if(project)await project(repo, source, proposal.policy, read, {currentSource:ref});
+        return outcome;
         });
       outcomes.push(outcome);
     } catch (error) { errors.push(error); }
@@ -342,7 +343,7 @@ export async function runRegistration(mode, env, {
     ? await pushRegistrationIds(event, env, new Octokit({...githubOptions,auth:env.REGISTRATION_ADMIN_TOKEN}))
     : registrationIds(event, env.GITHUB_EVENT_NAME);
   if (mode === 'prepare') {
-    if(ids.length===0 && env.GITHUB_EVENT_NAME==='push')return;
+    if(ids.length===0)return;
     const request = makePrivateRequest(randomUUID(), ids, env);
     await writeFile(env.REGISTRATION_REQUEST_PATH, JSON.stringify(request) + '\n', { flag: 'wx', mode: 0o600 });
     await appendFile(env.GITHUB_OUTPUT, 'id=' + request.requestId + '\n');

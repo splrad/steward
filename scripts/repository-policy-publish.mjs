@@ -1,11 +1,11 @@
 import {createHash} from 'node:crypto';
 import {mkdtemp,rm} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {repositoryPolicyPath,repositoryPolicyBranch} from '../packages/runner/dist/index.js';
 import {mergedRepositoryPolicy} from './repository-policy-read.mjs';
 import {projectionBytes} from './repository-policy-projection.mjs';
 import {writeReleaseRecords} from './release-record.mjs';
+import {nativeTemporaryParent} from './native-scratch.mjs';
 
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 const check=(condition,code)=>{if(!condition)throw Error('REPOSITORY_POLICY_PROJECTION_'+code);};
@@ -13,8 +13,9 @@ const identity={name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@
 
 export async function projectMergedRepositoryPolicy(app, repository, source, observed, readSource, ports) {
   const getPolicy=ports.getPolicy??mergedRepositoryPolicy;
-  const adopted=await getPolicy(app,repository);
-  if(!adopted.policy)return;
+  const readMerged=()=>getPolicy(app,repository,{allowRegisteredRename:true});
+  const adopted=await readMerged();
+  if(!adopted.policy||adopted.policy.repository!==repository.full_name)return;
   const selected=adopted.policy;
   check(selected.productCi.every(path=>observed.productCi.includes(path)),'PRODUCT_CI');
   if(selected.site) {
@@ -22,7 +23,7 @@ export async function projectMergedRepositoryPolicy(app, repository, source, obs
     if(selected.site.source==='release')check(observed.release?.units.some(unit=>unit.id===selected.site.unit),'PAGES');
   }
   const content=projectionBytes(selected);
-  const root=await mkdtemp(join(tmpdir(),'repository-policy-projection-'));
+  const root=await mkdtemp(join(await nativeTemporaryParent('REPOSITORY_POLICY_PROJECTION_TEMP_LINK'),'repository-policy-projection-'));
   try {
     return await app.forRepository(repository.id,async token=>{
       const getState=ports.getState??(await import('./release-coordinator.mjs')).fetchState;
@@ -30,7 +31,7 @@ export async function projectMergedRepositoryPolicy(app, repository, source, obs
       const state=await refresh();
       const current=state.snapshot.currentPaths.includes(repositoryPolicyPath)?await state.readBytes(repositoryPolicyPath):null;
       if(current?.toString('utf8')===content)return 'UNCHANGED';
-      const latest=await getPolicy(app,repository);
+      const latest=await readMerged();
       check(latest.commit===adopted.commit&&await ports.currentSource()===source,'MOVED');
       const directory=await mkdtemp(join(root,'write-'));
       const result=await (ports.write??writeReleaseRecords)({directory:join(directory,'checkout'),remote:state.remote,

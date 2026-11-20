@@ -98,6 +98,8 @@ test('product reads only selected CI and Pages from protected state, with digest
   assert.equal(built.publicAllowed,false);
   assert.equal(built.options.buildOnly,true);
   assert.equal((await workflowPagesOptions(reader,{...env,STEWARD_DOCS_SOURCE:'default-branch'},async()=>selection)).publicAllowed,true);
+  assert.equal((await workflowPagesOptions(reader,{...env,STEWARD_DOCS_SOURCE:'default-branch',
+    STEWARD_DOCS_APPROVED_SOURCE:''},async()=>selection)).publicAllowed,false);
   assert.equal((await workflowPagesOptions(reader,{...env,STEWARD_DOCS_SOURCE:'default-branch'},async()=>({...selection,site:null}))).options.mode,'');
   await assert.rejects(readRepositoryProjection(reader,1),/PROJECTION_INVALID/);
   protectedRules=false;
@@ -130,6 +132,8 @@ test('projection writer uses one path, scoped credentials and reads back only ap
   assert.equal(await run(),'UNCHANGED');
   assert.equal(writes,1);
   assert.equal(JSON.parse(bytes).adoption,'paused');
+  assert.equal(await run({getPolicy:async()=>({commit:base,policy:{...selected,repository:'splrad/OldName'}})}),undefined);
+  assert.equal(writes,1);
   bytes=null;
   await assert.rejects(run({currentSource:async()=>candidate}),/PROJECTION_MOVED/);
   assert.equal(writes,1);
@@ -201,6 +205,8 @@ test('reads policy only from a stable protected administrator main and proves mi
   }};
   assert.deepEqual(await readRepositoryPolicy(api,product),{commit:base,policy:{...policy,adoption:'paused'},adoption:'paused'});
   await assert.rejects(readRepositoryPolicy(api,{...product,full_name:'splrad/Renamed'}),/REPOSITORY_POLICY_UNAVAILABLE/);
+  assert.equal((await readRepositoryPolicy(api,{...product,full_name:'splrad/Renamed'},{allowRegisteredRename:true})).policy.repository,
+    product.full_name);
   missing=true;
   assert.deepEqual(await readRepositoryPolicy(api,product),{commit:base,policy:null,adoption:'legacy'});
   directoryMode='100644';
@@ -270,6 +276,20 @@ test('private receiver accepts verified metadata and one ID for recovery', () =>
   }
   assert.throws(()=>registrationIds({...event(body('repository','created',[product.id])),sender:{id:1}},'repository_dispatch'),
     /Untrusted registration event/);
+});
+
+test('an accepted event without registration targets completes without an artifact',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'registry-no-target-'));
+  try {
+    const eventPath=join(root,'event.json');
+    await writeFile(eventPath,JSON.stringify(event(body('label','edited'))));
+    const errors=[];
+    assert.equal(await registrationEntry('prepare',{GITHUB_EVENT_PATH:eventPath,GITHUB_EVENT_NAME:'repository_dispatch'},
+      {errorOutput:{write:line=>errors.push(line)}}),0);
+    assert.deepEqual(errors,[]);
+  } finally {
+    await rm(root,{recursive:true,force:true});
+  }
 });
 
 function fake({ files = new Map(), open = [], closed = [], failCreate = false } = {}) {
