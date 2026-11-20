@@ -5,8 +5,4 @@
 <!-- steward-configuration-sources -->
 <!-- /steward-configuration-sources -->
 
-{% if product_repository %}
-[修改配置](https://github.com/{{ product_repository }}/actions/workflows/repository-configuration.yml)
-{% endif %}
-
-管理员或委托者在默认分支点击 **Run workflow** 打开本仓配置 PR。后续直接在该 PR 中勾选入口、试跑和交付文件，核对 **Files changed** 后审阅合并。
+启用 Issues 的仓库在「仓库配置」Issue 中展示生效设置。管理员或委托者可勾选请求框，打开其中列出的配置 PR。关闭 Issues 的仓库从 Pull requests 进入配置 PR；如上次配置 PR 已关闭，可在其中评论 `/configure`。在 PR 中核对 **Files changed** 后审阅合并。
