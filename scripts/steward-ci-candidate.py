@@ -37,21 +37,56 @@ def read_url(url):
         return response.read()
 
 
-def verify_other_locks(base, head):
-    before, after = (tomllib.loads(rules.blob(ref, "mise.lock").decode())["tools"] for ref in (base, head))
-    platform = rules.PLATFORMS[int(os.name == "nt")]
-    for key in before.keys() & after.keys():
-        if before[key] == after[key]:
-            continue
+def lock_blob(repo, ref, path):
+    entry = subprocess.check_output(["git", "-C", repo, "ls-tree", ref, "--", path])
+    require(entry.startswith(b"100644 blob "), f"Expected regular tracked file: {path}")
+    return subprocess.check_output(["git", "-C", repo, "show", f"{ref}:{path}"])
+
+
+def checked_records(original, candidate):
+    before = original["tools"]
+    after = candidate["tools"]
+    require({k: v for k, v in original.items() if k != "tools"} ==
+            {k: v for k, v in candidate.items() if k != "tools"}, "Unsupported lockfile contract change")
+    require(before.keys() == after.keys(), "Tool inventory change needs a trusted supplier contract")
+    for key, records in after.items():
         previous, = before[key]
-        item, = after[key]
+        item, = records
+        if previous != item:
+            require(previous.keys() == item.keys(), f"Unexpected fields or platform set for {key}")
+            for field, value in previous.items():
+                if field == "version":
+                    continue
+                if field in rules.PLATFORMS or (field == "aube" and key == "npm"):
+                    allowed = {"url", "url_api", "checksum"} if field in rules.PLATFORMS else {"path", "digest"}
+                    require(item[field].keys() == value.keys(), f"Unexpected {key} {field} field set")
+                    require(all(item[field][k] == v for k, v in value.items() if k not in allowed),
+                            f"Unexpected {key} {field} metadata")
+                else:
+                    require(item[field] == value, f"Unexpected {key} {field} change")
+        yield key, previous, item
+
+
+def verify_other_locks(base, head):
+    before = tomllib.loads(lock_blob("policy", base, "mise.lock").decode())
+    after = tomllib.loads(lock_blob("target", head, "mise.lock").decode())
+    platform = rules.PLATFORMS[int(os.name == "nt")]
+    for key, previous, item in checked_records(before, after):
+        if previous == item:
+            if key != "npm":
+                continue
+            directory = previous["aube"]["path"]
+            if all(lock_blob("policy", base, f"{directory}/{name}") == lock_blob("target", head, f"{directory}/{name}")
+                   for name in ("aube-lock.yaml", "package.json")):
+                continue
         version = item["version"]
         require(re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,3}", version), "Unexpected candidate version")
         if key == "npm":
             lock_path = f".mise/locks/npm/{version}"
             require(item["aube"]["path"] == lock_path, "Unexpected npm lock path")
-            lock = rules.blob(head, lock_path + "/aube-lock.yaml")
-            package = json.loads(rules.blob(head, lock_path + "/package.json"))
+            lock = lock_blob("target", head, lock_path + "/aube-lock.yaml")
+            require(item["aube"]["digest"] == "sha256:" + hashlib.sha256(lock).hexdigest(), "npm lock digest differs")
+            package = json.loads(lock_blob("target", head, lock_path + "/package.json"))
             require(package["dependencies"] == {"npm": version}, "Unexpected npm dependency")
             meta = json.loads(read_url("https://registry.npmjs.org/npm/" + version))
             url = f"https://registry.npmjs.org/npm/-/npm-{version}.tgz"

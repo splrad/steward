@@ -120,7 +120,7 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
-          if [[ -f policy/scripts/steward-ci-candidate.py ]] && ! cmp -s policy/mise.lock target/mise.lock; then
+          if [[ -f policy/scripts/steward-ci-candidate.py ]]; then
             python policy/scripts/steward-ci-candidate.py full-lock "$BASE" "$HEAD"
           fi
       - name: Activate trusted policy tool paths
@@ -140,6 +140,7 @@ jobs:
         shell: bash
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
+          python scripts/test/steward_ci_lock_test.py
           npm test
           npm run typecheck
           npm run verify:config -- --toolchain-root "$GITHUB_WORKSPACE/policy"
