@@ -26,17 +26,42 @@ def template_tag_plan(central, commit):
         require(versions,'TEMPLATE_INITIAL_ADOPTION_REQUIRED')
         latest=max(versions); previous=versions[latest]
         require(previous['reachable'],'TEMPLATE_NEWER_TAG_OUTSIDE_MAIN')
-        paths=['copier.yml','templates/repository']
-        before=git(central,['ls-tree','-rz',previous['commit'],'--',*paths],env)
-        after=git(central,['ls-tree','-rz',commit,'--',*paths],env)
+        # A retry on the just-published commit compares the same inputs that
+        # selected its delivery mode, without allocating another version.
+        already_tagged=previous['commit']==commit
+        comparison=previous
+        if already_tagged and len(versions)>1:
+            older=versions[sorted(versions)[-2]]
+            if older['reachable']:
+                comparison=older
+        def tree(revision, *paths):
+            return git(central,['ls-tree','-rz',revision,'--',*paths],env)
+        template_paths=['copier.yml','templates/repository']
+        before=tree(comparison['commit'],*template_paths)
+        after=tree(commit,*template_paths)
         require(after,'TEMPLATE_SOURCE_MISSING')
-        if before==after:return {'status':'UNCHANGED','commit':commit,'previous':previous,'tags':tags}
+        policy_path='config/review/security-common.md'
+        old_policy=tree(comparison['commit'],policy_path)
+        new_policy=tree(commit,policy_path)
+        require(not old_policy or new_policy,'SECURITY_POLICY_SOURCE_REMOVED')
+        if new_policy:
+            require(re.fullmatch(rb'100644 blob [0-9a-f]{40}\tconfig/review/security-common\.md\0',new_policy),
+                    'SECURITY_POLICY_SOURCE_MODE')
+        independent=before==after and not old_policy and bool(new_policy)
+        if already_tagged or (before==after and old_policy==new_policy):
+            plan={'status':'UNCHANGED','commit':commit,'previous':previous,'tags':tags}
+            if already_tagged and independent and previous['tag']=='v'+str(latest) and tags['refs/tags/'+previous['tag']]==commit:
+                plan.update(independentSecurityAdoption=True,tag=previous['tag'])
+            return plan
         release=list(latest.release)
         while len(release)<3:release.append(0)
         release[-1]+=1
         candidate=(str(latest.epoch)+'!' if latest.epoch else '')+'.'.join(map(str,release))
         require(Version(candidate)>latest,'TEMPLATE_VERSION_ORDER')
-        return {'status':'CREATE','commit':commit,'tag':'v'+candidate,'previous':previous,'tags':tags}
+        plan={'status':'CREATE','commit':commit,'tag':'v'+candidate,'previous':previous,'tags':tags}
+        if independent:
+            plan['independentSecurityAdoption']=True
+        return plan
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser();parser.add_argument('--central',required=True);parser.add_argument('--commit',required=True);parser.add_argument('--output',required=True)

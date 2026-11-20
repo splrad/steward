@@ -167,6 +167,11 @@ test('administrator scans cannot be skipped by paths-filter; native filters incl
  const workflow=YAML.parse(await readFile(new URL('../../.github/workflows/pr-validation-native.yml',import.meta.url),'utf8'));
  assert.equal(workflow.jobs.scope.outputs.dependency,"${{ startsWith(steps.identity.outputs.dependencyMode, 'private-') && 'true' || steps.scope.outputs.dependency }}");
  const filter=YAML.parse(workflow.jobs.scope.steps.find(s=>s.id==='scope').with.filters);assert(filter.dependency.includes('.mise/**'));
+ for(const path of ['SECURITY.md','.github/SECURITY.md','docs/SECURITY.md','.copier-answers.yml']){
+   assert(filter.security_policy.includes(path),path);
+ }
+ assert.equal(workflow.jobs.scope.outputs.governance,"${{ steps.scope.outputs.security_policy == 'true' && 'true' || steps.scope.outputs.governance }}");
+ assert.equal(workflow.jobs.governance.if,"needs.scope.outputs.governance == 'true'");
  // Every administrator PR is scanned, even an unknown manifest or a documentation-only change.
  assert.equal(workflow.jobs.dependency.if,"needs.scope.outputs.dependency == 'true'");
 });
@@ -368,6 +373,8 @@ test('private governance registration binds native identity and rejects product 
  assert.equal(dependencyMode(event,policy),'native');
  for(const id of ['43','true','042'])assert.throws(()=>dependencyMode(event,policy,id),/GOVERNANCE_REGISTRATION/);
  for(const repository of [{...event.repository,private:false},{...event.repository,owner:{id:1}},{...event.repository,full_name:'fork/fixture'}])assert.throws(()=>dependencyMode({repository},policy,'42'),/GOVERNANCE_REGISTRATION/);
- assertGovernanceOnlyScope(['README.md','.copier-answers.yml','.github/workflows/pr-labeler.yml']);
- for(const path of ['safe-settings/settings.yml','mise.lock','package-lock.json','package.json','src/index.js','.github/workflows/build.yml'])assert.throws(()=>assertGovernanceOnlyScope([path]),/GOVERNANCE_INPUT_UNCOVERED/);
+ assertInputScope(['SECURITY.md']);
+ assert.throws(()=>assertInputScope(['docs/SECURITY.md']),/INPUT_UNCOVERED/);
+ assertGovernanceOnlyScope(['README.md','SECURITY.md','.copier-answers.yml','.github/workflows/pr-labeler.yml']);
+ for(const path of ['.github/SECURITY.md','safe-settings/settings.yml','mise.lock','package-lock.json','package.json','src/index.js','.github/workflows/build.yml'])assert.throws(()=>assertGovernanceOnlyScope([path]),/GOVERNANCE_INPUT_UNCOVERED/);
 });

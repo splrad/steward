@@ -13,6 +13,7 @@ import {dispatchTrial,findEvidence,nativeChannelJobs,requestFromRun,rerunValidat
 import {inspectRepository,versionsPath,pagesPath} from '../configuration-view.mjs';
 import {applySelection,assertChannelWorkflow,prepareTarget,trialKey} from '../configuration-selection.mjs';
 import {optionState,reconcile} from '../repository-configuration.mjs';
+import {requestFromComment} from '../configuration-dashboard.mjs';
 import YAML from 'yaml';
 const A='a'.repeat(40),B='b'.repeat(40),C='c'.repeat(40),actor={id:12,login:'maintainer',type:'User'};
 const repo={id:21,full_name:'splrad/sample',default_branch:'trunk',owner:{login:'splrad'}};
@@ -45,6 +46,38 @@ test('manual run and rerun both require live administrator or delegated identity
   native.triggering_actor=actor;
   assert.equal((await requestFromRun(api,'',repo,1,2,B,archive)).data.actor,12);
   await assert.rejects(requestFromRun(api,'',repo,1,1,B,archive),/Stale/);
+});
+
+test('public initiation is selected on each protected default branch and cannot authorize PR edits',async()=>{
+  const source=await readFile('templates/repository/'+requestPath,'utf8');
+  for(const repositoryId of [21,48]){
+    const product={...repo,id:repositoryId};
+    const files=new Map([[A+'/'+requestPath,source],[B+'/'+requestPath,source]]);
+    const api=fake(files);
+    api.rest.repos.getCollaboratorPermissionLevel=async()=>response({permission:'read',user:actor});
+    const run={repository:product,head_repository:product,head_branch:'trunk',id:1,head_sha:A,run_attempt:1,status:'completed',
+      conclusion:'success',path:requestPath,event:'issue_comment',actor,triggering_actor:actor};
+    api.rest.actions.getWorkflowRun=async()=>response(run);
+    const data={event:run.event,repository:product.id,actor:actor.id,source:A,run:1,attempt:1,command:{number:2,id:3}};
+    const read=()=>requestFromRun(api,'',product,1,1,B,async()=>({data}));
+    const native=()=>requestFromComment(api,product,B,2,3,1,1);
+    assert.equal((await native()).publicRequests,false);
+    const policy=B+'/.github/configuration-delegates.json';
+    files.set(policy,JSON.stringify([actor.id]));
+    assert.equal((await native()).publicRequests,false);
+    run.event=data.event='issues';
+    data.source=run.head_sha=B;
+    assert.equal((await read()).publicRequests,false);
+    files.set(policy,JSON.stringify([]));
+    await assert.rejects(read(),/administrator/);
+    data.source=run.head_sha=A;
+    files.set(policy,JSON.stringify({delegates:[],requestAccess:'public'}));
+    assert.equal((await native()).publicRequests,true);
+    run.event=data.event='workflow_dispatch';
+    await assert.rejects(read(),/Default branch moved/);
+    run.event=data.event='pull_request';data.pull={number:2,head:A};
+    await assert.rejects(read(),/administrator/);
+  }
 });
 
 test('review requests bind the originating fork and head before authorization is reconciled',async()=>{

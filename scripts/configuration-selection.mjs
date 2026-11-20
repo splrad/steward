@@ -3,7 +3,7 @@ import {createHash} from 'node:crypto';
 import {posix} from 'node:path';
 import YAML from 'yaml';
 import {adaptBuild,renderBuild,repositoryPath,scriptBuild,selectWorkflow,staticMatrixRows} from './configuration-build.mjs';
-import {changeChannels,channelWorkflowPath,ciPath,deliveryPath,explicitDelivery,jsonFile,pagesPath,publishPath,versionsPath} from './configuration-view.mjs';
+import {changeChannels,channelWorkflowPath,ciPath,deliveryPath,explicitDelivery,jsonFile,managedPagesCondition,pagesPath,publishPath,versionsPath} from './configuration-view.mjs';
 import {releaseAdoptionPlan} from './release-adoption.mjs';
 import {assertRegisteredAdapters,parseDeliveryConfig,parseSupplementalNotes} from '../packages/runner/dist/index.js';
 
@@ -291,7 +291,7 @@ export async function applySelection(model,operation,plan,context) {
       if(!doc.hasIn(['jobs',job])) {must(!on,'Missing site job '+job);continue;}
       const path=['jobs',job,'if'];
       let condition=String(doc.getIn(path)??'success()');
-      const prior=/^\((true|false) && (?:true|needs\.select\.outputs\.ready == 'true'|vars\.STEWARD_DOCS_SOURCE == '(?:default-branch|release)'(?: && vars\.STEWARD_DOCS_UNIT == '[a-z][a-z0-9-]*')?)\) && \(([\s\S]*)\)$/.exec(condition);
+      const prior=managedPagesCondition.exec(condition);
       if(prior) condition=prior[2];
       if(condition.startsWith('${{') && condition.endsWith('}}'))condition=condition.slice(3,-2).trim();
       const gate=job==='build' && plan.site.source==='release'?"needs.select.outputs.ready == 'true'":'true';

@@ -3,8 +3,10 @@ on:
   workflow_dispatch:
     inputs:
       repository_id: {type: string, required: true}
-      run_id: {type: string, required: true}
-      attempt: {type: string, required: true}
+      run_id: {type: string}
+      attempt: {type: string}
+      issue_number: {type: string}
+      comment_id: {type: string}
 permissions:
   contents: read
 concurrency:
@@ -35,7 +37,7 @@ jobs:
         with:
           ref: ${{ github.workflow_sha }}
           persist-credentials: false
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d
         env:
           MISE_SAFE: '1'
           MISE_NODE_COMPILE: 'false'
@@ -55,4 +57,6 @@ jobs:
           REPOSITORY_ID: ${{ inputs.repository_id }}
           REQUEST_RUN: ${{ inputs.run_id }}
           REQUEST_ATTEMPT: ${{ inputs.attempt }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          COMMENT_ID: ${{ inputs.comment_id }}
         run: node scripts/repository-configuration.mjs
