@@ -12,6 +12,7 @@ import {inspectRepository} from '../configuration-view.mjs';
 import {dynamicBuildInputs,findEvidence,trialInventory} from '../configuration-native.mjs';
 import {stageNativeProducer} from '../configuration-native-artifact.mjs';
 import {reconcile} from '../repository-configuration.mjs';
+import {readSession} from '../configuration-session.mjs';
 import {parseDeliveryConfig} from '../../packages/runner/dist/index.js';
 
 const root=process.cwd();
@@ -82,7 +83,7 @@ for(const [mode,hasIssues] of [
     return inspectRepository(files);
   };
   const actor={id:12,login:'maintainer',type:'User'}, bot={id:301115370,type:'Bot'};
-  let pr=null,ref=null,state={values:{},evidence:{}},sequence=100;
+  let pr=null,ref=null,comment=null,sequence=100;
   const response=data=>({data});
   const api={target:{},rest:{git:{
     getRef:async()=>{if(!ref)throw Object.assign(Error('Missing'),{status:404});return response({object:{sha:ref}});},
@@ -91,16 +92,27 @@ for(const [mode,hasIssues] of [
     compareCommitsWithBasehead:async()=>response({behind_by:0})},pulls:{
     list:async()=>{},get:async()=>response(structuredClone(pr)),create:async input=>{assert.equal(pr,null);pr={...input,number:9,user:bot,head:{ref:input.head,repo,sha:ref}};},
     update:async({body})=>{pr.body=body;}
-  }},paginate:async()=>pr?[structuredClone(pr)]:[],graphql:async(q,{input})=>{
+  },issues:{
+    listComments:async()=>{},
+    createComment:async({issue_number,body})=>{
+      assert.equal(issue_number,pr.number);assert.equal(comment,null);
+      comment={id:19,node_id:'comment-19',user:bot,body};return response(comment);
+    },
+    updateComment:async({comment_id,body})=>{assert.equal(comment_id,comment.id);comment.body=body;}
+  }},paginate:async(method,params)=>{
+    if(method===api.rest.pulls.list)return pr?[structuredClone(pr)]:[];
+    assert.equal(method,api.rest.issues.listComments);assert.equal(params.issue_number,pr.number);
+    return comment?[structuredClone(comment)]:[];
+  },graphql:async(q,{id,input})=>{
+    if(id){assert.equal(id,comment.node_id);return {node:{body:comment.body,author:{login:'splrad-steward[bot]'}}};}
     assert.equal(input.expectedHeadOid,ref);
     for(const f of input.fileChanges.additions)await put(f.path,Buffer.from(f.contents,'base64'));
     if(input.fileChanges.additions.length)git('add','--',...input.fileChanges.additions.map(f=>f.path));git('-c','commit.gpgsign=false','commit','--allow-empty','-m',input.message.headline,'-m',input.message.body);
     ref=git('rev-parse','HEAD');if(pr)pr.head.sha=ref;return {createCommitOnBranch:{commit:{oid:ref}}};
   }};
   const evidence=new Map();
-  const ctx={repo,base,api,write:api,actions:api,load,lock:async()=>{},sessions:{
-    read:async()=>structuredClone(state),write:async(api,n,s)=>{assert.equal(n,9);state=structuredClone(s);}
-  },find:async(api,token,repo,base,head,target)=>evidence.get(head+'/'+target.unit),
+  const ctx={repo,base,api,write:api,actions:api,load,lock:async()=>{},
+    find:async(api,token,repo,base,head,target)=>evidence.get(head+'/'+target.unit),
   dispatch:async(api,actions,repo,base,head,target,recipe)=>{
     const env={PATH:process.env.PATH,SYSTEMROOT:process.env.SYSTEMROOT,TMP:dir,TEMP:dir,HOME:dir};
     if(process.platform==='win32') env.PATH=dirname(dirname(execFileSync('where.exe',['git.exe'],{encoding:'utf8'}).trim().split(/\r?\n/)[0]))+'\\bin;'+env.PATH;
@@ -145,7 +157,8 @@ for(const [mode,hasIssues] of [
     ctx.inventory=(api,token,repo,base,head,target,recipe)=>target.unit==='route'?
       trialInventory(actionsRead,token,repo,base,head,target,recipe,archive):priorInventory(api,token,repo,base,head,target);
   } else ctx.discover=async()=>[];
-  const formModel=async()=>Object.assign(await load(api,ref),{nativeVariants:state.nativeVariants});
+  const session=()=>readSession(api,pr.number);
+  const formModel=async()=>Object.assign(await load(api,ref),{nativeVariants:(await session()).nativeVariants});
   const run=(event,data)=>reconcile({...ctx,run:{id:sequence++,run_attempt:1,event,triggering_actor:actor},data});
   await run('workflow_dispatch',{});
   assert.equal(pr.number,9);
@@ -175,7 +188,7 @@ for(const [mode,hasIssues] of [
   await refresh();assert.equal(ref,preparedHead);
   await edit({'operation.trial':true});assert.equal(evidence.size,complex?1:2);
   await run('workflow_run',{trial:{id:81,attempt:1}});
-  const items=configurationForm(await formModel(),ref,state).items;
+  const items=configurationForm(await formModel(),ref,await session()).items;
   const asset=(id,name)=>items.find(i=>i.id.startsWith(id+'.f') && i.id.endsWith('.use') && pr.body.split('\n').some(l=>l.includes(name) && l.includes('cfg '+i.id+' '))).id.slice(0,-4);
   const a=asset(native,'route-2.4.1.tar.gz'),b=asset('s1','stations-1.6.0.zip');
   assert.match(pr.body,/build.log/);
@@ -187,6 +200,7 @@ for(const [mode,hasIssues] of [
   await edit({...final,'channel.workflow':''});
   assert.equal(ref,preparedHead);
   assert.match(pr.body,/请选择已审阅的本仓渠道工作流/);
+  const state=await session();
   const savedPlan=planFromForm(await formModel(),{...state,values:{...state.values,...final}},'select');
   await edit(final);
   assert.equal(pr.number,9);assert.notEqual(ref,preparedHead);
