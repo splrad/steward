@@ -179,13 +179,18 @@ export async function registrationProposal(repo, read) {
   if (productCi.length !== ciPaths.length) pending.push('复核产品 CI 工作流或触发条件');
   const release = releaseRegistration(model, pending);
   const choice = pagesChoices(model.pages);
+  const validSiteUnit=choice.source!=='release'||release?.units.some(unit=>unit.id===choice.unit);
   let site = null;
-  if (choice.build && choice.source && (choice.source !== 'release' ||
-    release?.units.some(unit => unit.id === choice.unit))) {
+  if (choice.build && choice.source && validSiteUnit) {
     site = { workflow: pagesPath, mode: 'build-only', source: choice.source,
       ...(choice.source === 'release' ? { unit: choice.unit } : {}) };
   }
-  if (model.pages && (!site || choice.deploy !== false)) pending.push('确认站点来源和公开部署授权');
+  if (choice.build || choice.deploy) {
+    if (!choice.source) pending.push('确认站点构建来源');
+    else if (!validSiteUnit) pending.push('确认站点的正式 Release 单元');
+    if (choice.deploy && !choice.build) pending.push('确认公开部署所需的站点构建选择');
+    if (choice.deploy) pending.push('确认公开部署授权');
+  }
   const matrix = model.publish?.jobs?.build?.strategy?.matrix?.include;
   const rows = Array.isArray(matrix) ? matrix : [];
   const releaseDetails = new Map((model.delivery?.units ?? []).map(unit => [unit.id, {
@@ -202,8 +207,12 @@ export function renderRegistrationPull(repo, source, proposal, current=null) {
   const list=values=>values.map(quote).join('、');
   const path='repositories/'+repo.id+'.json';
   const title='chore: 登记 '+repo.name+' 逐仓配置';
+  const differences=current?fields.filter(key=>!isDeepStrictEqual(current[key],proposal.policy[key])):[];
+  const needsReview=differences.length>0||proposal.pending.length>0;
   const lines=[
-    '请在这张私有管理员仓 PR 中确认目标仓的治理选择。需要调整时，在 PR 分支编辑 '+quote(path)+' 并提交修改，再从 **Files changed** 核对最终 JSON 和下列待确认项。确认后将草稿转为待审，按本仓流程审查合并。',
+    '请在这张私有管理员仓 PR 中确认目标仓的治理选择。需要调整时，在 PR 分支编辑 '+quote(path)+
+      ' 并提交修改，再从 **Files changed** 核对最终 JSON'+(needsReview?'，并处理下列待确认项':'')+
+      '。确认后将草稿转为待审，按本仓流程审查合并。',
     '', '## 仓库与配置', '',
     '- 目标仓 '+quote(repo.full_name)+'（'+repo.id+'）',
     '- 目标仓默认分支提交 '+quote(source),
@@ -233,9 +242,8 @@ export function renderRegistrationPull(repo, source, proposal, current=null) {
     lines.push('- 工作流 '+quote(workflow),
       '- 选择 '+(mode==='build-only'?'仅构建':'构建并部署'),
       '- 来源 '+(siteSource==='default-branch'?'默认分支':'正式 Release 单元 '+quote(unit)));
-  } else lines.push('站点未配置。');
-  const differences=current?fields.filter(key=>!isDeepStrictEqual(current[key],proposal.policy[key])):[];
-  if(differences.length||proposal.pending.length) {
+  } else lines.push('本次登记未启用站点。');
+  if(needsReview) {
     lines.push('','## 待确认','');
     if(differences.length)lines.push('- 仓内声明与已采用配置有差异，需审阅 '+list(differences));
     for(const note of proposal.pending)lines.push('- '+note);

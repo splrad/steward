@@ -368,7 +368,7 @@ test('initial .github and LayerScape drafts contain their actual selection shape
     assert.equal(pull.title,'chore: 登记 '+repo.name+' 逐仓配置');
     assert.match(pull.body,new RegExp(source));
     assert.ok(pull.body.includes('在 PR 分支编辑 `'+registrationPath(repo)+'` 并提交修改'));
-    assert.match(pull.body,/站点未配置/);
+    assert.match(pull.body,/本次登记未启用站点/);
     assert.deepEqual(state.writes.map(([kind])=>kind),['ref','commit','pull']);
     if(repo===governance) {
       assert.deepEqual([proposal.policy.productCi,proposal.policy.release,proposal.pending],[[],null,[]]);
@@ -380,13 +380,13 @@ test('initial .github and LayerScape drafts contain their actual selection shape
       assert.deepEqual(proposal.policy.productCi,[ci]);
       assert.deepEqual(proposal.policy.release,{buildWorkflow:publish,units:[{id:'layerscape',channels:[channel]}]});
       assert.equal(proposal.policy.site,null);
-      assert.equal(proposal.pending.length,1);
+      assert.deepEqual(proposal.pending,[]);
       assert.ok(pull.body.includes('正式构建入口 `'+publish+'`'));
       assert.ok(pull.body.includes('构建目标 `windows-x64`'));
       assert.ok(pull.body.includes('`github-release`（必需）'));
       for(const asset of assets)assert.ok(pull.body.includes('`'+asset.id+'`（`'+asset.name+'`）'));
       for(const file of metadata)assert.ok(pull.body.includes('`'+file+'`'));
-      assert.match(pull.body,/确认站点来源和公开部署授权/);
+      assert.ok(!pull.body.includes('待确认\n'));
     }
     state.open[0].body += '\n人工改稿';
     state.trees.get(candidate).set(registrationPath(repo),'人工正在编辑');
@@ -395,6 +395,25 @@ test('initial .github and LayerScape drafts contain their actual selection shape
     assert.match(state.open[0].body,/人工改稿/);
     assert.equal(state.writes.length,3);
   }
+});
+
+test('only selected Pages operations prompt for their missing inputs',async()=>{
+  const selected=async(sourceMode,build,deploy)=>{
+    const files=new Map(productFiles);
+    const mode=sourceMode?'    STEWARD_DOCS_SOURCE: '+sourceMode+'\n':'';
+    files.set(pages,(mode?'env:\n'+mode:'')+'jobs:\n  build:\n    if: ('+build+' && true) && (true)\n'+
+      '  deploy:\n    if: ('+deploy+' && true) && (true)\n');
+    return propose(product,files);
+  };
+  assert.deepEqual((await selected('',false,false)).pending,[]);
+  assert.deepEqual((await selected('',true,false)).pending,['确认站点构建来源']);
+  assert.deepEqual((await selected('release',true,false)).pending,['确认站点的正式 Release 单元']);
+  const local=await selected('default-branch',true,false);
+  assert.equal(local.policy.site.mode,'build-only');
+  assert.deepEqual(local.pending,[]);
+  const requested=await selected('default-branch',true,true);
+  assert.equal(requested.policy.site.mode,'build-only');
+  assert.deepEqual(requested.pending,['确认公开部署授权']);
 });
 
 test('manual central PRs and merged choices keep authority over discovered differences', async () => {
