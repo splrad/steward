@@ -113,7 +113,8 @@ export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invo
     if (head===event.sourceSha && result.sourceSha!==head) await reconcile((await cycleStage('LEDGER_READ',snapshot)).head);
     return {...build,cycleId};
   }
-  const run=nativeRunFact(await (event.kind==='publication'?centralGet:get)(`actions/runs/${event.runId}`));
+  const readRun=event.kind==='publication'?centralGet:get;
+  const run=await cycleStage('SOURCE_READ',async()=>nativeRunFact(await readRun(`actions/runs/${event.runId}`)));
   if (run.id!==event.runId || run.runAttempt!==event.attempt || run.status!=='completed') fail('CYCLE_EVENT_RUN');
   if (event.kind==='publication') {
     if (run.repositoryId!==centralId || run.headRepositoryId!==centralId || run.actorId!==botId || run.headBranch!=='main'
@@ -125,17 +126,17 @@ export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invo
     const prior=await execute('reconcile-publication');
     if(prior.status!=='OBSERVED')return {...prior,cycleId};
   } else if (run.displayTitle.startsWith('Channels observe ')) {
-    const workflow=probeWorkflow?await probeWorkflow():null;
+    const workflow=probeWorkflow?await cycleStage('SOURCE_READ',probeWorkflow):null;
     if(probeWorkflow&&(!Number.isSafeInteger(workflow?.id)||workflow.id<=0||workflow.state!=='active'||
        workflow.path!=='.github/workflows/steward-release-channels.yml'))fail('CYCLE_PROBE_ORIGIN');
     const probeProduct=workflow?{...product,channelWorkflowId:workflow.id}:product;
     if (!registeredProbe(run,botId,probeProduct)) fail('CYCLE_PROBE_ORIGIN');
     if (run.conclusion!=='success')return wait('PROBE_UNSUCCESSFUL');
-    const artifacts=probeArtifacts?await probeArtifacts(run):null;
+    const artifacts=probeArtifacts?await cycleStage('SOURCE_READ',()=>probeArtifacts(run)):null;
     let candidates=cycles.filter(c=>probeMatches(c,run,botId,probeProduct,artifacts));
     if (!candidates.length && artifacts && probeReport) {
       for(const artifact of artifacts.filter(a=>a.expired===false && a.workflow_run?.id===run.id && a.workflow_run?.head_sha===run.headSha
-        && typeof a.name==='string' && cycles.some(c=>a.name.startsWith('probe-'+c.id+'-')))) artifact.report=await probeReport(artifact);
+        && typeof a.name==='string' && cycles.some(c=>a.name.startsWith('probe-'+c.id+'-')))) artifact.report=await cycleStage('SOURCE_READ',()=>probeReport(artifact));
       candidates=cycles.filter(c=>probeMatches(c,run,botId,probeProduct,artifacts));
     }
     if(!candidates.length && artifacts && !artifacts.some(artifact=>artifact.expired===false))return wait('PROBE_RECEIPT_UNCONFIRMED');
@@ -148,7 +149,7 @@ export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invo
     cycleId=cycle.id;
     if (!request.canonicalRunId) {
       await execute(request.purpose==='build'?'dispatch-build':'dispatch-channel');
-      const bound=(await snapshot()).cycles.find(c=>c.value.id===cycleId)?.value.dispatches.find(d=>d.requestKey===request.requestKey);
+      const bound=(await cycleStage('LEDGER_READ',snapshot)).cycles.find(c=>c.value.id===cycleId)?.value.dispatches.find(d=>d.requestKey===request.requestKey);
       if (bound?.canonicalRunId!==run.id) return {...wait('CANONICAL_RUN_UNCONFIRMED'),cycleId};
     }
     if (run.conclusion!=='success') return {...await execute('rerun',run.id),cycleId};
@@ -182,7 +183,7 @@ export async function main(env=process.env) {
   if(run.actor?.id!==app.appBotId || run.display_title!=='Release cycle '+requestKey) fail('CYCLE_ACTOR');
   const root=await mkdtemp(join(tmpdir(),'steward-cycle-'));
   const producer={repositoryId:centralId,runId:run.id,attempt:run.run_attempt,controllerSha:run.head_sha};
-  try {
+  return withCycleCleanup(async()=>{
     const processProduct=product=>cycleStage('PRODUCT_ACCESS',async()=>{
       validateEvent(event,requestKey,[product]);
       const repository={id:product.id,full_name:product.name,default_branch:product.defaultBranch};
@@ -209,7 +210,7 @@ export async function main(env=process.env) {
     const result=await cycleStage('PARTICIPATION',()=>withCycleEventProduct(app,event,processProduct));
     await cycleStage('RESULT_WRITE',()=>writeFile('result.json',JSON.stringify({schemaVersion:1,requestKey,producer,event,status:result.status,reason:result.reason??null,
       cycleId:result.cycleId??null,publishInvoked:result.publishInvoked===true})+'\n',{flag:'wx'}));
-  } finally {await cycleStage('CLEANUP',()=>rm(root,{recursive:true,force:true}));}
+  },()=>rm(root,{recursive:true,force:true}));
 }
 const publicCodes=new Set([
   'CYCLE_ACTOR','CYCLE_EVENT_AMBIGUOUS','CYCLE_EVENT_ID','CYCLE_EVENT_KEY','CYCLE_EVENT_KIND',
@@ -235,6 +236,16 @@ async function cycleStage(stage,operation) {
   catch(error) {
     if(error instanceof CycleStageFailure)throw error;
     throw new CycleStageFailure(stage,error);
+  }
+}
+
+export async function withCycleCleanup(operation,cleanup) {
+  let operationFailed=false;
+  try { return await operation(); }
+  catch(error) { operationFailed=true; throw error; }
+  finally {
+    try { await cycleStage('CLEANUP',cleanup); }
+    catch(error) { if(!operationFailed)throw error; }
   }
 }
 
