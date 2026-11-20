@@ -85,4 +85,11 @@ test('checks adoption against trusted Git tags, preserves outside bytes on sync 
   assert.throws(()=>check(upgraded,future));
   pin('v1.0.0');const rollback = commit();
   assert.throws(()=>check(upgraded,rollback),/ADOPTION_REMOVED/);
+  git('tag','v2.0.0-rc1','v2.0.0');
+  pin('v2.0.0-rc1');writeFileSync(policy,initial);
+  const prerelease=commit();
+  assert.throws(()=>check(legacy,prerelease),/ANSWERS_RELEASE_TAG/);
+  rmSync(join(root,'copier.yml'));const nonTemplate=commit();git('tag','v8.0.0',nonTemplate);
+  pin('v8.0.0');const invalidTemplate=commit();
+  assert.throws(()=>verify(root,legacy,invalidTemplate,root,nonTemplate,false,false),/ANSWERS_TEMPLATE_MISSING/);
 });

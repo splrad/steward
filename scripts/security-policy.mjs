@@ -71,9 +71,10 @@ function adopted(target, revision, trusted, trustedHead) {
   if (!data) return null;
   const value = YAML.parse(data.toString('utf8'));
   if (value?._src_path !== 'https://github.com/splrad/steward.git') return null;
-  requirePolicy(typeof value._commit === 'string' && /^v?\d[0-9a-z.!+_-]*$/i.test(value._commit), 'ANSWERS');
+  requirePolicy(typeof value._commit === 'string' && releaseTag.test(value._commit), 'ANSWERS_RELEASE_TAG');
   const sha = git(trusted, 'rev-parse', '--verify', 'refs/tags/' + value._commit + '^{commit}').toString().trim();
   git(trusted, 'merge-base', '--is-ancestor', sha, trustedHead);
+  requirePolicy(blob(trusted, sha, 'copier.yml'), 'ANSWERS_TEMPLATE_MISSING');
   return common(trusted, sha);
 }
 
