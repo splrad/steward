@@ -98,6 +98,8 @@ jobs:
             governance: *source
             security_policy:
               - 'SECURITY.md'
+              - '.github/SECURITY.md'
+              - 'docs/SECURITY.md'
               - '.copier-answers.yml'
             dependency:
               - '.mise/**'
