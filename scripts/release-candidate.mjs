@@ -36,7 +36,7 @@ export function mergedContributorIdentity(identity, authors) {
 }
 
 /** Fixed candidate adapter. Credentials never enter archived data or model/RP payloads. */
-export async function nativeReleaseCandidate(request, { token, readToken, copilotToken, controllerSha, controllerDirectory = process.cwd(), now = () => new Date().toISOString(), fetcher = fetch, generator, language, expectedStateSha, expectedSourceSha, temporaryRoot = tmpdir(),verifyHandoff,contentRecovery,observation,manualCandidateProducer,reselectUnits=false } = {}) {
+export async function nativeReleaseCandidate(request, { token, readToken, copilotToken, controllerSha, controllerDirectory = process.cwd(), now = () => new Date().toISOString(), fetcher = fetch, generator, language, expectedStateSha, expectedSourceSha, temporaryRoot = tmpdir(),verifyHandoff,contentRecovery,observation,manualCandidateProducer,reselectUnits=false,checkRepositoryPolicy } = {}) {
   if (!readToken || readToken === token) return { status: 'WAIT', reason: 'CANDIDATE_SCOPED_READ_CREDENTIAL_REQUIRED' };
   if (!validSha(controllerSha)) return { status: 'WAIT', reason: 'CANDIDATE_CONTROLLER_IDENTITY_REQUIRED' };
   if(expectedStateSha!==undefined&&!validSha(expectedStateSha))fail('CANDIDATE_EXPECTED_STATE_INVALID');
@@ -135,6 +135,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     const source = async () => {
       const baseSha = await fetchBranch(request.defaultBranch); if (!baseSha) fail('CANDIDATE_DEFAULT_BRANCH_UNAVAILABLE');
       if(expectedSourceSha!==undefined&&baseSha!==expectedSourceSha)fail('CANDIDATE_EVENT_SOURCE_CHANGED');
+      await checkRepositoryPolicy?.(path=>fileAt(baseSha,path));
       const config = await fileAt(baseSha, 'release-please-config.json'), manifest = await fileAt(baseSha, '.release-please-manifest.json');
       delivery = parseDeliveryConfig(JSON.parse(await fileAt(baseSha, '.github/delivery.json')));
       assertProductDelivery(delivery,request.repository);

@@ -94,21 +94,7 @@ async function readHead(api, branch, missing = false) {
   return result.data.object.sha;
 }
 
-export async function registrationProposal(repo, read) {
-  const paths = [ciPath, deliveryPath, publishPath, versionsPath, pagesPath];
-  const files = new Map((await Promise.all(paths.map(async path => [path, await read(path)])))
-    .filter(([, text]) => text !== null));
-  const ci = files.has(ciPath) ? JSON.parse(files.get(ciPath)) : [];
-  const ciPaths = files.has(ciPath) ? productWorkflows(ci, ci) : [];
-  for (const path of ciPaths) {
-    const text = await read(path);
-    if (text !== null) files.set(path, text);
-  }
-  const model = inspectRepository(files);
-  const pending = [];
-  const productCi = ciPaths.filter(path => model.workflows.some(workflow =>
-    workflow.path === path && selectableProductCI(workflow, repo.default_branch)));
-  if (productCi.length !== ciPaths.length) pending.push('复核产品 CI 工作流或触发条件');
+export function releaseRegistration(model, pending) {
   let release = null;
   if (model.delivery) {
     const delivery = parseDeliveryConfig(model.delivery);
@@ -138,6 +124,25 @@ export async function registrationProposal(repo, read) {
     }
     if (units.length) release = { buildWorkflow: publishPath, units };
   }
+  return release;
+}
+
+export async function registrationProposal(repo, read) {
+  const paths = [ciPath, deliveryPath, publishPath, versionsPath, pagesPath];
+  const files = new Map((await Promise.all(paths.map(async path => [path, await read(path)])))
+    .filter(([, text]) => text !== null));
+  const ci = files.has(ciPath) ? JSON.parse(files.get(ciPath)) : [];
+  const ciPaths = files.has(ciPath) ? productWorkflows(ci, ci) : [];
+  for (const path of ciPaths) {
+    const text = await read(path);
+    if (text !== null) files.set(path, text);
+  }
+  const model = inspectRepository(files);
+  const pending = [];
+  const productCi = ciPaths.filter(path => model.workflows.some(workflow =>
+    workflow.path === path && selectableProductCI(workflow, repo.default_branch)));
+  if (productCi.length !== ciPaths.length) pending.push('复核产品 CI 工作流或触发条件');
+  const release = releaseRegistration(model, pending);
   const choice = pagesChoices(model.pages);
   let site = null;
   if (choice.build && choice.source && (choice.source !== 'release' ||

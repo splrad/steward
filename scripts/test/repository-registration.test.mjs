@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -8,6 +9,10 @@ import { requestFile } from '../repository-registration-request.mjs';
 import { checkedRegistration } from '../repository-registration-policy.mjs';
 import { assertInputScope, assertGovernanceOnlyScope } from '../private-dependency-policy.mjs';
 import { requiresProductCI } from '../validation-input.mjs';
+import {readRepositoryPolicy} from '../repository-policy-read.mjs';
+import {main as runLegacyConfiguration} from '../repository-configuration.mjs';
+import {releasePolicyGuard} from '../release-repository-policy.mjs';
+import {servicePages} from '../pages-maintenance.mjs';
 
 const admin = { id:1447987054, full_name:'splrad/steward-settings', default_branch:'main', private:true };
 const org = { id:302208797, login:'splrad' };
@@ -43,6 +48,85 @@ const body = (event, action, repository_ids) => ({
 });
 const event = payload => ({repository:admin,action:'settings-source-event',
   sender:{id:353238212,login:'splrad-governance[bot]',type:'Bot'},client_payload:payload});
+
+test('reads policy only from a stable protected administrator main and proves missing entries',async()=>{
+  const {policy}=await propose(product,productFiles);
+  const bytes=Buffer.from(JSON.stringify({...policy,adoption:'paused'}));
+  const blob=createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+  let head=base,protectedBranch=true,listings=0,missing=false,finalRef=base,directoryMode='040000';
+  const api={rest:{
+    repos:{
+      get:async()=>({data:{...admin,owner:org,archived:false,disabled:false}}),
+      getBranch:async()=>({data:{name:'main',protected:protectedBranch,commit:{sha:listings>0?finalRef:head}}}),
+      getContent:async({ref,path})=>{
+        assert.equal(ref,head);
+        assert.equal(path,registrationPath(product));
+        return {data:{path,sha:blob,type:'file',encoding:'base64',content:bytes.toString('base64'),size:bytes.length}};
+      }
+    },
+    git:{getTree:async({tree_sha})=>{
+      listings++;
+      const tree=tree_sha===base?[{path:'repositories',type:'tree',mode:directoryMode,sha:candidate}]:
+        missing?[]:[{path:product.id+'.json',type:'blob',mode:'100644',sha:blob}];
+      return {data:{truncated:false,tree}};
+    }}
+  }};
+  assert.deepEqual(await readRepositoryPolicy(api,product),{commit:base,policy:{...policy,adoption:'paused'},adoption:'paused'});
+  await assert.rejects(readRepositoryPolicy(api,{...product,full_name:'splrad/Renamed'}),/REPOSITORY_POLICY_UNAVAILABLE/);
+  missing=true;
+  assert.deepEqual(await readRepositoryPolicy(api,product),{commit:base,policy:null,adoption:'legacy'});
+  directoryMode='100644';
+  await assert.rejects(readRepositoryPolicy(api,product),/REPOSITORY_POLICY_UNAVAILABLE/);
+  directoryMode='040000';
+  listings=0;finalRef=source;
+  await assert.rejects(readRepositoryPolicy(api,product),/REPOSITORY_POLICY_UNAVAILABLE/);
+  protectedBranch=false;
+  await assert.rejects(readRepositoryPolicy(api,product),/REPOSITORY_POLICY_UNAVAILABLE/);
+});
+
+test('legacy workflow stops before acquiring product write credentials for paused and central targets',async()=>{
+  const env={REPOSITORY_ID:String(product.id),GITHUB_REPOSITORY:'splrad/steward',GITHUB_REPOSITORY_ID:'1296724484',
+    GITHUB_EVENT_NAME:'workflow_dispatch'};
+  let writes=0;
+  const app={discover:async()=>[product],forTemplateRepository:async()=>{writes++;}};
+  for(const adoption of ['paused','central','legacy'])
+    await runLegacyConfiguration(env,{openApp:async()=>app,readPolicy:async(_app,repo)=>{
+      assert.equal(repo.id,product.id);
+      return {adoption};
+    }});
+  assert.equal(writes,1);
+  await assert.rejects(runLegacyConfiguration(env,{openApp:async()=>app,readPolicy:async()=>{throw Error('Unavailable');}}),/Unavailable/);
+  assert.equal(writes,1);
+});
+
+test('new release candidates consume the approved release selections and preserve native product changes',async()=>{
+  const {policy}=await propose(product,productFiles);
+  let adoption='central',selection=policy;
+  const guard=releasePolicyGuard({},product,async()=>({adoption,policy:selection}));
+  await guard(async path=>productFiles.get(path));
+  const customized=new Map(productFiles);
+  customized.set(publish,productFiles.get(publish).replace('windows-x64','custom-runner-target'));
+  await guard(async path=>customized.get(path));
+  const modified=structuredClone(policy);
+  modified.release.units[0].channels[0].artifactIds.pop();
+  selection=modified;
+  await assert.rejects(guard(async path=>productFiles.get(path)),/CANDIDATE_REPOSITORY_POLICY_CONFLICT/);
+  selection={...policy,release:null};
+  await assert.rejects(guard(async()=>assert.fail('Disabled release should not load product inputs')),/CANDIDATE_REPOSITORY_POLICY_DISABLED/);
+  adoption='legacy';
+  await guard(async()=>assert.fail('Legacy release should continue from native inputs'));
+});
+
+test('central Pages consumer blocks recovery for disabled and build-only sites and checks native source',async()=>{
+  const preventWrite=()=>assert.fail('unexpected Pages mutation');
+  const readPolicy=async site=>({adoption:'central',policy:{site}});
+  const args={repository:product,coordinator:{controllerSha:base},store:{save:preventWrite}};
+  for(const site of [null,{workflow:pages,mode:'build-only',source:'default-branch'}]) {
+    assert.deepEqual(await servicePages({...args,readPolicy:()=>readPolicy(site),io:{request:preventWrite}}),{status:'DISABLED'});
+  }
+  await assert.rejects(servicePages({...args,readPolicy:()=>readPolicy({workflow:pages,mode:'build-and-deploy',source:'default-branch'}),
+    io:{request:async method=>{assert.equal(method,'GET');return {status:404};}}}),/PAGES_REPOSITORY_POLICY_CONFLICT/);
+});
 
 test('private receiver accepts verified metadata and one ID for recovery', () => {
   assert.deepEqual(registrationIds(event(body('repository','created',[governance.id])),'repository_dispatch'),[governance.id]);

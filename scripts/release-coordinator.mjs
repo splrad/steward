@@ -10,6 +10,8 @@ import { readReleaseRecords, writeReleaseRecords, releaseCommand, assertReleaseW
 import {servicePages,pagesGitStore} from './pages-maintenance.mjs';
 import {assertQualityProtection,qualityNativeIO} from './quality-language-summary.mjs';
 import {validateReleaseConfiguration} from './release-adoption.mjs';
+import {mergedRepositoryPolicy} from './repository-policy-read.mjs';
+import {releasePolicyGuard} from './release-repository-policy.mjs';
 
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const identity={name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'};
@@ -270,7 +272,8 @@ export async function serviceRepositoryPages({app,root,repository,coordinator,co
     const writeDirectory=await mkdtemp(join(root,'pages-writes-'));
     const store=pagesGitStore({repositoryId:repository.id,refresh:()=>fetchState(root,repository,token,'steward/governance-state',{governanceAppId}),
       writeDirectory,defaultBranch:repository.default_branch,token,identity});
-    return servicePages({io,repository,store,completion,appBotId:app.appBotId,token,coordinator});
+    return servicePages({io,repository,store,completion,appBotId:app.appBotId,token,coordinator,
+      readPolicy:()=>mergedRepositoryPolicy(app,repository)});
   });
 }
 
@@ -302,7 +305,8 @@ export async function main() {
         const centralIo={request:(method,path,...args)=>{if(method!=='GET'||!path.startsWith('/repos/splrad/steward/'))throw new Error('RELEASE_CENTRAL_READ_ONLY');return centralTransport.request(method,path,...args);}};
         const result=await serviceReleaseWake(request,refresh,async(command,input)=>command==='candidate'
           ? app.forCandidateRepository(repository.id,(candidateToken,candidateReadToken)=>releaseCommand(command,{...input,directory:request.directory},
-            {token:candidateToken,io:state.io,centralIo,candidateReadToken,copilotToken:process.env.STEWARD_COPILOT_TOKEN,controllerSha,controllerDirectory:process.cwd()}))
+            {token:candidateToken,io:state.io,centralIo,candidateReadToken,copilotToken:process.env.STEWARD_COPILOT_TOKEN,controllerSha,controllerDirectory:process.cwd(),
+              candidateRuntime:{checkRepositoryPolicy:releasePolicyGuard(app,repository)}}))
           : releaseCommand(command,{...input,directory:request.directory},{token,io:state.io,centralIo,controllerDirectory:process.cwd(),
             centralInvocation:{runId:Number(process.env.GITHUB_RUN_ID),runAttempt:Number(process.env.GITHUB_RUN_ATTEMPT),controllerSha,defaultBranch:process.env.STEWARD_DEFAULT_BRANCH}}));
         await refresh();
