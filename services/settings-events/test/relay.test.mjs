@@ -59,6 +59,34 @@ test('empty-repository bootstrap default branch is accepted even from governance
   b.ref='unrelated'; assert.equal(eligible('create',b),false);
 });
 
+test('signed repository and installation events share only registration IDs', async () => {
+  const repo = payload();
+  repo.action = 'created';
+  const install = {action:'added', installation:{id:POLICY.installation,app_id:Number(POLICY.app),
+    account:{id:POLICY.orgId,login:POLICY.org}}, repositories_added:[
+    {id:42,full_name:'private-source'}, {id:123}, {id:42}
+  ]};
+  const removed = {...install, action:'removed', repositories_removed:install.repositories_added};
+  const cases = [
+    [repo,'repository',[123]],
+    [{...repo,ref_type:'branch',ref:'main',repository:{...repo.repository,default_branch:'main'}},'create',[123]],
+    [install,'installation_repositories',[42,123]],
+    [removed,'installation_repositories',undefined],
+    [{...install,repositories_added:[{id:'42'}]},'installation_repositories',undefined],
+    [{...install,action:'created',repositories:install.repositories_added},'installation',[42,123]]
+  ];
+  for (const [body,event,ids] of cases) {
+    let metadata;
+    const response = await handle(await request(body,event),env,async (_, value) => {
+      metadata = value;
+      return {accepted:true,code:'dispatch_accepted'};
+    });
+    assert.equal(response.status,202);
+    assert.deepEqual(metadata.repository_ids,ids);
+    assert.ok(!JSON.stringify(metadata).includes('private-source'));
+  }
+});
+
 const scope = {total_count: 1, repositories: [{id: POLICY.repositoryId, full_name: POLICY.repository, private: true, default_branch: 'main'}]};
 function transport({badScope = false, dispatchThrows = false, revokeFails = false, broadPermission = false, metadata = 'read'} = {}) {
   const calls = [];

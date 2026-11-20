@@ -1,0 +1,326 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { appendFile, readFile, writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
+import { createAppAuth } from '@octokit/auth-app';
+import { Octokit } from '@octokit/rest';
+import { nativeReleaseApp, parseDeliveryConfig } from '../packages/runner/dist/index.js';
+import apiVersion from '../config/github-api.json' with { type: 'json' };
+import contract from '../config/settings-source-events.json' with { type: 'json' };
+import { revisionReader } from './configuration-authorization.mjs';
+import { commitFiles, must, positive, sha } from './configuration-native.mjs';
+import { ciPath, deliveryPath, effectiveChannels, inspectRepository, jsonFile, pagesChoices, pagesPath,
+  publishPath, versionsPath } from './configuration-view.mjs';
+import { productWorkflows, selectableProductCI } from './validation-input.mjs';
+import { checkedRegistration } from './repository-registration-policy.mjs';
+import { adminId, centralId, isGovernanceBot, loadPrivateRequest, makePrivateRequest, readWake,
+  registrationEvent, wakePayload } from './repository-registration-request.mjs';
+
+const orgId = 302208797;
+const governance = { id: 5639432, installation: 179184801 };
+const stewardBot = 301115370;
+const webFlow = 19864447;
+const fields = ['productCi', 'release', 'site'];
+const metadataFiles = ['sbom.spdx.json', 'release-notes.md', 'artifact-manifest.json', 'SHA256SUMS'];
+const digest = text => createHash('sha256').update(text).digest('hex');
+const githubOptions = {
+  request: { headers: { 'x-github-api-version': apiVersion.version } },
+  log: { debug() {}, info() {}, warn() {}, error() {} }
+};
+
+export function registrationIds(event, name) {
+  const repo = event.repository;
+  must(repo?.id === adminId && repo.full_name === 'splrad/steward-settings' &&
+    repo.private === true && repo.default_branch === 'main', 'Invalid registration receiver');
+  if (name === 'workflow_dispatch') return [positive(event.inputs?.repository_id)];
+  must(name === 'repository_dispatch' && event.action === 'settings-source-event' &&
+    isGovernanceBot(event.sender), 'Untrusted registration event');
+  const payload = event.client_payload;
+  must(payload && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(payload.delivery) &&
+    /^[a-f0-9]{64}$/.test(payload.body_sha256) && Object.hasOwn(contract.actions, payload.event) &&
+    contract.actions[payload.event].includes(payload.action) &&
+    Object.keys(payload).every(key => ['delivery', 'event', 'action', 'body_sha256', 'repository_ids'].includes(key)),
+  'Invalid registration metadata');
+  if (!Object.hasOwn(payload, 'repository_ids')) return [];
+  const allowed = ['repository', 'create'].includes(payload.event) ||
+    payload.event === 'installation_repositories' && payload.action === 'added' ||
+    payload.event === 'installation' && payload.action === 'created';
+  const ids = payload.repository_ids;
+  must(allowed && Array.isArray(ids) && ids.length > 0 && new Set(ids).size === ids.length &&
+    ids.every(id => Number.isSafeInteger(id) && id > 0) &&
+    (!['repository', 'create'].includes(payload.event) || ids.length === 1), 'Invalid registration targets');
+  return ids;
+}
+
+function checkRepository(repo, id) {
+  must(repo?.id === id && repo.owner?.id === orgId && repo.owner?.login === 'splrad' &&
+    repo.full_name === 'splrad/' + repo.name && /^[A-Za-z0-9_.-]+$/.test(repo.name) &&
+    typeof repo.default_branch === 'string' && repo.default_branch, 'Repository identity mismatch');
+  return repo;
+}
+
+async function withScopedApp(key, app, repositoryId, permissions, operation) {
+  must(key, 'Registration App credential is unavailable');
+  const appApi = new Octokit({ ...githubOptions, authStrategy: createAppAuth,
+    auth: { appId: app.id, privateKey: key.replace(/\\n/g, '\n') } });
+  const { data: installation } = await appApi.request('GET /orgs/{org}/installation', { org: 'splrad' });
+  must(installation.id === app.installation && installation.app_id === app.id &&
+    installation.account?.id === orgId && !installation.suspended_at, 'Registration installation mismatch');
+  const { token } = await appApi.auth({ type: 'installation', installationId: app.installation,
+    repositoryIds: [repositoryId], permissions });
+  const api = new Octokit({ ...githubOptions, auth: token });
+  try {
+    const { data: scope } = await api.request('GET /installation/repositories', { per_page: 100 });
+    must(scope.total_count === 1 && scope.repositories.length === 1 &&
+      scope.repositories[0].id === repositoryId, 'Registration token scope mismatch');
+    const { data } = await api.request('GET /repositories/{id}', { id: repositoryId });
+    const repo = checkRepository(data, repositoryId);
+    api.target = { owner: repo.owner.login, repo: repo.name };
+    return await operation(api, repo);
+  } finally {
+    await api.request('DELETE /installation/token');
+  }
+}
+
+async function readHead(api, branch, missing = false) {
+  const result = await api.rest.git.getRef({ ...api.target, ref: 'heads/' + branch }).catch(error => {
+    if (missing && (error.status === 404 || error.status === 409)) return null;
+    throw error;
+  });
+  if (!result) return null;
+  must(result.data.ref === 'refs/heads/' + branch && result.data.object.type === 'commit' &&
+    sha(result.data.object.sha), 'Invalid registration ref');
+  return result.data.object.sha;
+}
+
+export async function registrationProposal(repo, read) {
+  const paths = [ciPath, deliveryPath, publishPath, versionsPath, pagesPath];
+  const files = new Map((await Promise.all(paths.map(async path => [path, await read(path)])))
+    .filter(([, text]) => text !== null));
+  const ci = files.has(ciPath) ? JSON.parse(files.get(ciPath)) : [];
+  const ciPaths = files.has(ciPath) ? productWorkflows(ci, ci) : [];
+  for (const path of ciPaths) {
+    const text = await read(path);
+    if (text !== null) files.set(path, text);
+  }
+  const model = inspectRepository(files);
+  const pending = [];
+  const productCi = ciPaths.filter(path => model.workflows.some(workflow =>
+    workflow.path === path && selectableProductCI(workflow, repo.default_branch)));
+  if (productCi.length !== ciPaths.length) pending.push('复核产品 CI 工作流或触发条件');
+  let release = null;
+  if (model.delivery) {
+    const delivery = parseDeliveryConfig(model.delivery);
+    const matrix = model.publish?.jobs?.build?.strategy?.matrix?.include;
+    const units = [];
+    for (const unit of delivery.units) {
+      if (!model.versions?.packages?.[unit.path] || !Array.isArray(matrix) ||
+        !matrix.some(row => row.unit === unit.id && typeof row.target === 'string' && row.target)) {
+        pending.push('确认发行单元和构建入口 ' + unit.id);
+        continue;
+      }
+      const channels = [];
+      for (const channel of effectiveChannels(delivery, unit)) {
+        let artifactIds = channel.artifactIds;
+        if (!artifactIds && channel.id === 'winget') {
+          const installers = unit.assets.filter(asset => /\.(?:exe|msi|msix|appx|msixbundle|appxbundle)$/i.test(asset.name));
+          if (installers.length !== 1) {
+            pending.push('确认 WinGet 安装文件 ' + unit.id);
+            continue;
+          }
+          artifactIds = [installers[0].id];
+        }
+        channels.push({ ...channel, artifactIds: artifactIds ?? unit.assets.map(asset => asset.id),
+          metadata: channel.metadata ?? (channel.id === 'winget' ? [] : metadataFiles) });
+      }
+      units.push({ id: unit.id, channels });
+    }
+    if (units.length) release = { buildWorkflow: publishPath, units };
+  }
+  const choice = pagesChoices(model.pages);
+  let site = null;
+  if (choice.build && choice.source && (choice.source !== 'release' ||
+    release?.units.some(unit => unit.id === choice.unit))) {
+    site = { workflow: pagesPath, mode: 'build-only', source: choice.source,
+      ...(choice.source === 'release' ? { unit: choice.unit } : {}) };
+  }
+  if (model.pages && (!site || choice.deploy !== false)) pending.push('确认站点来源和公开部署授权');
+  return { policy: checkedRegistration({ schemaVersion: 1, repositoryId: repo.id, repository: repo.full_name,
+    productCi, release, site }, repo.id), pending };
+}
+
+const branchPrefix = id => 'steward/repository-registration-' + id + '-';
+
+async function matchingPull(api, admin, id, path) {
+  const pulls = await api.paginate(api.rest.pulls.list, { ...api.target, state: 'open',
+    base: admin.default_branch, per_page: 100 });
+  const matches = [];
+  for (const pull of pulls) {
+    if (pull.head.ref.startsWith(branchPrefix(id))) {
+      must(pull.user?.id === stewardBot && pull.head.repo?.id === admin.id,
+        'Reserved registration branch belongs to another author');
+      matches.push(pull);
+      continue;
+    }
+    const files = await api.paginate(api.rest.pulls.listFiles, { ...api.target, pull_number: pull.number, per_page: 100 });
+    if (files.some(file => [file.filename, file.previous_filename].includes(path))) matches.push(pull);
+  }
+  must(matches.length < 2, 'Multiple open PRs touch this registration');
+  return matches[0];
+}
+
+export async function reconcileRegistration(api, admin, repo, source, proposal, verifySource) {
+  const id = repo.id, path = 'repositories/' + id + '.json';
+  const base = await readHead(api, admin.default_branch);
+  const read = revisionReader(api, base);
+  const merged = await read(path);
+  const current = merged === null ? null : checkedRegistration(JSON.parse(merged), id);
+  const differences = fields.filter(key => !current || !isDeepStrictEqual(current[key], proposal.policy[key]));
+  const open = await matchingPull(api, admin, id, path);
+  if (open) return { result: 'reused', number: open.number, differences, pending: proposal.pending };
+  const policy = current ? { ...current, repository: repo.full_name } : proposal.policy;
+  if (current && policy.repository === current.repository)
+    return { result: differences.length || proposal.pending.length ? 'review-required' : 'unchanged',
+      differences, pending: proposal.pending,
+      ...(differences.length ? { observations: differences.map(field =>
+        ({ field, current: current[field], observed: proposal.policy[field] })) } : {}) };
+
+  const bytes = jsonFile(policy);
+  const branch = branchPrefix(id) + digest(bytes).slice(0, 20);
+  const args = { ...api.target, base: admin.default_branch, head: 'splrad:' + branch };
+  const existing = await api.paginate(api.rest.pulls.list, { ...args, state: 'closed', per_page: 100 });
+  if (existing.length) return { result: 'previously-reviewed', number: existing[0].number, differences, pending: proposal.pending };
+  must(await verifySource() === source && await readHead(api, admin.default_branch) === base,
+    'Registration input moved; refresh the proposal');
+  let head = await readHead(api, branch, true);
+  if (!head) {
+    await api.rest.git.createRef({ ...api.target, ref: 'refs/heads/' + branch, sha: base });
+    head = base;
+  }
+  const title = 'chore: 登记 ' + repo.name + ' 逐仓配置';
+  if (head === base) {
+    head = await commitFiles(api, admin, branch, base, new Map([[path, bytes]]), '目标仓源码 ' + source, title);
+  } else {
+    const { data: commit } = await api.rest.repos.getCommit({ ...api.target, ref: head });
+    must(commit.parents.length === 1 && commit.author?.id === stewardBot && commit.committer?.id === webFlow &&
+      commit.commit.verification?.verified === true && commit.files?.length === 1 && commit.files[0].filename === path &&
+      await revisionReader(api, head)(path) === bytes, 'Recovery branch contains a competing change');
+    const parent = commit.parents[0].sha;
+    if (parent !== base) {
+      const { data: comparison } = await api.rest.repos.compareCommitsWithBasehead({ ...api.target,
+        basehead: parent + '...' + base });
+      must(comparison.merge_base_commit.sha === parent, 'Recovery branch base is no longer an ancestor');
+    }
+  }
+  must(sha(head) && await readHead(api, branch) === head &&
+    await verifySource() === source && await readHead(api, admin.default_branch) === base,
+  'Registration input changed before PR creation');
+  const concurrent = await matchingPull(api, admin, id, path);
+  if (concurrent) return { result: 'reused', number: concurrent.number, differences, pending: proposal.pending };
+  const body = ['维护者审阅中央配置后合并。', '', '- 目标仓 `' + repo.full_name + '`（' + id + '）',
+    '- 目标仓默认分支提交 `' + source + '`', '- 配置文件 `' + path + '`',
+    '- 产品 CI ' + (policy.productCi.map(file => '`' + file + '`').join('、') || '沿用组织公共检查'),
+    '- 发行 ' + (policy.release?.units.map(unit => '`' + unit.id + '`（' +
+      (unit.channels.filter(channel => channel.required).map(channel => channel.id).join('、') || '渠道未启用') +
+      '）').join('、') || '未配置'),
+    '- 站点 ' + (policy.site ? '`' + policy.site.mode + '` · `' + policy.site.source + '`' : '未配置'),
+    ...proposal.pending.map(note => '- 待确认：' + note), '',
+    '按 Files changed 核对实际选择；配置登记与业务启用分别验证。'].join('\n');
+  const { data: pull } = await api.rest.pulls.create({ ...args, head: branch, title, body, draft: true });
+  return { result: 'created', number: pull.number, differences, pending: proposal.pending };
+}
+
+async function withStewardAdmin(app, purpose, operation) {
+  return app.forRepository(adminId, async token => {
+    const api = new Octokit({ ...githubOptions, auth: token });
+    const { data } = await api.request('GET /repositories/{id}', { id: adminId });
+    const repo = checkRepository(data, adminId);
+    must(repo.full_name === 'splrad/steward-settings' && repo.private === true &&
+      repo.default_branch === 'main' && !repo.archived && !repo.disabled,
+    'Registration administration repository changed');
+    api.target = { owner: repo.owner.login, repo: repo.name };
+    return operation(api, repo, token);
+  }, purpose);
+}
+
+async function applyRequests(ids, withGovernance, withAdmin) {
+  const outcomes = [];
+  const errors = [];
+  for (const id of ids) {
+    try {
+      const outcome = await withGovernance(id, { metadata: 'read', contents: 'read' }, async (sourceApi, repo) => {
+        if (repo.archived || repo.disabled) return { result: 'inactive' };
+        const ref = () => readHead(sourceApi, repo.default_branch, true);
+        const source = await ref();
+        if (!source) return { result: 'awaiting-default-branch' };
+        const proposal = await registrationProposal(repo, revisionReader(sourceApi, source));
+        return withAdmin('registration-write', (api, admin) =>
+          reconcileRegistration(api, admin, repo, source, proposal, async () => {
+            const { data } = await sourceApi.request('GET /repositories/{id}', { id });
+            const fresh = checkRepository(data, id);
+            if (fresh.archived || fresh.disabled || fresh.full_name !== repo.full_name ||
+              fresh.default_branch !== repo.default_branch) return null;
+            return ref();
+          }));
+        });
+      outcomes.push(outcome);
+    } catch (error) { errors.push(error); }
+  }
+  if (errors.length) throw new AggregateError(errors, 'Registration requests incomplete');
+  return outcomes;
+}
+
+export async function runRegistration(mode, env, {
+  withGovernance = (id, permissions, operation) =>
+    withScopedApp(env.GOVERNANCE_APP_PRIVATE_KEY, governance, id, permissions, operation),
+  openAdmin = async () => {
+    const app = await nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY ?? '');
+    return (purpose, operation) => withStewardAdmin(app, purpose, operation);
+  },
+  extract,
+  output = process.stdout
+} = {}) {
+  const event = JSON.parse(await readFile(env.GITHUB_EVENT_PATH, 'utf8'));
+  if (mode === 'consume') {
+    const requestId = readWake(event, env);
+    const withAdmin = await openAdmin();
+    const ids = await withAdmin('registration-read', (api, admin, token) =>
+      loadPrivateRequest(api, admin, token, requestId, extract));
+    const result = await applyRequests(ids, withGovernance, withAdmin);
+    output.write('REGISTRATION_PROCESSED\n');
+    return result;
+  }
+
+  const ids = registrationIds(event, env.GITHUB_EVENT_NAME);
+  if (mode === 'prepare') {
+    const request = makePrivateRequest(randomUUID(), ids, env);
+    await writeFile(env.REGISTRATION_REQUEST_PATH, JSON.stringify(request) + '\n', { flag: 'wx', mode: 0o600 });
+    await appendFile(env.GITHUB_OUTPUT, 'id=' + request.requestId + '\n');
+    return;
+  }
+
+  must(mode === 'notify', 'Invalid registration mode');
+  const request = makePrivateRequest(env.REGISTRATION_REQUEST_ID, ids, env);
+  const saved = JSON.parse(await readFile(env.REGISTRATION_REQUEST_PATH, 'utf8'));
+  must(isDeepStrictEqual(saved, request), 'Registration request changed after upload');
+  await withGovernance(centralId, { metadata: 'read', contents: 'write' }, async (api, repo) => {
+    must(repo.id === centralId && repo.full_name === 'splrad/steward' && repo.private === false &&
+      repo.default_branch === 'main' && !repo.archived && !repo.disabled, 'Invalid registration wake destination');
+    await api.rest.repos.createDispatchEvent({ ...api.target, event_type: registrationEvent,
+      client_payload: wakePayload(request.requestId) });
+  });
+}
+
+export async function registrationEntry(mode, env, options = {}) {
+  try {
+    await runRegistration(mode, env, options);
+    return 0;
+  } catch {
+    (options.errorOutput ?? process.stderr).write('REGISTRATION_UNAVAILABLE\n');
+    return 1;
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href)
+  process.exitCode = await registrationEntry(process.argv[2], process.env);

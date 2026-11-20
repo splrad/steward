@@ -6,6 +6,7 @@ import {readFile,appendFile,writeFile,lstat,realpath} from 'node:fs/promises';
 import {resolve,join,sep} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {loadPolicy,dependencyMode,assertGovernanceOnlyScope,configurationCallers} from './private-dependency-policy.mjs';
+import {checkedRegistration,registrationPath,registrationWorkflow} from './repository-registration-policy.mjs';
 import {assertLifecycleScope} from './private-lifecycle-policy.mjs';
 const check=(ok,code)=>{if(!ok)throw Error('VALIDATION_'+code);};
 export function git(workspace,args) {
@@ -28,10 +29,10 @@ export function documentationOnly(files) {
 export function requiresProductCI(files,dependency,administrator) {
   if(dependency==='private-governance'||documentationOnly(files))return false;
   if(dependency!=='private-administrator')return true;
-  const managed=new Set([administrator.workflow,administrator.lockException?.manifestPath,administrator.lockException?.patchPath,
+  const managed=new Set([administrator.workflow,registrationWorkflow,administrator.lockException?.manifestPath,administrator.lockException?.patchPath,
     'safe-settings/settings.yml','safe-settings/deployment-settings.yml','.gitignore','mise.toml','mise.lock',
     '.github/dependabot.yml','.github/renovate.json']);
-  return files.some(path=>!documentationOnly([path])&&!managed.has(path)
+  return files.some(path=>!documentationOnly([path])&&!managed.has(path)&&!registrationPath.test(path)
     &&!/^\.mise\/locks\/npm\/\d+\.\d+\.\d+\/(?:aube-lock\.yaml|package\.json)$/.test(path));
 }
 export function productWorkflows(value,files) {
@@ -108,6 +109,10 @@ export async function validationInput(workspace,env=process.env) {
   const files=git(workspace,['ls-files','-z']).toString('utf8').split('\0').filter(Boolean);
   const policy=await loadPolicy();
   const dependency=dependencyMode(event,policy,env.PRIVATE_GOVERNANCE_REPOSITORY_ID);
+  if(dependency==='private-administrator')for(const path of files) {
+    const registered=registrationPath.exec(path);
+    if(registered)checkedRegistration(JSON.parse(await readFile(await regular(workspace,path),'utf8')),Number(registered[1]));
+  }
   // Reject product inputs before scope outputs can schedule any candidate build.
   if(dependency==='private-governance')assertGovernanceOnlyScope(files);
   if(dependency==='private-lifecycle')assertLifecycleScope(files);

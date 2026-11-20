@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SPLRAD repository policy proposal",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "repositoryId", "repository", "productCi", "release", "site"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "repositoryId": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "repository": { "type": "string", "pattern": "^splrad/[A-Za-z0-9_.-]+$" },
+    "productCi": {
+      "type": "array", "uniqueItems": true,
+      "items": { "$ref": "#/$defs/workflow" }
+    },
+    "release": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["buildWorkflow", "units"],
+      "properties": {
+        "buildWorkflow": { "$ref": "#/$defs/workflow" },
+        "units": {
+          "type": "array", "minItems": 1,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["id", "channels"],
+            "properties": {
+              "id": { "$ref": "#/$defs/id" },
+              "channels": {
+                "type": "array",
+                "items": {
+                  "type": "object", "additionalProperties": false,
+                  "required": ["id", "required", "location", "artifactIds", "metadata"],
+                  "properties": {
+                    "id": { "$ref": "#/$defs/id" },
+                    "required": { "type": "boolean" },
+                    "location": { "type": "string", "minLength": 1 },
+                    "artifactIds": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+                    "metadata": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "site": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["workflow", "mode", "source"],
+          "properties": {
+            "workflow": { "$ref": "#/$defs/workflow" },
+            "mode": { "enum": ["build-only", "build-and-deploy"] },
+            "source": { "enum": ["default-branch", "release"] },
+            "unit": { "$ref": "#/$defs/id" }
+          },
+          "if": { "properties": { "source": { "const": "release" } } },
+          "then": { "required": ["unit"] },
+          "else": { "not": { "required": ["unit"] } }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+    "workflow": { "type": "string", "pattern": "^\\.github/workflows/[A-Za-z0-9_.-]+\\.ya?ml$" }
+  }
+}

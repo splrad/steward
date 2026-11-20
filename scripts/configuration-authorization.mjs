@@ -48,7 +48,7 @@ const receiver='.github/workflows/repository-configuration-event.yml';
 const central=api=>api.target.owner==='splrad' && api.target.repo==='steward';
 
 // Walk immutable native directory trees. Missing paths share the same cached directory lookup.
-function revisionReader(api,ref) {
+export function revisionReader(api,ref) {
   const trees=new Map(),contents=new Map();
   async function directory(oid) {
     if(!trees.has(oid)) {
