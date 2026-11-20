@@ -118,6 +118,14 @@ it.each(['success','lost','conflict','changed','first security adoption'])('temp
     await api.wakePublishedTemplate(io,await execute,async()=>{},async(value:unknown)=>records.push(value));
     expect(records).toEqual([{kind:'template-wake',status:'INDEPENDENT_SECURITY_ADOPTION',tag:'v1.0.1',commit:M}]);
     expect(writes).toBe(1);
+    for (const status of ['UNCHANGED','CREATE']) {
+      const retry=await api.publishTemplateTag(io,{...plan,status,tags:{...refs},independentSecurityAdoption:true},async()=>{},async()=>{});
+      expect(retry.status).toBe('ALREADY_PUBLISHED');
+      const recovered:unknown[]=[];
+      await api.wakePublishedTemplate(io,retry,async()=>{},async(value:unknown)=>recovered.push(value));
+      expect(recovered).toEqual(records);
+      expect(writes).toBe(1);
+    }
   }else {expect(await execute).toEqual({status:'PUBLISHED',tag:'v1.0.1'});expect(writes).toBe(1);}
 });
 it('uses the independent Governance App, one repository, exact permissions and revokes on failure',async()=>{

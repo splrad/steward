@@ -51,7 +51,11 @@ class PromotionTests(unittest.TestCase):
             self.assertEqual((plan['status'],plan['tag'],plan['commit']),('CREATE',expected,current))
             self.assertEqual(plan.get('independentSecurityAdoption',False),body=='first')
             self.git('tag',expected,current)
-            self.assertEqual(template_tag_plan(self.root,current)['status'],'UNCHANGED')
+            retry=template_tag_plan(self.root,current)
+            self.assertEqual(retry['status'],'UNCHANGED')
+            self.assertEqual(retry.get('independentSecurityAdoption',False),body=='first')
+            if body=='first':
+                self.assertEqual((retry['tag'],retry['commit']),(expected,current))
 
     def test_first_security_policy_with_any_copier_change_keeps_automatic_delivery(self):
         policy=self.root/'config/review/security-common.md'
