@@ -79,6 +79,7 @@ for(const mode of ['reviewed scripts','native container, service and dynamic mat
   };
   const actor={id:12,login:'maintainer',type:'User'}, bot={id:301115370,type:'Bot'};
   let pr=null,ref=null,state={values:{},evidence:{}},sequence=100;
+  let interruptBeforeCommit=complex;
   const response=data=>({data});
   const api={target:{},rest:{git:{
     getRef:async()=>{if(!ref)throw Object.assign(Error('Missing'),{status:404});return response({object:{sha:ref}});},
@@ -88,7 +89,10 @@ for(const mode of ['reviewed scripts','native container, service and dynamic mat
     list:async()=>{},get:async()=>response(structuredClone(pr)),create:async input=>{assert.equal(pr,null);pr={...input,number:9,user:bot,head:{ref:input.head,repo,sha:ref}};},
     update:async({body})=>{pr.body=body;}
   }},paginate:async()=>pr?[structuredClone(pr)]:[],graphql:async(q,{input})=>{
+    // CommittableBranch uses the unqualified branchName, while REST createRef takes refs/heads/...
+    assert.deepEqual(input.branch,{repositoryNameWithOwner:repo.full_name,branchName:git('branch','--show-current')});
     assert.equal(input.expectedHeadOid,ref);
+    if(interruptBeforeCommit){interruptBeforeCommit=false;throw Error('fixture: interrupted before commit');}
     for(const f of input.fileChanges.additions)await put(f.path,Buffer.from(f.contents,'base64'));
     if(input.fileChanges.additions.length)git('add','--',...input.fileChanges.additions.map(f=>f.path));git('-c','commit.gpgsign=false','commit','--allow-empty','-m',input.message.headline,'-m',input.message.body);
     ref=git('rev-parse','HEAD');if(pr)pr.head.sha=ref;return {createCommitOnBranch:{commit:{oid:ref}}};
@@ -143,8 +147,20 @@ for(const mode of ['reviewed scripts','native container, service and dynamic mat
   } else ctx.discover=async()=>[];
   const formModel=async()=>Object.assign(await load(api,ref),{nativeVariants:state.nativeVariants});
   const run=(event,data)=>reconcile({...ctx,run:{id:sequence++,run_attempt:1,event,triggering_actor:actor},data});
-  await run('workflow_dispatch',{});
+  const firstRequest={id:sequence++,run_attempt:1,event:'workflow_dispatch',triggering_actor:actor};
+  const deliver=()=>reconcile({...ctx,run:firstRequest,data:{}});
+  if(complex) {
+    await assert.rejects(deliver(),/fixture: interrupted before commit/);
+    assert.equal(ref,base);
+    assert.equal(pr,null);
+    assert.equal(git('branch','--show-current'),'steward/repository-configuration-'+base);
+  }
+  await deliver();
   assert.equal(pr.number,9);
+  const openedHead=ref;
+  assert.equal(git('rev-list','--count',base+'..'+openedHead),'1');
+  await deliver();
+  assert.equal(pr.head.sha,openedHead);
   const refresh=()=>run('workflow_dispatch',{});
   const edit=async fields=>{
     const previous=pr.body;
