@@ -27,6 +27,7 @@ export async function deliverRepositoryTemplate(request, { writeToken, readToken
   });}finally{await log.close();}
   let result;try{result=JSON.parse(await readFile(output,'utf8'));}catch{throw Error('TEMPLATE_DELIVERY_UNAVAILABLE');}
   if(result.status==='SECURITY_POLICY_FAILED' && /^SECURITY_POLICY_[A-Z_]+$/.test(result.reason))throw Error(result.reason);
+  if(['PENDING_LEGACY_CONFIGURATION','TEMPLATE_CONFLICT'].includes(result.status))throw Error(result.status);
   if(code!==0 || !['DELIVERED','UNCHANGED','NO_DIFF','CLOSED'].includes(result.status))throw Error('TEMPLATE_DELIVERY_INCOMPLETE');
   return result;
 }
@@ -45,6 +46,8 @@ export async function templateWake({discover,deliver},clock=Date.now) {
       else counts.failed++;
     }catch(error){
       counts.failed++;
+      if(error.message==='PENDING_LEGACY_CONFIGURATION')counts.pendingLegacyConfiguration=(counts.pendingLegacyConfiguration??0)+1;
+      if(error.message==='TEMPLATE_CONFLICT')counts.templateConflicts=(counts.templateConflicts??0)+1;
       if(/^SECURITY_POLICY_[A-Z_]+$/.test(error.message)){
         counts.securityPolicyFailures??={};
         counts.securityPolicyFailures[error.message]=(counts.securityPolicyFailures[error.message]??0)+1;
