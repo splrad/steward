@@ -19,7 +19,8 @@ it('contains the native product build and inspection budgets within hosted job l
 it('connects the fixed coordinator and independent native health job within the 45 minute wake', async () => {
   const d = await load('release.yml');
   expect(Object.keys(d.jobs)).toEqual(['release-coordinator','automation-health']);
-  expect(d.on.schedule).toEqual([{cron:'3-58/5 * * * *'}]);
+  expect(d.on.schedule).toEqual([{cron:'4-59/5 * * * *'}]);
+  expect(d.jobs['release-coordinator'].if).toBe(d.jobs['automation-health'].if+" && vars.STEWARD_EXPECTED_PAUSED_RELEASE != '311600220'");
   expect(d.concurrency).toEqual({group:'steward-release-coordinator','cancel-in-progress':false});
   expect(d.jobs['release-coordinator']['timeout-minutes']).toBe(45);
   expect(d.jobs['release-coordinator'].steps.at(-1).run).toBe('node scripts/release-coordinator.mjs');
