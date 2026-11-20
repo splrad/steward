@@ -2,7 +2,8 @@
 export function assertTemplateWake(env,event={}) {
   const check=ok=>{if(!ok)throw Error('TEMPLATE_EVENT_NOT_AUTHORIZED');};
   if(env.GITHUB_EVENT_NAME==='workflow_dispatch') {
-    check(event.inputs?.health_only!==true&&event.inputs?.health_only!=='true');return;
+    check(Object.keys(event.inputs ?? {}).every(key => key === 'bootstrap_only'));
+    return;
   }
   if(env.GITHUB_EVENT_NAME==='repository_dispatch') {
     check(event.action==='steward-template-event'&&event.sender?.id===353238212
