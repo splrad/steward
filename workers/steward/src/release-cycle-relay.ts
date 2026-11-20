@@ -265,8 +265,8 @@ export class ReleaseRelay {
         return;
       }
       const retryAt=retryAfterTime(error,this.now(),r.next);
-      if(r.tries<4 && retryAt!==undefined && retryAt>r.next &&
-         !(error instanceof GitHubRetryError&&error.dispatchAttempted)){
+      const attemptedDispatch = error instanceof GitHubRetryError && error.dispatchAttempted;
+      if (r.tries < 4 && retryAt !== undefined && retryAt > r.next && !attemptedDispatch) {
         await save({next:retryAt});return;
       }
       if (r.tries >= 4) await save({stage:'unknown',reason:r.stage === 'prepare' ? 'PREPARATION_EXHAUSTED' : 'DELIVERY_UNKNOWN'});
