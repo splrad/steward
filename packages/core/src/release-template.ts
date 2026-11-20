@@ -28,6 +28,28 @@ function filled(value: unknown): asserts value is string {
     || prompts.some(prompt => value.includes(prompt))) fail('empty or unfilled input');
 }
 
+/** Remove generated empty optional sections from the preview while preserving source Markdown. */
+export function previewUnitNotes(markdown: string): string {
+  if (!markdown.includes(noSourceInformation)) return markdown;
+  const nodes = unified().use(remarkParse).parse(markdown).children;
+  const headings = nodes.flatMap((node, index) => node.type === 'heading' && node.depth === 2 ? [index] : []);
+  let preview = markdown;
+  for (let index = headings.length - 1; index >= 0; index--) {
+    const position = headings[index]!;
+    const heading = nodes[position]!;
+    if (heading.type !== 'heading') continue;
+    const label = heading.children.length === 1 && heading.children[0]?.type === 'text' ? heading.children[0].value : '';
+    const field = headingFields[label as keyof typeof headingFields];
+    const start = heading.position?.start.offset, content = heading.position?.end.offset;
+    const next = headings[index + 1] ?? nodes.length;
+    if (next !== position + 2 || nodes[position + 1]?.type !== 'paragraph') continue;
+    const end = nodes[next]?.position?.start.offset ?? markdown.length;
+    if (start !== undefined && content !== undefined && optionalNotes.some(key => key === field)
+      && markdown.slice(content, end).trim() === noSourceInformation) preview = preview.slice(0, start) + preview.slice(end);
+  }
+  return preview;
+}
+
 /** Keep the committed Markdown bytes between unique level-two headings. */
 export function parseSupplementalNotes(markdown: string, template = ''): Record<NotesField, string> {
   const nodes = unified().use(remarkParse).parse(markdown).children;
@@ -91,7 +113,7 @@ export function renderCommittedReleaseNotes(template: string, data: ReleaseTempl
   const compact = template.includes('{{{upgradeNotices}}}');
   for (const key of [...plainFields, ...markdownFields]) {
     const value = data[key as keyof ReleaseTemplateData];
-    if (compact && optionalNotes.some(field => field === key) && value === '') continue;
+    if (compact && (key === 'downloads' || optionalNotes.some(field => field === key)) && value === '') continue;
     filled(value);
   }
   if (!/^[^\r\n<>\[\]{}*`]+$/.test(data.productName)) fail('product name must be plain text');
@@ -207,7 +229,7 @@ export function renderFrozenReleaseNotes(template: string, data: FrozenReleaseNo
   if ((!data.assets.length && !data.githubDisabled) || new Set(data.assets.map(asset => asset.id)).size !== data.assets.length
     || new Set(data.assets.map(asset => asset.name.toLowerCase())).size !== data.assets.length) fail('download set');
   const legacy = template.includes('{{controllerSha}}');
-  const downloads = !data.assets.length ? '本次构建未配置 GitHub 下载项。' : [ ...(legacy ? ['| 用途（产物 ID，详见安装说明） | 系统/架构（构建目标） | 文件 |', '| --- | --- | --- |'] : []), ...data.assets.map(asset => {
+  const downloads = !data.assets.length ? (legacy ? '本次构建未配置 GitHub 下载项。' : '') : [ ...(legacy ? ['| 用途（产物 ID，详见安装说明） | 系统/架构（构建目标） | 文件 |', '| --- | --- | --- |'] : []), ...data.assets.map(asset => {
     if (asset.description !== undefined && (!asset.description.trim() || /[\p{C}\p{Zl}\p{Zp}]/u.test(asset.description))) fail('asset description');
 
     assertDeliveryAssetName(asset.name);

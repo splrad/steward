@@ -69,7 +69,7 @@ test('official issue shows the adopted source, reuses a PR and reopens in place 
   await f.run('issues',f.click());assert.equal(f.pulls.length,1);
   f.pins.pop();issue.state='closed';
   await f.run();assert.deepEqual(f.pins,[90,91,100]);assert.equal(issue.state,'open');
-  f.pulls[0].state='closed';await f.run();assert.match(issue.body,/当前没有开放/);
+  f.pulls[0].state='closed';await f.run();assert.match(issue.body,/已关闭，变更未采用/);
   const toggle=f.click();await f.run('issues',toggle,22);await f.run('issues',toggle,22);
   assert.equal(f.pulls.length,2);assert.match(issue.body,/pull\/2\)/);
   f.pulls[0].state='closed';await f.run();

@@ -2,7 +2,7 @@ import {productCITriggerGap,selectableProductCI,workflowEvent} from './validatio
 import {createHash} from 'node:crypto';
 import {posix} from 'node:path';
 import {matrixValue,staticMatrixRows,supportedArchiveName} from './configuration-build.mjs';
-import {channelWorkflowPath,effectiveChannels,pagesChoices,renderConfiguration} from './configuration-view.mjs';
+import {channelSelection,metadataFiles,channelWorkflowPath,effectiveChannels,pagesChoices,renderConfiguration} from './configuration-view.mjs';
 const key=text=>createHash('sha256').update(text).digest('hex').slice(0,16);
 const display=text=>String(text??'').replace(/[\r\n<>`]/g,' ');
 const token=field=>'<!-- cfg '+field+' -->';
@@ -46,12 +46,6 @@ export function candidates(model,values) {
   return entries;
 }
 
-const metadataFiles=['sbom.spdx.json','release-notes.md','artifact-manifest.json','SHA256SUMS'];
-function channelSelection(delivery,unit,c) {
-  return {ids:c.artifactIds??(!c.required && delivery.schemaVersion===2?[]:unit.assets.filter(a=>c.id!=='winget'||/\.(exe|msi|msix|appx|msixbundle|appxbundle)$/i.test(a.name)).map(a=>a.id)),
-    metadata:c.metadata??(delivery.schemaVersion===1 && c.id!=='winget'?metadataFiles:[])};
-}
-
 function unitDefaults(model,entry,values) {
   const id=entry.id, raw=values[id+'.unit']??'';
   const unit=model.delivery?.units.find(u=>u.id===raw);
@@ -78,7 +72,7 @@ export function configurationForm(model,head,state={}) {
   };
   // Summarize adopted settings as values. Every editable control below has a real operation.
   lines.push(renderConfiguration(model,head).replace(/^- \[x\] /gm,'- ✓ ').replace(/^- \[ \] /gm,'- ○ '),'',
-    '### 调整配置','','在本张 PR 勾选入口，编辑字段后保存。准备入口后可试跑，运行完成后选择归档文件和发布渠道。');
+    '### 调整配置','','在本 PR 勾选入口，编辑字段后保存。准备入口后可试跑，运行完成后选择归档文件和发布渠道。在 **Files changed** 核对修改，合并后生效。');
   for(const workflow of model.workflows) {
     const gap=productCITriggerGap(workflow,model.defaultBranch);
     if(gap) {
@@ -167,7 +161,6 @@ export function configurationForm(model,head,state={}) {
     const build=model.pages.jobs?.build, deploy=model.pages.jobs?.deploy;
     if(build) field('site.build','选择构建文档站',site.build??false,'check');
     if(deploy) field('site.deploy','选择允许公开部署（须启用 Pages，运维批准的来源模式须一致，release 模式还须匹配同一非空单元）',site.deploy??false,'check');
-    lines.push('仅构建可直接使用下方来源。公开部署条件未满足时，已启用的构建仍可运行。');
     field('site.source','站点来源（default-branch 或 release）',site.source);
     field('site.unit','正式 Release 来源单元',site.unit);
   }
