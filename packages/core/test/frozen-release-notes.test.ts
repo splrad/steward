@@ -1,6 +1,7 @@
+import { renderUnitContent } from '../src/release-content.js';
 import { readFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
-import { renderFrozenReleaseNotes, nestReleaseMarkdown, type FrozenReleaseNotes } from '../src/release-template.js';
+import { renderFrozenReleaseNotes, previewUnitNotes, nestReleaseMarkdown, type FrozenReleaseNotes } from '../src/release-template.js';
 import { renderReleaseContributors } from '../src/release-candidate.js';
 const template = readFileSync('templates/repository/.github/release-template.md.mustache', 'utf8');
 const data: FrozenReleaseNotes = {
@@ -46,6 +47,33 @@ it('RN05 HTML attribute escaping is retained by the reused contributor renderer'
   const body = renderReleaseContributors([{ ...data.contributors[0]!, alt: '\"<&\'', avatarUrl: 'https://avatars.githubusercontent.com/u/123?x="<&' }]);
   expect(body).toContain('&quot;'); expect(body).toContain('&lt;'); expect(body).toContain('&amp;');
   expect(body).not.toContain('alt=""<');
+});
+it('keeps the source headings and projects populated sections into both reader surfaces', () => {
+  const notes = renderUnitContent((['summary', 'changes', 'upgrade'] as const).map(section =>
+    ({ section, textZh: '关闭应用后运行安装程序。', sourceIds: ['example'], qualification: 'SOURCE_CONFIRMED' })));
+  expect(notes.match(/^## /gm)).toHaveLength(7);
+  for (const text of [previewUnitNotes(notes), renderFrozenReleaseNotes(template, { ...data, notes })]) {
+    expect(text).toContain('升级与迁移');
+    expect(text).not.toMatch(/已知问题|当前发布资料未提供/);
+  }
+});
+it.each(['    ', '\t'])('preserves a manually quoted diagnostic in an indented code block', indent => {
+  const markdown = '## 恢复\n\n' + indent + '当前发布资料未提供此项变化的确认信息。\n';
+  expect(previewUnitNotes(markdown)).toBe(markdown);
+});
+it('omits the download list when GitHub delivery is disabled', () => {
+  const body = renderFrozenReleaseNotes(template, { ...data, assets: [], githubDisabled: true });
+  expect(body).not.toMatch(/未配置|releases\/download/);
+  expect(body).toContain(data.sourceUrl);
+});
+it('fills the required download field in a seven-section template without an executor line', () => {
+  const separateNotices = template.replace('{{{upgradeNotices}}}', [
+    '## 升级须知', '{{{compatibility}}}', '{{{upgrade}}}', '{{{knownIssues}}}', '{{{recovery}}}',
+  ].join('\n\n'));
+  expect(separateNotices).not.toContain('{{controllerSha}}');
+  const body = renderFrozenReleaseNotes(separateNotices, { ...data, assets: [], githubDisabled: true });
+  expect(body).toContain('本次构建未配置 GitHub 下载项。');
+  expect(body).toContain(data.sourceUrl);
 });
 it.each(['filename', 'asset-id', 'target', 'duplicate', 'empty', 'tag', 'unit'])('RN05 rejects invalid download identity: %s', kind => {
   const input = structuredClone(data);
