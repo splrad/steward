@@ -38,10 +38,26 @@ function rateLimitError(res:Response,dispatchAttempted=false){
 }
 async function limitedBytes(response:Response,max:number){
  rateLimitError(response);
- ensure(response.ok&&response.body,'HTTP_READ_FAILED');const reader=response.body.getReader();const chunks:Uint8Array[]=[];let size=0;
- try{for(;;){const {value,done}=await reader.read();if(done)break;size+=value.length;ensure(size<=max,'RESPONSE_LIMIT');chunks.push(value);}}
- finally{await reader.cancel();}
- const bytes=new Uint8Array(size);let offset=0;for(const c of chunks){bytes.set(c,offset);offset+=c.length;}return bytes;
+ ensure(response.ok&&response.body,'HTTP_READ_FAILED');const bytes=await readBoundedBody(response.body,max);
+ ensure(bytes,'RESPONSE_LIMIT');return bytes;
+}
+export async function readBoundedBody(body:ReadableStream<Uint8Array>|null,max:number){
+ if(!body)return new Uint8Array(0);
+ const reader=body.getReader(),chunks:Uint8Array[]=[];
+ let size=0;
+ try{
+   for(;;){
+     const {value,done}=await reader.read();
+     if(done)break;
+     size+=value.length;
+     if(size>max){await reader.cancel();return null;}
+     if(value.length)chunks.push(value);
+   }
+ }finally{reader.releaseLock();}
+ const bytes=new Uint8Array(size);
+ let offset=0;
+ for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}
+ return bytes;
 }
 /** Decode only the named, small JSON member; no extraction to disk and no executable archive paths. */
 export function readZipJson(bytes:Uint8Array,name:string):unknown{
@@ -52,15 +68,37 @@ export function readZipJson(bytes:Uint8Array,name:string):unknown{
  for(let n=0;n<count;n++){
   ensure(at+46<=b.length&&b.readUInt32LE(at)===0x02014b50,'ZIP_ENTRY');const flags=b.readUInt16LE(at+8),method=b.readUInt16LE(at+10),compressed=b.readUInt32LE(at+20),size=b.readUInt32LE(at+24),len=b.readUInt16LE(at+28),extra=b.readUInt16LE(at+30),comment=b.readUInt16LE(at+32),local=b.readUInt32LE(at+42);
   ensure(at+46+len+extra+comment<=b.length,'ZIP_BOUNDS');const path=b.subarray(at+46,at+46+len).toString('utf8');
-  if(path===name){ensure(!match&&!(flags&1)&&size<=256*1024&&local+30<=b.length&&b.readUInt32LE(local)===0x04034b50,'ZIP_MEMBER');const start=local+30+b.readUInt16LE(local+26)+b.readUInt16LE(local+28);ensure(start+compressed<=b.length,'ZIP_MEMBER_BOUNDS');const raw=b.subarray(start,start+compressed);ensure(method===0||method===8,'ZIP_METHOD');match=method===0?raw:inflateRawSync(raw,{maxOutputLength:256*1024});ensure(match!.length===size,'ZIP_SIZE');}
+  if(path===name){
+   const directory=b.readUInt32LE(eocd+16);
+   ensure(!match&&!(flags&1)&&size<=256*1024&&local+30<=directory&&b.readUInt32LE(local)===0x04034b50,'ZIP_MEMBER');
+   const localName=local+30,localNameEnd=localName+b.readUInt16LE(local+26);
+   const start=localNameEnd+b.readUInt16LE(local+28),end=start+compressed;
+   ensure(end<=directory,'ZIP_MEMBER_BOUNDS');
+   ensure(b.subarray(localName,localNameEnd).equals(b.subarray(at+46,at+46+len))&&
+     b.readUInt16LE(local+6)===flags&&b.readUInt16LE(local+8)===method,'ZIP_LOCAL_HEADER');
+   const crc=b.readUInt32LE(at+16),streamed=Boolean(flags&8);
+   for(const [offset,expected] of [[14,crc],[18,compressed],[22,size]] as const){
+     const actual=b.readUInt32LE(local+offset);
+     ensure(actual===expected||(streamed&&actual===0),'ZIP_LOCAL_SIZE');
+   }
+   if(streamed){
+     const matches=(offset:number)=>offset+12<=directory&&b.readUInt32LE(offset)===crc&&
+       b.readUInt32LE(offset+4)===compressed&&b.readUInt32LE(offset+8)===size;
+     ensure(matches(end)||(end+4<=directory&&b.readUInt32LE(end)===0x08074b50&&matches(end+4)),'ZIP_DESCRIPTOR');
+   }
+   ensure(method===0||method===8,'ZIP_METHOD');
+   const raw=b.subarray(start,end);
+   match=method===0?raw:inflateRawSync(raw,{maxOutputLength:256*1024});
+   ensure(match && match.length===size,'ZIP_SIZE');
+  }
   at+=46+len+extra+comment;
  }
  ensure(match,'ARTIFACT_MEMBER_MISSING');return JSON.parse(match.toString('utf8'));
 }
 export class BoundedGitHub implements GitReader {
- private deadline=Date.now()+30_000;
+ private readonly deadline:number;
  private tokens=new Map<string,Promise<string>>();
- constructor(private env:BoundedEnv,private transport:typeof fetch=globalThis.fetch.bind(globalThis),readonly target?:ProductTarget,private pagesSite?:{id:number;name:string}){}
+ constructor(private env:BoundedEnv,private transport:typeof fetch=globalThis.fetch.bind(globalThis),readonly target?:ProductTarget,private pagesSite?:{id:number;name:string},deadline=Date.now()+30_000){this.deadline=deadline;}
  private repo(id:number){
    if(id===CENTRAL.id)return CENTRAL;
    const target=this.pagesSite??this.target??TARGET;
@@ -76,7 +114,7 @@ export class BoundedGitHub implements GitReader {
    if(repo.owner?.id!==302208797||repo.private!==false||repo.visibility!=='public'||repo.archived!==false||
       repo.disabled!==false||repo.fork!==false||!/^splrad\/[A-Za-z0-9_.-]+$/.test(repo.full_name)||!repo.default_branch)return;
    const target:ProductTarget={id,name:repo.full_name,defaultBranch:repo.default_branch};
-   const scoped=new BoundedGitHub(this.env,this.transport,target);
+   const scoped=new BoundedGitHub(this.env,this.transport,target,undefined,this.deadline);
    const base='/repos/'+target.name;
    const refPath=base+'/git/ref/heads/'+encodeURIComponent(target.defaultBranch);
    const ref=await scoped.json(id,refPath);

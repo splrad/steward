@@ -1,6 +1,7 @@
 import {describe,it,expect,vi} from 'vitest';
+import {handleWebhook} from '../src/index.js';
 import {generateKeyPairSync} from 'node:crypto';
-import {BoundedGitHub,TARGET,CENTRAL} from '../src/bounded-recheck-github.js';
+import {BoundedGitHub,TARGET,CENTRAL,readZipJson,readBoundedBody} from '../src/bounded-recheck-github.js';
 describe('fixed public upstream reader',()=>{
  it('uses injected transport with fixed URL, bounded signal and no App token',async()=>{const transport=vi.fn(async(_url:any,_init:any)=>Response.json({number:123}));const g=new BoundedGitHub({} as any,transport as typeof fetch);expect(await g.upstreamPull(123)).toEqual({number:123});const [url,init]=transport.mock.calls[0]!;expect(url).toBe('https://api.github.com/repos/microsoft/winget-pkgs/pulls/123');expect(init.redirect).toBe('manual');expect(init.signal).toBeInstanceOf(AbortSignal);expect(new Headers(init.headers).has('authorization')).toBe(false);});
  it('rejects overlarge streamed responses',async()=>{const g=new BoundedGitHub({} as any,vi.fn(async()=>new Response('x'.repeat(256*1024+1))) as typeof fetch);await expect(g.upstreamPull(1)).rejects.toThrow('RESPONSE_LIMIT');});
@@ -27,4 +28,50 @@ it('uses the Worker fetch receiver and refuses redirects during native prepare a
   await expect(g.json(CENTRAL.id,`/repos/${CENTRAL.name}/actions/workflows/release-candidate-event.yml/dispatches`,'POST',{})).rejects.toThrow('GITHUB_HTTP_307');
   expect(transport).toHaveBeenCalledTimes(4);
  }finally{transport.mockRestore();}
+});
+
+it('reads a fixed-size ZIP report',()=>{
+ const zip=Buffer.from('UEsDBBQAAAAIAM8JdV2QX9SnDQAAAAsAAAALAAAAcmVwb3J0Lmpzb26rVsrPVrIqKSpNrQUAUEsBAhQAFAAAAAgAzwl1XZBf1KcNAAAACwAAAAsAAAAAAAAAAAAAAIABAAAAAHJlcG9ydC5qc29uUEsFBgAAAAABAAEAOQAAADYAAAAAAA==','base64');
+ expect(readZipJson(zip,'report.json')).toEqual({ok:true});
+ for(const offset of [6,8,14,18,22,30]){
+   const inconsistent=Buffer.from(zip);
+   inconsistent[offset]=inconsistent.readUInt8(offset)^1;
+   expect(()=>readZipJson(inconsistent,'report.json')).toThrow(/ZIP_LOCAL/);
+ }
+});
+
+it('reads a streamed ZIP report',()=>{
+ const zip=Buffer.from('UEsDBBQACAAIAM8JdV0AAAAAAAAAAAAAAAALAAAAcmVwb3J0Lmpzb26rVsrPVrIqKSpNrQUAUEsHCJBf1KcNAAAACwAAAFBLAQIUABQACAAIAM8JdV2QX9SnDQAAAAsAAAALAAAAAAAAAAAAAACAAQAAAAByZXBvcnQuanNvblBLBQYAAAAAAQABADkAAABGAAAAAAA=','base64');
+ expect(readZipJson(zip,'report.json')).toEqual({ok:true});
+});
+
+it('cancels a streaming body at the first over-limit chunk',async()=>{
+ const cancel=vi.fn();
+ const body=new ReadableStream<Uint8Array>({pull(c){c.enqueue(new Uint8Array(3));},cancel});
+ expect(await readBoundedBody(body,5)).toBeNull();
+ expect(cancel).toHaveBeenCalledOnce();
+});
+it('charges candidate scope discovery to the original deadline',async()=>{
+ const env={} as any;
+ const transport=vi.fn();
+ const reader=new BoundedGitHub(env,transport);
+ vi.spyOn(reader as any,'issueToken').mockResolvedValue('fixture');
+ vi.spyOn(reader as any,'installationScope').mockImplementation(async()=>{
+   vi.spyOn(Date,'now').mockReturnValue(Date.now()+31000);
+   return {total_count:1,repositories:[{...TARGET,owner:{id:302208797},private:false,visibility:'public',
+     archived:false,disabled:false,fork:false,full_name:TARGET.name,default_branch:'main'}]};
+ });
+ const token=vi.spyOn(BoundedGitHub.prototype as any,'issueToken').mockResolvedValue('fixture');
+ try{await expect(reader.forCandidate(TARGET.id)).rejects.toThrow('ACTION_TIMEOUT');expect(transport).not.toHaveBeenCalled();}
+ finally{token.mockRestore();vi.restoreAllMocks();}
+});
+
+it('returns 413 for an oversized webhook without Content-Length',async()=>{
+ const cancel=vi.fn();
+ const chunk=new Uint8Array(1024*1024);
+ const body=new ReadableStream({pull(controller){controller.enqueue(chunk);},cancel});
+ const request=new Request('https://runtime.test/github/webhook',{method:'POST',body,duplex:'half'} as RequestInit);
+ expect(request.headers.has('content-length')).toBe(false);
+ expect((await handleWebhook(request,{} as any)).status).toBe(413);
+ expect(cancel).toHaveBeenCalledOnce();
 });

@@ -1,3 +1,4 @@
+import {readBoundedBody} from './bounded-recheck-github.js';
 import {acceptReleasePromotion} from './release-promotion.js';
 import {acceptReleaseHint} from './release-cycle-relay.js';
 import {forwardPagesCompletion} from './pages-completion.js';
@@ -472,7 +473,9 @@ export async function forwardConfigurationCompletion(env: Env, payload: any, sub
 
 export async function handleWebhook(request: Request, env: Env): Promise<Response> {
   const declared = Number(request.headers.get("content-length") ?? "0"); if (declared > MAX_BODY) return response(413);
-  const bytes = await request.arrayBuffer(); if (bytes.byteLength > MAX_BODY) return response(413);
+  const body = await readBoundedBody(request.body, MAX_BODY);
+  if (!body) return response(413);
+  const bytes = body.buffer;
   if (!env.STEWARD_WEBHOOK_SECRET || !await verifyWebhookSignature(bytes, request.headers.get("x-hub-signature-256"), env.STEWARD_WEBHOOK_SECRET)) return response(401);
   let payload: any; try { payload = JSON.parse(new TextDecoder().decode(bytes)); } catch { return response(400); }
   if (!validScope(payload, env)) return response(403);
