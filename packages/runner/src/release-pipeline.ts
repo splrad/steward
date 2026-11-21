@@ -16,7 +16,7 @@ import { Octokit } from '@octokit/rest';
 import { assertPipelineSource, type PipelineSource, type PublishPipelineRecord } from './release-pipeline-record.js';
 import { parsePipelineRecord, pipelineSource, type BuildPipelineRecord } from './release-pipeline-record.js';
 import { channelFiles, parseDeliveryConfig, deliveryAssetNames, assertDeliveryPath, type DeliveryUnit, type DeliveryConfig } from '../../core/src/delivery-config.js';
-import { defaultBuildWorkflow, dispatchWorkflow, encodeRepositoryPath, githubDeliveryJobStep, githubDeliveryStep } from '../../core/src/release-workflow.js';
+import { defaultBuildWorkflow, dispatchWorkflow, encodeRepositoryPath, githubDeliveryJobStep, githubDeliveryStep, staticMatrixRows } from '../../core/src/release-workflow.js';
 import { parseReleaseDescriptor,artifactNames } from '../../core/src/release-descriptor.js';
 import { parseLegacyRepositoryCatalog } from '../../core/src/legacy-repository-policy.js';
 import { decodeNormalizedDelivery,type NormalizedDeliveryEvidence } from '../../core/src/native-evidence.js';
@@ -733,6 +733,15 @@ function deliveryPaths(value:unknown) {
   return typeof value==='string'?value.split(/\r?\n/).map(path=>path.trim()).filter(Boolean):[];
 }
 
+type DeliveryMatrixRow=Record<string,unknown>&{unit:string};
+function matrixDeliveryRows(matrix:unknown):DeliveryMatrixRow[] {
+  // Only concrete unit rows establish channel ownership. Platform targets can be gathered in a separate job.
+  const rows=staticMatrixRows(matrix,16_384);
+  if(!rows?.length||!rows.every((row):row is DeliveryMatrixRow=>typeof row.unit==='string')
+    ||new Set(rows.map(row=>row.unit)).size!==rows.length)fail('workflow delivery unit matrix');
+  return rows;
+}
+
 function assertFlatWorkflowSelection(paths:string[],files:{path:string}[]) {
   const rules=paths.map(path=>{
     const excluded=path.startsWith('!'),source=excluded?path.slice(1):path;
@@ -775,11 +784,12 @@ export function applyWorkflowDelivery(delivery:DeliveryConfig,bytes:Uint8Array):
     const channel=(typeof step?.id==='string' ? step.id.slice('upload-'.length) : '') as WorkflowChannel;
     if(step?.id!=='upload-'+channel||!Object.hasOwn(deliverySteps,channel))continue;
     const explicit=/^delivery\/([a-z][a-z0-9-]*)$/.exec(job.name??'')?.[1];
-    const ids=explicit?[explicit]:/^delivery\/\$\{\{\s*matrix\.unit\s*}}$/.test(job.name??'')?[...known.keys()]:[];
+    const matrix=/^delivery\/\$\{\{\s*matrix\.unit\s*}}$/.test(job.name??'');
+    const rows:DeliveryMatrixRow[]=explicit?[{unit:explicit}]:matrix?matrixDeliveryRows(job.strategy?.matrix):[];
     const location=channel==='github-release'?'github':step.env?.STEWARD_CHANNEL_LOCATION;
     const proof=step.env?.STEWARD_DELIVERY_ATTESTED;
     const paths=deliveryPaths(step.with?.path);
-    if(!ids.length||ids.some(id=>!known.has(id)||known.get(id)!.has(channel))
+    if(!rows.length||rows.some(({unit})=>!known.has(unit)||known.get(unit)!.has(channel))
       ||typeof location!=='string'||!location||/[\r\n\0]/.test(location)
       ||step.name!==deliverySteps[channel]||!/^actions\/upload-artifact@[a-f0-9]{40}$/.test(step.uses??'')
       ||!matchesDeliveryName(step.with?.name,channel,explicit)
@@ -789,9 +799,12 @@ export function applyWorkflowDelivery(delivery:DeliveryConfig,bytes:Uint8Array):
     const attested=proof===true||proof==='true'||paths.length>0&&job.steps.some((candidate:any)=>
       /^actions\/attest(?:-build-provenance)?@[a-f0-9]{40}$/.test(candidate?.uses??'')
       &&JSON.stringify(deliveryPaths(candidate.with?.['subject-path']).sort())===JSON.stringify([...paths].sort()));
-    for(const id of ids) {
+    for(const row of rows) {
+      const id=row.unit;
       known.get(id)!.set(channel,location);
-      pathsByUnit.get(id)!.set(channel,paths);
+      const selected=matrix?deliveryPaths(paths.join('\n').replace(/\$\{\{\s*matrix\.([A-Za-z_][\w-]*)\s*}}/g,
+        (expression,field:string)=>typeof row[field]==='string'?row[field]:expression)):paths;
+      pathsByUnit.get(id)!.set(channel,selected);
       if(attested) {
         let channels=attestations.get(id);
         if(!channels)attestations.set(id,channels=new Set());

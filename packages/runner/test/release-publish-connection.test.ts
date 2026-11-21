@@ -16,6 +16,37 @@ import type { WorkflowDeliveryReceipt } from '../../core/src/release-observation
 const roots:string[]=[];
 afterEach(async()=>{vi.restoreAllMocks();vi.unstubAllEnvs();for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
 const deliveryName=(channel:string,unit:string)=>'delivery-'+channel+'-${{ github.repository_id }}-'+unit+'-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}';
+it('adopts channels for the declared unit rows of a delivery matrix',()=>{
+  const compact={schemaVersion:3,repositoryAuthors:[{id:1,evidence:'approved author record'}]};
+  const settings={packages:{'.':{component:'cli'},'docs':{component:'internal-docs'},'sdk':{component:'sdk'}}};
+  const units=[{id:'cli',path:'.',version:'1.0.0',tag:'cli-v1.0.0'},
+    {id:'internal-docs',path:'docs',version:'1.0.0',tag:'internal-docs-v1.0.0'},
+    {id:'sdk',path:'sdk',version:'1.0.0',tag:'sdk-v1.0.0'}];
+  const bytes=(matrix:unknown)=>Buffer.from(JSON.stringify({jobs:{deliver:{name:'delivery/${{ matrix.unit }}',
+    strategy:{matrix},steps:[{id:'upload-github-release',name:'Upload GitHub release delivery',
+      uses:'actions/upload-artifact@'+'a'.repeat(40),
+      with:{name:deliveryName('github-release','${{ matrix.unit }}'),path:'dist/${{ matrix.unit }}/*.tgz'}}]}}}));
+  const select=(matrix:unknown)=>{
+    const workflow=bytes(matrix);
+    const handoff=applyWorkflowDelivery(parseDeliveryConfig(compact,settings),workflow);
+    const cycle=mergedBuildCycle({prNumber:12,sourceSha:S,sourceTree:S,reviewedTree:S,controllerSha:C,
+      deliveryBlobSha:S,delivery:compact,releasePlease:settings,workflow,units});
+    return {handoff,cycle};
+  };
+  const {handoff,cycle}=select({unit:['cli']});
+  expect(githubUnits(cycle).map(unit=>unit.id)).toEqual(['cli']);
+  expect(cycle.units.find(unit=>unit.id==='internal-docs')).toMatchObject({githubDisabled:true,assets:[],releaseId:null});
+  expect(handoff.paths.get('cli')?.get('github-release')).toEqual(['dist/cli/*.tgz']);
+  expect(handoff.paths.get('internal-docs')?.size).toBe(0);
+  expect(githubUnits(select({unit:['cli'],os:['ubuntu-24.04'],include:[{label:'release archive'}]}).cycle).map(u=>u.id))
+    .toEqual(['cli']);
+  expect(githubUnits(select({include:[{unit:'sdk',files:'dist/sdk/*.tgz'}]}).cycle).map(unit=>unit.id)).toEqual(['sdk']);
+  expect(githubUnits(select({unit:['cli','internal-docs','sdk'],exclude:[{unit:'sdk'},{unit:'internal-docs'}],
+    include:[{unit:'sdk',files:'dist/sdk/*.tgz'}]}).cycle).map(unit=>unit.id)).toEqual(['cli','sdk']);
+  expect(()=>select({unit:['cli'],os:['ubuntu-24.04','windows-2025']})).toThrow('workflow delivery unit matrix');
+  expect(()=>select({include:[{unit:'cli',os:'ubuntu-24.04'},{unit:'cli',os:'windows-2025'}]}))
+    .toThrow('workflow delivery unit matrix');
+});
 it('binds required provenance to each unit and channel selection',()=>{
   const delivery=parseDeliveryConfig({schemaVersion:3,repositoryAuthors:[{id:1,evidence:'approved author record'}]},
     {packages:{'packages/signed':{component:'signed'},'packages/plain':{component:'plain'}}});
@@ -235,6 +266,45 @@ it('prepares a single native Node delivery, changes the public set in its workfl
     {manifest:{artifacts:[{path:'checksums.txt'},{path:'fixture-cli.tgz'}]}},
   ]);
 
+  const aggregate=(targets:{name:string;runner:string}[],usesMatrixFiles=false)=>{
+    const built=JSON.parse(adoptedWorkflow([]));
+    const upload='actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9';
+    const selected=['dist/${{ matrix.unit }}/fixture-cli-*.tgz','!dist/${{ matrix.unit }}/fixture-cli-debug.tgz'].join('\n');
+    built.jobs.build={name:'build/${{ matrix.name }}','runs-on':'${{ matrix.runner }}',strategy:{matrix:{include:targets}},steps:[
+      {run:'npm run package -- --target "${{ matrix.name }}"'},
+      {uses:upload,with:{name:'cli-target-${{ matrix.name }}',path:'out/fixture-cli-${{ matrix.name }}.tgz'}},
+    ]};
+    const delivery=built.jobs.package;
+    delivery.name='delivery/${{ matrix.unit }}';
+    delivery.needs='build';
+    delivery['runs-on']='ubuntu-24.04';
+    delivery.strategy={matrix:usesMatrixFiles?{include:[{unit:'app',files:'dist/app/fixture-cli-*.tgz'}]}:{unit:['app']}};
+    delivery.steps=[{uses:'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333',
+      with:{pattern:'cli-target-*',path:'dist/app','merge-multiple':true}},
+      {...delivery.steps[1],uses:upload,with:{name:deliveryName('github-release','${{ matrix.unit }}'),
+        path:usesMatrixFiles?'${{ matrix.files }}':selected}}];
+    return JSON.stringify(built);
+  };
+  const targets=[{name:'linux-x64',runner:'ubuntu-24.04'},{name:'win-x64',runner:'windows-2025'}];
+  source[workflow]=aggregate(targets);
+  const platformFiles=targets.map(({name})=>'fixture-cli-'+name+'.tgz');
+  const two=await prepare('aggregate-two',platformFiles);
+  expect(two).toMatchObject([{githubDelivery:{runId:100,artifactId:811,attempt:1},
+    manifest:{artifacts:platformFiles.map(path=>({path,sha256:digest(packageBytes)}))}}]);
+  await expect(prepare('reject-matrix-exclusion',[...platformFiles,'fixture-cli-debug.tgz'])).rejects.toThrow('RN_DELIVERY_SELECTION');
+  await expect(prepare('reject-non-package',[...platformFiles,'checksums.txt'])).rejects.toThrow('RN_DELIVERY_SELECTION');
+  const third={name:'macos-arm64',runner:'macos-15'};
+  source[workflow]=aggregate([...targets,third]);
+  expect(JSON.parse(source[workflow]!).jobs.package).toEqual(JSON.parse(aggregate(targets)).jobs.package);
+  await expect(prepare('aggregate-three',[...platformFiles,'fixture-cli-'+third.name+'.tgz'])).resolves.toMatchObject([
+    {manifest:{artifacts:[...platformFiles,'fixture-cli-'+third.name+'.tgz'].sort().map(path=>({path}))}},
+  ]);
+  source[workflow]=aggregate(targets,true);
+  await expect(prepare('matrix-row-selects-path',platformFiles)).resolves.toMatchObject([
+    {manifest:{artifacts:platformFiles.map(path=>({path}))}},
+  ]);
+  await expect(prepare('matrix-row-rejects-unmatched',[...platformFiles,'checksums.txt'])).rejects.toThrow('RN_DELIVERY_SELECTION');
+
   const next=['fixture-cli.tgz','checksums.txt'];
   source[workflow]=adoptedWorkflow(next);
   expect(source['.github/delivery.json']).toBe(sourceConfig);
@@ -254,7 +324,28 @@ it('prepares a single native Node delivery, changes the public set in its workfl
   amended.jobs.archive={steps:[{name:'business-freeze',uses:'actions/upload-artifact@'+'a'.repeat(40),with:{name:'final-fixture'}}]};
   source[workflow]=JSON.stringify(amended);
   await expect(prepare('separate-legacy-freeze',next)).rejects.toThrow('workflow-owned product must deliver its files');
-});
+
+  const internal={id:'internal-docs',path:'docs',version:'2.0.0',tag:'internal-docs-v2.0.0'};
+  const scopedSettings={...settings,packages:{...settings.packages,docs:{'release-type':'simple','version-file':'VERSION',
+    component:internal.id,'include-component-in-tag':true}}};
+  source['release-please-config.json']=JSON.stringify(scopedSettings);
+  source['.release-please-manifest.json']=JSON.stringify({'.':'1.0.0',docs:internal.version});
+  source['docs/VERSION']='2.0.0\n';
+  source[workflow]=aggregate(targets);
+  const scoped=mergedBuildCycle({prNumber:context.cycle.prNumber,sourceSha:S,sourceTree:S,reviewedTree:S,controllerSha:C,
+    deliveryBlobSha:context.cycle.deliveryConfigSha,delivery:JSON.parse(sourceConfig),releasePlease:scopedSettings,
+    workflow:Buffer.from(source[workflow]!),units:[{id:'app',path:'.',version:'1.0.0',tag:'v1.0.0'},internal]});
+  expect(scoped.units[1]).toMatchObject({id:internal.id,githubDisabled:true});
+  const request={...f.request,inputs:{...f.request.inputs}};
+  Object.assign(request,nativeRequestIdentity(context.repositoryId,scoped,request));
+  request.inputs.operation_key=request.operationKey;
+  scoped.dispatches.push(request);
+  context.cycle=scoped;
+  f.runs.get(2).display_title='为 GitHub 打包 '+request.operationKey;
+  await expect(prepare('only-matrix-unit-delivers',platformFiles)).resolves.toMatchObject([
+    {unitId:'app',githubDelivery:{artifactId:811,attempt:1}},
+  ]);
+},30_000);
 
 it('selects separate GitHub and authorized channel assemblies and restores only the original external bytes',async()=>{
   permitOfflineScript(resolve('scripts/inspect-python-release.py'));
