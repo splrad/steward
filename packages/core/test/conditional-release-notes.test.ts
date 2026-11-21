@@ -108,4 +108,16 @@ describe('organization conditional release notes', () => {
       expect(project(input.replace('@main','@'+frozen.tag))).toContain('@'+frozen.tag);
     }
   });
+
+  it.each(['releases/latest/download/file.zip','releases/download/v1.0.0/file.zip','blob/main/README.md'])(
+    'rejects floating or stale GitHub URLs in shell examples: %s', path => {
+      const shell=(ref:string)=>notes('获取与使用',`**准备附件**。下载本版。\n\n~~~sh\ncurl -O "https://github.com/${repository}/${ref}"\n~~~`);
+      const preview=(text:string)=>renderCandidateNote('.release-notes/product.md',text,[],{template,repository,sourceSha,tag:frozen.tag});
+      const render=(text:string)=>renderFrozenReleaseNotes(template,{...frozen,notes:text,selectedDownloads:new Set(['file.zip'])});
+      for (const project of [preview,render]) {
+        expect(()=>project(shell(path))).toThrow('acquisition example link');
+        expect(project(shell(`releases/download/${frozen.tag}/file.zip`))).toContain('curl -O');
+      }
+      expect(()=>render(shell(`releases/download/${frozen.tag}/internal.zip`))).toThrow('acquisition example link');
+    });
 });

@@ -23,7 +23,7 @@ import { decodeNormalizedDelivery,type NormalizedDeliveryEvidence } from '../../
 import { githubUnits, parseReleaseRecord, sameWorkflowDelivery, type CycleRecord, type RepositoryRecord, type WorkflowChannelReceipt, type WorkflowDeliveryReceipt } from '../../core/src/release-observation.js';
 import { decodeCandidateDocument, type CandidateArchiveChunk } from '../../core/src/release-candidate-record.js';
 import { confirmedReleaseContributors, confirmedReleaseContributorsPath, selectReleaseContributors } from '../../core/src/release-candidate.js';
-import { isConditionalTemplate } from '../../core/src/conditional-release-notes.js';
+import { isAdoptedOrganizationReleaseTemplate, isConditionalTemplate, isPreviouslyAdoptedReleaseTemplate } from '../../core/src/conditional-release-notes.js';
 import { nativeRunFact, NativeEvidenceReader, EvidenceReadError, type EvidenceContext, type EvidenceTransport, nativeEvidenceTransport } from './native-release-evidence.js';
 import { verifyExecutionSource, verifyDispatchWorkflow, channelTargets, channelTargetsDigest, verifyContinuationReleases, type ChannelTarget } from './release-run.js';
 import { parseDocument } from 'yaml';
@@ -451,9 +451,13 @@ export async function pipelineIdentity(input: ProductBuildInput, environment: No
   const sharedTemplate=await file(input.controllerDirectory,cycle.controllerSha,sharedReleaseTemplatePath);
   const template=delivery.buildWorkflow===undefined?await source(productReleaseTemplatePath):
     await localGitSnapshot.file(input.sourceDirectory,cycle.sourceSha,productReleaseTemplatePath)??sharedTemplate;
-  if(!template.equals(sharedTemplate))fail('adopted notes template');
-  const conditional = isConditionalTemplate(template.toString('utf8'));
-  if (session.identity.noteTemplate !== (conditional ? template.toString('utf8') : undefined)) fail('frozen candidate template');
+  const templateText = template.toString('utf8');
+  const conditional = isConditionalTemplate(templateText);
+  const previous = !conditional && !template.equals(sharedTemplate)
+    && await isAdoptedOrganizationReleaseTemplate(sharedTemplate.toString('utf8')) && await isPreviouslyAdoptedReleaseTemplate(templateText);
+  if ((!template.equals(sharedTemplate) && !previous) || (conditional && !await isAdoptedOrganizationReleaseTemplate(templateText)))
+    fail('adopted notes template');
+  if (session.identity.noteTemplate !== (conditional ? templateText : undefined)) fail('frozen candidate template');
   const confirmations = conditional ? await localGitSnapshot.file(input.sourceDirectory, cycle.sourceSha, confirmedReleaseContributorsPath) : null;
   const confirmedHumans = conditional ? confirmedReleaseContributors(confirmations?.toString('utf8') ?? null) : undefined;
   const units: BuildPipelineRecord['units'] = [];
@@ -489,6 +493,7 @@ async function pipelineNotesTemplate(record: BuildPipelineRecord, sourceDirector
   if (!template || hash(template) !== record.templateSha256) fail('notes template source');
   const text = template.toString('utf8');
   if (isConditionalTemplate(text) !== (record.noteFormat === 'conditional')) fail('notes template format');
+  if (record.noteFormat === 'conditional' && !await isAdoptedOrganizationReleaseTemplate(text)) fail('adopted notes template');
   return text;
 }
 
@@ -1175,6 +1180,7 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
   if(workflowDelivery&&!workflowDelivery.sealed)fail('legacy workflow delivery requires its complete original freeze');
   const notesTemplate = template.bytes.toString('utf8');
   const conditional = isConditionalTemplate(notesTemplate);
+  if (conditional && !await isAdoptedOrganizationReleaseTemplate(notesTemplate)) fail('adopted notes template');
   if(delivery.schemaVersion===3) {
     const confirmations = conditional ? await source(context.repository, cycle.sourceSha, confirmedReleaseContributorsPath)
       .then(file => file.bytes.toString('utf8')).catch(error => {

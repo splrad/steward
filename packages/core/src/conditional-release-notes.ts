@@ -2,6 +2,7 @@ import Mustache from 'mustache';
 import remarkParse from 'remark-parse';
 import { unified } from 'unified';
 import { isAlias, isScalar, parseAllDocuments, visit } from 'yaml';
+import { sha256Hex } from './fingerprint.js';
 import type { ReleaseContributor } from './candidate-note.js';
 
 export const changeHeadings = {
@@ -40,6 +41,15 @@ const sectionByHeading = new Map<string, ConditionalSection>(
   Object.entries(conditionalHeadings).map(([key, value]) => [value, key as ConditionalSection]),
 );
 export const isConditionalTemplate = (template: string): boolean => template.includes('{{#requiredActions}}');
+export const isAdoptedOrganizationReleaseTemplate = async (template: string): Promise<boolean> =>
+  await sha256Hex(template) === '104ba109cfd13d3dca3b3ffb51d9d48eadae31fbc3c38c1ba517aceb94245231';
+
+const legacyOrganizationTemplates = new Set([
+  '456bedbae6c57f772630a44153077d0b26fd44c340abb8ea2905d1d813b76711', // Steward 723f1583
+  '8b61942fc172cca1ed06886a3fd691835c5dc474624c3b6872449cdf14ed98e5', // Steward 8eae6add
+]);
+export const isPreviouslyAdoptedReleaseTemplate = async (template: string): Promise<boolean> =>
+  legacyOrganizationTemplates.has(await sha256Hex(template));
 
 export function isConditionalItem(markdown: string, section: ConditionalSection): boolean {
   const nodes = parser.parse(markdown).children;
@@ -132,7 +142,8 @@ export function assertVersionAcquisitionLinks(notes: ConditionalNotes, repositor
   assetNames?: readonly string[]) {
   const prefix = `/${repository.toLowerCase()}/`;
   const versioned = (url: URL): boolean => {
-    if (url.origin !== 'https://github.com' || !url.pathname.toLowerCase().startsWith(prefix)) return true;
+    if (url.hostname !== 'github.com' || !url.pathname.toLowerCase().startsWith(prefix)) return true;
+    if (url.origin !== 'https://github.com' || url.username || url.password) return false;
     const path = url.pathname.slice(prefix.length);
     if (path.startsWith('releases/tag/')) return decodeURIComponent(path.slice('releases/tag/'.length)) === tag;
     if (path.startsWith('releases/download/')) {
@@ -158,6 +169,9 @@ export function assertVersionAcquisitionLinks(notes: ConditionalNotes, repositor
       if ('children' in child) child.children.forEach(verify);
     };
     paragraph.children.forEach(verify);
+    for (const link of githubUrls(item.example?.content ?? '')) {
+      if (!versioned(new URL(link))) fail('acquisition example link is outside the release version');
+    }
     if (/^ya?ml$/i.test(item.example?.language ?? '')) {
       for (const document of parseAllDocuments(item.example!.content, { uniqueKeys: true })) {
         if (document.errors.length) fail('invalid YAML acquisition example');
@@ -178,16 +192,19 @@ export function assertVersionAcquisitionLinks(notes: ConditionalNotes, repositor
   }
 }
 
+function githubUrls(text: string) {
+  return new Set([...text.matchAll(/https?:\/\/github\.com(?::\d+)?\/[^\s<>()[\]"'`]+/gi)]
+    .map(match => match[0]!.replace(/[.,!?;:]+$/, '')));
+}
+
 export function assertSelectedReleaseDownloads(markdown: string, repository: string, tag: string, selected: ReadonlySet<string>) {
   const prefix = `/${repository.toLowerCase()}/releases/download/`;
-  const links = new Set([...markdown.matchAll(/https:\/\/github\.com\/[^\s<>()[\]"'`]+/gi)]
-    .map(match => match[0]!.replace(/[.,!?;:]+$/, '')));
-  for (const link of links) {
+  for (const link of githubUrls(markdown)) {
     const url = new URL(link);
     if (!url.pathname.toLowerCase().startsWith(prefix)) continue;
     const download = decodeURIComponent(url.pathname.slice(prefix.length));
     const tagPrefix = tag + '/';
-    if (!download.startsWith(tagPrefix) || !selected.has(download.slice(tagPrefix.length)))
+    if (url.origin !== 'https://github.com' || !download.startsWith(tagPrefix) || !selected.has(download.slice(tagPrefix.length)))
       fail('conditional release links to a file outside GitHub delivery');
   }
 }

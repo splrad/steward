@@ -13,7 +13,7 @@ import { advanceReleaseCandidate, pushPreparedCandidate, collectContentInput, pl
   resumeContentBatches, assembleUnitNotes, copilotReleaseClient, decodeCandidateDocument, splitContentText, selectReleaseContributors, releaseAffectedUnitIds, isolatedBuildEnvironment,
   candidateObservationIdentity, parseDeliveryConfig, parseSupplementalNotes, assertDeliveryPath, assertProductDelivery, mergedBuildCycle, assertRepositoryWrite, completeMergedPull,
   defaultBuildWorkflow, productReleaseTemplatePath, sharedReleaseTemplatePath, NativeEvidenceReader, nativeEvidenceTransport,
-  isConditionalTemplate, confirmedReleaseContributors, confirmedReleaseContributorsPath } from '../packages/runner/dist/index.js';
+  isAdoptedOrganizationReleaseTemplate, isConditionalTemplate, confirmedReleaseContributors, confirmedReleaseContributorsPath } from '../packages/runner/dist/index.js';
 import { readReleaseRecords, writeReleaseRecords, assertReleaseWriterProtection } from './release-record.mjs';
 import { restoreContentRecovery } from './release-content-recovery.mjs';
 
@@ -87,10 +87,14 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     if(!new RegExp('^100(?:644|755) blob [a-f0-9]{40}\\t').test(entry)||entry.slice(entry.indexOf('\t')+1)!==path+'\0')fail('CANDIDATE_REGULAR_SOURCE_REQUIRED');
     return (await git('cat-file','blob',entry.slice(12,52))).toString('utf8');
   };
+  const checkedTemplate=async text=>{
+    if(isConditionalTemplate(text) && !await isAdoptedOrganizationReleaseTemplate(text))fail('CANDIDATE_ORGANIZATION_TEMPLATE');
+    return text;
+  };
   const templateAt=async(sha,pin,delivery)=>{
     if(delivery.schemaVersion!==3) {
       const local=await fileAt(sha,productReleaseTemplatePath,true);
-      if(local!==null)return local;
+      if(local!==null)return checkedTemplate(local);
     }
     const reader=new NativeEvidenceReader(nativeEvidenceTransport(undefined,fetcher),'splrad/steward');
     const file=await reader.json(`contents/${sharedReleaseTemplatePath}?ref=${pin}`);
@@ -99,7 +103,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     const bytes=Buffer.from(file.content,'base64');
     if(bytes.length!==file.size||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==file.sha)
       fail('CANDIDATE_RELEASE_TEMPLATE');
-    return new TextDecoder('utf-8',{fatal:true}).decode(bytes);
+    return checkedTemplate(new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes));
   };
   const checkPolicyAt=async(sha,delivery)=>{
     if(!checkRepositoryPolicy)return;
@@ -111,7 +115,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
   const sourceTemplateAt = async (sha, delivery) => {
     if (!pinnedTemplate.has(sha)) {
       const local = delivery.schemaVersion === 3 ? null : await fileAt(sha, productReleaseTemplatePath, true);
-      if (local !== null) pinnedTemplate.set(sha, local);
+      if (local !== null) pinnedTemplate.set(sha, await checkedTemplate(local));
       else if (!delivery.buildWorkflow) pinnedTemplate.set(sha, await templateAt(sha, controllerSha, delivery));
       else {
         const workflow = parseDocument(await fileAt(sha, delivery.buildWorkflow), { uniqueKeys: true });

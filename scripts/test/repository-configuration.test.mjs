@@ -236,6 +236,8 @@ for(const mode of ['reviewed scripts','native container, service and dynamic mat
   legacyFiles.delete('.github/delivery.json');
   legacyFiles.set('.github/release-template.md.mustache','{{{upgradeNotices}}}');
   await assert.rejects(applySelection(inspectRepository(legacyFiles),'select',scenario,options),/先采用组织发行说明模板/);
+  legacyFiles.set('.github/release-template.md.mustache',adopted.files.get('.github/release-template.md.mustache').replace('width="48"','width="12"'));
+  await assert.rejects(applySelection(inspectRepository(legacyFiles),'select',scenario,options),/先采用组织发行说明模板/);
   const result=JSON.parse(partial.get('.github/delivery.json'));
   assert.equal(result.units[0].assets[0].description,'Reviewed CLI package');
   assert.deepEqual(result.units[1],adopted.delivery.units[1]);

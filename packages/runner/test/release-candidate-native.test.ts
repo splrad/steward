@@ -49,7 +49,7 @@ const { readReleaseRecords,writeReleaseRecords,releaseCommand } = await import(p
 const roots: string[] = [];
 afterEach(async () => { vi.unstubAllGlobals();for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-recovery', 'pending-recovery', 'legacy-pending-cancel',
-  'compact', 'conditional-organization', 'conditional-compact'])('runs the native candidate adapter through protected state, real Git, upstream generation, fake SDK and same-PR editing: %s', async pinCase => {
+  'compact', 'conditional-organization', 'conditional-compact', 'conditional-tampered'])('runs the native candidate adapter through protected state, real Git, upstream generation, fake SDK and same-PR editing: %s', async pinCase => {
   const root = await mkdtemp(join(tmpdir(), 'candidate-native-test-')); roots.push(root); registerOfflineFixtureRoot(root);
   const directory = join(root, 'source'), remote = join(root, 'remote.git'); await mkdir(directory);
   const env = isolatedBuildEnvironment(process.env, root), identity = { name: 'Fixture', email: 'fixture@example.invalid' };
@@ -86,7 +86,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     '.release-please-manifest.json': '{".":"0.0.0"}', '.github/delivery.json': JSON.stringify(delivery), 'code.txt': '功能实现\n' })) await writeFile(join(directory, path), text);
   if (conditional) {
     await writeFile(join(directory, '.github/release-template.md.mustache'), compact ? 'Product override is ignored in schema v3.\n'
-      : await readFile('templates/repository/.github/release-template.md.mustache'));
+      : (await readFile('templates/repository/.github/release-template.md.mustache','utf8')).replace('width="48"',pinCase==='conditional-tampered'?'width="12"':'width="48"'));
     await writeFile(join(directory, '.github/release-contributors.json'), JSON.stringify([7, 42, 44, 45, 46, 19864447].map(id => ({ id, evidence: 'Offline confirmation fixture' }))));
   }
   await git('add', '.'); await git('commit', '--signoff', '-m', 'feat: initial product');
@@ -221,6 +221,11 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   const unregisteredPolicy=explicitWorkflow||compact?releasePolicyGuard({},request,async()=>({adoption:'legacy',policy:null})):undefined;
   const options = { token: 'fixture-write', readToken: 'fixture-read', controllerSha: 'f'.repeat(40), fetcher, generator, language, temporaryRoot: root,
     checkRepositoryPolicy:unregisteredPolicy,now: () => '2026-10-27T00:00:00Z' };
+  if(pinCase==='conditional-tampered') {
+    await expect(nativeReleaseCandidate(request,options)).rejects.toThrow('CANDIDATE_ORGANIZATION_TEMPLATE');
+    expect(modelCalls).toBe(0);
+    return;
+  }
   if(compact) {
     const transport={request:async(method:'GET'|'POST',path:string)=>{
       const response=await fetcher('https://api.github.com'+path,{method,headers:{authorization:'Bearer fixture-read'}});

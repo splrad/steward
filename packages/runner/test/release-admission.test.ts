@@ -85,6 +85,13 @@ it('requires the product template for a legacy cycle without an explicit native 
   delete f.source['.github/release-template.md.mustache'];
   await expect(pipelineIdentity(f.input,f.environment,f.gh,f.io)).rejects.toThrow('missing source input: .github/release-template.md.mustache');
 });
+it('keeps the previously adopted legacy template with an organization-template controller', async () => {
+  const released=await (await import('node:fs/promises')).readFile('templates/repository/.github/release-template.md.mustache','utf8');
+  const f=productPipelineFixture(1,false,'global.json',released);
+  expect(await pipelineIdentity(f.input,f.environment,f.gh,f.io)).toMatchObject({status:'ADMITTED'});
+  f.source['.github/release-template.md.mustache']+='changed';
+  await expect(pipelineIdentity(f.input,f.environment,f.gh,f.io)).rejects.toThrow('adopted notes template');
+});
 it('rejects a static artifact identity before admitting a sealed legacy GitHub handoff', async () => {
   const f=productPipelineFixture(), workflow=YAML.parse(f.source[defaultBuildWorkflow]!);
   const upload='actions/upload-artifact@'+'a'.repeat(40);

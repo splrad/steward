@@ -5,7 +5,7 @@ import YAML from 'yaml';
 import {adaptBuild,renderBuild,repositoryPath,scriptBuild,selectWorkflow,staticMatrixRows} from './configuration-build.mjs';
 import {changeChannels,channelWorkflowPath,ciPath,deliveryPath,explicitDelivery,jsonFile,managedPagesCondition,pagesPath,publishPath,versionsPath} from './configuration-view.mjs';
 import {releaseAdoptionPlan} from './release-adoption.mjs';
-import {assertRegisteredAdapters,isConditionalTemplate,parseDeliveryConfig,parseSupplementalNotes,productReleaseTemplatePath} from '../packages/runner/dist/index.js';
+import {assertRegisteredAdapters,isAdoptedOrganizationReleaseTemplate,parseDeliveryConfig,parseSupplementalNotes,productReleaseTemplatePath} from '../packages/runner/dist/index.js';
 
 const key=/^[a-z][a-z0-9-]{0,63}$/;
 const caller='.github/workflows/repository-configuration-trial.yml';
@@ -212,7 +212,7 @@ export async function applySelection(model,operation,plan,context) {
   if(changes.has(deliveryPath)) {
     const normalized=parseDeliveryConfig(delivery);
     if(normalized.schemaVersion!==3 && !normalized.repositoryAuthors.length)
-      must(isConditionalTemplate(model.files.get(productReleaseTemplatePath)??''),'请先采用组织发行说明模板，再保存发行配置。');
+      must(await isAdoptedOrganizationReleaseTemplate(model.files.get(productReleaseTemplatePath)??''),'请先采用组织发行说明模板，再保存发行配置。');
     const adoption=releaseAdoptionPlan(normalized);
     if(adoption.externalTargets.length) {
       const existing=model.files.has(channelWorkflowPath);
