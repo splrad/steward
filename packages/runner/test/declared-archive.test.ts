@@ -31,6 +31,7 @@ it.each([
   ['extra.zip', 'zip', false],
   ['short-comment.zip', 'zip', false],
   ['ambiguous.zip', 'zip', false],
+  ['historical-zip64.zip', 'zip', false],
   ['buffered-tail.tar.gz', 'tar-gzip', false],
   ['later-tail.tar.gz', 'tar-gzip', false],
   ['broken.tar.gz', 'tar-gzip', false],
@@ -92,4 +93,12 @@ it('reads the embedded version of a format-supported Windows installer', async (
   await expect(check('1.2.3')).resolves.toBeUndefined();
   await expect(check('1.2.4')).rejects.toThrow('RN_DELIVERY_VERSION');
   await expect(inspectWorkflowAsset(join(root,'bad-font.zip'),'simple','1.2.3',process.cwd(),root)).rejects.toThrow('RN_DELIVERY_FORMAT');
+});
+
+it('reads an MSIX bundle version with a proven single-disk ZIP64 footer', async () => {
+  const check=(file:string,version='1.2.3')=>inspectWorkflowAsset(join(root,file),'simple',version,process.cwd(),root);
+  await expect(check('application.msixbundle')).resolves.toBeUndefined();
+  await expect(check('application.msixbundle','1.2.4')).rejects.toThrow('RN_DELIVERY_VERSION');
+  await expect(check('split.appxbundle')).rejects.toThrow('RN_DELIVERY_FORMAT');
+  await expect(check('missing-zip64.appxbundle')).rejects.toThrow('RN_DELIVERY_FORMAT');
 });

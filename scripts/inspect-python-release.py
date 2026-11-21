@@ -124,10 +124,9 @@ def check_zip_records(source, entries, central_start, workflow_paths):
         require(fields == (entry.CRC, entry.compress_size, entry.file_size))
 
 
-def check_zip_directory(source, archive, footer, footer_offset):
+def check_zip_directory(source, archive, footer, footer_offset, workflow_paths):
     """Match decoded entries to their exact on-disk extent and end records."""
     disk, directory_disk, disk_count, count, size, start = struct.unpack_from("<4H2I", footer, 4)
-    require(disk == directory_disk == 0)
     source.seek(archive.start_dir)
     entries = archive.infolist()
     for entry in entries:
@@ -142,7 +141,7 @@ def check_zip_directory(source, archive, footer, footer_offset):
     expected = (len(entries), len(entries), actual_size, archive.start_dir)
     legacy = (disk_count, count, size, start)
     if end == footer_offset:
-        require(legacy == expected)
+        require(disk == directory_disk == 0 and legacy == expected)
         return
     # A ZIP64 end record and locator may follow the directory even in a
     # small archive. Compare both generations of addresses and counts.
@@ -151,6 +150,9 @@ def check_zip_directory(source, archive, footer, footer_offset):
     record_size = struct.unpack_from("<Q", record, 4)[0]
     require(record_size >= 44 and end + 12 + record_size + 20 == footer_offset)
     require(struct.unpack_from("<II", record, 16) == (0, 0))
+    # Windows packaging tools write sentinel disk numbers in the legacy footer.
+    disk_numbers = (0, 0xffff) if workflow_paths else (0,)
+    require(disk in disk_numbers and directory_disk in disk_numbers)
     require(struct.unpack_from("<4Q", record, 24) == expected)
     require(all(value in (actual, sentinel) for value, actual, sentinel
                 in zip(legacy, expected, (0xffff, 0xffff, 0xffffffff, 0xffffffff))))
@@ -171,7 +173,7 @@ def release_zip(path, workflow_paths=False):
         footer = bounded.read(22)
         require(footer[:4] == b"PK\x05\x06" and int.from_bytes(footer[20:22], "little") == len(archive.comment))
         require(bounded.read(len(archive.comment)) == archive.comment)
-        check_zip_directory(bounded, archive, footer, offset)
+        check_zip_directory(bounded, archive, footer, offset, workflow_paths)
         yield archive
 
 
