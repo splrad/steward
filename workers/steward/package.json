@@ -1,0 +1,23 @@
+{
+  "name": "@splrad/steward-worker",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "jose": "6.2.17",
+    "minimatch": "10.2.6",
+    "@splrad/steward-core": "file:../../packages/core"
+  },
+  "devDependencies": {
+    "wrangler": "4.163.0",
+    "vitest": "5.0.3",
+    "@cloudflare/workers-types": "5.20261116.1",
+    "@types/node": "26.6.6",
+    "typescript": "7.0.2",
+    "@types/mustache": "4.2.6"
+  },
+  "scripts": {
+    "test": "vitest run --maxWorkers=2",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "typecheck": "tsc --noEmit"
+  }
+}

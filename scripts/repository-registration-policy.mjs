@@ -61,6 +61,11 @@ export async function releaseAssetConsumerConflicts(selections, native, site, {r
     const channels=native.units.find(unit=>unit.id===selection.unitId).channels;
     const downstream=channels.filter(channel=>channel.id!=='github-release'&&channel.required);
     if(!downstream.length)continue;
+    // WinGet publishes a URL for clients. The installer must be public even
+    // when the channel worker can read it from the original build.
+    const winget=downstream.find(channel=>channel.id==='winget');
+    if(winget&&!selection.artifactIds.includes(winget.artifactIds[0]))
+      return [...conflicts,'RELEASE_WINGET_INSTALLER'];
     if(!consumer) {
       const source=await read?.(channelWorkflowPath);
       const workflow=source&&inspectRepository(new Map([[channelWorkflowPath,source]])).workflows[0]?.document;

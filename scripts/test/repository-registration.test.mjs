@@ -863,8 +863,8 @@ test('a narrowed approval stays selected during registration refresh and preview
 
 test('a channel that can read frozen evidence or already reads its own public file allows an independent GitHub selection',async()=>{
   const {policy}=await propose(product,productFiles);
-  const winget={id:'winget',required:true,location:'Fixture.Product',artifactIds:['deployer'],metadata:[]};
-  policy.release.units[0].channels.push(winget);
+  const ghcr={id:'ghcr-assets',required:true,location:'ghcr.io/example/product',artifactIds:['deployer'],metadata:[]};
+  policy.release.units[0].channels.push(ghcr);
   const selected=structuredClone(policy.release),chosen=selected.units[0].channels[0];
   Object.assign(chosen,{artifactIds:['fonts'],metadata:[]});
   const checkout=`jobs: {channel: {steps: [{with: {repository: splrad/steward, path: controller, ref: "${base}"}}]}}`;
@@ -879,6 +879,27 @@ test('a channel that can read frozen evidence or already reads its own public fi
   policy.release.units[0].channels[0].metadata=[];
   chosen.artifactIds.push('deployer');
   assert.deepEqual(await check(),[]);
+});
+
+test('preview and candidate admission preserve the public installer URL required by WinGet',async()=>{
+  const files=new Map(productFiles);
+  const delivery=JSON.parse(files.get('.github/delivery.json'));
+  delivery.units[0].channels.push({id:'winget',required:true,location:'Fixture.Product',artifactIds:['deployer'],metadata:[]});
+  files.set('.github/delivery.json',JSON.stringify(delivery));
+  const proposal=await propose(product,files);
+  const policy=structuredClone(proposal.policy);
+  Object.assign(policy.release.units[0].channels[0],{artifactIds:['fonts'],metadata:[]});
+  const read=(path)=>{
+    assert.notEqual(path,'.github/workflows/steward-release-channels.yml','Reject before checking controller capability');
+    return files.get(path);
+  };
+  assert.deepEqual(await configurationConflicts(policy,{...proposal,readProductFile:read}),['RELEASE_WINGET_INSTALLER']);
+  const guard=releasePolicyGuard({},product,async()=>({adoption:'central',policy,commit:base}));
+  await assert.rejects(guard(read),/CANDIDATE_REPOSITORY_POLICY_RELEASE_WINGET_INSTALLER/);
+  policy.release.units[0].channels[0].artifactIds.push('deployer');
+  const checkout=`jobs: {channel: {steps: [{with: {repository: splrad/steward, path: controller, ref: "${base}"}}]}}`;
+  assert.deepEqual(await releaseAssetConsumerConflicts(releaseAssetSelections(policy.release,proposal.policy.release),proposal.policy.release,null,
+    {read:async()=>checkout,assetCount:()=>3,controller:async()=>'applyFrozenReleaseAssets(delivery,context.repositoryId,context.cycle,selections)'}),[]);
 });
 
 test('an edited private draft reports unsupported choices against its current head',async()=>{

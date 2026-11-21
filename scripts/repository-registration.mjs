@@ -280,6 +280,7 @@ const conflictDescriptions={
   PRODUCT_CI:'产品 CI 选择必须引用默认分支可运行的入口。已有产品 CI 声明时至少选择一个入口。',
   RELEASE:'请核对发行单元、渠道及可选文件。GitHub Release 可在产品声明内选择发布文件。',
   RELEASE_CHANNEL_SOURCE:'当前固定的渠道执行器无法从构建封存读取这组文件。采用前请更新渠道执行器，或保留该执行器实际需要读取的文件。',
+  RELEASE_WINGET_INSTALLER:'已启用的 WinGet 渠道需要公开安装文件下载地址。请在此单元的 GitHub Release 中保留 WinGet 选定的安装文件。',
   PAGES_RELEASE_SOURCE:'当前 Pages 以此单元的 Release 为来源，仍通过公开的 artifact-manifest.json 核对完整附件。默认分支来源独立。'
 };
 

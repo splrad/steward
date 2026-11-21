@@ -213,7 +213,8 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     const existing = state.repository.candidate;
     const session = { repository: state.repository, ...await loadDocument(`generated/${existing?.id}/session.json`) ?? { generated: null, pending: null, identity: null, conflict: null, preview: null, adoption: null } };
     const sdk = observation ? null : language ?? copilotReleaseClient(controllerDirectory, copilotToken ?? '');
-    const runtime = { workspace: request.directory, temporaryRoot: root, repository: request.repository, defaultBranch: request.defaultBranch, appBotId: request.appBotId, identity: request.identity, now, source,
+    const activeCycle=state.cycles.find(record=>record.value.id===state.repository.activeCycleId)?.value;
+    const runtime = { activeCycle, workspace: request.directory, temporaryRoot: root, repository: request.repository, defaultBranch: request.defaultBranch, appBotId: request.appBotId, identity: request.identity, now, source,
       pullRequests: prs, branchHead: fetchBranch,
       legacyCandidate: async () => {
         const workflows = await native('actions/workflows?per_page=100');
@@ -363,7 +364,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       updateComment: (id, body) => api('PATCH', `/repos/${request.repository}/issues/comments/${id}`, { body }),
     };
     const manualBlobs=new Map(),manualFetched=new Set();
-    const manualIO={
+    const manualIO={activeCycle,
       product:{id:request.repositoryId,name:request.repository,defaultBranch:request.defaultBranch},
       pull:()=>native(`pulls/${session.repository.candidate.prNumber}`),
       changedPaths:async(base,head)=>{
@@ -397,7 +398,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       },
     };
     if(observation&&session.manualValidation) {
-      const actual=candidateObservationIdentity(session);
+      const actual=candidateObservationIdentity(session,activeCycle);
       if(Object.keys(actual).sort().join()!==Object.keys(observation).sort().join()||Object.entries(actual).some(([key,value])=>observation[key]!==value))fail('MANUAL_OBSERVATION_IDENTITY');
       const cache=session.manualValidation,pull=await manualIO.pull();
       if(pull.number!==cache.prNumber||pull.head?.repo?.id!==cache.repositoryId||pull.base?.repo?.id!==cache.repositoryId
@@ -414,11 +415,22 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     // A declaration change invalidates the old manual proof. Normal generation owns the next snapshot.
     if(reselectUnits&&manualCandidateProducer)session.manualValidation=null;
     if(!reselectUnits&&manualCandidateProducer&&session.repository.candidate?.prNumber&&session.generated) {
-      const pull=await manualIO.pull(),currentSource=await manualIO.source();
+      const pull=await manualIO.pull();
       if(session.manualValidation&&pull.labels?.some(label=>label.name==='release:editing'))return {status:'WAIT',reason:'EDITING',head:pull.head.sha};
-      if(session.manualValidation||!session.pending&&!session.repository.candidate.pendingWrite
-        &&session.generated.baseSha!==currentSource&&pull.head?.sha!==session.repository.candidate.publishedHead
+      let validate=Boolean(session.manualValidation);
+      const published=session.repository.candidate.publishedHead;
+      if(!validate&&!session.pending&&!session.repository.candidate.pendingWrite&&pull.head?.sha!==published
         &&pull.state==='open'&&!pull.merged&&!pull.labels?.some(label=>label.name==='release:editing')) {
+        const source=await manualIO.source();
+        validate=session.generated.baseSha!==source;
+        if(!validate&&published&&await manualIO.isAncestor(published,pull.head.sha)) {
+          const delivery=parseDeliveryConfig(JSON.parse(await manualIO.read(source,'.github/delivery.json')));
+          const paths=new Set(delivery.units.filter(u=>session.generated.units.some(g=>g.id===u.id&&g.path===u.path)).map(u=>u.notesPath));
+          const edits=await manualIO.changedPaths(published,pull.head.sha);
+          validate=edits.length>0&&edits.every(path=>paths.has(path));
+        }
+      }
+      if(validate) {
         if(manualCandidateProducer.controllerSha!==controllerSha)fail('MANUAL_PRODUCER_CONTROLLER');
         const verified=await validateManualCandidate(session,manualCandidateProducer,manualIO);
         if(verified!==session.manualValidation) {

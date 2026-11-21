@@ -1,17 +1,13 @@
+import {headingFields,optionalNotes,noSourceInformation} from './candidate-note.js';
+export {previewUnitNotes} from './candidate-note.js';
 import Mustache from 'mustache';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import { selectReleaseContributors, type ReleaseContributor, type RepositoryAuthor } from './release-candidate.js';
 import { assertDeliveryAssetName, assertDeliveryPath } from './delivery-config.js';
 
-const headingFields = {
-  '概述': 'summary', '更新内容': 'userChanges', '兼容性': 'compatibility', '升级与迁移': 'upgrade',
-  '安装说明': 'installation', '已知问题': 'knownIssues', '恢复': 'recovery',
-} as const;
 type NotesField = typeof headingFields[keyof typeof headingFields];
-const optionalNotes = ['compatibility', 'upgrade', 'installation', 'knownIssues', 'recovery'] as const;
 const usesCompactLayout = (template: string) => template.includes('{{{upgradeNotices}}}');
-const noSourceInformation = '当前发布资料未提供此项变化的确认信息。';
 const prompts = [
   '说明此版本给使用者带来的主要变化。',
   '根据源码证据生成此版本给使用者带来的主要变化，供原PR审阅。',
@@ -27,28 +23,6 @@ function fail(message: string): never { throw new Error(`RELEASE_TEMPLATE: ${mes
 function filled(value: unknown): asserts value is string {
   if (typeof value !== 'string' || !value.trim() || /\{\{|\}\}/.test(value)
     || prompts.some(prompt => value.includes(prompt))) fail('empty or unfilled input');
-}
-
-/** Remove generated empty optional sections from the preview while preserving source Markdown. */
-export function previewUnitNotes(markdown: string): string {
-  if (!markdown.includes(noSourceInformation)) return markdown;
-  const nodes = unified().use(remarkParse).parse(markdown).children;
-  const headings = nodes.flatMap((node, index) => node.type === 'heading' && node.depth === 2 ? [index] : []);
-  let preview = markdown;
-  for (let index = headings.length - 1; index >= 0; index--) {
-    const position = headings[index]!;
-    const heading = nodes[position]!;
-    if (heading.type !== 'heading') continue;
-    const label = heading.children.length === 1 && heading.children[0]?.type === 'text' ? heading.children[0].value : '';
-    const field = headingFields[label as keyof typeof headingFields];
-    const start = heading.position?.start.offset, content = heading.position?.end.offset;
-    const next = headings[index + 1] ?? nodes.length;
-    if (next !== position + 2 || nodes[position + 1]?.type !== 'paragraph') continue;
-    const end = nodes[next]?.position?.start.offset ?? markdown.length;
-    if (start !== undefined && content !== undefined && optionalNotes.some(key => key === field)
-      && markdown.slice(content, end).trim() === noSourceInformation) preview = preview.slice(0, start) + preview.slice(end);
-  }
-  return preview;
 }
 
 /** Keep the committed Markdown bytes between unique level-two headings. */
