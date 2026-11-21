@@ -191,7 +191,8 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       const template = await sourceTemplateAt(baseSha, delivery);
       conditional = isConditionalTemplate(template);
       confirmedHumans = conditional ? await confirmedHumansAt(baseSha) : undefined;
-      notesPaths = conditional ? Object.fromEntries(delivery.units.map(unit => [unit.id,unit.notesPath])) : undefined;
+      notesPaths = conditional || delivery.schemaVersion === 3
+        ? Object.fromEntries(delivery.units.map(unit => [unit.id,unit.notesPath])) : undefined;
       const rules = await native(`rules/branches/${encodeURIComponent(request.defaultBranch)}`);
       if (!Array.isArray(rules) || !rules.some(r => r.type === 'non_fast_forward') || !rules.some(r => r.type === 'deletion')) fail('CANDIDATE_SOURCE_PROTECTION_REQUIRED');
       await checkPolicyAt(baseSha,delivery);
@@ -250,7 +251,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       lastFacts = facts;
       lastProtections = { branch: rules, tags: protectedTags };
       return { baseSha, authors: delivery.repositoryAuthors, authorsDigest: hash(JSON.stringify(delivery.repositoryAuthors)),
-        ...(conditional ? { confirmedHumans, noteTemplate: template, notesPaths } : {}) };
+        ...(notesPaths ? {notesPaths} : {}), ...(conditional ? { confirmedHumans, noteTemplate: template } : {}) };
     };
     const prs = async branch => {
       const values = await pages(`pulls?state=all&base=${encodeURIComponent(request.defaultBranch)}&head=${encodeURIComponent(request.repository.split('/')[0] + ':' + branch)}`);
@@ -565,7 +566,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         const confirmedHumans = conditional ? await confirmedHumansAt(sourceSha) : undefined;
         for (const unit of delivery.units.filter(unit => data.generated.units.some(generated => generated.id === unit.id))) {
           const frozen=data.identity.units.find(value=>value.id===unit.id);
-          if(conditional&&(frozen?.notesPath??`.release-notes/${unit.id}.md`)!==unit.notesPath)fail('MERGED_CANDIDATE_NOTE_PATH');
+          if((conditional||delivery.schemaVersion===3)&&(frozen?.notesPath??`.release-notes/${unit.id}.md`)!==unit.notesPath)fail('MERGED_CANDIDATE_NOTE_PATH');
           parseSupplementalNotes(await fileAt(sourceSha,unit.notesPath),template);
         }
         const deliveryBlobSha = (await git('rev-parse', `${sourceSha}:.github/delivery.json`)).toString().trim();

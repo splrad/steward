@@ -53,7 +53,7 @@ export async function validateManualCandidate(session,producer,io) {
     const unit=delivery.units.find(unit=>unit.id===generated.id&&unit.path===generated.path);
     if(!unit||manifest[unit.path]!==generated.version)fail('MANUAL_UNIT_COVERAGE');
     const frozen=session.identity.units.find(value=>value.id===unit.id);
-    if(conditional&&(frozen?.notesPath??`.release-notes/${unit.id}.md`)!==unit.notesPath)fail('MANUAL_NOTE_PATH');
+    if((conditional||delivery.schemaVersion===3)&&(frozen?.notesPath??`.release-notes/${unit.id}.md`)!==unit.notesPath)fail('MANUAL_NOTE_PATH');
     const options={...settings,...settings.packages[unit.path]};
     if(options['release-type']!=='simple'||typeof options['version-file']!=='string')fail('MANUAL_VERSION_ADAPTER');
     assertDeliveryPath(options['version-file']);

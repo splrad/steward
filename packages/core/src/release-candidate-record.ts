@@ -37,7 +37,7 @@ function candidateIdentity(identity: any) {
   if (!/^[a-f0-9]{64}$/.test(identity.authorsDigest) || !/^[a-f0-9]{64}$/.test(identity.sourceDigest)
     || !Array.isArray(identity.actors) || !Array.isArray(identity.units)) throw new Error('CANDIDATE_IDENTITY_INVALID');
   for (const unit of identity.units) {
-    const hasNotesPath = typeof identity.noteTemplate === 'string' && typeof unit?.notesPath === 'string';
+    const hasNotesPath = typeof unit?.notesPath === 'string';
     exact(unit, ['id', 'actors', 'contributors', ...(hasNotesPath ? ['notesPath'] : [])]);
     if (!Array.isArray(unit.actors)) throw new Error('CANDIDATE_IDENTITY_INVALID');
     if (hasNotesPath) assertDeliveryPath(unit.notesPath);

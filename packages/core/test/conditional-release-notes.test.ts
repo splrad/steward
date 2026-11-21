@@ -133,4 +133,21 @@ describe('organization conditional release notes', () => {
     expect(render(example(frozen.tag))).toContain('@'+frozen.tag);
     expect(render(example(mergedSha))).toContain('@'+mergedSha);
   });
+
+  it.each(['releases/latest', 'tree/main', 'blob/v1.0.0/README.md'])('checks a bare acquisition URL: %s', path => {
+    const input=notes('获取与使用',`**本版入口**。见 https://github.com/${repository}/${path} 。`);
+    expect(()=>renderCandidateNote('.release-notes/product.md',input,[],{template,repository,sourceSha,tag:frozen.tag})).toThrow('acquisition link');
+    expect(()=>renderFrozenReleaseNotes(template,{...frozen,notes:input})).toThrow('acquisition link');
+  });
+
+  it.each(['必须执行的操作','本版重点','兼容性与迁移'])('checks floating links outside acquisition: %s', heading => {
+    const location=(ref:string)=>notes(heading,`**下载**。见[附件](<https://github.com/${repository}/releases/${ref}/file.zip>)。`);
+    const preview=(input:string)=>renderCandidateNote('.release-notes/product.md',input,[],{template,repository,sourceSha,tag:frozen.tag});
+    const render=(input:string)=>renderFrozenReleaseNotes(template,{...frozen,notes:input,selectedDownloads:new Set(['file.zip'])});
+    for (const project of [preview,render]) {
+      expect(()=>project(location('latest/download'))).toThrow('outside GitHub delivery');
+      expect(()=>project(location('download/v1.0.0'))).toThrow('outside GitHub delivery');
+      expect(project(location('download/'+frozen.tag))).toContain('/download/'+frozen.tag);
+    }
+  });
 });

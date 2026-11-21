@@ -168,6 +168,9 @@ export function assertVersionAcquisitionLinks(notes: ConditionalNotes, repositor
     if (paragraph?.type !== 'paragraph') fail('invalid acquisition description');
     const verify = (child: (typeof paragraph)['children'][number]): void => {
       if (child.type === 'link' && !versioned(new URL(child.url))) fail('acquisition link is outside the release version');
+      if (child.type === 'text' || child.type === 'inlineCode') for (const link of githubUrls(child.value)) {
+        if (!versioned(new URL(link))) fail('acquisition link is outside the release version');
+      }
       if ('children' in child) child.children.forEach(verify);
     };
     paragraph.children.forEach(verify);
@@ -199,14 +202,19 @@ function githubUrls(text: string) {
     .map(match => match[0]!.replace(/[.,!?;:]+$/, '')));
 }
 
-export function assertSelectedReleaseDownloads(markdown: string, repository: string, tag: string, selected: ReadonlySet<string>) {
-  const prefix = `/${repository.toLowerCase()}/releases/download/`;
+export function assertSelectedReleaseDownloads(markdown: string, repository: string, tag: string, selected?: ReadonlySet<string>) {
+  const releases = `/${repository.toLowerCase()}/releases/`;
+  const prefix = releases + 'download/';
   for (const link of githubUrls(markdown)) {
     const url = new URL(link);
-    if (!url.pathname.toLowerCase().startsWith(prefix)) continue;
+    const path = url.pathname.toLowerCase();
+    if (path === releases + 'latest/download' || path.startsWith(releases + 'latest/download/'))
+      fail('conditional release links to a file outside GitHub delivery');
+    if (!path.startsWith(prefix)) continue;
     const download = decodeURIComponent(url.pathname.slice(prefix.length));
     const tagPrefix = tag + '/';
-    if (url.origin !== 'https://github.com' || !download.startsWith(tagPrefix) || !selected.has(download.slice(tagPrefix.length)))
+    if (url.origin !== 'https://github.com' || !download.startsWith(tagPrefix) || download === tagPrefix
+      || (selected && !selected.has(download.slice(tagPrefix.length))))
       fail('conditional release links to a file outside GitHub delivery');
   }
 }

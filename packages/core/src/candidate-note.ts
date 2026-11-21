@@ -1,7 +1,7 @@
 import Mustache from 'mustache';
 import {unified} from 'unified';
 import remarkParse from 'remark-parse';
-import { assertVersionAcquisitionLinks, isConditionalTemplate, parseConditionalNotes, renderConditionalNotes } from './conditional-release-notes.js';
+import { assertSelectedReleaseDownloads, assertVersionAcquisitionLinks, isConditionalTemplate, parseConditionalNotes, renderConditionalNotes } from './conditional-release-notes.js';
 
 export const headingFields = {
   '概述': 'summary', '更新内容': 'userChanges', '兼容性': 'compatibility', '升级与迁移': 'upgrade',
@@ -45,7 +45,9 @@ export function renderCandidateNote(path:string,markdown:string,contributors:Par
     const url = `https://github.com/${format.repository}/tree/${format.sourceSha}`;
     const notes = parseConditionalNotes(markdown);
     if (format.tag) assertVersionAcquisitionLinks(notes, format.repository, format.tag);
-    return `# ${path}\n\n` + renderConditionalNotes(format.template, notes, { label: '查看候选源码', url }, contributors);
+    const body = renderConditionalNotes(format.template, notes, { label: '查看候选源码', url }, contributors);
+    if (format.tag) assertSelectedReleaseDownloads(body, format.repository, format.tag);
+    return `# ${path}\n\n` + body;
   }
   return `# ${path}\n\n${previewUnitNotes(markdown)}`+renderReleaseContributors(contributors);
 }
@@ -56,7 +58,8 @@ export function renderCandidateProjection(
   repository: string,
 ): string {
   const notePath = (unit: (typeof identity.units)[number]) => unit.notesPath ?? `.release-notes/${unit.id}.md`;
-  const paths = identity.noteTemplate ? new Set(identity.units.map(notePath)) : null;
+  const paths = identity.noteTemplate || identity.units.some(unit => unit.notesPath !== undefined)
+    ? new Set(identity.units.map(notePath)) : null;
   const notes = generated.files.filter(file => file.content !== null && (paths ? paths.has(file.path) : file.path.startsWith('.release-notes/')));
   if (!notes.length) throw Error('CANDIDATE_PROJECTION_NOTES');
   if (paths && (paths.size !== identity.units.length || notes.length !== paths.size)) throw Error('CANDIDATE_PROJECTION_NOTES');

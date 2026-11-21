@@ -63,7 +63,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   if(compactRegistered)await writeFile(join(directory,'.github/steward-central-policy'),'central\n');
   const explicitWorkflow=pinCase==='new-source'?'.github/workflows/fixture-release.yaml':undefined;
   const buildWorkflow=explicitWorkflow??'.github/workflows/steward-release-publish.yml';
-  const notesPath=compact?(conditional?'docs/release-current.md':'.release-notes/root.md'):'.release-notes/app.md';
+  const notesPath=compact?(compactRegistered?'docs/release-current.md':'.release-notes/root.md'):'.release-notes/app.md';
   for(const path of (compact?[buildWorkflow]:[buildWorkflow,'.github/workflows/steward-release-channels.yml','.github/release-template.md.mustache']))
     if(pinCase!=='old-source'||!path.endsWith('release-template.md.mustache'))
     await writeFile(join(directory,path),'# offline adopted source\n');
@@ -81,7 +81,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   const config = { 'separate-pull-requests': false, 'include-component-in-tag': false, packages: { '.': { 'release-type': 'simple', 'version-file': 'VERSION' } } };
   const repositoryAuthors=[{id:7,evidence:'offline explicit authorship record'}];
   const registeredChannels=explicitWorkflow?[{id:'github-release',required:true,location:'github',artifactIds:['app'],metadata:[]}]:[];
-  const delivery=compact?{schemaVersion:3,...(conditional?{notes:{'.':notesPath}}:{repositoryAuthors})}:{schemaVersion:explicitWorkflow?2:1,buildWorkflow:explicitWorkflow,
+  const delivery=compact?{schemaVersion:3,...(!conditional?{repositoryAuthors}:{}),...(compactRegistered?{notes:{'.':notesPath}}:{})}:{schemaVersion:explicitWorkflow?2:1,buildWorkflow:explicitWorkflow,
     repositoryAuthors,units:[{id:'app',path:'.',notesPath:'.release-notes/app.md',
       assets:[{id:'app',name:'app-${version}.zip',mediaType:'application/zip'}],channels:registeredChannels}]};
   for (const [path, text] of Object.entries({ 'README.md': '# 应用\n\n公开使用说明。\n', 'VERSION': '0.0.0\n', 'release-please-config.json': JSON.stringify(config),
@@ -492,6 +492,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   expect(archive.documents.some((file: any) => file.path.endsWith('/session.json'))).toBe(true);
   if (conditional) expect(archive.session.identity).toMatchObject({noteTemplate:expect.stringContaining('{{#hasContributors}}'),
     contributors:{contributors:[7,42,44].map(id=>expect.objectContaining({id}))},units:[{notesPath}]});
+  if (compactRegistered && !conditional) expect(archive.session.identity.units).toMatchObject([{notesPath}]);
   if (conditional && !compact) {
     const { tag, version } = merged.cycles[0].value.units[0];
     const contributors = archive.session.identity.units[0].contributors.contributors;

@@ -80,7 +80,7 @@ async function verifyEditedNotes(g:GitReader,m:any,owner:ManualOwner|undefined,t
    const declaration=declarations[0];
    const frozen=owner.session.identity?.units?.find((v:any)=>v.id===u.id);
    ensure(declarations.length===1&&declaration.path===u.path&&declaration.notesPath===u.notesPath&&Array.isArray(frozen?.contributors?.contributors),'MANUAL_NOTE_OWNER');
-   if(template)ensure((frozen.notesPath??`.release-notes/${u.id}.md`)===u.notesPath,'MANUAL_NOTE_OWNER');
+   if(template||delivery.schemaVersion===3)ensure((frozen.notesPath??`.release-notes/${u.id}.md`)===u.notesPath,'MANUAL_NOTE_OWNER');
    const raw=bytes.get(u.notesPath);ensure(raw,'MANUAL_NOTE_MISSING');
    return renderCandidateNote(u.notesPath,new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(raw),frozen.contributors.contributors,
      template?{template,repository:target.name,sourceSha:m.sourceSha,tag:u.tag}:undefined);

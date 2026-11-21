@@ -207,7 +207,7 @@ describe('native ingress across a controller or deployment change',()=>{
 });
 
 describe('manual notes at the generated base',()=>{
- it.each(['valid','conditional v3','long preview','unrelated edit','unrelated head','undeclared notes','wrong preview'])('verifies the exact published-to-human change: %s',async scenario=>{
+ it.each(['valid','legacy v3','conditional v3','long preview','unrelated edit','unrelated head','undeclared notes','wrong preview'])('verifies the exact published-to-human change: %s',async scenario=>{
    const f=fixture(),m=f.m,notes=m.units[0].notesPath;
    m.schemaVersion=3;
    m.units[0].versionPath='VERSION';
@@ -217,12 +217,14 @@ describe('manual notes at the generated base',()=>{
    const declaration={id:'layerscape',path:'.',notesPath:scenario==='undeclared notes'?'other.md':notes};
    f.blobs['.github/delivery.json']=f.sourceBlobs['.github/delivery.json']=JSON.stringify({schemaVersion:2,units:[declaration]});
    f.blobs[notes]='## 更新内容\r\n\r\n人工修改。\r\n\r\n## 恢复\r\n\r\n当前发布资料未提供此项变化的确认信息。\r\n';
-   if(scenario==='conditional v3'){
-     f.session.identity.noteTemplate=readFileSync(new URL('../../../templates/repository/.github/release-template.md.mustache',import.meta.url),'utf8');
+   if(scenario==='legacy v3'||scenario==='conditional v3'){
      f.session.identity.units[0].notesPath=notes;
      f.blobs['.github/delivery.json']=f.sourceBlobs['.github/delivery.json']=JSON.stringify({schemaVersion:3,notes:{'.':notes}});
      f.blobs['release-please-config.json']=f.sourceBlobs['release-please-config.json']=JSON.stringify({packages:{'.':{component:'layerscape'}}});
-     f.blobs[notes]='## 🐛 错误修复\r\n\r\n**启动**。人工修改。\r\n';
+     if(scenario==='conditional v3'){
+       f.session.identity.noteTemplate=readFileSync(new URL('../../../templates/repository/.github/release-template.md.mustache',import.meta.url),'utf8');
+       f.blobs[notes]='## 🐛 错误修复\r\n\r\n**启动**。人工修改。\r\n';
+     }
    }
    if(scenario==='long preview')f.blobs[notes]=f.blobs[notes].replace('人工修改。','稿'.repeat(68000));
    m.files=Object.keys(f.blobs).sort().map(path=>({path,sha256:digest(f.blobs[path]).slice(7)}));
@@ -275,7 +277,7 @@ describe('manual notes at the generated base',()=>{
      f.comments[0].body=body.replace(TARGET.name,'splrad/other');
      expect((await manualProjectionBefore(g,facts)).pending).toBe(true);
      await expect(verifyManualProjection(g,facts,evidence)).rejects.toThrow('MANUAL_COMMENT_BINDING');
-   }else if(scenario==='valid'||scenario==='conditional v3')expect((await read()).identity).toEqual(manualIdentity(m,f.state,f.session));
+   }else if(scenario==='valid'||scenario==='legacy v3'||scenario==='conditional v3')expect((await read()).identity).toEqual(manualIdentity(m,f.state,f.session));
    else await expect(read()).rejects.toThrow({ 'unrelated edit':'MANUAL_NOTE_SCOPE','unrelated head':'MANUAL_PUBLISHED_ANCESTRY',
      'undeclared notes':'MANUAL_NOTE_OWNER','wrong preview':'MANUAL_PROJECTION'}[scenario]);
  });

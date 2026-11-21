@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { GitReleaseInputOptions } from './release-git-input.js';
 import { assertDeliveryPath } from '../../core/src/delivery-config.js';
-import { assertVersionAcquisitionLinks, parseConditionalNotes } from '../../core/src/conditional-release-notes.js';
+import { assertSelectedReleaseDownloads, assertVersionAcquisitionLinks, parseConditionalNotes } from '../../core/src/conditional-release-notes.js';
 import { committedVersionNotes } from '../../core/src/release-template.js';
 import { isolatedBuildEnvironment } from './build-environment.js';
 import { CONTENT_PROMPT, CONDITIONAL_CONTENT_PROMPT, validateContentResult, validateContentInput, renderUnitContent, buildConditionalDraft, splitContentText, releaseAffectedUnitIds, utf8Length,
@@ -142,8 +142,13 @@ export async function resumeContentBatches(work: ContentWork, cache: ContentCach
         && (item.qualification !== 'SOURCE_CONFIRMED' || !payload.sources.some(source => source.documentationText && item.sourceIds.includes(source.id)))))
         throw conditionalOutputError('documentationEvidence');
       if (conditional && runtime.repository) {
-        const notes = parseConditionalNotes(buildConditionalDraft(result.paragraphs));
-        try { assertVersionAcquisitionLinks(notes, runtime.repository, payload.units[0]!.tag); }
+        const draft = buildConditionalDraft(result.paragraphs);
+        const notes = parseConditionalNotes(draft);
+        const tag = payload.units[0]!.tag;
+        try {
+          assertVersionAcquisitionLinks(notes, runtime.repository, tag);
+          assertSelectedReleaseDownloads(draft, runtime.repository, tag);
+        }
         catch { throw conditionalOutputError('acquisitionVersion'); }
       }
       return result;

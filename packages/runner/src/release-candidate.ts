@@ -183,7 +183,10 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   if (frozen && generated && generated.baseSha === source.baseSha
     && frozen.sourceDigest === generated.sourceDigest && frozen.authorsDigest === source.authorsDigest
     && JSON.stringify(frozen.units.map(u => u.id).sort()) === JSON.stringify(generated.units.map(u => u.id).sort())) {
-    if (frozen.noteTemplate !== source.noteTemplate || frozen.units.some(unit => unit.notesPath !== source.notesPaths?.[unit.id]))
+    if (frozen.noteTemplate !== source.noteTemplate || frozen.units.some(unit => {
+      const declared = source.notesPaths?.[unit.id];
+      return declared ? (unit.notesPath ?? `.release-notes/${unit.id}.md`) !== declared : unit.notesPath !== undefined;
+    }))
       throw Error('CANDIDATE_NOTE_TEMPLATE_DRIFT');
     const projected = { ...frozen, contributors: selectReleaseContributors(frozen.actors, source.authors, source.confirmedHumans),
       units: frozen.units.map(unit => ({ ...unit, contributors: selectReleaseContributors(unit.actors, source.authors, source.confirmedHumans) })) };

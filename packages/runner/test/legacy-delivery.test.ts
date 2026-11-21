@@ -59,6 +59,8 @@ it('normalizes original S descriptor, frozen v2 bytes and original channels with
   expect(value.normalizedDelivery).not.toHaveProperty('repositoryAuthors');expect(JSON.stringify(value.normalizedDelivery)).not.toContain('entrypoint');
   decodeStateFile('steward/release-state',f.file.path,Buffer.from(f.file.content),1);
   expect((await readCycleDelivery(f.context,[f.record],f.io)).legacy).toEqual(f.value);
+  f.context.cycle.workflowDelivery=true;
+  await expect(readCycleDelivery(f.context,[f.record],f.io)).rejects.toThrow('frozen delivery mode');
 });
 it('retrieves exact S/C and original Release manifest before archiving a projection',async()=>{
   const f=await fixture();expect(await prepareNormalizedDelivery(f.context,f.io,f.io,NOW)).toEqual(f.file);
