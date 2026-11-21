@@ -1,11 +1,60 @@
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
-import type { ProductReleaseManifest } from '../src/release-artifacts.js';
+import { fileDigest, type ProductReleaseManifest, type WorkflowReleaseManifest } from '../src/release-artifacts.js';
 import { ghReleaseFixture as fixture } from './gh-release-fixture.js';
+import { verifyWorkflowDelivery } from '../src/release-pipeline.js';
 
 const writes = (f: Awaited<ReturnType<typeof fixture>>) => f.calls.filter(args => args.includes('--method'));
+it('honors a workflow subset even when the old delivery declares GitHub implicitly',async()=>{
+  const f=await fixture(),staged=join(f.target.directory,'staged');
+  await mkdir(staged);await writeFile(join(staged,'app.exe'),await readFile(join(f.target.directory,'app.exe')));
+  const original={id:'app',path:'.',notesPath:'notes.md',assets:f.target.manifest.artifacts.map(asset=>({id:asset.id,name:asset.path,mediaType:asset.mediaType})),channels:[]};
+  const delivery=await verifyWorkflowDelivery(['app.exe'],staged,f.target.directory,original,f.target.manifest);
+  expect(f.adapter.names({...f.target,delivery})).toEqual(['app.exe']);
+  await writeFile(join(staged,'app.exe'),'different');
+  await expect(verifyWorkflowDelivery(['app.exe'],staged,f.target.directory,original,f.target.manifest)).rejects.toThrow('GitHub delivery bytes');
+});
+
+it('finishes a single-file workflow delivery from the same draft after a label write failure',async()=>{
+  const f=await fixture(),archived=f.target.manifest;
+  const directory=join(f.target.directory,'single-workflow-delivery');
+  await mkdir(directory);await writeFile(join(directory,'cli.tgz'),'retained package');
+  const manifest:WorkflowReleaseManifest={schemaVersion:4,repositoryId:archived.repositoryId,fullName:archived.fullName,
+    cycleId:archived.cycleId,unitId:archived.unitId,version:archived.version,packageVersion:archived.packageVersion,tag:archived.tag,
+    sourceSha:archived.sourceSha,buildWorkflow:'.github/workflows/steward-release-publish.yml',buildRef:archived.buildRef,workflowId:22,
+    runId:10,attempt:1,delivery:{runId:10,attempt:1,artifactId:90,digest:'sha256:'+'8'.repeat(64)},
+    attested:false,artifacts:[{id:'cli',...await fileDigest(directory,'cli.tgz')}]};
+  const target={...f.target,directory,manifest,publicBody:'Reviewed 1.2.3 release'};
+  f.state.originalAttempt=2;
+  await expect(f.adapter.publish(target)).rejects.toThrow('completed product Run required');
+  f.state.originalAttempt=1;f.state.originalConclusion='failure';
+  await expect(f.adapter.publish(target)).rejects.toThrow('completed product Run required');
+  f.state.originalConclusion='success';
+  await expect(f.adapter.verifyAttestation(target,join(directory,'cli.tgz'))).rejects.toThrow('attestation run identity');
+  f.state.invocation=f.state.invocation.replace('/attempts/2','/attempts/1');
+  await expect(f.adapter.verifyAttestation(target,join(directory,'cli.tgz'))).resolves.toHaveLength(1);
+  const carried={...target,manifest:{...manifest,attempt:2,delivery:{...manifest.delivery,buildAttempt:2},attested:true}};
+  f.state.originalConclusion='failure';
+  await expect(f.adapter.freezeProof(carried)).resolves.toMatchObject({run_attempt:2,conclusion:'success'});
+  f.state.invocation=f.state.invocation.replace('/attempts/1','/attempts/2');
+  await expect(f.adapter.freezeProof(carried)).rejects.toThrow('attestation run identity');
+  f.state.originalConclusion='success';
+  expect(writes(f)).toHaveLength(0);
+  f.calls.length=0;
+  f.state.runStatus='in_progress';f.state.runConclusion='failure';
+  f.state.blockLabel=true;
+  await expect(f.adapter.publish(target)).rejects.toThrow();
+  expect(f.remote.get('cli.tgz')?.bytes.toString()).toBe('retained package');
+  f.state.blockLabel=false;
+  await expect(f.adapter.publish(target)).resolves.toMatchObject({releaseId:20,mode:'verified'});
+  expect(writes(f).filter(args=>args.includes('POST'))).toHaveLength(1);
+  expect([...f.remote.keys()]).toEqual(['cli.tgz']);
+  expect(f.calls.some(args=>args[0]==='attestation')).toBe(false);
+  expect(f.calls.some(args=>args.includes('repos/fixture/product/actions/runs/10/attempts/1'))).toBe(true);
+  expect(f.calls.some(args=>args.includes('repos/fixture/product/actions/runs/10'))).toBe(false);
+});
 it('recovers half-uploaded seven-file release and lost upload/body/publication responses using exact IDs', async () => {
   const f = await fixture(); f.put('app.exe', Buffer.from('app')); f.state.loseLabel = f.state.loseUpload = f.state.loseBody = f.state.losePublish = true;
   expect((await f.adapter.publish(f.target)).mode).toBe('verified');

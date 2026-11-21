@@ -1,7 +1,7 @@
 import { renderUnitContent } from '../src/release-content.js';
 import { readFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
-import { renderFrozenReleaseNotes, previewUnitNotes, nestReleaseMarkdown, type FrozenReleaseNotes } from '../src/release-template.js';
+import { renderFrozenReleaseNotes, projectFrozenReleaseDownloads, previewUnitNotes, nestReleaseMarkdown, type FrozenReleaseNotes } from '../src/release-template.js';
 import { renderReleaseContributors } from '../src/release-candidate.js';
 const template = readFileSync('templates/repository/.github/release-template.md.mustache', 'utf8');
 const data: FrozenReleaseNotes = {
@@ -65,6 +65,15 @@ it('omits the download list when GitHub delivery is disabled', () => {
   const body = renderFrozenReleaseNotes(template, { ...data, assets: [], githubDisabled: true });
   expect(body).not.toMatch(/未配置|releases\/download/);
   expect(body).toContain(data.sourceUrl);
+});
+it('projects two workflow-selected assets from a complete sealed download block', () => {
+  const assets = [...data.assets,
+    {id:'deployer',name:'AFR-Deployer_v9.2.2.exe',build:'windows-x64',description:'部署器'},
+    {id:'fonts',name:'Fonts.zip',build:'windows-x64',description:'字体包'}];
+  const original = renderFrozenReleaseNotes(template,{...data,assets});
+  const projected = projectFrozenReleaseDownloads(template,original,{...data,assets},
+    new Set(['AFR-Deployer_v9.2.2.exe','Fonts.zip']));
+  expect(projected).toBe(renderFrozenReleaseNotes(template,{...data,assets:assets.slice(1)}));
 });
 it('fills the required download field in a seven-section template without an executor line', () => {
   const separateNotices = template.replace('{{{upgradeNotices}}}', [

@@ -188,6 +188,32 @@ export interface FrozenReleaseNotes {
   assets: { id: string; name: string; build: string; description?: string | undefined }[];
   channels: { id: string; location: string }[];
 }
+
+type ReleaseDownloadInput = Pick<FrozenReleaseNotes,'assets'|'repository'|'tag'>;
+function releaseDownloadMarkdown(template: string, data: ReleaseDownloadInput): string {
+  const legacy = template.includes('{{controllerSha}}');
+  return [ ...(legacy ? ['| 用途（产物 ID，详见安装说明） | 系统/架构（构建目标） | 文件 |', '| --- | --- | --- |'] : []), ...data.assets.map(asset => {
+    if (asset.description !== undefined && (!asset.description.trim() || /[\p{C}\p{Zl}\p{Zp}]/u.test(asset.description))) fail('asset description');
+    assertDeliveryAssetName(asset.name);
+    if (![asset.id, asset.build].every(value => /^[a-z][a-z0-9-]*$/.test(value))) fail('download source');
+    const link = `[${asset.name}](https://github.com/${data.repository}/releases/download/${encodeURIComponent(data.tag)}/${encodeURIComponent(asset.name)})`;
+    const description = asset.description?.replace(/[\\`*_{}\[\]()<>#!|~&]/g, char => `&#${char.codePointAt(0)};`);
+    return legacy ? `| ${asset.id} | ${asset.build} | ${link} |` : `- ${link}${description ? ' — ' + description : ''}`;
+  })].join('\n');
+}
+
+/** Preserve the reviewed prose and change only the original renderer's download block. */
+export function projectFrozenReleaseDownloads(template: string, notes: string, native: ReleaseDownloadInput, selected: ReadonlySet<string>): string {
+  const assets=native.assets.filter(asset=>selected.has(asset.name));
+  if(assets.length===native.assets.length)return notes;
+  if(!assets.length)fail('empty public download set');
+  const original='\n'+releaseDownloadMarkdown(template,native)+'\n';
+  const framed='\n'+notes+'\n', start=framed.indexOf(original);
+  if(start<0 || framed.indexOf(original,start+1)>=0)fail('frozen download block');
+  const replacement='\n'+releaseDownloadMarkdown(template,{...native,assets})+'\n';
+  return (framed.slice(0,start)+replacement+framed.slice(start+original.length)).slice(1,-1);
+}
+
 /** Four user-facing sections, rendered only from reviewed source and frozen native identities. */
 export function renderFrozenReleaseNotes(template: string, data: FrozenReleaseNotes): string {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(data.repository) || data.repository.split('/').some(part => part === '.' || part === '..')
@@ -204,15 +230,7 @@ export function renderFrozenReleaseNotes(template: string, data: FrozenReleaseNo
   if ((!data.assets.length && !data.githubDisabled) || new Set(data.assets.map(asset => asset.id)).size !== data.assets.length
     || new Set(data.assets.map(asset => asset.name.toLowerCase())).size !== data.assets.length) fail('download set');
   const legacy = template.includes('{{controllerSha}}');
-  const downloads = !data.assets.length ? (usesCompactLayout(template) ? '' : '本次构建未配置 GitHub 下载项。') : [ ...(legacy ? ['| 用途（产物 ID，详见安装说明） | 系统/架构（构建目标） | 文件 |', '| --- | --- | --- |'] : []), ...data.assets.map(asset => {
-    if (asset.description !== undefined && (!asset.description.trim() || /[\p{C}\p{Zl}\p{Zp}]/u.test(asset.description))) fail('asset description');
-
-    assertDeliveryAssetName(asset.name);
-    if (![asset.id, asset.build].every(value => /^[a-z][a-z0-9-]*$/.test(value))) fail('download source');
-    const link = `[${asset.name}](https://github.com/${data.repository}/releases/download/${encodeURIComponent(data.tag)}/${encodeURIComponent(asset.name)})`;
-    const description = asset.description?.replace(/[\\`*_{}\[\]()<>#!|~&]/g, char => `&#${char.codePointAt(0)};`);
-    return legacy ? `| ${asset.id} | ${asset.build} | ${link} |` : `- ${link}${description ? ' — ' + description : ''}`;
-  })].join('\n');
+  const downloads = !data.assets.length ? (usesCompactLayout(template) ? '' : '本次构建未配置 GitHub 下载项。') : releaseDownloadMarkdown(template,data);
   const values = { ...Object.fromEntries(Object.entries(sections).map(([key, value]) => [key, nestReleaseMarkdown(value, key === 'userChanges' ? 3 : 4)])),
     productName: data.displayName ?? (legacy ? data.unitId : data.repository.split('/')[1]!), version: data.version, downloads, sourceLinkLabel: data.sourceLinkLabel, sourceUrl: data.sourceUrl, commitUrl: data.commitUrl,
     sourceSha: data.sourceSha, controllerSha: data.controllerSha, channels, hasContributors: contributors.length > 0, contributors } as ReleaseTemplateData;

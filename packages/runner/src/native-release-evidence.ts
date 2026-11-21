@@ -41,6 +41,7 @@ export interface ArchivedFile { path: string; commit: string; value: NativeArchi
 export interface RetryLimitFile { path:string; commit:string; value:NativeRetryLimit }
 export interface SourceRejectionFile {path:string;commit:string;value:NativeSourceRejection}
 export interface ReadHistory { complete: boolean; observations: NativeReadObservation[]; retryLimits?:RetryLimitFile[]; sourceRejections?:SourceRejectionFile[];
+  frozenPublicationBuilds?:ReadonlyMap<number,number>;
   channelEvidence?:{path:string;commit:string;value:NativeChannelEvidence|import('../../core/src/native-evidence.js').NativeChannelRead}[]; publication?:{native:NativeAttemptSet;missing:string[];archived?:ArchivedAttempt[]} }
 export function verifyNativeSourceRejection(context:EvidenceContext,file:SourceRejectionFile) {
   const value=decodeNativeSourceRejection(Buffer.from(JSON.stringify(file.value))),request=context.cycle.dispatches.find(request=>request.requestKey===value.requestKey);
@@ -490,10 +491,23 @@ export async function inspectNativeCycle(input: EvidenceContext, history: Archiv
       else missingNativeKeys.push(`request:${request.requestKey}:canonical-run`);continue;
     }
     const runId=request.canonicalRunId;
+    const frozen=request.purpose==='build'?readHistory.frozenPublicationBuilds?.get(runId):undefined;
+    const runPath='actions/runs/'+runId+(frozen===undefined?'':'/attempts/'+frozen);
+    const runArtifacts=async()=>{
+      const items=await reader.pages('actions/runs/'+runId+'/artifacts','artifacts');
+      // Later delivery uploads are irrelevant to the frozen publication observation.
+      const prefix='steward-result-'+runId+'-';
+      return frozen===undefined?items:items.filter(item=>{
+        const name=typeof item.name==='string'?item.name:'';
+        const attempt=/^([1-9][0-9]*)-/.exec(name.slice(prefix.length));
+        return name.startsWith(prefix)&&Boolean(attempt&&Number(attempt[1])<=frozen);
+      });
+    };
     try {
-      const latest=nativeRunFact(await reader.json(`actions/runs/${runId}`)); sourceRun(context,request,latest);
+      const latest=nativeRunFact(await reader.json(runPath)); sourceRun(context,request,latest);
+      if(frozen!==undefined)check(latest.runAttempt===frozen&&latest.status==='completed'&&latest.conclusion==='success','frozen build attempt');
       const source=await workflowSource(reader,latest);
-      const artifacts=await reader.pages(`actions/runs/${runId}/artifacts`,'artifacts');
+      const artifacts=await runArtifacts();
       for(let attempt=1;attempt<=latest.runAttempt;attempt++) {
         const run=nativeRunFact(await reader.json(`actions/runs/${runId}/attempts/${attempt}`)); sourceRun(context,request,run);check(run.runAttempt===attempt,'attempt identity');
         const jobs=(await reader.pages(`actions/runs/${runId}/attempts/${attempt}/jobs`,'jobs')).map(jobFact);
@@ -576,13 +590,13 @@ export async function inspectNativeCycle(input: EvidenceContext, history: Archiv
         const recorded=existing?.value ?? archive;
         native.attempts.push(await archiveAttempt(recorded, archives)); archives.push(recorded);
       }
-      check(same(latest,nativeRunFact(await reader.json(`actions/runs/${runId}`))) && same(artifacts,await reader.pages(`actions/runs/${runId}/artifacts`,'artifacts')),'run changed');
+      check(same(latest,nativeRunFact(await reader.json(runPath)))&&same(artifacts,await runArtifacts()),'run changed');
       latestRuns.push(latest);
       native.runs.push({runId,workflowId:request.workflowId,entry:request.purpose==='build'?'build':'channel',sourceSha:context.cycle.sourceSha,
         inputDigest:request.inputDigest,actorId:context.appBotId,latestAttempt:latest.runAttempt,availability:'live'});
     } catch(error) {
       // 404 can hide a private repository. Only explicit 410 plus complete protected history is archive fallback.
-      const prior=history.filter(file=>file.value.run.id===runId);
+      const prior=history.filter(file=>file.value.run.id===runId&&(frozen===undefined||file.value.run.runAttempt<=frozen));
       let expired=error instanceof EvidenceReadError && error.status===410;
       if(error instanceof EvidenceReadError && error.status===404 && (prior.length||readHistory.complete)) {
         try {
@@ -590,7 +604,7 @@ export async function inspectNativeCycle(input: EvidenceContext, history: Archiv
           expired=!runs.some(run=>run.id===runId);
         } catch { /* Permission loss or incomplete pagination is not expiration. */ }
       }
-      if(expired && prior.length) {
+      if(expired&&prior.length&&(frozen===undefined||prior.some(file=>file.value.run.runAttempt===frozen&&file.value.run.status==='completed'&&file.value.run.conclusion==='success'))) {
         for(const file of prior) check(/^[a-f0-9]{40}$/.test(file.commit) && archiveFile(file.value).path===file.path,'archive provenance');
         for(const file of prior) {
           check(/^[a-f0-9]{40}$/.test(file.commit) && archiveFile(file.value).path===file.path,'archive provenance');
@@ -698,6 +712,8 @@ export async function recoverNativeCycle(input: EvidenceContext, runId: number, 
   if(attempt.invocations.length && attempt.invocations.every(invocation=>['EFFECT_CONFIRMED','REJECTED_BEFORE_BUSINESS'].includes(invocation.evidence.outcome??''))
     && !results.some(result=>result.reasonCode==='DEPENDENCY_NOT_READY'))
     return {status:'SATISFIED',reason:'EFFECTS_ARCHIVED',observation};
+  if(context.cycle.workflowDelivery&&request.purpose==='build'&&before.conclusion==='success')
+    return {status:'SATISFIED',reason:'NO_NATIVE_RECOVERY_REQUIRED',observation};
   if(expired || before.runAttempt>=51 || Date.parse(observedAt)-Date.parse(chain[0]!.run.createdAt)>30*24*60*60_000)
     return {status:'BLOCKED',reason:'NATIVE_MAINTENANCE_REQUIRED',runId,observation};
   // One automatic native rerun per Run; further failures remain visible for native maintenance.

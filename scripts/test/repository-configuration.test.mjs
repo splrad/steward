@@ -275,6 +275,14 @@ test('rejects edits that change the head, labels or locked controls',()=>{
   assert.throws(()=>parseForm(form.body,form.body.replace('### 调整配置','### 替换标题'),form.items),/marked/);
 });
 
+test('routes compact delivery file changes to the reviewed workflow while preserving other configuration',async()=>{
+  const model={delivery:{schemaVersion:3,repositoryAuthors:[{id:12,evidence:'Confirmed repository authorship'}]}};
+  await assert.rejects(applySelection(model,'select',{},{}),/受审产品工作流/);
+  await assert.rejects(applySelection(model,'configure',{channels:[{unit:'desktop',id:'github-release'}]},{}),/受审产品工作流/);
+  assert.deepEqual(await applySelection(model,'configure',{},{}),new Map());
+  assert.deepEqual(await applySelection(model,'trial',{channels:[{unit:'desktop',id:'github-release'}]},{}),new Map());
+});
+
 test('reports only declared product platforms and keeps operational Pages conditions out of selections',async()=>{
   const unit={id:'cli',path:'.',assets:[],channels:[]};
   const pages={env:{STEWARD_DOCS_SOURCE:'${{ vars.STEWARD_DOCS_SOURCE }}',STEWARD_DOCS_UNIT:'${{ vars.STEWARD_DOCS_UNIT }}'},jobs:{

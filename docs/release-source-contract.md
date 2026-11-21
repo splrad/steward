@@ -6,7 +6,7 @@
 
 [候选入口](../scripts/release-candidate.mjs)使用 Release Please 的版本与候选结果，并接入内容收集、分批生成和人工稿保护。候选合并后读取原 PR、合并提交 S 和已审 head H，比较完整 Git 树，核对冻结作者集合及原生版本，再通过既有 Git 快进事务登记周期和 activeCycleId。构建及标签绑定准确 S，中央执行来源另存 controller SHA；不以运行时默认分支最新提交替代。
 
-构建按 S 中的 delivery 数据和原生 YAML 生产者映射读取文件，登记实际 Run/attempt、artifact ID、摘要及来源。构建身份不取得中央发布权限；中央读取并核验冻结制品后执行发布。相关数据与检查见[发布管线](../packages/runner/src/release-pipeline.ts)。
+公开产品按 S 中经审查的工作流交件。中央保存在受保护 Git 状态中的回执包含实际 Run/attempt、artifact ID 和摘要，并从这一制品冻结、发布和恢复原文件。构建身份不取得中央发布权限。历史完整冻结包继续按原有 producer 映射和证明核验。参见[产品工作流合同](product-build.md)和[发布管线](../packages/runner/src/release-pipeline.ts)。
 
 单位 notes 仍须包含七节：概述、更新内容、兼容性、升级与迁移、安装说明、已知问题、恢复；[notes解析与模板映射](../packages/core/src/release-template.ts)校验完整标题集合。正式Release正文将概述置于产品/版本一级标题后、“升级须知”前；兼容性、升级与迁移、安装说明、已知问题、恢复五项映射到“升级须知”，并包含下载资产信息；更新内容映射到“更新内容”，再按冻结贡献者和作者ID生成可选“贡献者”，以CHANGELOG准确比较链接等来源组成“完整变更”。这是外层四节布局（贡献者可省略），不减少单位notes的七节要求。展示副本可调整标题层级，原notes/CHANGELOG保留原字节。作者过滤依据已确认的身份，不以账号存在代替作者确认。
 
