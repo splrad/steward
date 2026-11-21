@@ -15,12 +15,17 @@ it('wakes original requests for a superseding controller including registration 
   const ns={idFromName:(key:string)=>key,get:(id:string)=>({fetch:async(r:Request)=>{
     wakes.push({id,...await r.json() as {policy:string;controller:string}});return new Response();
   }})};
-  const broker=new ReleasePromotion(storage as any,{BOUNDED_RECHECK:ns} as any);
+  const env={BOUNDED_RECHECK:ns,BOUNDED_RECHECK_ENABLED:'false'};
+  const broker=new ReleasePromotion(storage as any,env as any);
   const wait=(kind:'native'|'cycle'|'quality',key:string,generation:number)=>broker.update('/wait',{kind,key:key.repeat(64),policy,generation});
   await wait('native','a',0);await wait('cycle','b',0);
   expect(await storage.get('__alarm')).toBeUndefined();
   await broker.update('/promoted',{policy,controller});
   await wait('quality','c',0);await wait('native','f',1);
+  for(let i=0;i<5;i++)await broker.alarm();
+  expect(wakes).toHaveLength(0);
+  expect(await storage.get('__alarm')).toBeDefined();
+  env.BOUNDED_RECHECK_ENABLED='true';
   await broker.alarm();await broker.update('/promoted',{policy,controller});await broker.alarm();
   expect(wakes.map(x=>x.id).sort()).toEqual(['cycle:v1:'+'b'.repeat(64),'native:v1:'+'a'.repeat(64),'quality:v1:'+'c'.repeat(64)]);
   expect(wakes.every(x=>x.controller===controller&&x.policy===policy)).toBe(true);

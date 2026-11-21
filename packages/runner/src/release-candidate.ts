@@ -1,8 +1,9 @@
-import { previewUnitNotes } from '../../core/src/release-template.js';
+import { renderCandidateNote } from '../../core/src/candidate-note.js';
+export { renderCandidateNote };
 import { manualCandidateFacts, type ManualCandidate } from '../../core/src/manual-candidate.js';
 import { createHash } from 'node:crypto';
-import { candidateId, candidateCreationBody, selectReleaseContributors, renderReleaseContributors, type CandidateSnapshot, type ReleaseActor, type RepositoryAuthor } from '../../core/src/release-candidate.js';
-import { assertRepositoryWrite, type RepositoryRecord } from '../../core/src/release-observation.js';
+import { candidateId, candidateCreationBody, selectReleaseContributors, type CandidateSnapshot, type ReleaseActor, type RepositoryAuthor } from '../../core/src/release-candidate.js';
+import { assertRepositoryWrite, type CycleRecord, type RepositoryRecord } from '../../core/src/release-observation.js';
 import { mergeCandidate, prepareCandidateWrite, resumeCandidateWrite, candidateTreeMatches, type PreparedCandidateWrite } from './release-candidate-update.js';
 
 export interface CandidatePullRequest { number: number; head: string; branch: string; base: string; state: 'open' | 'closed'; merged: boolean; editing: boolean; body: string }
@@ -17,6 +18,7 @@ export interface CandidateSession {
   adoption: null | { humanHead: string; generatedBase: string; differences: CandidateSnapshot['files'] };
 }
 export interface CandidateRuntime {
+  activeCycle?: CycleRecord;
   workspace: string; temporaryRoot: string; repository: string; defaultBranch: string; appBotId: number; identity: { name: string; email: string };
   now(): string;
   source(): Promise<{ baseSha: string; authors: RepositoryAuthor[]; authorsDigest: string }>;
@@ -49,13 +51,23 @@ function candidateVersion(units:{id:string;path:string;version:string;tag:string
   const identities=ordered.map(({id,path,version,tag})=>[id,path,version,tag]);
   return 'units-'+digest(identities);
 }
+// The caller resolves this record from the same protected tree as the repository.
+export function candidateCycleIsSeparate(repository: RepositoryRecord, cycle?: CycleRecord) {
+  if (repository.activeCycleId === null) return true;
+  const number = repository.candidate?.prNumber;
+  return !!cycle && !!number && Number.isSafeInteger(number) && number > 0
+    && Number.isSafeInteger(cycle.prNumber) && cycle.prNumber > 0 && cycle.prNumber !== number
+    && /^[a-f0-9]{40}$/.test(cycle.sourceSha) && cycle.id === repository.activeCycleId
+    && cycle.id === `pr-${cycle.prNumber}-${cycle.sourceSha}`;
+}
 /** Stable generation identity; human edits and derived contributor projection do not restart a window. */
-export function candidateObservationIdentity(session: CandidateSession): CandidateObservation {
+export function candidateObservationIdentity(session: CandidateSession, activeCycle?: CycleRecord): CandidateObservation {
   const { repository, generated } = session, candidate = repository.candidate;
+  if (!candidateCycleIsSeparate(repository,activeCycle)) throw Error('CANDIDATE_CYCLE_OWNER');
   if(session.manualValidation) {
     const m=session.manualValidation;
     if(repository.repositoryId!==m.repositoryId||candidate?.id!==m.candidateId||candidate.prNumber!==m.prNumber||candidate.branch!==m.branch
-      ||repository.activeCycleId||session.pending||candidate.pendingWrite)throw Error('MANUAL_OWNER');
+      ||session.pending||candidate.pendingWrite)throw Error('MANUAL_OWNER');
     const factDigest=digest(manualCandidateFacts(m));
     return {repositoryId:m.repositoryId,cycleId:m.candidateId,channel:'candidate',version:candidateVersion(m.units),
       artifactDigest:'sha256:'+factDigest,sourceSha:m.sourceSha,stage:'candidate',
@@ -69,6 +81,7 @@ export function candidateObservationIdentity(session: CandidateSession): Candida
     version: candidateVersion(generated.units), artifactDigest: 'sha256:' + digest(generated), sourceSha: candidate.baseSha,
     stage: 'candidate', epoch: digest([repository.repositoryId, candidate.id, candidate.baseSha, candidate.generatedSnapshotPath, candidate.publishedHead]), upstreamPR: null };
 }
+
 /** Exact existing generated-note projection, with frozen native contributor identities. */
 export function candidateProjectionPreview(session:CandidateSession):string {
   if(!session.generated||!session.identity)throw Error('CANDIDATE_PROJECTION_CACHE');
@@ -78,7 +91,7 @@ export function candidateProjectionPreview(session:CandidateSession):string {
     const unit=session.identity!.units.find(u=>`.release-notes/${u.id}.md`===f.path)
       ??(session.identity!.units.length===1?session.identity!.units[0]:undefined);
     if(!unit)throw Error('CANDIDATE_PROJECTION_UNIT');
-    return `# ${f.path}\n\n${previewUnitNotes(f.content!)}`+renderReleaseContributors(unit.contributors.contributors);
+    return renderCandidateNote(f.path,f.content!,unit.contributors.contributors);
   }).join('\n').replace(/\r\n?/g,'\n');
 }
 export function candidateStatusBody(repository:string,candidateId:string,units:{id:string;version:string}[],head:string,preview:string,previewCommit:string):string {
@@ -92,7 +105,7 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   if (repository.defaultBranch !== io.defaultBranch) throw new Error('CANDIDATE_DEFAULT_BRANCH_DRIFT');
   const save = async () => { repository.revision++; repository.lastProgressAt = io.now(); return io.save(session); };
   if (observation) {
-    const actual = candidateObservationIdentity(session);
+    const actual = candidateObservationIdentity(session, io.activeCycle);
     if (JSON.stringify(Object.keys(observation).sort()) !== JSON.stringify(Object.keys(actual).sort())
       || Object.entries(actual).some(([key, value]) => observation[key as keyof CandidateObservation] !== value))
       throw new Error('CANDIDATE_OBSERVATION_IDENTITY');
@@ -286,7 +299,7 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   }
   if (observed.pr.state === 'closed') return { status: 'WAIT', reason: 'CLOSED_PR' };
   session.preview = merged.files.filter(f => f.path.startsWith('.release-notes/') && f.content !== null)
-    .map(f => `# ${f.path}\n\n${previewUnitNotes(f.content!)}` + renderReleaseContributors(session.identity!.units.find(u => `.release-notes/${u.id}.md` === f.path)!.contributors.contributors)).join('\n').replace(/\r\n?/g, '\n');
+    .map(f => renderCandidateNote(f.path,f.content!,session.identity!.units.find(u => `.release-notes/${u.id}.md` === f.path)!.contributors.contributors)).join('\n').replace(/\r\n?/g, '\n');
   const archive = await save(); await statusComment(session.preview, archive, observed.pr.head);
   return { status: 'READY', prNumber: candidate.prNumber, head: candidate.publishedHead };
 }

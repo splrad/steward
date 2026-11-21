@@ -63,6 +63,14 @@ export class ReleasePromotion {
     const generation=(await this.storage.get<number>('generation'))??0;
     const policy=await this.storage.get<string>('promotionPolicy'),controller=await this.storage.get<string>('controller');
     if(!policy||!controller)return;
+    if(this.env.BOUNDED_RECHECK_ENABLED!=='true'){
+      await this.storage.transaction(async t=>{
+        const current=(await t.get<number>('generation'))??0;
+        if((await t.list({start:'wait:',end:bucket(current),limit:1})).size)await t.setAlarm(Date.now()+60_000);
+        else await t.deleteAlarm();
+      });
+      return;
+    }
     const ns=this.env.BOUNDED_RECHECK;ensure(ns,'PROMOTION_NAMESPACE');
     const range={start:'wait:',end:bucket(generation)};
     for(const [name,tries] of await this.storage.list<number>({...range,limit:8})){

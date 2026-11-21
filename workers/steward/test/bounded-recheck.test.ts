@@ -24,6 +24,17 @@ describe('bounded recheck faults with actual SQLite transactions',()=>{
  it('durable registration recovers lost immediate wake across reconstruction',async()=>{const f=fixture();await f.engine().register(input());expect(f.store.alarm()).toBe(t0);await f.engine().wake();expect(f.effects.observe).toHaveBeenCalledTimes(1);expect((await f.store.read())?.consumed).toBe(0);expect(f.store.alarm()).toBe(t0+2*m);});
  it('duplicates cannot reset budget, T0 or epoch',async()=>{const f=fixture();await f.engine().register(input());await f.engine().wake();f.time(t0+2*m);await f.engine().wake();await f.engine().register(input());expect((await f.store.read())?.consumed).toBe(1);await expect(f.engine().register({...input(),t0:t0+1})).rejects.toThrow('REGISTRATION_CONFLICT');});
  it('concurrent wakes reserve one intent and recovery alarm before IO',async()=>{const f=fixture();let resolve!:(o:Outcome)=>void;f.effects.observe=vi.fn(()=>new Promise(r=>resolve=r));await f.engine().register(input());const pending=f.engine().wake();await Promise.resolve();await f.engine().wake();expect(f.effects.observe).toHaveBeenCalledTimes(1);expect(f.store.alarm()).toBe(t0+m);resolve({kind:'pending'});await pending;});
+ it('keeps pending candidate confirmations read-only through the final retry',async()=>{
+   const f=fixture({kind:'unknown'});
+   vi.mocked(f.effects.confirm).mockResolvedValue({kind:'pending'});
+   await f.engine().register(input());
+   await f.engine().wake();
+   for(const minutes of [1,5,15,30]){f.time(t0+minutes*m);await f.engine().wake();}
+   expect(f.effects.observe).toHaveBeenCalledTimes(1);
+   expect(f.effects.confirm).toHaveBeenCalledTimes(3);
+   expect((await f.store.read())?.reason).toBe('UNKNOWN_DELIVERY');
+   expect(f.store.alarm()).toBeNull();
+ });
  it('unknown dispatch never repeats POST and has exactly 3 read-only confirmations',async()=>{const f=fixture({kind:'unknown'});await f.engine().register(input());await f.engine().wake();for(const n of [1,5,15]){f.time(t0+n*m);await f.engine().wake();}expect(f.effects.observe).toHaveBeenCalledTimes(1);expect(f.effects.confirm).toHaveBeenCalledTimes(3);expect((await f.store.read())?.reason).toBe('UNKNOWN_DELIVERY');expect(f.store.alarm()).toBeNull();});
  it('crash during last confirmation leaves durable terminal state, not orphan pending',async()=>{const f=fixture({kind:'unknown'});await f.engine().register(input());await f.engine().wake();for(const n of [1,5]){f.time(t0+n*m);await f.engine().wake();}f.effects.confirm=vi.fn(()=>new Promise(()=>{}));f.time(t0+15*m);void f.engine().wake();await Promise.resolve();expect((await f.store.read())?.status).toBe('NEEDS_ATTENTION');expect(f.store.alarm()).toBeNull();});
  it('pause/resume retains unknown intent and original deadline',async()=>{const f=fixture({kind:'unknown'});await f.engine().register(input());await f.engine().wake();await f.engine().control('pause',1);expect(f.store.alarm()).toBeNull();f.time(t0+10*m);await f.engine().control('resume',2);await f.engine().wake();expect(f.effects.observe).toHaveBeenCalledTimes(1);expect(f.effects.confirm).toHaveBeenCalledTimes(1);expect((await f.store.read())?.deadline).toBe(t0+120*m);});

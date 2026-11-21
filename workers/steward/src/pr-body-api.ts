@@ -1,3 +1,4 @@
+import { readBoundedBody } from "./bounded-recheck-github.js";
 import { createAppJwt, GitHubClient, GitHubRequestError } from "../support/github/index.js";
 import repositoryCatalog from "../config/repositories.json" with { type: "json" };
 import { PullRequestBodyWriteIntentStore, type PullRequestBodyWriteIntent } from "./pr-body-write-intents.js";
@@ -33,8 +34,9 @@ function noStoreResponse(status: number, body?: unknown): Response {
 async function readJsonObject(request: Request): Promise<Record<string, unknown>> {
   const declared = Number(request.headers.get("content-length") ?? "0");
   if (declared > 512 * 1024) throw new Error("内部请求正文过大");
-  const text = await request.text();
-  if (Buffer.byteLength(text, "utf8") > 512 * 1024) throw new Error("内部请求正文过大");
+  const bytes = await readBoundedBody(request.body, 512 * 1024);
+  if (!bytes) throw new Error("内部请求正文过大");
+  const text = new TextDecoder().decode(bytes);
   let value: unknown;
   try { value = JSON.parse(text); } catch { throw new Error("内部请求正文无效"); }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("内部请求正文无效");

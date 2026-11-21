@@ -9,7 +9,14 @@ export async function candidateFacts<T extends boolean=false>(g:GitReader,requir
  const read=(p:string)=>g.json((g.target??TARGET).id,`/repos/${(g.target??TARGET).name}/${p}`);
  const ref=await read('git/ref/heads/steward/release-state');ensure(ref.ref==='refs/heads/steward/release-state'&&ref.object?.type==='commit'&&sha(ref.object.sha),'STATE_REF');const commit=ref.object.sha;
  const file=async(path:string)=>{const f=await read(`contents/${path}?ref=${commit}`);ensure(f.path===path&&f.type==='file'&&f.encoding==='base64'&&sha(f.sha)&&f.size<=512*1024,'STATE_FILE');const b=Buffer.from(f.content,'base64');ensure(b.length===f.size&&createHash('sha1').update(`blob ${b.length}\0`).update(b).digest('hex')===f.sha,'STATE_BLOB');return JSON.parse(b.toString('utf8'));};
- const state=await file('state.json');const c=state.candidate;ensure(state.schemaVersion===3&&state.repositoryId===(g.target??TARGET).id&&!state.activeCycleId&&c&&/^[a-f0-9]{64}$/.test(c.id)&&sha(c.baseSha)&&sha(c.publishedHead)&&c.generatedSnapshotPath&&Number.isSafeInteger(c.prNumber),'CANDIDATE_NOT_READY');
+ const state=await file('state.json');const c=state.candidate;ensure(state.schemaVersion===3&&state.repositoryId===(g.target??TARGET).id&&c&&/^[a-f0-9]{64}$/.test(c.id)&&sha(c.baseSha)&&sha(c.publishedHead)&&c.generatedSnapshotPath&&Number.isSafeInteger(c.prNumber)&&c.prNumber>0,'CANDIDATE_NOT_READY');
+ if(state.activeCycleId!==null){
+   const id=state.activeCycleId;
+   ensure(typeof id==='string'&&/^pr-[1-9][0-9]*-[a-f0-9]{40}$/.test(id),'CANDIDATE_CYCLE_OWNER');
+   const cycle=await file(`cycles/${id}.json`);
+   ensure(cycle && cycle.id===id && Number.isSafeInteger(cycle.prNumber) && cycle.prNumber>0 &&
+     sha(cycle.sourceSha) && id===`pr-${cycle.prNumber}-${cycle.sourceSha}` && cycle.prNumber!==c.prNumber,'CANDIDATE_CYCLE_OWNER');
+ }
  const path=`generated/${c.id}/session.json`,first=await file(path),parts=[first];ensure(Number.isSafeInteger(first.count)&&first.count>0&&first.count<=128,'CHUNK_COUNT');
  for(let n=1;n<first.count;n++)parts.push(await file(`generated/${c.id}/session-${n}.json`));
  ensure(parts.every((x,n)=>x.schemaVersion===1&&x.repositoryId===(g.target??TARGET).id&&x.candidateId===c.id&&x.documentKind==='session'&&x.index===n&&x.count===first.count&&x.documentDigest===first.documentDigest&&typeof x.content==='string'&&Buffer.byteLength(x.content)<=256*1024),'CHUNK_BINDING');
@@ -50,7 +57,7 @@ export async function candidateFacts<T extends boolean=false>(g:GitReader,requir
  const priorIdentity=(manualId?(!c.pendingWrite&&!session.pending?manualId:null):ready?{repositoryId:(g.target??TARGET).id,cycleId:c.id,channel:'candidate',version:candidateVersion(generated.units),artifactDigest:digest(JSON.stringify(generated)),sourceSha:c.baseSha,stage:'candidate',epoch:createHash('sha256').update(JSON.stringify([(g.target??TARGET).id,c.id,c.baseSha,c.generatedSnapshotPath,c.publishedHead])).digest('hex'),upstreamPR:null}:null) as Identity|null;
  const identity=(selectionChanged?null:priorIdentity) as (T extends true?Identity|null:Identity);
  let pull=await read(`pulls/${c.prNumber}`);ensure(pull.number===c.prNumber&&pull.head?.repo?.id===(g.target??TARGET).id&&pull.base?.repo?.id===(g.target??TARGET).id&&pull.head.ref===c.branch&&pull.base.ref===(g.target??TARGET).defaultBranch&&sha(pull.head.sha),'CANDIDATE_PULL');
- if(manual&&!allowPending)pull=await verifyManualHead(g,manual,pull,generated.files);
+ if(manual&&!allowPending)pull=await verifyManualHead(g,manual,pull,generated.files,{publishedHead:c.publishedHead,session});
  ensure((await read('git/ref/heads/steward/release-state')).object?.sha===commit,'STATE_MOVED');
  return {identity,priorIdentity,state,pull,session,manual,evidence:{stateCommit:commit,path,documentDigest:first.documentDigest,prNumber:c.prNumber,head:pull.head.sha}};
 }

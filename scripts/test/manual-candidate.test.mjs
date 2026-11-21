@@ -16,6 +16,19 @@ test('managed structure rejects deletion, symlink, changed mode and restored tom
   assert.equal(manualManagedEntryMatches({...file,content:null},''),true);
   assert.equal(manualManagedEntryMatches({...file,content:null},entry('100644')),false);
 });
+test('manual validation and observation bind the active cycle to a different PR',async()=>{
+  const f=fixture(),number=f.session.repository.candidate.prNumber;
+  const cycle={id:`pr-${number-1}-${G}`,prNumber:number-1,sourceSha:G};
+  f.session.repository.activeCycleId=cycle.id;
+  const saved=await validateManualCandidate(f.session,f.producer,{...f.io,activeCycle:cycle});
+  f.session.manualValidation=saved;
+  assert.equal(candidateObservationIdentity(f.session,cycle).sourceSha,S);
+  assert.throws(()=>candidateObservationIdentity(f.session),/CANDIDATE_CYCLE_OWNER/);
+  const same={...cycle,id:`pr-${number}-${G}`,prNumber:number};
+  f.session.repository.activeCycleId=same.id;
+  await assert.rejects(validateManualCandidate(f.session,f.producer,{...f.io,activeCycle:same}),/MANUAL_NOT_READY/);
+  assert.throws(()=>candidateObservationIdentity(f.session,same),/CANDIDATE_CYCLE_OWNER/);
+});
 test('manual validation requires native managed file structure before freezing',async()=>{
   const f=fixture();f.io.managedStructure=async()=>false;
   await assert.rejects(validateManualCandidate(f.session,f.producer,f.io),/MANUAL_MANAGED_STRUCTURE/);
@@ -201,4 +214,19 @@ for(const schemaVersion of [1,2])test('two declared release units on trunk bind 
     Object.assign(repository,saved);
   }
   await assert.rejects(withCandidateProduct(app,999,()=>assert.fail(),transport),/BOUNDED_REPOSITORY/);
+});
+
+test('same-base manual preview binds immutable notes, hides generated placeholders and preserves contributors',async()=>{
+  const f=fixture(),path=f.delivery.units[0].notesPath;
+  f.session.generated.baseSha=S;
+  f.session.identity.units[0].contributors.contributors=[{id:42,login:"editor",profileUrl:"https://github.com/editor",avatarUrl:"https://avatars.githubusercontent.com/u/42",alt:"editor"}];
+  f.io.isAncestor=async(a,b)=>[G,S].includes(a)&&b===H;
+  f.files[path]=f.files[path].replace('## 恢复\n\n已核对的人工说明。','## 恢复\n\n当前发布资料未提供此项变化的确认信息。');
+  const saved=await validateManualCandidate(f.session,f.producer,f.io);
+  assert.equal(saved.schemaVersion,3);assert.equal(saved.files.find(f=>f.path===path).sha256,hash(f.files[path]));
+  assert.match(saved.projection.preview,/## 贡献者/);assert.match(saved.projection.preview,/已核对的人工说明/);assert.doesNotMatch(saved.projection.preview,/## 恢复/);
+  const {validateManualCandidateRecord}=await import('../../packages/runner/dist/index.js');
+  await assert.rejects(validateManualCandidateRecord({...saved,projection:{...saved.projection,preview:'different'}},repo,id),/MANUAL_PROJECTION/);
+  f.io.changedPaths=async()=>['CHANGELOG.md'];
+  await assert.rejects(validateManualCandidate(f.session,f.producer,f.io),/MANUAL_NOTE_SCOPE/);
 });

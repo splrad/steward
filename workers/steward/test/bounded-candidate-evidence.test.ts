@@ -14,7 +14,7 @@ import {digest,TARGET,CENTRAL,type GitReader} from '../src/bounded-recheck-githu
 const sha=(c:string)=>c.repeat(40),key=(c:string)=>c.repeat(64),t0=Date.now()-60000;
 async function fixture(){
  const generated={baseSha:sha('a'),units:[{id:'layerscape',path:'.',version:'1.0.0'}],files:[{path:'.release-notes/layerscape.md',mode:'100644',content:'Notes\n'}]},document:any={generated,pending:null,identity:{id:'existing',units:[{id:'layerscape',contributors:{contributors:[]}}]},conflict:null,preview:'# .release-notes/layerscape.md\n\nNotes\n'},session=JSON.stringify(document);
- const state={schemaVersion:3,repositoryId:TARGET.id,activeCycleId:null,candidate:{id:key('b'),pendingWrite:null,baseSha:sha('a'),publishedHead:sha('c'),generatedSnapshotPath:`generated/${key('b')}/${key('a')}.json`,statusCommentId:7,prNumber:192,branch:'steward/candidate'}};
+ const state={schemaVersion:3,repositoryId:TARGET.id,activeCycleId:null as string|null,candidate:{id:key('b'),pendingWrite:null,baseSha:sha('a'),publishedHead:sha('c'),generatedSnapshotPath:`generated/${key('b')}/${key('a')}.json`,statusCommentId:7,prNumber:192,branch:'steward/candidate'}};
  const path=`generated/${key('b')}/session.json`,files:any={'state.json':state,[path]:{schemaVersion:1,repositoryId:TARGET.id,candidateId:key('b'),documentKind:'session',index:0,count:1,documentDigest:digest(session).slice(7),content:session}};
  files[state.candidate.generatedSnapshotPath]={schemaVersion:1,repositoryId:TARGET.id,candidateId:key('b'),documentKind:'generated',index:0,count:1,documentDigest:digest(JSON.stringify(generated)).slice(7),content:JSON.stringify(generated)};
  const pull={number:192,state:'open',merged:false,labels:[],head:{repo:{id:TARGET.id},ref:'steward/candidate',sha:sha('d')},base:{repo:{id:TARGET.id},ref:'main'}};
@@ -28,6 +28,30 @@ async function fixture(){
  return {g,env,registration,producer,artifact,run,pull,event,files,state,document};
 }
 describe('candidate producer evidence and event controls',()=>{
+ it('observes a candidate with a separately owned cycle at the same protected commit',async()=>{
+   const f=await fixture(),source=sha('d'),id=`pr-180-${source}`;
+   f.state.activeCycleId=id;
+   f.files[`cycles/${id}.json`]={id,prNumber:180,sourceSha:source};
+   const paths:string[]=[];
+   const g:GitReader={...f.g,json:async(repo,path)=>{paths.push(path);return f.g.json(repo,path);}};
+   expect((await candidateFacts(g)).identity).toEqual(f.registration.identity);
+   expect(paths.filter(p=>p.includes('/contents/cycles/'))).toEqual([
+     `/repos/${TARGET.name}/contents/cycles/${id}.json?ref=${sha('1')}`
+   ]);
+ });
+ it.each(['same PR','missing','wrong id','wrong owner','wrong source','invalid pointer','bad blob'])('refuses uncertain cycle ownership: %s',async scenario=>{
+   const f=await fixture(),source=sha('d'),number=scenario==='same PR'?192:180,id=`pr-${number}-${source}`;
+   f.state.activeCycleId=scenario==='invalid pointer'?'../state':id;
+   if(scenario!=='missing')f.files[`cycles/${id}.json`]={
+     id:scenario==='wrong id'?'other':id,prNumber:scenario==='wrong owner'?181:number,
+     sourceSha:scenario==='wrong source'?sha('e'):source,
+   };
+   const g:GitReader={...f.g,json:async(repo,path)=>{
+     const result=await f.g.json(repo,path);
+     return scenario==='bad blob'&&path.includes('/contents/cycles/')?{...result,sha:sha('0')}:result;
+   }};
+   await expect(candidateFacts(g,false,true)).rejects.toThrow();
+ });
  it.each(['ui','layerscape'])('reads a protected conflict for %s on a new path without returning a stale identity',async id=>{
    const f=await fixture();
    const chunk=f.files[`generated/${f.state.candidate.id}/session.json`];

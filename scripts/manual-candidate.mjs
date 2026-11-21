@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {TagName} from 'release-please/build/src/util/tag-name.js';
 import {Version} from 'release-please/build/src/version.js';
-import {parseDeliveryConfig,assertProductDelivery,parseSupplementalNotes,assertDeliveryPath,manualCandidateFacts,manualCandidatePreview,
+import {candidateCycleIsSeparate,parseDeliveryConfig,assertProductDelivery,renderCandidateNote,parseSupplementalNotes,assertDeliveryPath,manualCandidateFacts,manualCandidatePreview,
   manualCandidateBody,validateManualCandidateRecord} from '../packages/runner/dist/index.js';
 const hash=v=>createHash('sha256').update(typeof v==='string'?v:JSON.stringify(v)).digest('hex');
 const fail=code=>{throw Error(code);};
@@ -19,7 +19,7 @@ export async function validateManualCandidate(session,producer,io) {
   const c=session.repository.candidate;
   const product=io.product;
   if(!product||product.id!==session.repository.repositoryId)fail('MANUAL_OWNER');
-  if(session.repository.activeCycleId||!c?.prNumber||!session.generated||!session.identity
+  if(!candidateCycleIsSeparate(session.repository,io.activeCycle)||!c?.prNumber||!session.generated||!session.identity
     ||session.pending||c.pendingWrite||!session.generated.units.length)fail('MANUAL_NOT_READY');
   const inspect=async()=>{
     const p=await io.pull(),sourceSha=await io.source();
@@ -40,7 +40,7 @@ export async function validateManualCandidate(session,producer,io) {
      !manifest||typeof manifest!=='object'||Array.isArray(manifest)||Object.keys(manifest).some(path=>!paths.includes(path)))fail('MANUAL_UNIT_COVERAGE');
   if(!matchesFrozenUnits(session))fail('MANUAL_UNIT_COVERAGE');
   const template=await io.read(before.headSha,'.github/release-template.md.mustache');
-  const units=[],notes=new Set();
+  const units=[],notes=new Set(),noteContents=[];
   for(const generated of session.generated.units) {
     const unit=delivery.units.find(unit=>unit.id===generated.id&&unit.path===generated.path);
     if(!unit||manifest[unit.path]!==generated.version)fail('MANUAL_UNIT_COVERAGE');
@@ -52,21 +52,28 @@ export async function validateManualCandidate(session,producer,io) {
     const component=options['include-component-in-tag']===false?undefined:options.component;
     if(options['include-component-in-tag']!==false&&!component)fail('MANUAL_TAG_COMPONENT');
     if(new TagName(Version.parse(generated.version),component,options['tag-separator'],options['include-v-in-tag']).toString()!==generated.tag)fail('MANUAL_TAG');
-    parseSupplementalNotes(await read(unit.notesPath),template);
+    const markdown=await read(unit.notesPath);
+    parseSupplementalNotes(markdown,template);noteContents.push(markdown);
     notes.add(unit.notesPath);
     units.push({...generated,notesPath:unit.notesPath,versionPath});
   }
   const legacy=product.id===1187527897&&units.length===1&&units[0].id==='layerscape'&&units[0].path==='.'&&units[0].versionPath==='VERSION';
-  if(legacy)delete units[0].versionPath;
+  const sameBase=before.sourceSha===session.generated.baseSha;
+  if(sameBase) {
+    if(!c.publishedHead||c.publishedHead===before.headSha||!await io.isAncestor(c.publishedHead,before.headSha))fail('MANUAL_PUBLISHED_ANCESTRY');
+    const edits=await io.changedPaths(c.publishedHead,before.headSha);
+    if(!edits.length||edits.some(path=>!notes.has(path)))fail('MANUAL_NOTE_SCOPE');
+  }
+  if(legacy&&!sameBase)delete units[0].versionPath;
   const allowed=new Set([...session.generated.files.map(file=>file.path),...notes]);
   const changed=await io.changedPaths(before.sourceSha,before.headSha);
   if(!Array.isArray(changed)||changed.some(path=>typeof path!=='string'||!allowed.has(path)))fail('MANUAL_UNMANAGED_CHANGES');
   // The immutable head binds all bytes; human prose may differ from G, but its file role may not.
   if(!await io.managedStructure(before.headSha,session.generated.files.filter(file=>!notes.has(file.path)||file.content!==null)))
     fail('MANUAL_MANAGED_STRUCTURE');
-  const result={schemaVersion:legacy?1:2,kind:'validated-manual-candidate',repositoryId:product.id,candidateId:c.id,prNumber:c.prNumber,
+  const result={schemaVersion:sameBase?3:legacy?1:2,kind:'validated-manual-candidate',repositoryId:product.id,candidateId:c.id,prNumber:c.prNumber,
     branch:c.branch,...before,units,files:[...files].sort(([a],[b])=>a<b?-1:a>b?1:0).map(([path,sha256])=>({path,sha256})),
-    projection:{preview:manualCandidatePreview(before),bodyDigest:''},producer};
+    projection:sameBase?{preview:units.map((unit,i)=>renderCandidateNote(unit.notesPath,noteContents[i],session.identity.units.find(u=>u.id===unit.id).contributors.contributors)).join('\n').replace(/\r\n?/g,'\n'),bodyDigest:''}:{preview:manualCandidatePreview(before),bodyDigest:''},producer};
   result.projection.bodyDigest=hash(manualCandidateBody(result));
   await validateManualCandidateRecord(result,product.id,c.id);
   if(JSON.stringify(await inspect())!==JSON.stringify(before))fail('MANUAL_NATIVE_MOVED');

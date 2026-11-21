@@ -189,3 +189,36 @@ describe('native ingress across a controller or deployment change',()=>{
   expect(r.source.status).toBe('NEEDS_ATTENTION');
  });
 });
+
+describe('manual notes at the generated base',()=>{
+ it.each(['valid','unrelated edit','unrelated head','undeclared notes','wrong preview'])('verifies the exact published-to-human change: %s',async scenario=>{
+   const f=fixture(),m=f.m,notes=m.units[0].notesPath;
+   m.schemaVersion=3;
+   m.units[0].versionPath='VERSION';
+   f.state.candidate.baseSha=f.session.generated.baseSha=m.sourceSha;
+   f.session.generated.units=[{id:'layerscape',path:'.',tag:'v1.2.3',version:'1.2.3'}];
+   f.session.identity.units=[{id:'layerscape',contributors:{contributors:[]}}];
+   const declaration={id:'layerscape',path:'.',notesPath:scenario==='undeclared notes'?'other.md':notes};
+   f.blobs['.github/delivery.json']=f.sourceBlobs['.github/delivery.json']=JSON.stringify({schemaVersion:2,units:[declaration]});
+   f.blobs[notes]='## 更新内容\r\n\r\n人工修改。\r\n\r\n## 恢复\r\n\r\n当前发布资料未提供此项变化的确认信息。\r\n';
+   m.files=Object.keys(f.blobs).sort().map(path=>({path,sha256:digest(f.blobs[path]).slice(7)}));
+   m.projection.preview='# '+notes+'\n\n## 更新内容\n\n人工修改。\n\n';
+   if(scenario==='wrong preview')m.projection.preview+='旧稿';
+   m.projection.bodyDigest=digest(manualBody(m)).slice(7);
+   const published=f.state.candidate.publishedHead;
+   const g:GitReader={...f.g,json:async(id,path)=>{
+     if(path.includes('/compare/'+published+'...'))return {base_commit:{sha:published},
+       merge_base_commit:{sha:scenario==='unrelated head'?sha('9'):published},status:'ahead'};
+     if(path.includes('/git/trees/'+published)){
+       const tree=await f.g.json(id,path.replace(published,m.sourceSha));
+       if(scenario==='unrelated edit')tree.tree.push({path:'unrelated.txt',mode:'100644',type:'blob',sha:sha('3')});
+       return tree;
+     }
+     return f.g.json(id,path);
+   }};
+   const read=candidateFacts(g);
+   if(scenario==='valid')expect((await read).identity).toEqual(manualIdentity(m,f.state,f.session));
+   else await expect(read).rejects.toThrow({ 'unrelated edit':'MANUAL_NOTE_SCOPE','unrelated head':'MANUAL_PUBLISHED_ANCESTRY',
+     'undeclared notes':'MANUAL_NOTE_OWNER','wrong preview':'MANUAL_PROJECTION'}[scenario]);
+ });
+});

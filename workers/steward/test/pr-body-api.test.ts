@@ -160,6 +160,19 @@ describe("共享正文接口和恢复", () => {
     }
   });
 
+  it('stops consuming an oversized authenticated prepare body without Content-Length',async()=>{
+    const database=new SqliteD1();
+    installAuthorization();
+    const cancel=vi.fn();
+    const chunk=new Uint8Array(128*1024);
+    const body=new ReadableStream({pull(controller){controller.enqueue(chunk);},cancel});
+    const url='https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/prepare';
+    const request=new Request(url,{method:'POST',headers:{authorization:'Bearer one-repository-token'},body,duplex:'half'} as RequestInit);
+    const response=await worker.fetch(request,env(database));
+    expect(response.status).toBe(400);
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
   it.each(['onboard-repository.yml','sync-review-instructions.yml'])('拒绝已退役来源 %s 的新正文意图',async workflow=>{
     const database=new SqliteD1();installAuthorization();
     const r=await worker.fetch(new Request('https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/prepare',{

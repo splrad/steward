@@ -89,6 +89,9 @@ export async function evaluateRemoteWorkflowContract(gh: GitHubClient, authority
   if (identity(pull) !== identity(await readPull())) throw new Error('CONTRACT_SOURCE_STALE: pull changed during evaluation');
   // Re-read mutable review state and collaborator permissions after the identity
   // check; an approval dismissed while this evaluation ran must not be reused.
-  if (changed) reviewId = await readApproval();
+  if (changed) {
+    reviewId = await readApproval();
+    if (identity(pull) !== identity(await readPull())) throw new Error('CONTRACT_SOURCE_STALE: pull changed during final approval');
+  }
   return {contract:candidate,binding,reviewId};
 }

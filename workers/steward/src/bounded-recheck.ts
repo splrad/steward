@@ -119,6 +119,10 @@ export class BoundedRecheck {
       const retryableObservation=!claim.confirm && error instanceof GitHubRetryError && (!error.dispatchAttempted || rejectedDispatch(error));
       outcome=['SOURCE_CHANGED','OBSERVATION_SOURCE_CHANGED','CHANNEL_ORIGINAL_IDENTITY'].includes(message)?{kind:'stop',reason:'SOURCE_CHANGED'}:['GENERATED_FILES_MISMATCH','MANUAL_UNMANAGED_CHANGES','MANUAL_GENERATED_FILE_TREE','CHANNEL_EXECUTION_PIN'].includes(message)?{kind:'stop',reason:message}:(retryableObservation||claim.record.identity.stage==='winget-pr')&&retryAfter!==undefined?{kind:'pending',retryAfter}:{kind:'unknown',...(retryAfter===undefined?{}:{retryAfter})};
     }
+    // A pending candidate confirmation carries no receipt for the previous POST.
+    if(claim.confirm && claim.record.identity.stage==='candidate' && outcome.kind==='pending'){
+      outcome={kind:'unknown',retryAfter:outcome.retryAfter};
+    }
     await this.store.transaction(r=>{
       if(!r || !r.intent || r.intent.key!==claim.intent.key) return {record:r,result:undefined};
       if('retryAfter' in outcome && outcome.retryAfter !== undefined){r.retryAfter=Math.max(r.retryAfter??0,outcome.retryAfter);r.intent.retryAfter=r.retryAfter;if(r.status==='PENDING'&&r.nextAt!==null)r.nextAt=Math.min(Math.max(r.nextAt,r.retryAfter),r.deadline);}
