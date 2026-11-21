@@ -46,7 +46,7 @@ it('reads real complete Git base/head and detects stale base, wrong checkout and
     git('checkout',head);const payload=JSON.parse(await readFile(event,'utf8'));payload.pull_request.base.sha=S;await writeFile(event,JSON.stringify(payload));await expect(validationInput(root,env)).rejects.toThrow();
   }finally{await rm(root,{recursive:true,force:true});}
 },30000);
-it('uses the protected base repository marker for a fork with Issues and Pages disabled',async()=>{
+it.each([false,true])('uses the protected base repository marker for a fork (private=%s)',async privateRepository=>{
   const {main}=await script('validation-input'),root=await mkdtemp(join(tmpdir(),'validation-fork-'));
   registerOfflineFixtureRoot(root);
   const git=(...args:string[])=>execFileSync('git',args,{cwd:root,encoding:'utf8'}).trim();
@@ -61,7 +61,7 @@ it('uses the protected base repository marker for a fork with Issues and Pages d
     const base=git('rev-parse','HEAD'),tree=git('rev-parse',base+':.github'),blob=git('rev-parse',base+':'+marker);
     git('update-ref','refs/remotes/origin/main',base);
     git('rm',marker);git('commit','--signoff','--no-gpg-sign','-m','remove marker in fork');
-    const repository={id:42,full_name:'splrad/fixture',default_branch:'main',has_issues:false,has_pages:false};
+    const repository={id:42,full_name:'splrad/fixture',default_branch:'main',private:privateRepository,has_issues:false,has_pages:false};
     const event=join(root,'event.json'),output=join(root,'output.txt');
     await writeFile(event,JSON.stringify({repository,pull_request:{base:{repo:{id:42},ref:'main',sha:base},
       head:{repo:{id:91,full_name:'contributor/fixture'},sha:git('rev-parse','HEAD')}}}));
@@ -73,11 +73,13 @@ it('uses the protected base repository marker for a fork with Issues and Pages d
       ['git/matching-refs/heads/steward/governance-state',[]],
     ]);
     const origin='https://api.github.com/repos/splrad/fixture';
+    const requests:string[]=[];
     vi.stubGlobal('fetch',vi.fn(async(url:string,request:RequestInit)=>{
       expect(url.startsWith(origin)).toBe(true);
       expect(request.method).toBe('GET');
       expect(new Headers(request.headers).get('authorization')).toBe('Bearer workflow-read');
       const path=url.slice(origin.length).replace(/^\//,'');
+      requests.push(path);
       if(path==='git/ref/heads/steward/governance-state')return new Response(null,{status:404});
       const value=responses.get(path);
       expect(value).toBeDefined();
@@ -88,11 +90,14 @@ it('uses the protected base repository marker for a fork with Issues and Pages d
       WORKFLOW_PATH:'.github/workflows/pr-validation-native.yml',WORKFLOW_SHA:S,GITHUB_ACTIONS:'true',
       REPOSITORY_POLICY_TOKEN:'workflow-read'};
     await expect(main(env)).rejects.toThrow('REPOSITORY_POLICY_PROJECTION_REQUIRED');
+    expect(requests).toContain('git/ref/heads/steward/governance-state');
     await expect(readFile(output)).rejects.toMatchObject({code:'ENOENT'});
     responses.set('git/trees/'+tree,{truncated:true,tree:[]});
     await expect(main(env)).rejects.toThrow('REPOSITORY_POLICY_PROJECTION_UNAVAILABLE');
     responses.set('git/trees/'+tree,{truncated:false,tree:[]});
+    requests.length=0;
     expect(await main(env)).toMatchObject({productApplicable:false,workflows:[]});
+    expect(requests.some(path=>path.includes('steward/governance-state'))).toBe(privateRepository);
     const fileJobEnv:NodeJS.ProcessEnv={...process.env,...env};
     delete fileJobEnv.REPOSITORY_POLICY_TOKEN;
     const workflow=(await import('yaml')).parse(await readFile('.github/workflows/pr-validation-native.yml','utf8'));
