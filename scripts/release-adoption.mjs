@@ -34,7 +34,7 @@ export function validateReleaseConfiguration(delivery,settings,versions) {
 // The channel workflow is product-owned. This list describes files to verify or
 // materialize from reviewed product sources; it never selects a product template.
 export function releaseAdoptionPlan(delivery) {
-  const files=[delivery.buildWorkflow??defaultBuildWorkflow,'.github/release-template.md.mustache'];
+  const files=[delivery.buildWorkflow??defaultBuildWorkflow];
   const externalTargets=delivery.units.flatMap(unit=>unit.channels
     .filter(channel=>channel.required && channel.id!=='github-release')
     .map(channel=>({unitId:unit.id,channelId:channel.id,location:channel.location})));

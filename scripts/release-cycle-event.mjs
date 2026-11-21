@@ -124,7 +124,7 @@ export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invo
     // Reconciliation reads every original attempt/job and formal asset, then archives its proof.
     const prior=await execute('reconcile-publication');
     if(prior.status!=='OBSERVED')return {...prior,cycleId};
-  } else if (run.displayTitle.startsWith('Channels observe ')) {
+  } else if (run.path==='.github/workflows/steward-release-channels.yml'&&run.displayTitle.startsWith('Channels observe ')) {
     const workflow=probeWorkflow?await probeWorkflow():null;
     if(probeWorkflow&&(!Number.isSafeInteger(workflow?.id)||workflow.id<=0||workflow.state!=='active'||
        workflow.path!=='.github/workflows/steward-release-channels.yml'))fail('CYCLE_PROBE_ORIGIN');
@@ -143,7 +143,10 @@ export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invo
     probeReceipt=true;
 
   } else {
-    const {cycle,request}=only(cycles.flatMap(cycle=>cycle.dispatches.filter(d=>run.displayTitle===(d.purpose==='build'?'Build '+d.operationKey:'Channels '+d.inputs.mode+' '+d.requestKey)).map(request=>({cycle,request}))));
+    const {cycle,request}=only(cycles.flatMap(cycle=>cycle.dispatches.filter(d=>d.purpose==='build'
+      ? d.buildWorkflow===undefined ? run.displayTitle==='Build '+d.operationKey
+        : run.path===d.buildWorkflow&&run.workflowId===d.workflowId&&run.displayTitle.includes(d.operationKey)
+      : run.displayTitle==='Channels '+d.inputs.mode+' '+d.requestKey).map(request=>({cycle,request}))));
     verifyExecutionSource(run,{repositoryId:product.id,appBotId:botId,cycle,request});
     cycleId=cycle.id;
     if (!request.canonicalRunId) {

@@ -6,7 +6,7 @@
   "required": ["schemaVersion", "repositoryAuthors", "units"],
   "properties": {
     "schemaVersion": { "enum": [1, 2] },
-    "buildWorkflow": { "type": "string", "pattern": "^\\.github/workflows/[A-Za-z0-9][A-Za-z0-9_.-]{0,191}\\.ya?ml$(?![\\s\\S])" },
+    "buildWorkflow": { "type": "string", "pattern": "^\\.github/workflows/[^/\\\\:\\u0000-\\u001f\\u007f-\\u009f*!?{}()[\\]<>|\"]{1,192}\\.ya?ml$(?![\\s\\S])" },
     "repositoryAuthors": {
       "type": "array", "minItems": 1,
       "items": {

@@ -1,5 +1,5 @@
 import { releaseBodyMatches } from './release-body.js';
-import { channelWorkflow, dispatchWorkflow } from '../../core/src/release-workflow.js';
+import { channelWorkflow, dispatchWorkflow, encodeRepositoryPath } from '../../core/src/release-workflow.js';
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -313,7 +313,7 @@ async function workflowSource(reader: NativeEvidenceReader, run: NativeRun) {
   const read=async(source:NativeEvidenceReader,path:string,commitSha:string):Promise<void>=>{
   const key=JSON.stringify([source.repository,path,commitSha]);if(visited.has(key))return;visited.add(key);
   check(visited.size<=100,'workflow source bound');
-  const blob = await source.json(`contents/${path}?ref=${commitSha}`);
+  const blob = await source.json(`contents/${encodeRepositoryPath(path)}?ref=${commitSha}`);
   check(blob.type === 'file' && blob.encoding === 'base64' && typeof blob.content === 'string' && blob.size <= 512*1024, 'workflow blob');
   const bytes = Buffer.from(blob.content, 'base64');
   check(bytes.length === blob.size && createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex') === blob.sha, 'workflow bytes');
