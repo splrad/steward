@@ -8,7 +8,7 @@ import {pathToFileURL,fileURLToPath} from 'node:url';
 import {TagName} from 'release-please/build/src/util/tag-name.js';
 import {Version} from 'release-please/build/src/version.js';
 import {isolatedBuildEnvironment,parseDeliveryConfig,NativeEvidenceReader,nativeEvidenceTransport,
-  inspectNativeCycle,inspectPublications,decodeReleaseRecord,assertRepositoryWrite,readNativeUnitVersion,defaultBuildWorkflow,applyWorkflowDelivery,assertRegisteredAdapters} from '../packages/runner/dist/index.js';
+  inspectNativeCycle,inspectPublications,decodeReleaseRecord,assertRepositoryWrite,readNativeUnitVersion,defaultBuildWorkflow,productReleaseTemplatePath,applyWorkflowDelivery,assertRegisteredAdapters} from '../packages/runner/dist/index.js';
 
 const fail=reason=>{throw new Error('RELEASE_ADOPTION: '+reason);};
 const sha=value=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
@@ -35,6 +35,7 @@ export function validateReleaseConfiguration(delivery,settings,versions) {
 // materialize from reviewed product sources; it never selects a product template.
 export function releaseAdoptionPlan(delivery) {
   const files=[delivery.buildWorkflow??defaultBuildWorkflow];
+  if(delivery.schemaVersion!==3&&delivery.buildWorkflow===undefined)files.push(productReleaseTemplatePath);
   const externalTargets=delivery.units.flatMap(unit=>unit.channels
     .filter(channel=>channel.required && channel.id!=='github-release')
     .map(channel=>({unitId:unit.id,channelId:channel.id,location:channel.location})));
