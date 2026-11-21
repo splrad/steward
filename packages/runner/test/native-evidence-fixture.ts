@@ -43,7 +43,7 @@ export function evidenceFixture(attempts=1) {
     if(suffix==='')return response({id:1,full_name:context.repository,private:false,default_branch:'main',archived:false,disabled:false});
     if(suffix==='actions/runs/100')return response(runs.get(latest));
     if(suffix==='actions/workflows/10')return response({id:10,path:runs.get(1).path});
-    if(suffix.startsWith('contents/'))return response({type:'file',encoding:'base64',content:workflowBytes.toString('base64'),size:workflowBytes.length,sha:blobSha});
+    if(suffix.startsWith('contents/'))return response({path:decodeURIComponent(suffix.slice('contents/'.length).split('?')[0]!),type:'file',encoding:'base64',content:workflowBytes.toString('base64'),size:workflowBytes.length,sha:blobSha});
     if(suffix==='actions/runs/100/artifacts?per_page=100')return response({total_count:artifacts.length,artifacts});
     let match=/^actions\/runs\/100\/attempts\/(\d+)(\/jobs\?per_page=100)?$/.exec(suffix);
     if(match){const n=Number(match[1]);return match[2]?response({total_count:jobs.get(n)!.length,jobs:jobs.get(n)}):response(runs.get(n));}

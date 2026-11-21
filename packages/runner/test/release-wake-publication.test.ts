@@ -34,7 +34,7 @@ it.each(['failure','in_progress','second-failure'] as const)('services later cyc
     if(path.includes('/contents/')){
       const name=path.split('/contents/')[1]!.split('?')[0]!,text=path.startsWith('/repos/splrad/steward/')?'locked tools':f.source[name];
       if(text===undefined)throw Error('unregistered source '+name);
-      const bytes=Buffer.from(text);return f.response({type:'file',encoding:'base64',content:bytes.toString('base64'),size:bytes.length,sha:createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')});
+      const bytes=Buffer.from(text);return f.response({path:path.split('/contents/')[1]!.split('?')[0],type:'file',encoding:'base64',content:bytes.toString('base64'),size:bytes.length,sha:createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')});
     }
     if(path.endsWith('/runs/100'))return f.response(f.runs.get(1));
     throw Error('unregistered publication read '+path);

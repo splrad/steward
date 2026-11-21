@@ -1,7 +1,7 @@
 import {expect,it} from 'vitest';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {mkdtemp,writeFile,rm} from 'node:fs/promises';
+import {mkdir,mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {localGitSnapshot,safeGitPath} from '../src/git-snapshot.js';
@@ -18,6 +18,11 @@ it('reads exact committed bytes, missing paths and modes from actual Git without
     expect(await localGitSnapshot.file(root,head,'missing')).toBeNull();
     await expect(localGitSnapshot.file(root,'main','bytes.txt')).rejects.toThrow('invalid source commit');
     await expect(localGitSnapshot.file(root,head,'../outside')).rejects.toThrow('unsafe path');
+    const workflow='.github/workflows/发布 构建.yml';
+    await mkdir(join(root,'.github/workflows'),{recursive:true});
+    await writeFile(join(root,workflow),'name: 发布构建\n');
+    await git('add','--',workflow);await git('commit','--signoff','-m','Add localized workflow');
+    expect(await localGitSnapshot.file(root,await localGitSnapshot.head(root),workflow)).toEqual(Buffer.from('name: 发布构建\n'));
     await writeFile(join(root,'state.json'),'fixture');await git('add','state.json');
     const oid=await git('rev-parse',head+':bytes.txt');await git('update-index','--cacheinfo','120000,'+oid+',state.json');await git('commit','--signoff','-m','Link fixture');
     await expect(localGitSnapshot.file(root,await localGitSnapshot.head(root),'state.json')).rejects.toThrow('regular Git blob');

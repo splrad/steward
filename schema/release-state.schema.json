@@ -406,6 +406,10 @@
           "type": "string",
           "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
         },
+        "buildWorkflow": {
+          "type": "string",
+          "pattern": "^\\.github/workflows/[^/\\\\:\\u0000-\\u001f\\u007f-\\u009f*!?{}()[\\]<>|\"]{1,192}\\.ya?ml$(?![\\s\\S])"
+        },
         "units": {
           "type": "array",
           "items": {
@@ -566,6 +570,10 @@
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 9007199254740991
+              },
+              "buildWorkflow": {
+                "type": "string",
+                "pattern": "^\\.github/workflows/[^/\\\\:\\u0000-\\u001f\\u007f-\\u009f*!?{}()[\\]<>|\"]{1,192}\\.ya?ml$(?![\\s\\S])"
               },
               "ref": {
                 "type": "string",
