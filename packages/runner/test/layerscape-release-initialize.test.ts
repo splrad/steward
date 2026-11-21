@@ -75,7 +75,7 @@ test('closeout stops before Git or state writes when the approved release-state 
   assert.deepEqual(f.calls,[]);
 }));
 
-function closeoutFixture(mode:'apply'|'closed'|'no-archive'|'moved-controller'|'moved-state') {
+function closeoutFixture(mode:'apply'|'closed'|'no-archive'|'moved-main'|'moved-controller'|'moved-state') {
   const sourceSha='3755e1426c3d9776927658480fe610b298c27813',cycleId='pr-192-'+sourceSha,applied='d'.repeat(40);
   const digest=(text:string)=>createHash('sha256').update(text).digest('hex');
   const observedAt='2026-11-19T06:55:17Z',requiredChannels=['ghcr-assets','winget'].map(channelId=>({
@@ -96,10 +96,11 @@ function closeoutFixture(mode:'apply'|'closed'|'no-archive'|'moved-controller'|'
   const closed={...active,activeCycleId:null,lastCompletedCycleId:cycleId};
   const before={head:state,history:[],cycles:[{value:cycle}],repository:['closed','no-archive'].includes(mode)?closed:active,
     domainRecords:mode==='no-archive'?[]:[{path:completionPath,value:completion},{path:provenance[0]!.path,content:payload}]};
-  let current=state,currentController=controller,writes=0;
+  let current=state,currentMain=head,currentController=controller,writes=0;
   const bytes=(value:unknown)=>({status:200,bytes:Buffer.from(JSON.stringify(value))});
   const io={async request(_method:string,path:string){
-    if(path.endsWith('/refs/heads/steward/release-state')||path.endsWith('/ref/heads/steward/release-state'))
+    if(path.endsWith('/ref/heads/main'))return bytes({ref:'refs/heads/main',object:{type:'commit',sha:currentMain}});
+    if(path.endsWith('/ref/heads/steward/release-state'))
       return bytes({ref:'refs/heads/steward/release-state',object:{type:'commit',sha:current}});
     if(path.endsWith('/pulls/201'))return bytes({number:201,state:'open',
       head:{ref:'steward/release-candidate',repo:{id:1187527897},sha:head},base:{ref:'main'}});
@@ -111,13 +112,14 @@ function closeoutFixture(mode:'apply'|'closed'|'no-archive'|'moved-controller'|'
   const centralIo={async request(){return bytes({object:{sha:currentController}});}};
   const inspectHistory=async(_request:unknown,hooks:{beforeArchivePush():Promise<void>;completionReader(cycle:unknown):unknown})=>{
     assert.equal(hooks.completionReader(cycle),completion);
+    if(mode==='moved-main')currentMain=state;
     if(mode==='moved-controller')currentController=head;
     await hooks.beforeArchivePush();
     writes++;
     current=mode==='moved-state'?head:applied;
     return {result:'PASS',archiveHead:applied,lastCompletedCycleId:cycleId};
   };
-  return {run:()=>closeout192({closeoutHead:state,controllerSha:controller},{repository:'splrad/LayerScape'},{
+  return {run:()=>closeout192({closeoutHead:state,controllerSha:controller,baseSha:head},{repository:'splrad/LayerScape'},{
     io,centralIo,readRecords:async()=>before,readCompletion:async()=>completion,inspectHistory,
   }),get writes(){return writes;}};
 }
@@ -137,11 +139,12 @@ test('a completed pointer without its archive is rejected',async()=>{
   await assert.rejects(f.run(),/NOT_APPLIED/);
   assert.equal(f.writes,0);
 });
-test('a controller change detected at the push boundary prevents a write',async()=>{
-  const f=closeoutFixture('moved-controller');
-  await assert.rejects(f.run(),/STATE_CHANGED/);
-  assert.equal(f.writes,0);
-});
+for(const mode of ['moved-main','moved-controller'] as const)
+  test('a source change detected at the push boundary prevents a write: '+mode,async()=>{
+    const f=closeoutFixture(mode);
+    await assert.rejects(f.run(),/STATE_CHANGED/);
+    assert.equal(f.writes,0);
+  });
 test('a moved state ref after the push prevents an applied result',async()=>{
   await assert.rejects(closeoutFixture('moved-state').run(),/STATE_CHANGED/);
 });

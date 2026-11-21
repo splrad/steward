@@ -57,7 +57,9 @@ export async function closeout192(plan,request,{token,io,centralIo,readRecords=r
     ||entry.value.units.length!==1||entry.value.units[0].releaseId!==450956063
     ||before.repository?.candidate?.prNumber!==201)fail('STATE_CHANGED');
   const validateTarget=async expected=>{
-    if((await currentController()).object?.sha!==plan.controllerSha||await candidate()!==candidateHead
+    const main=await product.json('git/ref/heads/main');
+    if(main.ref!=='refs/heads/main'||main.object?.type!=='commit'||main.object.sha!==plan.baseSha
+      ||(await currentController()).object?.sha!==plan.controllerSha||await candidate()!==candidateHead
       ||await currentState()!==expected)fail('STATE_CHANGED');
   };
   // The history reader takes its evaluation time before it asks for evidence.
