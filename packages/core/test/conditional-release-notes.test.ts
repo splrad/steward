@@ -173,6 +173,12 @@ describe('organization conditional release notes', () => {
     expect(() => renderFrozenReleaseNotes(template, { ...frozen, notes: input, selectedDownloads: new Set(['setup x64.zip']) })).toThrow('acquisition link');
   });
 
+  it('trims punctuation following a bare download without changing punctuation inside its filename', () => {
+    const url = `https://github.com/${repository}/releases/download/${frozen.tag}/Tool!x64.zip`;
+    const input = notes('本版重点', `**下载**。如下 ${url}!`);
+    expect(renderFrozenReleaseNotes(template, { ...frozen, notes: input, selectedDownloads: new Set(['Tool!x64.zip']) })).toContain(url);
+  });
+
   it.each([
     'https://example:placeholder@github.com/',
     'https://:placeholder@github.com/',

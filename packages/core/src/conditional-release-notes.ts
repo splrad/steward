@@ -213,8 +213,13 @@ export function assertVersionAcquisitionLinks(notes: ConditionalNotes, repositor
 }
 
 function githubUrls(text: string) {
-  return new Set([...text.matchAll(/https?:\/\/(?:[^\s<>()[\]"'`/?#\\]*@)?github\.com(?::\d+)?\/[^\s<>()[\]"'`]+/gi)]
-    .map(match => match[0]!.replace(/[.,!?;:]+$/, '')));
+  const urls = new Set<string>();
+  for (const [link] of text.matchAll(/https?:\/\/(?:[^\s<>()[\]"'`/?#\\]*@)?github\.com(?::\d+)?\/[^\s<>()[\]"'`]+/gi)) {
+    let end = link.length;
+    while (end > 0 && '.,!?;:'.includes(link.charAt(end - 1))) end--;
+    urls.add(link.slice(0, end));
+  }
+  return urls;
 }
 
 export function assertSelectedReleaseDownloads(markdown: string, repository: string, tag: string, selected?: ReadonlySet<string>) {
