@@ -8,6 +8,7 @@ import { sealProductArtifacts, fileDigest, type ProductReleaseManifest } from '.
 import * as downloads from '../src/native-artifact-download.js';
 import { productPipelineFixture } from './product-pipeline-fixture.js';
 import { S, C, START, END, digest } from './native-evidence-fixture.js';
+import { nativeRequestIdentity } from '../src/native-release-evidence.js';
 import { permitOfflineScript } from './offline-fixtures.js';
 import type { WorkflowDeliveryReceipt } from '../../core/src/release-observation.js';
 const roots:string[]=[];
@@ -85,20 +86,31 @@ it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-r
 it('prepares a single native Node delivery, changes the public set in its workflow, and reuses the original attempt',async()=>{
   const f=productPipelineFixture(2,false,[]),{context,source}=f;
   const workflow='.github/workflows/steward-release-publish.yml';
-  const settings={'include-component-in-tag':false,packages:{'.':{'release-type':'node'}}};
+  const settings={'include-component-in-tag':false,packages:{'.':{'release-type':'node',component:'app'}}};
   source['release-please-config.json']=JSON.stringify(settings);
   source['package.json']='{"name":"fixture-cli","version":"1.0.0"}';
   source['CHANGELOG.md']='## [1.0.0](https://github.com/example/product/compare/v0.9.0...v1.0.0)\n\n### Features\n\nCLI.\n';
   source['.release-notes/app.md']=['概述','更新内容','兼容性','升级与迁移','安装说明','已知问题','恢复'].map(label=>'## '+label+'\n\n已审文稿。').join('\n\n');
   function adoptedWorkflow(files:string[]) {
-    return JSON.stringify({jobs:{package:{name:'delivery/app',steps:[
+    return JSON.stringify({'run-name':'为 GitHub 打包 ${{ inputs.operation_key }}',on:{workflow_dispatch:{
+      inputs:Object.fromEntries(['cycle_id','operation_key','source_sha','controller_sha'].map(key=>[key,{type:'string',required:true}]))
+    }},jobs:{package:{name:'delivery/app',steps:[
       {run:'node build.mjs'},{id:'upload-github-release',name:'Upload GitHub release delivery',
         uses:'actions/upload-artifact@'+'a'.repeat(40),with:{path:files.join('\n')}},
     ]}}});
   }
   const initial=['fixture-cli.tgz'];
   source[workflow]=adoptedWorkflow(initial);
+  source['.github/delivery.json']=JSON.stringify({schemaVersion:3,repositoryAuthors:f.delivery.repositoryAuthors});
   const sourceConfig=source['.github/delivery.json'];
+  const bytes=Buffer.from(sourceConfig);
+  context.cycle.deliveryConfigSha=createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex');
+  context.cycle.buildWorkflow=f.request.buildWorkflow=workflow;
+  Object.assign(f.request,nativeRequestIdentity(context.repositoryId,context.cycle,f.request));
+  f.input.operationKey=f.request.inputs.operation_key=f.request.operationKey;
+  f.runs.get(2).display_title='为 GitHub 打包 '+f.request.operationKey;
+  expect(await pipelineIdentity(f.input,f.environment,f.gh,f.io)).toMatchObject({status:'SOURCE_VERIFIED',
+    units:[{unit:'app',tag:'v1.0.0',version:'1.0.0',packageVersion:'1.0.0'}]});
   Object.assign(f.runs.get(2),{status:'completed',conclusion:'success'});
   const chunk=f.input.state.domainRecords[0]!.value as {candidateId:string;content:string;documentDigest:string},
     candidate={...f.input.state.repository.candidate!,generatedSnapshotPath:'generated/'+chunk.candidateId+'/generated.json'};

@@ -5,6 +5,7 @@ import { inflateRawSync } from 'node:zlib';
 import { createAppJwt } from '../support/github/index.js';
 import { GITHUB_API_VERSION } from '../support/github/api-version.js';
 import type { BodyWriteRuntimeEnv } from './pr-body-api.js';
+import { releasePleaseUnitId } from '../../../packages/core/src/release-workflow.js';
 export const TARGET = { id:1187527897, name:'splrad/LayerScape', defaultBranch:'main' } as const;
 export const CENTRAL = { id:1296724484, name:'splrad/steward' } as const;
 export function digest(bytes:Uint8Array|string){return 'sha256:'+createHash('sha256').update(bytes).digest('hex');}
@@ -157,11 +158,16 @@ export class BoundedGitHub implements GitReader {
    try{
      const delivery=await read('.github/delivery.json'),settings=await read('release-please-config.json'),versions=await read('.release-please-manifest.json');
      if(!delivery||!settings||!versions)return;
-     ensure(Array.isArray(delivery.units)&&delivery.units.length>0&&settings.packages&&versions,'CANDIDATE_DECLARATION');
-     const roots=delivery.units.map((unit:any)=>unit.path).sort();
+     ensure(settings.packages&&typeof settings.packages==='object'&&!Array.isArray(settings.packages)&&versions,'CANDIDATE_DECLARATION');
+     const units=delivery.schemaVersion===3
+       ?Object.entries(settings.packages).map(([path,options]:[string,any])=>({path,id:releasePleaseUnitId(path,options?.component)}))
+       :delivery.units;
+     ensure(Array.isArray(units)&&units.length>0,'CANDIDATE_DECLARATION');
+     const roots=units.map((unit:any)=>unit.path).sort();
      ensure(settings['separate-pull-requests']===false&&new Set(roots).size===roots.length&&JSON.stringify(roots)===JSON.stringify(Object.keys(settings.packages).sort())&&
        Object.keys(versions).every(path=>roots.includes(path)),'CANDIDATE_UNIT_COVERAGE');
-     target.units=delivery.units.map(({id,path}:any)=>({id,path}));
+     ensure(new Set(units.map((unit:any)=>unit.id)).size===units.length,'CANDIDATE_UNIT_COVERAGE');
+     target.units=units.map(({id,path}:any)=>({id,path}));
    }catch(error){if(error instanceof Error && error.message === 'GITHUB_HTTP_404')return;throw error;}
    ensure((await scoped.json(id,refPath)).object?.sha===ref.object.sha,'CANDIDATE_SOURCE_MOVED');
    return scoped;

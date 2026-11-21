@@ -16,3 +16,10 @@ export function encodeRepositoryPath(path:string): string {
 export function dispatchWorkflow(request: {purpose: string; buildWorkflow?: string}): string {
   return request.purpose === 'build' ? request.buildWorkflow ?? defaultBuildWorkflow : channelWorkflow;
 }
+import {createHash} from 'node:crypto';
+
+export function releasePleaseUnitId(path:string,component:unknown):string {
+  const input=component??(path==='.'?'root':path.split('/').at(-1));
+  const name=typeof input==='string'?input.toLowerCase():'';
+  return /^[a-z][a-z0-9-]{0,63}$/.test(name)?name:'unit-'+createHash('sha256').update(path).digest('hex').slice(0,32);
+}

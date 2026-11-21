@@ -4,8 +4,18 @@ import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import { fileDigest, type ProductReleaseManifest, type WorkflowReleaseManifest } from '../src/release-artifacts.js';
 import { ghReleaseFixture as fixture } from './gh-release-fixture.js';
+import { verifyWorkflowDelivery } from '../src/release-pipeline.js';
 
 const writes = (f: Awaited<ReturnType<typeof fixture>>) => f.calls.filter(args => args.includes('--method'));
+it('honors a workflow subset even when the old delivery declares GitHub implicitly',async()=>{
+  const f=await fixture(),staged=join(f.target.directory,'staged');
+  await mkdir(staged);await writeFile(join(staged,'app.exe'),await readFile(join(f.target.directory,'app.exe')));
+  const original={id:'app',path:'.',notesPath:'notes.md',assets:f.target.manifest.artifacts.map(asset=>({id:asset.id,name:asset.path,mediaType:asset.mediaType})),channels:[]};
+  const delivery=await verifyWorkflowDelivery(['app.exe'],staged,f.target.directory,original,f.target.manifest);
+  expect(f.adapter.names({...f.target,delivery})).toEqual(['app.exe']);
+  await writeFile(join(staged,'app.exe'),'different');
+  await expect(verifyWorkflowDelivery(['app.exe'],staged,f.target.directory,original,f.target.manifest)).rejects.toThrow('GitHub delivery bytes');
+});
 
 it('finishes a single-file workflow delivery from the same draft after a label write failure',async()=>{
   const f=await fixture(),archived=f.target.manifest;

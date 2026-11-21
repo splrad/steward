@@ -34,7 +34,7 @@ export async function validateManualCandidate(session,producer,io) {
   const files=new Map();
   const read=async path=>{const text=await io.read(before.headSha,path);if(typeof text!=='string')fail('MANUAL_FILE');files.set(path,hash(text));return text;};
   const settings=JSON.parse(await read('release-please-config.json')),manifest=JSON.parse(await read('.release-please-manifest.json'));
-  const delivery=parseDeliveryConfig(JSON.parse(await read('.github/delivery.json')));assertProductDelivery(delivery);
+  const delivery=parseDeliveryConfig(JSON.parse(await read('.github/delivery.json')),settings);assertProductDelivery(delivery);
   const paths=delivery.units.map(unit=>unit.path).sort();
   if(JSON.stringify(Object.keys(settings.packages??{}).sort())!==JSON.stringify(paths)||
      !manifest||typeof manifest!=='object'||Array.isArray(manifest)||Object.keys(manifest).some(path=>!paths.includes(path)))fail('MANUAL_UNIT_COVERAGE');

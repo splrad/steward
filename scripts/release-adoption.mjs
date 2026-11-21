@@ -73,7 +73,7 @@ export async function withReleaseAdoption(request,adoption,io,operation) {
     const file=async(commit,path)=>(await fileBytes(commit,path)).toString('utf8').trim();
     const settings=JSON.parse(await file(adoption.sourceSha,'release-please-config.json'));
     const manifest=JSON.parse(await file(adoption.sourceSha,'.release-please-manifest.json'));
-    const delivery=parseDeliveryConfig(JSON.parse(await file(adoption.sourceSha,'.github/delivery.json')));
+    const delivery=parseDeliveryConfig(JSON.parse(await file(adoption.sourceSha,'.github/delivery.json')),settings);
     validateReleaseConfiguration(delivery,settings,manifest);
     for(const path of releaseAdoptionPlan(delivery).files)await file(adoption.sourceSha,path);
     if(request.repositoryId===1187527897) {
@@ -85,7 +85,7 @@ export async function withReleaseAdoption(request,adoption,io,operation) {
     const verifySource=async(pr,cycle)=>{
       const S=pr.merge_commit_sha;
       const config=JSON.parse(await file(S,'release-please-config.json')),versions=JSON.parse(await file(S,'.release-please-manifest.json'));
-      const sourceDelivery=parseDeliveryConfig(JSON.parse(await file(S,'.github/delivery.json')));
+      const sourceDelivery=parseDeliveryConfig(JSON.parse(await file(S,'.github/delivery.json')),config);
       // Historical recovery verifies the obligations frozen at S. Current product
       // onboarding requirements are enforced before admitting a new candidate.
       if(!cycle||cycle.sourceSha!==S||cycle.prNumber!==pr.number)fail('original cycle required');

@@ -93,12 +93,19 @@ export function verifyNormalizedDelivery(context:EvidenceContext,record:{path:st
     ||JSON.stringify(value.normalizedDelivery)!==JSON.stringify(legacyDeliveryFacts(context,value)))fail('normalized delivery provenance');
   return value;
 }
+async function readNativeSourceFile(reader:NativeEvidenceReader,sha:string,path:string) {
+  const value=await reader.json(`contents/${encodeRepositoryPath(path)}?ref=${sha}`);
+  if(value.type!=='file'||value.encoding!=='base64'||typeof value.content!=='string')fail('source file identity');
+  const bytes=Buffer.from(value.content,'base64');
+  if(bytes.length!==value.size||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==value.sha)fail('source blob digest');
+  return {bytes,sha:value.sha};
+}
+
 export async function readCycleDelivery(context:EvidenceContext,records:{path:string;commit:string;value:unknown}[],io:EvidenceTransport) {
+  const reader=new NativeEvidenceReader(io,context.repository),sourceSha=context.cycle.sourceSha;
+  let source;
   try {
-    const source=await new NativeEvidenceReader(io,context.repository).json(`contents/.github/delivery.json?ref=${context.cycle.sourceSha}`),bytes=Buffer.from(source.content??'','base64');
-    if(source.type!=='file'||source.encoding!=='base64'||source.size!==bytes.length||source.sha!==context.cycle.deliveryConfigSha
-      ||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==source.sha)fail('original delivery evidence required');
-    return {delivery:parseDeliveryConfig(JSON.parse(bytes.toString('utf8'))),legacy:null};
+    source=await readNativeSourceFile(reader,sourceSha,'.github/delivery.json');
   }catch(error) {
     if (!((error instanceof EvidenceReadError) && error.status === 404)) throw error;
     const proofs=records.filter(r=>r.path.startsWith('evidence/normalized-delivery/')&&(r.value as {cycleId?:string})?.cycleId===context.cycle.id).map(r=>verifyNormalizedDelivery(context,r));
@@ -107,6 +114,10 @@ export async function readCycleDelivery(context:EvidenceContext,records:{path:st
     proofs.sort((a,b)=>a.observedAt.localeCompare(b.observedAt));
     return {delivery:proofs[0]!.normalizedDelivery,legacy:proofs[0]!};
   }
+  if(source.sha!==context.cycle.deliveryConfigSha)fail('original delivery evidence required');
+  const raw=JSON.parse(source.bytes.toString('utf8'));
+  const settings=raw.schemaVersion===3?JSON.parse((await readNativeSourceFile(reader,sourceSha,'release-please-config.json')).bytes.toString('utf8')):undefined;
+  return {delivery:parseDeliveryConfig(raw,settings),legacy:null};
 }
 /** Read the exact original S/C sources before producing a historical projection for protected Git adoption. */
 export async function prepareNormalizedDelivery(context:EvidenceContext,io:EvidenceTransport,controllerIo:EvidenceTransport,observedAt:string) {
@@ -192,7 +203,7 @@ export async function pipelineChannelDownload(context:EvidenceContext,target:Cha
           || (await fileDigest(record.directory,'artifact-manifest.json')).sha256!==target.manifestDigest) return fail('channel freeze identity');
         await new NativeGitHubRelease(gh,download).verify({manifest:record.manifest,
           delivery:'delivery' in record?record.delivery:source.unit,
-          ...('publicBody' in record&&record.publicBody!==undefined?{publicBody:record.publicBody}:{}),
+          ...(('publicBody' in record) && (record.publicBody !== undefined) ? {publicBody:record.publicBody} : {}),
           directory:record.directory,releaseId:target.releaseId,appBotId:context.appBotId});
         await mkdir(directory);
         for (const name of channelFiles(source.unit,target.channelId,record.manifest.artifacts))
@@ -266,10 +277,11 @@ export function assertProductDelivery(delivery:Pick<DeliveryConfig,'units'>) {
 }
 /** The merged source is eligible only when its full Git tree matches the reviewed candidate. */
 export function mergedBuildCycle(input: { prNumber: number; sourceSha: string; controllerSha: string; sourceTree: string; reviewedTree: string;
-  deliveryBlobSha: string; delivery: unknown; units: { id: string; path: string; version: string; tag: string }[]; repository?:string; repositoryId?:number }): CycleRecord {
+  deliveryBlobSha: string; delivery: unknown; releasePlease?:Parameters<typeof parseDeliveryConfig>[1];
+  units: { id: string; path: string; version: string; tag: string }[]; repository?:string; repositoryId?:number }): CycleRecord {
   if (![input.sourceSha, input.controllerSha, input.sourceTree, input.reviewedTree, input.deliveryBlobSha].every(sha => /^[a-f0-9]{40}$/.test(sha))
     || input.sourceTree !== input.reviewedTree || !input.units.length) fail('merged product tree differs from reviewed source');
-  const delivery = parseDeliveryConfig(input.delivery);
+  const delivery = parseDeliveryConfig(input.delivery,input.releasePlease);
   assertProductDelivery(delivery);
   if(input.repository && input.repositoryId) assertRegisteredAdapters(input.repositoryId,input.repository,delivery);
   if(new Set(input.units.map(unit=>unit.id)).size!==input.units.length||new Set(input.units.map(unit=>unit.path)).size!==input.units.length)fail('merged duplicate unit mapping');
@@ -347,15 +359,21 @@ export async function pipelineIdentity(input: ProductBuildInput, environment: No
     const bytes = await localGitSnapshot.file(directory, sha, path); if (!bytes) fail('missing source input: ' + path); return bytes;
   };
   const source = (path: string) => file(input.sourceDirectory, cycle.sourceSha, path);
-  const deliveryBytes = await source('.github/delivery.json'), delivery = parseDeliveryConfig(JSON.parse(deliveryBytes.toString('utf8')));
+  const deliveryBytes=await source('.github/delivery.json'),rawDelivery=JSON.parse(deliveryBytes.toString('utf8'));
+  const delivery=parseDeliveryConfig(rawDelivery,rawDelivery.schemaVersion===3?JSON.parse((await source('release-please-config.json')).toString('utf8')):undefined);
   assertProductDelivery(delivery);
   if (createHash('sha1').update(`blob ${deliveryBytes.length}\0`).update(deliveryBytes).digest('hex') !== cycle.deliveryConfigSha) fail('delivery source blob');
   if (delivery.buildWorkflow !== request.buildWorkflow) fail('delivery workflow identity');
   const workflowBytes = await source(dispatchWorkflow(request)); verifyDispatchWorkflow(workflowBytes, request);
   const document = parseDocument(workflowBytes.toString('utf8'), { uniqueKeys: true });
   if (document.errors.length) fail('product YAML');
-  const workflow = document.toJS({ maxAliasCount: 0 }), matrix = workflow?.jobs?.build?.strategy?.matrix?.include;
-  if (!Array.isArray(matrix) || !matrix.length || matrix.some(row => !row || Object.keys(row).sort().join(',') !== 'assets,target,unit'
+  const workflow=document.toJS({maxAliasCount:0});
+  const matrix:{unit:string;target:string;assets:string[]}[]=workflow?.jobs?.build?.strategy?.matrix?.include;
+  const workflowOwned=delivery.schemaVersion===3;
+  if(workflowOwned) {
+    const handoff=workflowGitHubDelivery(workflow);
+    if(!handoff||handoff.sealed)fail('workflow-owned product must deliver its files');
+  } else if (!Array.isArray(matrix) || !matrix.length || matrix.some(row => !row || Object.keys(row).sort().join(',') !== 'assets,target,unit'
     || !/^[a-z][a-z0-9-]*$/.test(row.target) || !Array.isArray(row.assets) || !row.assets.length)) fail('native producer matrix');
   const projection=await nativeDeliveryProjection(delivery,cycle.units,source,input.controllerDirectory);
   const mergedChunks=input.state.domainRecords.filter(item=>item.value?.documentKind==='merged-candidate'
@@ -374,6 +392,16 @@ export async function pipelineIdentity(input: ProductBuildInput, environment: No
   if(!session.identity || !session.generated || session.pending || session.identity.authorsDigest!==hash(Buffer.from(JSON.stringify(delivery.repositoryAuthors))))
     fail('frozen candidate identities');
   if (JSON.stringify(cycle.units.map(unit => unit.id).sort()) !== JSON.stringify(session.generated.units.map((unit: { id: string }) => unit.id).sort())) fail('candidate release unit set');
+  if(workflowOwned) {
+    for(const target of cycle.units) {
+      if(!session.generated.units.some((unit:typeof target)=>unit.id===target.id&&unit.version===target.version&&unit.tag===target.tag))
+        fail('candidate release unit version');
+    }
+    if(!await stateRef())return {status:'UNKNOWN' as const,reason:'STATE_SOURCE_MOVED'};
+    return {status:'SOURCE_VERIFIED' as const,units:cycle.units.map(unit=>({
+      unit:unit.id,version:unit.version,tag:unit.tag,packageVersion:projection.versions.get(unit.id)!,
+    }))};
+  }
   const sharedTemplate=await file(input.controllerDirectory,cycle.controllerSha,sharedReleaseTemplatePath);
   const productTemplate=await localGitSnapshot.file(input.sourceDirectory,cycle.sourceSha,productReleaseTemplatePath);
   const template=productTemplate??sharedTemplate;
@@ -651,9 +679,9 @@ export async function verifyWorkflowDelivery(selection:string[],staged:string,se
     const actual=await fileDigest(staged,name),original=await fileDigest(sealed,name);
     if(actual.size!==original.size||actual.sha256!==original.sha256)fail('GitHub delivery bytes: '+name);
   }
-  return {...unit,channels:unit.channels.map(channel=>channel.id==='github-release'?{
-    ...channel,artifactIds:artifacts.map(asset=>asset.id),metadata:selection.filter(name=>!artifacts.some(asset=>asset.path===name)),
-  }:channel)};
+  const github=unit.channels.find(channel=>channel.id==='github-release')??{id:'github-release',required:true,location:'github'};
+  const selected={...github,artifactIds:artifacts.map(asset=>asset.id),metadata:selection.filter(name=>!artifacts.some(asset=>asset.path===name))};
+  return {...unit,channels:[...unit.channels.filter(channel=>channel.id!=='github-release'),selected]};
 }
 
 type PublicationUnit={unitId:string;directory:string;manifest:ProductReleaseManifest|WorkflowReleaseManifest;delivery:DeliveryUnit;
@@ -745,16 +773,11 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
     }
     return records;
   }
-  const source = async (repository: string, sha: string, path: string) => {
-    const value = await new NativeEvidenceReader(repository === context.repository ? io : controllerIo, repository).json(`contents/${encodeRepositoryPath(path)}?ref=${sha}`);
-    if (value.type !== 'file' || value.encoding !== 'base64') fail('source file identity');
-    const bytes = Buffer.from(value.content, 'base64');
-    if (bytes.length !== value.size || createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex') !== value.sha) fail('source blob digest');
-    return { bytes, sha: value.sha };
-  };
+  const source=(repository:string,sha:string,path:string)=>readNativeSourceFile(
+    repository===context.repository?reader:new NativeEvidenceReader(controllerIo,repository),sha,path);
   const deliverySource = await source(context.repository, cycle.sourceSha, '.github/delivery.json');
   if (deliverySource.sha !== cycle.deliveryConfigSha) fail('frozen delivery source');
-  const delivery = parseDeliveryConfig(JSON.parse(deliverySource.bytes.toString('utf8')));
+  const delivery=original.delivery;
   assertProductDelivery(delivery);
   const template=await source(context.repository,cycle.sourceSha,productReleaseTemplatePath).catch(error=>{
     if(!(error instanceof EvidenceReadError)||error.status!==404)throw error;
@@ -764,6 +787,7 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
   const workflow = await source(context.repository, cycle.sourceSha, delivery.buildWorkflow ?? defaultBuildWorkflow);
   const document = parseDocument(workflow.bytes.toString('utf8'), { uniqueKeys: true }); if (document.errors.length) fail('source workflow');
   const definition=document.toJS({maxAliasCount:0}),workflowDelivery=workflowGitHubDelivery(definition);
+  if(delivery.schemaVersion===3&&(!workflowDelivery||workflowDelivery.sealed))fail('workflow-owned product must deliver its files');
   const matrix = definition?.jobs?.build?.strategy?.matrix?.include;
   const projection=await nativeDeliveryProjection(delivery,cycle.units,async path=>(await source(context.repository,cycle.sourceSha,path)).bytes,controllerDirectory,true);
   const pages: NativePages = async (path, field) => {
