@@ -735,7 +735,7 @@ export async function assertReleaseWriterProtection(repository,branch,io,{token,
 }
 
 /** Fixed Git/native history reader. E05/E06 supply fresh source/channel observations through one trusted I/O boundary. */
-export async function inspectRepositoryHistory(request,{token,io=nativeEvidenceTransport(token),completionReader,now=()=>new Date().toISOString(),handoff,centralIo}={}) {
+export async function inspectRepositoryHistory(request,{token,io=nativeEvidenceTransport(token),completionReader,now=()=>new Date().toISOString(),handoff,centralIo,beforeArchivePush}={}) {
   let snapshot=await readReleaseRecords({directory:request.directory,targetRef:'steward/release-state',repositoryId:request.repositoryId,includeHistory:true});
   const native=async path=>{const response=await io.request('GET',`/repos/${request.repository}${path?'/'+path:''}`);if(response.status!==200)fail('history native read');return JSON.parse(Buffer.from(response.bytes).toString('utf8'));};
   if(snapshot.repository?.schemaVersion!==3)return {result:'UNKNOWN',inventoryComplete:false,reason:'RELEASE_ADOPTION_REQUIRED'};
@@ -807,7 +807,7 @@ export async function inspectRepositoryHistory(request,{token,io=nativeEvidenceT
     return {...history,result:'UNKNOWN',reason:'HISTORY_SOURCE_MOVED'};
   await mkdir(request.writeDirectory,{recursive:true});
   const written=await writeReleaseRecords({directory:join(request.writeDirectory,'history-'+sha256(JSON.stringify(changes))),remote:request.remote,repositoryId:request.repositoryId,
-    defaultBranch:request.defaultBranch,targetRef:'steward/release-state',writer:'release',expectedHead:snapshot.head,allowedPaths:changes.map(file=>file.path),changes,identity:request.identity},{token});
+    defaultBranch:request.defaultBranch,targetRef:'steward/release-state',writer:'release',expectedHead:snapshot.head,allowedPaths:changes.map(file=>file.path),changes,identity:request.identity},{token,beforePush:beforeArchivePush});
   if(!['APPLIED','UNCHANGED'].includes(written.status)||(await native('git/ref/heads/steward/release-state')).object?.sha!==written.head
     ||(await native(`commits/${encodeURIComponent(request.defaultBranch)}`)).sha!==defaultHead)return {...history,result:'UNKNOWN',reason:'HISTORY_ADOPTION_UNCONFIRMED'};
   return {...history,archiveHead:written.head};
