@@ -24,7 +24,7 @@ Actions 事件策略通过 GitHub 设置页或官方 REST 在采用阶段配置�
 
 ## 中央 Release 暂停
 
-有界发行及 Pages 事件入口检查中央仓库变量 `STEWARD_EXPECTED_PAUSED_RELEASE` 与旧 Release 工作流的原生状态。暂停期间保留值 `311600220` 和 `disabled_manually` 状态。
+有界发行及 Pages 事件入口检查当前受信 main 提交的完整 Git tree，确认旧 `release.yml` 已退出，再核对触发 Run 与现役工作流状态。历史工作流 311600220 保持停用供原运行追溯。
 
 ## 私有仓 Copier 准入
 
