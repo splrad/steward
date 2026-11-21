@@ -6,7 +6,9 @@
     "helpers:pinGitHubActionDigests"
   ],
   "automerge": false,
-  "dependencyDashboard": true,
+  "dependencyDashboard": {
+    "enabled": true
+  },
   "ignoreScripts": true,
   "timezone": "Asia/Bangkok",
   "prConcurrentLimit": 5,
