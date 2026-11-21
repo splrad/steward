@@ -373,17 +373,46 @@
         ]
       },
       "configVersion": "quality-native-comments-v1",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4653289279",
+        "sourceCommit": "b5456c1c91bb004b6168b7e4101aa205a7097e56",
+        "sourceUrl": "https://github.com/splrad/steward/pull/434#discussion_r4653289279",
+        "severity": "原文未说明",
+        "originalIdentifiers": [
+          "<code>&amp;&amp;</code>",
+          "<code>if(error instanceof EvidenceReadError&amp;&amp;error.status===404)fail(...)</code>",
+          "<code>if ((error instanceof EvidenceReadError) &amp;&amp; error.status === 404) fail(...)</code>",
+          "<code>packages/runner/src/release-pipeline.ts</code>",
+          "packages/runner/src/release-pipeline.ts"
+        ],
+        "segmentIndex": 0,
+        "problemZh": "原文指出：嵌套运算符周围的空白写法与运算符优先级表达不一致，具体示例为 <code>if(error instanceof EvidenceReadError&amp;&amp;error.status===404)fail(...)</code>。",
+        "impactZh": "原文指出：该写法会造成语义上的歧义；通过显式分组和规范空白可在不改变功能的前提下消除歧义，并满足 CodeQL 规则。",
+        "suggestionZh": "原文建议仅修改 <code>packages/runner/src/release-pipeline.ts</code> 约 1001–1003 行附近条件表达式：将 <code>if(error instanceof EvidenceReadError&amp;&amp;error.status===404)fail(...)</code> 改为 <code>if ((error instanceof EvidenceReadError) &amp;&amp; error.status === 404) fail(...)</code>，即在 <code>&amp;&amp;</code> 两侧添加括号并统一运算符空格；不需要新增 imports、方法或定义。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-21T15:06:16.048Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 3337,
+                "outputTokens": 665
+              }
+            ],
+            "totalNanoAiu": 1091615000,
+            "aiCredits": 1.091615,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-21T15:07:16.048Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     }
   },
   "cursor": 0
