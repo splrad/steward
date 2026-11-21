@@ -12,7 +12,7 @@ import { githubUnits, decodeReleaseRecord, decodeStateFile, stateRecordOwner, as
   inspectNativeCycle, recoverNativeCycle, archiveFile, nativeReadFile, nativeEvidenceTransport,
   dispatchNativeRun, prepareBuildDispatch, defaultBuildWorkflow, dispatchWorkflow, encodeRepositoryPath, verifyDispatchWorkflow, inspectPublications, invokePublication, inspectCycleHistory, verifyFrozenReceipts, completionFile, decodeCompletionArchive,
   pipelinePreparePublication, readCycleDelivery, prepareNormalizedDelivery, NativeGitHubRelease, nativeGhCommand, nativeReleaseDownload, NativeEvidenceReader, nativeRunFact,
-  publicationManifestDigest,sameWorkflowDelivery,prepareWorkflowChannelReceipts,
+  publicationManifestDigest,sameWorkflowDelivery,prepareWorkflowChannelReceipts,isWorkflowDeliveryUnavailable,
   retainedChannelObservations, observeNativeChannels, readChannelSourceRejections, selectChannelDispatch, prepareChannelDispatch, channelTargetsDigest, verifyChannelResult, verifyContinuationReleases, evaluateCompletion } from '../packages/runner/dist/index.js';
 
 import {withReleaseAdoption,recoverReleaseCaches} from './release-adoption.mjs';
@@ -660,7 +660,7 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
           alreadyPublished.add(unit.id);
         }
       } catch(error) {
-        if(!cycle.workflowDelivery)throw error;
+        if(!cycle.workflowDelivery||!isWorkflowDeliveryUnavailable(error))throw error;
         unavailable.add(unit.id);
       }
     }

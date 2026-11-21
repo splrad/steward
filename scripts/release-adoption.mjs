@@ -8,7 +8,7 @@ import {pathToFileURL,fileURLToPath} from 'node:url';
 import {TagName} from 'release-please/build/src/util/tag-name.js';
 import {Version} from 'release-please/build/src/version.js';
 import {isolatedBuildEnvironment,parseDeliveryConfig,NativeEvidenceReader,nativeEvidenceTransport,
-  inspectNativeCycle,inspectPublications,decodeReleaseRecord,assertRepositoryWrite,readNativeUnitVersion,defaultBuildWorkflow} from '../packages/runner/dist/index.js';
+  inspectNativeCycle,inspectPublications,decodeReleaseRecord,assertRepositoryWrite,readNativeUnitVersion,defaultBuildWorkflow,applyWorkflowDelivery,assertRegisteredAdapters} from '../packages/runner/dist/index.js';
 
 const fail=reason=>{throw new Error('RELEASE_ADOPTION: '+reason);};
 const sha=value=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
@@ -75,6 +75,10 @@ export async function withReleaseAdoption(request,adoption,io,operation) {
     const manifest=JSON.parse(await file(adoption.sourceSha,'.release-please-manifest.json'));
     const delivery=parseDeliveryConfig(JSON.parse(await file(adoption.sourceSha,'.github/delivery.json')),settings);
     validateReleaseConfiguration(delivery,settings,manifest);
+    if(delivery.schemaVersion===3) {
+      applyWorkflowDelivery(delivery,await fileBytes(adoption.sourceSha,delivery.buildWorkflow));
+      assertRegisteredAdapters(request.repositoryId,request.repository,delivery);
+    }
     for(const path of releaseAdoptionPlan(delivery).files)await file(adoption.sourceSha,path);
     if(request.repositoryId===1187527897) {
       if(request.repository!=='splrad/LayerScape'||Object.keys(manifest).length||settings.packages?.['.']?.['initial-version']!=='1.0.0'

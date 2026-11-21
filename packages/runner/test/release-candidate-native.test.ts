@@ -65,7 +65,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     jobs:{package:{name:'delivery/root',steps:[
       {uses:'actions/checkout@'+'a'.repeat(40),with:{repository:'splrad/steward',path:'controller',ref:sourceControllerSha}},
       {id:'upload-github-release',name:'Upload GitHub release delivery',uses:'actions/upload-artifact@'+'a'.repeat(40),
-        with:{name:'delivery-github-release-fixture',path:'app.zip'}},
+        with:{name:'delivery-github-release-${{ github.repository_id }}-root-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}',path:'app.zip'}},
     ]}}}));
   const config = { 'separate-pull-requests': false, 'include-component-in-tag': false, packages: { '.': { 'release-type': 'simple', 'version-file': 'VERSION' } } };
   const repositoryAuthors=[{id:7,evidence:'offline explicit authorship record'}];

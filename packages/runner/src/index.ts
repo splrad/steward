@@ -8,7 +8,7 @@ export { githubUnits } from '../../core/src/release-observation.js';
 export { downloadNativeArtifact } from './native-artifact-download.js';
 export { assertProductDelivery, assertRegisteredAdapters } from './release-pipeline.js';
 export { parsePipelineRecord, pipelineSource } from './release-pipeline-record.js';
-export { pipelineIdentity, pipelineNotes, pipelineInspect, pipelineRecoverCycleFinal, mergedBuildCycle, findFrozenFinal, pipelineDownloadPhase, pipelineFrozenManifest, pipelinePublish, pipelineVerifyPublished, pipelinePreparePublication, readCycleDelivery, prepareNormalizedDelivery, prepareWorkflowChannelReceipts, githubDeliveryArtifact } from './release-pipeline.js';
+export { pipelineIdentity, pipelineNotes, pipelineInspect, pipelineRecoverCycleFinal, mergedBuildCycle, findFrozenFinal, pipelineDownloadPhase, pipelineFrozenManifest, pipelinePublish, pipelineVerifyPublished, pipelinePreparePublication, readCycleDelivery, prepareNormalizedDelivery, prepareWorkflowChannelReceipts, githubDeliveryArtifact, applyWorkflowDelivery, isWorkflowDeliveryUnavailable } from './release-pipeline.js';
 export { inspectProductArtifacts, sealProductArtifacts, validateProductManifest } from './release-artifacts.js';
 export { renderFrozenReleaseNotes } from '../../core/src/release-template.js';
 export { decodeCompletionArchive } from '../../core/src/release-history.js';
