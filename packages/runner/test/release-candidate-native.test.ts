@@ -73,10 +73,10 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     ]}}}));
   const config = { 'separate-pull-requests': false, 'include-component-in-tag': false, packages: { '.': { 'release-type': 'simple', 'version-file': 'VERSION' } } };
   const repositoryAuthors=[{id:7,evidence:'offline explicit authorship record'}];
+  const registeredChannels=explicitWorkflow?[{id:'github-release',required:true,location:'github',artifactIds:['app'],metadata:[]}]:[];
   const delivery=compact?{schemaVersion:3,repositoryAuthors}:{schemaVersion:explicitWorkflow?2:1,buildWorkflow:explicitWorkflow,
     repositoryAuthors,units:[{id:'app',path:'.',notesPath:'.release-notes/app.md',
-      assets:[{id:'app',name:'app-${version}.zip',mediaType:'application/zip'}],channels:explicitWorkflow
-        ?[{id:'github-release',required:true,location:'github',artifactIds:['app'],metadata:[]}]:[]}]};
+      assets:[{id:'app',name:'app-${version}.zip',mediaType:'application/zip'}],channels:registeredChannels}]};
   for (const [path, text] of Object.entries({ 'README.md': '# 应用\n\n公开使用说明。\n', 'VERSION': '0.0.0\n', 'release-please-config.json': JSON.stringify(config),
     '.release-please-manifest.json': '{".":"0.0.0"}', '.github/delivery.json': JSON.stringify(delivery), 'code.txt': '功能实现\n' })) await writeFile(join(directory, path), text);
   await git('add', '.'); await git('commit', '--signoff', '-m', 'feat: initial product'); const B = await git('rev-parse', 'HEAD');
@@ -195,7 +195,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
       .toEqual({status:'APPLICABLE',sourceSha:B,units:[{id:'root',path:'.',notesPath}]});
   }
   const pausedPolicy=releasePolicyGuard({},request,async()=>({adoption:'paused',policy:null}));
-  const registered=(channels:NonNullable<typeof delivery.units>[number]['channels'])=>({adoption:'central',policy:{
+  const registered=(channels:typeof registeredChannels)=>({adoption:'central',policy:{
     repositoryId:1,repository:request.repository,release:{buildWorkflow:'.github/workflows/steward-release-publish.yml',units:[{id:'app',channels}]},
   }});
   if(explicitWorkflow) {
@@ -341,7 +341,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
         candidateRuntime:{checkRepositoryPolicy:pausedPolicy}})).rejects.toThrow('CANDIDATE_REPOSITORY_POLICY_DISABLED');
     expect(requests.slice(start).every(request=>request.method==='GET')).toBe(true);
     expect(await head('steward/release-state')).toBe(before);expect(modelCalls).toBe(firstCalls);
-    const conflictingPolicy=releasePolicyGuard({},request,async()=>registered(delivery.units[0]!.channels.map(channel=>({...channel,artifactIds:['other']}))));
+    const conflictingPolicy=releasePolicyGuard({},request,async()=>registered(registeredChannels.map(channel=>({...channel,artifactIds:['other']}))));
     await expect(releaseCommand('candidate',{...request,cycleId:null,runId:null,writeDirectory:join(root,'conflicting-handoff')},
       {token:options.token,candidateReadToken:options.readToken,controllerSha:options.controllerSha,now:options.now,io,
         candidateRuntime:{checkRepositoryPolicy:conflictingPolicy}})).rejects.toThrow('CANDIDATE_REPOSITORY_POLICY_CONFLICT');
@@ -384,7 +384,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   let adoptedReads=0;
   const adoptedPolicy=explicitWorkflow?releasePolicyGuard({},request,async()=>{
     adoptedReads++;
-    return registered(delivery.units[0]!.channels);
+    return registered(registeredChannels);
   }):undefined;
   const handed=await releaseCommand('candidate',{...request,cycleId:null,runId:null,writeDirectory:join(root,'merge-writes')},
     {token:options.token,candidateReadToken:options.readToken,controllerSha:options.controllerSha,now:options.now,io,
