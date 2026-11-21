@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, writeFile, readdir, copyFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { parse, stringify } from 'yaml';
 import { pipelineChannelDownload, pipelineIdentity, pipelinePreparePublication, readCycleDelivery } from '../src/release-pipeline.js';
 import { sealProductArtifacts, fileDigest, type ProductReleaseManifest } from '../src/release-artifacts.js';
 import * as downloads from '../src/native-artifact-download.js';
@@ -15,11 +16,18 @@ const roots:string[]=[];
 afterEach(async()=>{vi.restoreAllMocks();vi.unstubAllGlobals();vi.unstubAllEnvs();for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
 it.each(['freeze','central-selection','external-from-freeze','wrong-selection-source','historical-formal','python-freeze','incomplete-run','failed-run','unbound-run','undispatched','foreign-run','foreign-source','formal-after-expiry','private-formal','partial-draft','corrupt-formal','missing-public-asset'])('prepares publication from exact native objects: %s',async kind=>{
   const f=productPipelineFixture(1,false,kind==='python-freeze'?'requirements-build.txt':'global.json');
-  if(kind==='external-from-freeze') {
+  const external=kind==='external-from-freeze', unpublished='support-1.0.0.exe', published='app-1.0.0.exe';
+  const downloadLine=(name:string)=>`- [${name}](https://github.com/example/product/releases/download/v1.0.0/${name})\n`;
+  if(external) {
     const delivery=JSON.parse(f.source['.github/delivery.json']!);
-    delivery.units[0].channels.push({id:'ghcr-assets',required:true,location:'ghcr.io/example/product',artifactIds:['app'],metadata:['SHA256SUMS']});
+    delivery.units[0].assets.push({...delivery.units[0].assets[0],id:'support',name:'support-${version}.exe'});
+    delivery.units[0].channels.push({id:'ghcr-assets',required:true,location:'ghcr.io/example/product',artifactIds:['support'],metadata:['SHA256SUMS']});
     const bytes=Buffer.from(JSON.stringify(delivery));
     f.source['.github/delivery.json']=bytes.toString();
+    const workflowPath='.github/workflows/steward-release-publish.yml';
+    const workflow=parse(f.source[workflowPath]!);
+    workflow.jobs.build.strategy.matrix.include[0].assets.push('support');
+    f.source[workflowPath]=stringify(workflow);
     f.context.cycle.deliveryConfigSha=createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
     f.context.cycle.requiredChannels=[{unitId:'app',channelId:'ghcr-assets'}];
   }
@@ -46,17 +54,22 @@ it.each(['freeze','central-selection','external-from-freeze','wrong-selection-so
     await expect(pipelineIdentity(f.input, f.environment, f.gh, f.io)).rejects.toThrow('missing product inspection or build locks');
   }
   const original=join(root,'original');await mkdir(original);
-  await writeFile(join(original,'app-1.0.0.exe'),'frozen binary');
+  await writeFile(join(original,published),'frozen binary');
   await writeFile(join(original,'sbom.spdx.json'),JSON.stringify({spdxVersion:'SPDX-2.3',SPDXID:'SPDXRef-DOCUMENT',packages:[]}));
-  await writeFile(join(original,'release-notes.md'),`1.0.0\n${S}\n${C}\n`);
+  const noteIdentity=`1.0.0\n${S}\n${C}\n`, publicBody=noteIdentity+'\n'+downloadLine(published);
+  await writeFile(join(original,'release-notes.md'),external?publicBody+downloadLine(unpublished):noteIdentity);
   const manifest:ProductReleaseManifest={schemaVersion:3,repositoryId:1,fullName:'example/product',cycleId:record.cycleId,requestKey:record.requestKey,
     unitId:'app',version:'1.0.0',packageVersion:'1.0.0',tag:'v1.0.0',sourceSha:S,controllerSha:C,buildRef:record.buildRef,
     deliverySha256:record.deliverySha256,templateSha256:record.templateSha256,runId:100,attempt:1,toolLocks:record.toolLocks,
     producers:[{buildId:'windows-x64',jobId:1000,attempt:1,artifactId:701}],artifacts:[{id:'app',mediaType:'application/octet-stream',...await fileDigest(original,'app-1.0.0.exe')}],evidence:[]};
+  if(external) {
+    await writeFile(join(original,unpublished),'frozen channel binary');
+    manifest.artifacts.push({id:'support',mediaType:'application/octet-stream',...await fileDigest(original,unpublished)});
+  }
   await sealProductArtifacts(original,manifest);
   const names=await readdir(original),unit=f.context.cycle.units[0]!,bound=['external-from-freeze','historical-formal','formal-after-expiry','private-formal','partial-draft','corrupt-formal','missing-public-asset'].includes(kind);
   if(bound){unit.releaseId=20;unit.manifestDigest=(await fileDigest(original,'artifact-manifest.json')).sha256;}
-  const body=await readFile(join(original,'release-notes.md'),'utf8'),installer=manifest.artifacts[0]!;
+  const body=external?publicBody:noteIdentity,installer=manifest.artifacts[0]!;
   if(kind==='external-from-freeze'){unit.notesDigest=digest(body);unit.assets=[installer];}
   if(kind==='foreign-source')unit.manifestDigest='f'.repeat(64);
   Object.assign(f.runs.get(1),{status:kind==='incomplete-run'?'in_progress':'completed',conclusion:kind==='incomplete-run'?null:kind==='failed-run'?'failure':'success'});
@@ -113,7 +126,8 @@ it.each(['freeze','central-selection','external-from-freeze','wrong-selection-so
       expect(id).toBe(300);await copyFile(join(original,installer.path),destination);
     },{unit:delivery.units[0]!,controllerDirectory:f.input.controllerDirectory,history})).resolves.toEqual(
       JSON.parse(await readFile(join(original,'artifact-manifest.json'),'utf8')));
-    expect((await readdir(output)).sort()).toEqual(['SHA256SUMS',installer.path].sort());
+    expect((await readdir(output)).sort()).toEqual(['SHA256SUMS',unpublished].sort());
+    expect(await readFile(join(output,unpublished))).toEqual(await readFile(join(original,unpublished)));
     expect(download).toHaveBeenCalledOnce();
     return;
   }
