@@ -534,7 +534,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     if(session.repository.candidate?.prNumber) {
       const value=await mergedSnapshot(session.repository.candidate,session,expectedHead);
       if(value) {
-        const {cycle,mergedArchive,sourceSha,defaultSha}=value;
+        const {cycle,mergedArchive,sourceSha,defaultSha,delivery}=value;
         if(!verifyHandoff)return {status:'WAIT',reason:'MERGED_CANDIDATE_VERIFICATION_REQUIRED'};
         const history=await verifyHandoff(cycle);
         const eligible=history?.result==='PASS';
