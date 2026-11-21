@@ -256,7 +256,7 @@ export async function readDirectChannelTargets(context:EvidenceContext,targets:C
     }
   }
   const bytes=legacy?Buffer.from(JSON.stringify(legacy)):Buffer.from(source.content??'','base64');
-  if(!legacy&&(source.type!=='file'||source.encoding!=='base64'||source.size!==bytes.length||source.sha!==context.cycle.deliveryConfigSha
+  if(!legacy&&(source.path!=='.github/delivery.json'||source.type!=='file'||source.encoding!=='base64'||source.size!==bytes.length||source.sha!==context.cycle.deliveryConfigSha
     ||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==source.sha))fail('direct delivery source');
   const delivery=legacy?.normalizedDelivery??parseDeliveryConfig(JSON.parse(bytes.toString('utf8'))),sources:NativeChannelRead['sources']=[];
   for(const target of targets) {

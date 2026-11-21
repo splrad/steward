@@ -8,7 +8,7 @@ export function releasePolicyGuard(app, repository, readPolicy=mergedRepositoryP
   return async (read,{nativeEntry=false,priorRegistration=false}={})=>{
     if(nativeEntry&&!priorRegistration)return;
     const selection=await readPolicy(app,repository);
-    if(nativeEntry&&selection.adoption==='paused')throw Error('CANDIDATE_REPOSITORY_POLICY_DISABLED');
+    if(selection.adoption==='paused')throw Error('CANDIDATE_REPOSITORY_POLICY_DISABLED');
     if(selection.adoption!=='central')return;
     if(!selection.policy.release)throw Error('CANDIDATE_REPOSITORY_POLICY_DISABLED');
     if(nativeEntry)return;

@@ -16,6 +16,11 @@ const {readReleaseRecords}=await import(pathToFileURL(resolve('scripts/release-r
 vi.setConfig({testTimeout:60_000});
 const roots:string[]=[];
 afterEach(async()=>{for(const path of roots.splice(0))await rm(path,{recursive:true,force:true});});
+it.each([1,2])('keeps the original template for default delivery schema %s',schemaVersion=>{
+  const template='.github/release-template.md.mustache';
+  expect(releaseAdoptionPlan({schemaVersion,units:[]}).files).toContain(template);
+  expect(releaseAdoptionPlan({schemaVersion,units:[],buildWorkflow:'.github/workflows/product.yaml'}).files).not.toContain(template);
+});
 async function fixture(options?:{channels:{id:string;required:boolean;location:string}[];hasWorkflow:boolean}) {
   const root=await mkdtemp(join(tmpdir(),'adoption-test-'));roots.push(root);registerOfflineFixtureRoot(root);
   const directory=join(root,'source'),remote=join(root,'remote.git');await mkdir(directory);

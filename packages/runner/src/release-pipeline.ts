@@ -93,12 +93,18 @@ export function verifyNormalizedDelivery(context:EvidenceContext,record:{path:st
     ||JSON.stringify(value.normalizedDelivery)!==JSON.stringify(legacyDeliveryFacts(context,value)))fail('normalized delivery provenance');
   return value;
 }
+async function readNativeSourceFile(reader:NativeEvidenceReader,sha:string,path:string) {
+  const value=await reader.json(`contents/${encodeRepositoryPath(path)}?ref=${sha}`);
+  if(value.path!==path||value.type!=='file'||value.encoding!=='base64'||typeof value.content!=='string')fail('source file identity');
+  const bytes=Buffer.from(value.content,'base64');
+  if(bytes.length!==value.size||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==value.sha)fail('source blob digest');
+  return {bytes,sha:value.sha};
+}
 export async function readCycleDelivery(context:EvidenceContext,records:{path:string;commit:string;value:unknown}[],io:EvidenceTransport) {
   try {
-    const source=await new NativeEvidenceReader(io,context.repository).json(`contents/.github/delivery.json?ref=${context.cycle.sourceSha}`),bytes=Buffer.from(source.content??'','base64');
-    if(source.type!=='file'||source.encoding!=='base64'||source.size!==bytes.length||source.sha!==context.cycle.deliveryConfigSha
-      ||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==source.sha)fail('original delivery evidence required');
-    return {delivery:parseDeliveryConfig(JSON.parse(bytes.toString('utf8'))),legacy:null};
+    const source=await readNativeSourceFile(new NativeEvidenceReader(io,context.repository),context.cycle.sourceSha,'.github/delivery.json');
+    if(source.sha!==context.cycle.deliveryConfigSha)fail('original delivery evidence required');
+    return {delivery:parseDeliveryConfig(JSON.parse(source.bytes.toString('utf8'))),legacy:null};
   }catch(error) {
     if (!((error instanceof EvidenceReadError) && error.status === 404)) throw error;
     const proofs=records.filter(r=>r.path.startsWith('evidence/normalized-delivery/')&&(r.value as {cycleId?:string})?.cycleId===context.cycle.id).map(r=>verifyNormalizedDelivery(context,r));
@@ -371,8 +377,8 @@ export async function pipelineIdentity(input: ProductBuildInput, environment: No
     fail('frozen candidate identities');
   if (JSON.stringify(cycle.units.map(unit => unit.id).sort()) !== JSON.stringify(session.generated.units.map((unit: { id: string }) => unit.id).sort())) fail('candidate release unit set');
   const sharedTemplate=await file(input.controllerDirectory,cycle.controllerSha,sharedReleaseTemplatePath);
-  const productTemplate=await localGitSnapshot.file(input.sourceDirectory,cycle.sourceSha,productReleaseTemplatePath);
-  const template=productTemplate??sharedTemplate;
+  const template=delivery.buildWorkflow===undefined?await source(productReleaseTemplatePath):
+    await localGitSnapshot.file(input.sourceDirectory,cycle.sourceSha,productReleaseTemplatePath)??sharedTemplate;
   if(!template.equals(sharedTemplate))fail('adopted notes template');
   const units: BuildPipelineRecord['units'] = [];
   for (const target of cycle.units) {
@@ -408,7 +414,7 @@ export async function pipelineNotes(record: BuildPipelineRecord, unitId: string,
   const changelogFile = delivery.path === '.' ? changelogPath : `${delivery.path}/${changelogPath}`;
   const changelog = await read(changelogFile);
   let templateBytes=await localGitSnapshot.file(sourceDirectory,record.sourceSha,productReleaseTemplatePath);
-  if(!templateBytes&&controllerDirectory)
+  if(!templateBytes&&record.delivery.buildWorkflow!==undefined&&controllerDirectory)
     templateBytes=await localGitSnapshot.file(controllerDirectory,record.controllerSha,sharedReleaseTemplatePath);
   if(!templateBytes||hash(templateBytes)!==record.templateSha256)fail('notes template source');
   const template=templateBytes.toString('utf8');
@@ -631,19 +637,14 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
     }
     return records;
   }
-  const source = async (repository: string, sha: string, path: string) => {
-    const value = await new NativeEvidenceReader(repository === context.repository ? io : controllerIo, repository).json(`contents/${encodeRepositoryPath(path)}?ref=${sha}`);
-    if (value.type !== 'file' || value.encoding !== 'base64') fail('source file identity');
-    const bytes = Buffer.from(value.content, 'base64');
-    if (bytes.length !== value.size || createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex') !== value.sha) fail('source blob digest');
-    return { bytes, sha: value.sha };
-  };
+  const source = (repository: string, sha: string, path: string) =>
+    readNativeSourceFile(new NativeEvidenceReader(repository === context.repository ? io : controllerIo, repository),sha,path);
   const deliverySource = await source(context.repository, cycle.sourceSha, '.github/delivery.json');
   if (deliverySource.sha !== cycle.deliveryConfigSha) fail('frozen delivery source');
   const delivery = parseDeliveryConfig(JSON.parse(deliverySource.bytes.toString('utf8')));
   assertProductDelivery(delivery);
   const template=await source(context.repository,cycle.sourceSha,productReleaseTemplatePath).catch(error=>{
-    if(!(error instanceof EvidenceReadError)||error.status!==404)throw error;
+    if(delivery.buildWorkflow===undefined||!(error instanceof EvidenceReadError)||error.status!==404)throw error;
     return source('splrad/steward',cycle.controllerSha,sharedReleaseTemplatePath);
   });
   if (delivery.buildWorkflow !== cycle.buildWorkflow) fail('frozen delivery workflow');

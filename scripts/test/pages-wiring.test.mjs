@@ -37,6 +37,7 @@ function fixture() {
     }
     if(p==='')return response(repo);
     if(p==='/git/ref/heads/trunk')return response({ref:'refs/heads/trunk',object:{type:'commit',sha:state.head}});
+    if(p==='/contents/.github/steward-central-policy')return state.legacyPolicy?response({type:'file'}):{...response({}),status:404};
     if(p==='/contents/.github/workflows/pages.yml') {
       const content=state.workflowBytes??bytes;
       return response({type:'file',path:'.github/workflows/pages.yml',encoding:'base64',content:content.toString('base64'),size:content.length,sha:createHash('sha1').update(`blob ${content.length}\0`).update(content).digest('hex')});
@@ -66,7 +67,7 @@ function fixture() {
   const reader=new NativeEvidenceReader(io,repo.full_name),options={reader,repositoryId:10,mode:'default-branch',controllerSha:pin};
   const store={async load(p){return structuredClone(records.get(p)??null);},async save(v,expected){const p=pagesRecordPath(v);assert.deepEqual(records.get(p)??null,expected);decodePagesMaintenance(Buffer.from(JSON.stringify(v)),10,p);if(expected)assertPagesProgress(expected,v);records.set(p,structuredClone(v));state.onSave?.(v);}};
   const coordinator={runId:900,runAttempt:1,controllerSha:pin};
-  const service=completion=>servicePages({io,repository:repo,store,coordinator,appBotId:301115370,completion},{now:()=>state.time,deployment:async()=>state.site});
+  const service=(completion,readPolicy)=>servicePages({io,repository:repo,store,coordinator,appBotId:301115370,completion,readPolicy},{now:()=>state.time,deployment:async()=>state.site});
   const successful=(id=40,sha=S)=>{state.deployments.push({id,environment:'github-pages',sha,created_at:'2026-10-30T00:00:00Z'});state.statuses.set(id,[{id:id+100,state:'success',created_at:'2026-10-30T00:10:00Z',log_url:'https://github.com/fixture/product/actions/runs/12/job/22',environment_url:'https://fixture.github.io/product/'}]);};
   return {repo,source,workflow,run,build,deploy,artifact,state,calls,records,reader,options,store,coordinator,service,successful};
 }
@@ -98,6 +99,28 @@ test('a repository build-only setting disables public Pages maintenance writes',
   assert.deepEqual(await f.service(),{status:'BUILD_ONLY'});
   assert.equal(f.calls.some(call=>call.method==='POST'),false);
   assert.equal(f.records.size,0);
+});
+
+test('keeps old public Pages policy and skips it for reviewed native source without a legacy marker',async()=>{
+  const fallback=fixture();
+  const paused=async()=>({adoption:'paused'});
+  assert.deepEqual(await fallback.service(undefined,paused),{status:'DISABLED'});
+  assert.equal(fallback.calls.some(call=>call.method==='POST'),false);
+  for(const legacyPolicy of [false,true]) {
+    const f=fixture();
+    f.state.legacyPolicy=legacyPolicy;
+    f.state.workflowBytes=Buffer.from(YAML.stringify({...workflowDoc,env:{...workflowDoc.env,STEWARD_DOCS_SOURCE:'default-branch'}}));
+    let authorityReads=0;
+    const result=await f.service(undefined,async()=>{authorityReads++;return paused();});
+    assert.equal(result.status,legacyPolicy?'DISABLED':'ACCEPTED');
+    assert.equal(authorityReads,legacyPolicy?1:0);
+    assert.equal(f.calls.some(call=>call.method==='POST'),!legacyPolicy);
+  }
+  const old=fixture();
+  await assert.rejects(old.service(undefined,async()=>({adoption:'central',policy:{site:{
+    mode:'build-and-deploy',workflow:'.github/workflows/pages.yml',source:'release',unit:'maps',
+  }}})),/PAGES_REPOSITORY_POLICY_CONFLICT/);
+  assert.equal(old.calls.some(call=>call.method==='POST'),false);
 });
 
 test('native YAML separates source, secret-free build and Pages deployment with same-Run artifacts',()=>{
