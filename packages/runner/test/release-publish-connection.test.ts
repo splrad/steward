@@ -433,7 +433,7 @@ it.each(['legacy','conditional'])('prepares a native Node delivery with the %s n
     return JSON.stringify(built);
   };
   const targets=[{name:'linux-x64',runner:'ubuntu-24.04'},{name:'win-x64',runner:'windows-2025'}];
-  if(conditional) source['.release-notes/app.md']='## 获取与使用\n\n**按平台安装**。从[本版附件](<https://github.com/example/product/releases/tag/v1.0.0>)选取对应平台的软件包。\n';
+  if(conditional) source[notesPath]='## 获取与使用\n\n**按平台安装**。从[本版附件](<https://github.com/example/product/releases/tag/v1.0.0>)选取对应平台的软件包。\n';
   source[workflow]=aggregate(targets);
   const platformFiles=targets.map(({name})=>'fixture-cli-'+name+'.tgz');
   const two=await prepare('aggregate-two',platformFiles);
