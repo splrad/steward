@@ -64,7 +64,7 @@ it('binds required provenance to each unit and channel selection',()=>{
   expect(attestations.has('plain')).toBe(false);
 });
 it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-run','unbound-run','undispatched','foreign-run','foreign-source','formal-after-expiry','private-formal','partial-draft','corrupt-formal','missing-public-asset',
-  'wrong-contents-path','wrong-contents-blob','missing-v1-template','missing-v2-template'])('prepares publication from exact native objects: %s',async kind=>{
+  'wrong-contents-path','wrong-contents-blob','missing-v1-template','missing-v2-template','marked-v1','marked-v2'])('prepares publication from exact native objects: %s',async kind=>{
   const f=productPipelineFixture(1,false,kind==='python-freeze'?'requirements-build.txt':'global.json');
   if(kind==='python-freeze') {
     permitOfflineScript(resolve('scripts/inspect-python-release.py'));
@@ -76,7 +76,7 @@ it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-r
   const admitted=await pipelineIdentity(f.input,f.environment,f.gh,f.io);
   if(admitted.status!=='ADMITTED')throw Error('fixture admission');
   const record=admitted.record,root=await mkdtemp(join(tmpdir(),'publish-connection-'));roots.push(root);
-  if (kind === 'historical-formal'||kind==='missing-v1-template') {
+  if (kind === 'historical-formal'||kind==='missing-v1-template'||kind==='marked-v1') {
     const legacy = JSON.parse(f.source['.github/delivery.json']!);
     legacy.schemaVersion = 1;
     delete legacy.units[0].buildLocks;
@@ -87,6 +87,10 @@ it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-r
     f.context.cycle.deliveryConfigSha = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
     record.deliverySha256 = digest(bytes);
     await expect(pipelineIdentity(f.input, f.environment, f.gh, f.io)).rejects.toThrow('missing product inspection or build locks');
+  }
+  if(kind==='marked-v1'||kind==='marked-v2') {
+    f.context.cycle.workflowDelivery=true;
+    await expect(pipelineIdentity(f.input,f.environment,f.gh,f.io)).rejects.toThrow('frozen delivery mode');
   }
   const original=join(root,'original');await mkdir(original);
   await writeFile(join(original,'app-1.0.0.exe'),'frozen binary');
@@ -135,6 +139,15 @@ it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-r
     await copyFile(join(original,names[id-300]!),destination);if(kind==='corrupt-formal'&&destination.endsWith('.exe'))await writeFile(destination,'other bytes');
   });
   if(['incomplete-run','failed-run','unbound-run','undispatched'].includes(kind)) { await expect(result).resolves.toMatchObject({status:'WAIT',reason:['unbound-run','undispatched'].includes(kind)?'BUILD_BINDING_REQUIRED':'BUILD_RUN_NOT_READY',publishInvoked:false});expect(download).not.toHaveBeenCalled(); }
+  else if(kind==='marked-v1'||kind==='marked-v2') {
+    await expect(result).rejects.toThrow('frozen delivery mode');
+    expect(calls).toEqual([`/repos/example/product/contents/.github/delivery.json?ref=${S}`]);
+    expect(download).not.toHaveBeenCalled();
+    expect(await readdir(output)).toEqual([]);
+    await expect(prepareWorkflowChannelReceipts(f.context,output,f.input.controllerDirectory,'fixture-token',[],io))
+      .rejects.toThrow('frozen delivery mode');
+    expect(await readdir(output)).toEqual([]);
+  }
   else if(kind==='wrong-contents-path'||kind==='wrong-contents-blob'||kind==='missing-v1-template'||kind==='missing-v2-template') {
     const errors={'wrong-contents-path':'source file identity','wrong-contents-blob':'source blob digest',
       'missing-v1-template':'NATIVE_HTTP_404','missing-v2-template':'NATIVE_HTTP_404'};
@@ -180,6 +193,9 @@ it('prepares a single native Node delivery, changes the public set in its workfl
   Object.assign(f.request,nativeRequestIdentity(context.repositoryId,context.cycle,f.request));
   f.input.operationKey=f.request.inputs.operation_key=f.request.operationKey;
   f.runs.get(2).display_title='为 GitHub 打包 '+f.request.operationKey;
+  delete context.cycle.workflowDelivery;
+  await expect(pipelineIdentity(f.input,f.environment,f.gh,f.io)).rejects.toThrow('frozen delivery mode');
+  context.cycle.workflowDelivery=true;
   expect(await pipelineIdentity(f.input,f.environment,f.gh,f.io)).toMatchObject({status:'SOURCE_VERIFIED',
     units:[{unit:'app',tag:'v1.0.0',version:'1.0.0',packageVersion:'1.0.0'}]});
   const originalBuild = {...f.runs.get(2),status:'completed',conclusion:'success',run_attempt:1};
@@ -228,6 +244,10 @@ it('prepares a single native Node delivery, changes the public set in its workfl
         await mkdir(input.directory);for(const name of selected)await writeFile(join(input.directory,name),name.endsWith('.tgz')?delivered:'checksums\n');
       },unavailable);
   };
+  delete context.cycle.workflowDelivery;
+  await expect(prepare('unmarked-v3',initial)).rejects.toThrow('frozen delivery mode');
+  expect(await readdir(join(output,'unmarked-v3'))).toEqual([]);
+  context.cycle.workflowDelivery=true;
   const originalManifest=source['.release-please-manifest.json']!;
   source['.release-please-manifest.json']='{}';
   await expect(prepare('missing-version-in-merged-source',initial)).rejects.toThrow('native version source');

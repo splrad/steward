@@ -108,6 +108,7 @@ export async function readCycleDelivery(context:EvidenceContext,records:{path:st
     source=await readNativeSourceFile(reader,sourceSha,'.github/delivery.json');
   }catch(error) {
     if (!((error instanceof EvidenceReadError) && error.status === 404)) throw error;
+    assertCycleDeliveryMode(context.cycle,false);
     const proofs=records.filter(r=>r.path.startsWith('evidence/normalized-delivery/')&&(r.value as {cycleId?:string})?.cycleId===context.cycle.id).map(r=>verifyNormalizedDelivery(context,r));
     if(!proofs.length)fail('NORMALIZED_DELIVERY_EVIDENCE_REQUIRED');
     if(proofs.some(proof=>JSON.stringify({...proof,observedAt:''})!==JSON.stringify({...proofs[0],observedAt:''})))fail('conflicting normalized delivery evidence');
@@ -118,11 +119,16 @@ export async function readCycleDelivery(context:EvidenceContext,records:{path:st
   const raw=JSON.parse(source.bytes.toString('utf8'));
   const settings=raw.schemaVersion===3?JSON.parse((await readNativeSourceFile(reader,sourceSha,'release-please-config.json')).bytes.toString('utf8')):undefined;
   const delivery=parseDeliveryConfig(raw,settings);
+  assertCycleDeliveryMode(context.cycle,delivery.schemaVersion===3);
   if(delivery.schemaVersion!==3)return {delivery,legacy:null};
   const workflow=await readNativeSourceFile(reader,sourceSha,delivery.buildWorkflow!);
   const handoff=applyWorkflowDelivery(delivery,workflow.bytes);
   assertFrozenWorkflowChannels(delivery,context.cycle);
   return {delivery,legacy:null,handoff,releasePlease:settings};
+}
+
+function assertCycleDeliveryMode(cycle:CycleRecord,workflowOwned:boolean) {
+  if(Boolean(cycle.workflowDelivery)!==workflowOwned)fail('frozen delivery mode');
 }
 
 function assertFrozenWorkflowChannels(delivery:DeliveryConfig,cycle:CycleRecord) {
@@ -402,15 +408,16 @@ export async function pipelineIdentity(input: ProductBuildInput, environment: No
   const source = (path: string) => file(input.sourceDirectory, cycle.sourceSha, path);
   const deliveryBytes=await source('.github/delivery.json'),rawDelivery=JSON.parse(deliveryBytes.toString('utf8'));
   const delivery=parseDeliveryConfig(rawDelivery,rawDelivery.schemaVersion===3?JSON.parse((await source('release-please-config.json')).toString('utf8')):undefined);
-  assertProductDelivery(delivery);
   if (createHash('sha1').update(`blob ${deliveryBytes.length}\0`).update(deliveryBytes).digest('hex') !== cycle.deliveryConfigSha) fail('delivery source blob');
+  const workflowOwned=delivery.schemaVersion===3;
+  assertCycleDeliveryMode(cycle,workflowOwned);
+  assertProductDelivery(delivery);
   if (delivery.buildWorkflow !== request.buildWorkflow) fail('delivery workflow identity');
   const workflowBytes = await source(dispatchWorkflow(request)); verifyDispatchWorkflow(workflowBytes, request);
   const document = parseDocument(workflowBytes.toString('utf8'), { uniqueKeys: true });
   if (document.errors.length) fail('product YAML');
   const workflow=document.toJS({maxAliasCount:0});
   const matrix:{unit:string;target:string;assets:string[]}[]=workflow?.jobs?.build?.strategy?.matrix?.include;
-  const workflowOwned=delivery.schemaVersion===3;
   if(workflowOwned) {
     applyWorkflowDelivery(delivery,workflowBytes);
     assertFrozenWorkflowChannels(delivery,cycle);
