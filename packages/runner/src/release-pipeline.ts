@@ -336,8 +336,10 @@ export function mergedBuildCycle(input: { prNumber: number; sourceSha: string; c
 async function nativeDeliveryProjection(delivery:DeliveryConfig,targets:CycleRecord['units'],source:(path:string)=>Promise<Buffer>,controllerDirectory:string,historical=false) {
   const settings=JSON.parse((await source('release-please-config.json')).toString('utf8'));
   const manifest=JSON.parse((await source('.release-please-manifest.json')).toString('utf8'));
-  if(JSON.stringify(Object.keys(settings.packages??{}).sort())!==JSON.stringify(delivery.units.map(unit=>unit.path).sort())
-    ||JSON.stringify(Object.keys(manifest).sort())!==JSON.stringify(delivery.units.map(unit=>unit.path).sort()))fail('Release Please delivery paths');
+  const declaredPaths=delivery.units.map(unit=>unit.path).sort(),manifestPaths=Object.keys(manifest).sort();
+  if(JSON.stringify(Object.keys(settings.packages??{}).sort())!==JSON.stringify(declaredPaths)
+    ||(delivery.schemaVersion===3?manifestPaths.some(path=>!declaredPaths.includes(path)):
+      JSON.stringify(manifestPaths)!==JSON.stringify(declaredPaths)))fail('Release Please delivery paths');
   const versions=new Map<string,string>(),toolLocks:Record<string,string>={};
   for(const target of targets) {
     const unit=delivery.units.find(unit=>unit.id===target.id);
@@ -748,15 +750,16 @@ function assertFlatWorkflowSelection(paths:string[],files:{path:string}[]) {
     const leaf=source.split(/[\\/]/).at(-1)!;
     return {excluded,leaf,directory:source.slice(0,source.length-leaf.length)};
   });
+  const directory=rules[0]!.directory;
+  const literal=directory.replace(/^\$\{\{\s*(?:runner\.temp|github\.workspace)\s*\}\}/i,'');
+  const sharedDirectory=/^[-\w.:/\\ ]*$/.test(literal)&&rules.every(rule=>rule.directory===directory);
+  const includes=rules.filter(rule=>!rule.excluded).map(rule=>rule.leaf);
+  // A bare path can also be a directory which the upload action uses as its archive root.
+  // A same-directory wildcard or two distinct sibling search paths establish the parent as root.
+  const parentIsRoot=sharedDirectory&&(includes.some(leaf=>leaf.includes('*'))||new Set(includes.map(leaf=>leaf.toLowerCase())).size>1);
   const simple=(leaf:string)=>/^[-\w.*]+$/.test(leaf)&&leaf.indexOf('*')===leaf.lastIndexOf('*')
-    &&(leaf.includes('*')||leaf.includes('.')||/^(?:README|LICENSE|NOTICE|SHA(?:256|512)SUMS)$/.test(leaf));
-  if(rules.some(({leaf})=>!simple(leaf)))return;
-  if(rules.some(rule=>rule.excluded)) {
-    // Upload removes the common root. An exclusion can be mapped to a flat name when the source directory is shared.
-    const directory=rules[0]!.directory;
-    const literal=directory.replace(/^\$\{\{\s*(?:runner\.temp|github\.workspace)\s*\}\}/i,'');
-    if(!/^[-\w.:/\\ ]*$/.test(literal)||rules.some(rule=>rule.directory!==directory))return;
-  }
+    &&(parentIsRoot||leaf.includes('*')||leaf.includes('.')||/^(?:README|LICENSE|NOTICE|SHA(?:256|512)SUMS)$/.test(leaf));
+  if(rules.some(({leaf})=>!simple(leaf))||rules.some(rule=>rule.excluded)&&!sharedDirectory)return;
   const matches=(name:string,leaf:string)=>{
     const [prefix,suffix]=leaf.split('*');
     return suffix===undefined?name===prefix:
@@ -978,8 +981,9 @@ async function prepareWorkflowPublication(options:{
   const {cycle}=context,requests=cycle.dispatches.filter(dispatch=>dispatch.purpose==='build');
   if(requests.length!==1||requests[0]!.canonicalRunId===null)
     return {status:'WAIT' as const,reason:'BUILD_BINDING_REQUIRED',publishInvoked:false as const};
-  const request=requests[0]!,run=verifyExecutionSource(nativeRunFact(await reader.json('actions/runs/'+request.canonicalRunId)),{...context,request});
-  if(run.status!=='completed'||run.conclusion!=='success')
+  const request=requests[0]!;
+  const run=units.length?verifyExecutionSource(nativeRunFact(await reader.json('actions/runs/'+request.canonicalRunId)),{...context,request}):null;
+  if(run&&(run.status!=='completed'||run.conclusion!=='success'))
     return {status:'WAIT' as const,reason:'BUILD_RUN_NOT_READY',publishInvoked:false as const};
   const chunks=history.filter(entry=>(entry.value as CandidateArchiveChunk)?.documentKind==='merged-candidate'
     && new RegExp(`/cycles/${cycle.id}(?:-[1-9][0-9]*)?\\.json$`).test(entry.path)).map(entry=>entry.value as CandidateArchiveChunk);
@@ -987,6 +991,7 @@ async function prepareWorkflowPublication(options:{
   if(merged.cycleId!==cycle.id||merged.sourceSha!==cycle.sourceSha||merged.pull.number!==cycle.prNumber
     ||merged.session.identity?.authorsDigest!==hash(Buffer.from(JSON.stringify(delivery.repositoryAuthors))))fail('workflow delivery reviewed source');
   const records:PublicationUnit[]=[];
+  if(!run)return records;
   for(const target of units) {
     const unit=delivery.units.find(unit=>unit.id===target.id);
     if(!unit?.channels.some(channel=>channel.id==='github-release'))fail('workflow GitHub delivery channel');

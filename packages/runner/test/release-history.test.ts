@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {expect,it} from 'vitest';
 import {inspectCycleHistory,type HistorySnapshot} from '../src/release-history.js';
-import {nativeRequestIdentity} from '../src/native-release-evidence.js';
+import {archiveFile,nativeRequestIdentity,nativeRunFact} from '../src/native-release-evidence.js';
 import {evidenceFixture,S,C,D,NOW,digest} from './native-evidence-fixture.js';
 import type {CycleCompletionFact} from '../../core/src/release-history.js';
 function fixture() {
@@ -53,7 +53,8 @@ it('does not classify an ordinary version-touch PR or a fork by title/body',asyn
   const f=fixture();f.pr.head.repo.id=2;
   const result=await inspectCycleHistory(f.snapshot,f.io,NOW,async()=>f.fact,undefined,async()=>true);expect(result.result).toBe('UNKNOWN');expect(result.discovered).toHaveLength(0);
 });
-it.each(['complete','unfinished','unverified-source','missing-native-pr','workflow-frozen','workflow-run-failed','workflow-run-unavailable'])('checks prior obligations before admitting a merged handoff: %s',async kind=>{
+it.each(['complete','unfinished','unverified-source','missing-native-pr','workflow-frozen','workflow-run-failed','workflow-run-unavailable',
+  'workflow-archived-original','workflow-no-original','workflow-conflicting-original'])('checks prior obligations before admitting a merged handoff: %s',async kind=>{
   const f=fixture(),next=structuredClone(f.snapshot.cycles[0]!.value),nextSha='e'.repeat(40);
   Object.assign(next,{id:`pr-13-${nextSha}`,prNumber:13,sourceSha:nextSha});
   const pr={...f.pr,id:202,number:13,merge_commit_sha:nextSha,merged_at:'2026-10-28T00:00:00Z'};
@@ -78,7 +79,25 @@ it.each(['complete','unfinished','unverified-source','missing-native-pr','workfl
     native.runs.get(1).display_title='Build '+dispatch.operationKey;
     Object.assign(old.units[0]!,{releaseId:null,manifestDigest:null,notesDigest:null,assets:[],githubDisabled:true});
     old.freezeCompletedAt=NOW;
+    if(['workflow-frozen','workflow-run-failed','workflow-run-unavailable'].includes(kind))old.freezeBuildAttempt=1;
+    if(kind==='workflow-archived-original'||kind==='workflow-conflicting-original') {
+      const archive={
+        schemaVersion:1 as const,repositoryId:1,repository:'example/product',cycleId:old.id,sourceSha:S,
+        requestKey:dispatch.requestKey,inputDigest:dispatch.inputDigest,executorControllerSha:C,
+        workflowBlobSha:gitBlob(files[workflow]!),sourceBlobs:[],observedAt:NOW,
+        run:nativeRunFact({...native.runs.get(1),conclusion:'success'}),jobs:[],producers:[],logs:[],objects:[],missingNativeKeys:[],
+      };
+      for(const attempt of kind==='workflow-conflicting-original'?[1,2]:[1]) {
+        const value={...archive,run:{...archive.run,runAttempt:attempt}};
+        const {path,content}=archiveFile(value);
+        f.snapshot.domainRecords.push({path,content,value,commit:D});
+      }
+      // A successful rerun first archived after this historic freeze cannot be its source.
+      const later={...archive,observedAt:'2026-10-28T00:00:00Z',run:{...archive.run,runAttempt:3}};
+      f.snapshot.domainRecords.push({...archiveFile(later),value:later,commit:D});
+    }
   }
+  const runs:string[]=[];
   const response=(value:unknown)=>({status:200,headers:new Headers(),bytes:Buffer.from(JSON.stringify(value))});
   const io={request:async(method:'GET'|'POST',path:string)=>{
     if(path.includes('/commits/main'))return response({sha:nextSha});
@@ -90,8 +109,10 @@ it.each(['complete','unfinished','unverified-source','missing-native-pr','workfl
         const data=files[file]!;
         return response({path:file,type:'file',encoding:'base64',content:data.toString('base64'),size:data.length,sha:gitBlob(data)});
       }
-      if(path.endsWith('/actions/runs/100'))return kind==='workflow-run-unavailable'?native.response({},404):
-        response({...native.runs.get(1),conclusion:kind==='workflow-frozen'?'success':'failure'});
+      if(path.includes('/actions/runs/100'))runs.push(path);
+      if(path.endsWith('/actions/runs/100'))return response({...native.runs.get(1),run_attempt:3,conclusion:'success'});
+      if(path.endsWith('/actions/runs/100/attempts/1'))return kind==='workflow-run-unavailable'?native.response({},404):
+        response({...native.runs.get(1),conclusion:kind==='workflow-run-failed'?'failure':'success'});
     }
     return f.io.request(method,path);
   }};
@@ -99,9 +120,10 @@ it.each(['complete','unfinished','unverified-source','missing-native-pr','workfl
   const result=await inspectCycleHistory(f.snapshot,io,NOW,async()=>f.fact,undefined,async(p,cycle)=>{
     checked.push(cycle!.id);return kind!=='unverified-source'||p.number!==13;
   },next);
-  const complete=kind==='complete'||kind==='workflow-frozen';
+  const complete=['complete','workflow-frozen','workflow-archived-original'].includes(kind);
   expect(result.result).toBe(complete?'PASS':kind==='unfinished'?'WAIT':'UNKNOWN');
   if(workflowFreeze) {
+    expect(runs).toEqual(['workflow-no-original','workflow-conflicting-original'].includes(kind)?[]:['/repos/example/product/actions/runs/100/attempts/1']);
     expect(result.reasons).toContainEqual({cycleId:old.id,reason:'NATIVE_BUILD_FREEZE',result:complete?'PASS':'UNKNOWN'});
     expect(result.activeCycleIds).toEqual(complete?[]:[old.id]);
     expect(result.lastCompletedCycleId).toBe(complete?old.id:null);

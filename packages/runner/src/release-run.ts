@@ -244,8 +244,8 @@ export async function nativeOrasRead(args:readonly string[]):Promise<string> {
   } finally {await rm(home,{recursive:true,force:true});}
 }
 export async function readDirectChannelTargets(context:EvidenceContext,targets:ChannelTarget[],io:EvidenceTransport,now:string,oras:OrasRead=nativeOrasRead,history:ChannelRecord[]=[]) {
-  if(!targets.length||targets.every(target=>context.cycle.units.some(unit=>unit.id===target.unitId
-    &&unit.channelDeliveries?.some(receipt=>receipt.channelId===target.channelId))))return {files:[] as ArchiveFile[],reads:[] as ChannelReadItem[]};
+  // The direct evidence format binds legacy delivery.json. Workflow-owned targets still need the native product probe.
+  if(!targets.length||context.cycle.workflowDelivery)return {files:[] as ArchiveFile[],reads:[] as ChannelReadItem[]};
   const reader=new NativeEvidenceReader(io,context.repository);let source:any,legacy:ReturnType<typeof verifyNormalizedDelivery>|undefined;
   try {source=await reader.json(`contents/.github/delivery.json?ref=${context.cycle.sourceSha}`);}catch(error) {
     if ((error instanceof EvidenceReadError) && error.status === 404) {

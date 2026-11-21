@@ -11,28 +11,40 @@ import {evidenceFixture,C,NOW,START,END,digest,zipResult} from './native-evidenc
 import {nativeRequestIdentity,recoverNativeCycle} from '../src/native-release-evidence.js';
 import {isolatedBuildEnvironment} from '../src/build-environment.js';
 import {permitOfflineScript,registerOfflineFixtureRoot} from './offline-fixtures.js';
+import {releaseProtectionFixture} from './fixtures/release-protection.js';
 const {serviceReleaseWake}=await import(pathToFileURL(resolve('scripts/release-coordinator.mjs')).href);
 const {publishNativeCycle,readReleaseRecords}=await import(pathToFileURL(resolve('scripts/release-record.mjs')).href);
 const roots:string[]=[];
 afterEach(async()=>{vi.restoreAllMocks();vi.unstubAllGlobals();vi.unstubAllEnvs();for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
 it.each(['failure','in_progress','second-failure','formal-asset-404','wrong-delivery-format','wrong-delivery-version',
-  'excluded-delivery-file'] as const)('handles %s in the bounded native publication entry',async kind=>{
+  'excluded-delivery-file','excluded-extensionless-file','freeze-original-attempt','freeze-attempt-incomplete','external-only-waits'] as const)('handles %s in the bounded native publication entry',async kind=>{
   const f=productPipelineFixture(),native=evidenceFixture(kind==='second-failure'?2:1),cycle=f.context.cycle;
-  const excluded=kind==='excluded-delivery-file';
+  const excluded=kind==='excluded-delivery-file'||kind==='excluded-extensionless-file';
   const rejectDelivery=kind==='wrong-delivery-format'||kind==='wrong-delivery-version'||excluded;
-  const assetName=excluded?'extra.json':kind==='wrong-delivery-version'?'package.json':'app.exe';
+  const assetName=kind==='excluded-extensionless-file'?'app':excluded?'extra.json':kind==='wrong-delivery-version'?'package.json':'app.exe';
   const archive=zipResult({name:'app',version:'2.0.0'},assetName);
   const artifact={id:800,name:`delivery-github-release-1-app-${cycle.sourceSha}-100-1`,digest:'sha256:'+digest(archive),
     expired:false,size_in_bytes:archive.length,workflow_run:{id:100,head_sha:cycle.sourceSha},created_at:'2026-10-26T00:00:30.000Z'};
-  if(kind==='formal-asset-404'||rejectDelivery) {
+  const externalOnly=kind==='external-only-waits';
+  const freeze=kind==='freeze-original-attempt'||kind==='freeze-attempt-incomplete'||externalOnly;
+  if(kind==='formal-asset-404'||rejectDelivery||freeze) {
     const workflow='.github/workflows/steward-release-publish.yml';
     const compact=JSON.stringify({schemaVersion:3,repositoryAuthors:f.delivery.repositoryAuthors});
     f.source['.github/delivery.json']=compact;
     f.source[workflow]=JSON.stringify({jobs:{delivery:{name:'delivery/app',steps:[{
       id:'upload-github-release',name:'Upload GitHub release delivery',uses:'actions/upload-artifact@'+'a'.repeat(40),
       with:{name:'delivery-github-release-${{ github.repository_id }}-app-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}',
-        path:excluded?'dist/*\n!dist/extra.json':assetName},
+        path:excluded?'dist/*\n!dist/'+assetName:assetName},
     }]}}});
+    if(freeze)f.source[workflow]=JSON.stringify({jobs:{build:{steps:[{run:'echo build'}]}}});
+    if(externalOnly) {
+      cycle.requiredChannels=[{unitId:'app',channelId:'ghcr-assets'}];
+      f.source[workflow]=JSON.stringify({jobs:{delivery:{name:'delivery/app',steps:[{
+        id:'upload-ghcr-assets',name:'Upload GHCR assets delivery',uses:'actions/upload-artifact@'+'a'.repeat(40),
+        env:{STEWARD_CHANNEL_LOCATION:'ghcr.io/example/product'},with:{path:'dist/*.tgz',
+          name:'delivery-ghcr-assets-${{ github.repository_id }}-app-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}'},
+      }]}}});
+    }
     const settings=JSON.parse(f.source['release-please-config.json']!);
     settings.packages['.'].component='app';
     f.source['release-please-config.json']=JSON.stringify(settings);
@@ -41,12 +53,13 @@ it.each(['failure','in_progress','second-failure','formal-asset-404','wrong-deli
     f.request.buildWorkflow=workflow;
     Object.assign(f.request,nativeRequestIdentity(1,cycle,f.request));
     f.request.inputs.operation_key=f.request.operationKey;
-    if(!rejectDelivery)Object.assign(cycle.units[0]!,{releaseId:50,assets:[{id:'app',path:'app.exe',size:3,sha256:digest('EXE')}],
+    if(freeze)cycle.units[0]!.githubDisabled=true;
+    else if(!rejectDelivery)Object.assign(cycle.units[0]!,{releaseId:50,assets:[{id:'app',path:'app.exe',size:3,sha256:digest('EXE')}],
       notesDigest:digest('approved body'),manifestDigest:digest('approved manifest'),
       githubDelivery:{runId:100,attempt:1,artifactId:800,digest:'sha256:'+digest('frozen archive')}});
   }
   Object.assign(f.runs.get(1),{status:kind==='in_progress'?'in_progress':'completed',
-    conclusion:kind==='in_progress'?null:rejectDelivery?'success':'failure',display_title:'Build '+f.request.operationKey});
+    conclusion:kind==='in_progress'?null:rejectDelivery||freeze?'success':'failure',display_title:'Build '+f.request.operationKey});
   if(kind==='in_progress')Object.assign(native.runs.get(1),{status:'in_progress',conclusion:null});
   native.setAccepted();
   const root=await mkdtemp(join(tmpdir(),'wake-publication-'));roots.push(root);registerOfflineFixtureRoot(root);
@@ -56,7 +69,7 @@ it.each(['failure','in_progress','second-failure','formal-asset-404','wrong-deli
   const state={...f.input.state.repository,schemaVersion:3,releaseAdoption:{sourceSha:cycle.sourceSha,prNumber:1},candidate:null};
   await writeFile(join(root,'state.json'),JSON.stringify(state)+'\n');await mkdir(join(root,'cycles'));
   await writeFile(join(root,`cycles/${cycle.id}.json`),JSON.stringify(cycle)+'\n');
-  if(rejectDelivery) {
+  if(rejectDelivery||freeze) {
     const candidate=mergedCandidateFixture(f.input);
     await mkdir(join(root,'generated',candidate.value.candidateId,'cycles'),{recursive:true});
     await writeFile(join(root,candidate.path),JSON.stringify(candidate.value)+'\n');
@@ -86,6 +99,14 @@ it.each(['failure','in_progress','second-failure','formal-asset-404','wrong-deli
         steps:[{name:'Upload GitHub release delivery',status:'completed',conclusion:'success',started_at:START,completed_at:END}]}]});
       if(path.endsWith('/actions/artifacts/800'))return f.response(artifact);
     }
+    if(freeze) {
+      if(path.endsWith('/git/ref/heads/steward/release-state'))
+        return f.response({object:{sha:await git('rev-parse','refs/heads/steward/release-state')}});
+      const protection=releaseProtectionFixture(path);
+      if(protection)return f.response(protection);
+      if(path.endsWith('/runs/100/attempts/1'))return f.response({...f.runs.get(1),
+        conclusion:kind==='freeze-original-attempt'?'success':'failure'});
+    }
     if(path.endsWith('/runs/100'))return f.response(f.runs.get(1));
     throw Error('unregistered publication read '+path);
   }};
@@ -101,6 +122,24 @@ it.each(['failure','in_progress','second-failure','formal-asset-404','wrong-deli
   });
   const publicationPorts={token:'fixture',io,centralIo:io,centralInvocation:{runId:900,runAttempt:1,controllerSha:C,defaultBranch:'main'},controllerDirectory:process.cwd(),now:()=>NOW};
   const registration={directory:root,repository:'example/product',repositoryId:1,appBotId:42,defaultBranch:'main'};
+  if(freeze) {
+    const result=await publishNativeCycle({...registration,cycleId:cycle.id,remote:root,writeDirectory:join(root,'writes'),
+      identity:{name:'Publication Fixture',email:'publication@example.invalid'}},publicationPorts);
+    const finalHead=await git('rev-parse','refs/heads/steward/release-state');
+    expect(calls.filter(path=>path.includes('/actions/runs/'))).toEqual(externalOnly?[]:['/repos/example/product/actions/runs/100',
+      '/repos/example/product/actions/runs/100/attempts/1']);
+    expect(calls.some(path=>path.includes('/releases')||path.includes('/git/refs/tags')||path.includes('/artifacts'))).toBe(false);
+    if(kind==='freeze-original-attempt') {
+      expect(result).toMatchObject({status:'FROZEN',reason:'NO_PUBLICATION_CHANNELS',archiveHead:finalHead,publishInvoked:false});
+      expect(finalHead).not.toBe(head);
+      const saved=await readReleaseRecords({directory:root,targetRef:'steward/release-state',repositoryId:1});
+      expect(saved.cycles[0]!.value).toMatchObject({id:cycle.id,freezeBuildAttempt:1,freezeCompletedAt:NOW});
+    } else {
+      expect(result).toMatchObject({status:'WAIT',reason:externalOnly?'FORMAL_RELEASE_REQUIRED':'BUILD_RUN_NOT_READY',publishInvoked:false});
+      expect(finalHead).toBe(head);
+    }
+    return;
+  }
   if(kind==='formal-asset-404') {
     await expect(publishNativeCycle({...registration,cycleId:cycle.id},publicationPorts)).rejects.toMatchObject({status:404});
     expect(calls.some(path=>path.endsWith('/releases/assets/51'))).toBe(true);

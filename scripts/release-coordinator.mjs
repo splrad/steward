@@ -39,7 +39,7 @@ export async function serviceReleaseWake(request,refresh,invoke,clock=Date.now) 
   snapshot=await refresh();
   const results=[];
   for(const {value:registered} of snapshot.cycles) {
-    if((registered.freezeOnly||registered.freezeCompletedAt) && !githubUnits(registered).length) {
+    if((registered.freezeOnly||registered.freezeCompletedAt) && !registered.requiredChannels?.length && !githubUnits(registered).length) {
       if(!registered.freezeCompletedAt)results.push(await invoke('observe-channel',{...request,cycleId:registered.id,runId:null}));
       continue;
     }
