@@ -125,17 +125,18 @@ export async function desiredPagesSource({reader,repositoryId,mode,unitId='',con
       if(listed.draft!==false||listed.prerelease!==false||listed.immutable!==true)continue;
       check(positive(listed.id)&&utc(listed.published_at),'RELEASE');
       if(listed.author?.id!==appBotId)continue;
+      const frozen=await readCycle(reader,listed,unitId);
+      if(frozen) {
+        candidates.push({release:listed,frozen});
+        continue;
+      }
       const bundle=await readManifest(reader,listed);
-      if(bundle&&bundle.assets.length===bundle.manifest.artifacts.length+4) {
+      if(bundle) {
         const m=bundle.manifest;validateProductManifest(m);
         check(m.repositoryId===repositoryId&&m.fullName===reader.repository,'MANIFEST_REPOSITORY');
         if(m.unitId!==unitId)continue;
         check(m.tag===listed.tag_name,'MANIFEST_TAG');
         candidates.push({release:listed,bundle});
-      } else {
-        const frozen=await readCycle(reader,listed,unitId);
-        if(frozen)candidates.push({release:listed,frozen});
-        else if(bundle&&bundle.manifest.unitId===unitId)candidates.push({release:listed,bundle});
       }
     }
     if(!candidates.length)return {status:'WAIT',reason:'NO_FORMAL_RELEASE'};

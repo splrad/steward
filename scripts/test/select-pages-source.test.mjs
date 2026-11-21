@@ -101,17 +101,24 @@ test('formal Release retains S after main advances; native final-byte verifier i
   assert.ok(f.contentReads.some(([p,s])=>p==='release-please-config.json'&&s===S));
   assert.ok(f.calls.some(c=>c[0]==='gh'&&c[1]==='attestation'));assert.ok(f.calls.some(c=>c[0]==='gh'&&c[2]==='verify-asset'));
 });
-test('formal release Pages can read workflow-picked bytes without a public manifest file',async t=>{
-  const f=await fixture(t),delivery=await f.ports.readContent(f.options.reader,'.github/delivery.json',S);
+for(const productFile of [false,true])test('formal release Pages uses frozen workflow bytes with a product manifest='+productFile,async t=>{
+  const f=await fixture(t),delivery=Buffer.from(JSON.stringify({schemaVersion:3,repositoryAuthors:[{id:7,evidence:'fixture author'}]}));
+  const settings=Buffer.from(JSON.stringify({'include-component-in-tag':false,packages:{'.':{component:'app'}}}));
   f.assets.splice(1);
+  if(productFile) {
+    const bytes=Buffer.from('{"version":"1.2.3","application":"custom"}');
+    f.assets.push({id:201,name:'artifact-manifest.json',size:bytes.length,state:'uploaded',digest:'sha256:'+hash(bytes)});
+    f.bytes.set(201,bytes);
+  }
   const stateSha='a'.repeat(40),blob=createHash('sha1').update('blob '+delivery.length+'\0').update(delivery).digest('hex');
   f.state.releaseState=stateSha;
   const unit={id:'app',version:'1.2.3',tag:f.release.tag_name,releaseId:f.release.id,
     githubDelivery:{runId:111,attempt:1,artifactId:114,digest:'sha256:'+hash('archive')},
     manifestDigest:hash('private manifest'),notesDigest:hash(f.release.body),
-    assets:[{id:'app',path:'app.bin',size:3,sha256:hash('app')}]};
+    assets:f.assets.map(asset=>({id:'file-'+asset.id,path:asset.name,size:asset.size,sha256:hash(f.bytes.get(asset.id))}))};
   const cycle={id:'pr-2-'+S,sourceSha:S,deliveryConfigSha:blob,units:[unit]};
   const ports={...f.ports,readCycle:async()=>({stateSha,cycle,unit}),
+    readContent:(reader,path,ref)=>path==='.github/delivery.json'?delivery:path==='release-please-config.json'?settings:f.ports.readContent(reader,path,ref),
     verifyRelease:()=>assert.fail('uses the frozen publication facts')};
   const result=await selectPagesSource(f.options,f.event,ports);
   assert.equal(result.status,'READY');assert.equal(result.source.manifestDigest,unit.manifestDigest);
