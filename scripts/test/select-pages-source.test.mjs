@@ -11,11 +11,11 @@ import {currentPagesSource} from '../pages-runtime.mjs';
 
 const S='a'.repeat(40),R='b'.repeat(40),P='c'.repeat(40),hash=b=>createHash('sha256').update(b).digest('hex');
 const gitBlob=bytes=>createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
-async function fixture(t) {
+async function fixture(t,deliverySchemaVersion=1) {
   const root=await mkdtemp(join(tmpdir(),'pages-source-test-'));t.after(()=>rm(root,{recursive:true,force:true}));
   const state={head:R,corrupt:false,ref:S,changed:false,workflowAtSource:true};
   const repo={id:10,full_name:'fixture/product',default_branch:'trunk',archived:false,disabled:false,has_pages:true,private:false};
-  const delivery=Buffer.from(JSON.stringify({schemaVersion:1,repositoryAuthors:[{id:7,evidence:'fixture author'}],units:[{id:'app',path:'.',notesPath:'.release-notes/app.md',
+  const delivery=Buffer.from(JSON.stringify({schemaVersion:deliverySchemaVersion,repositoryAuthors:[{id:7,evidence:'fixture author'}],units:[{id:'app',path:'.',notesPath:'.release-notes/app.md',
     assets:[{id:'app',name:'app.bin',mediaType:'application/octet-stream'}],channels:[]}]}));
   const base={schemaVersion:3,repositoryId:10,fullName:repo.full_name,cycleId:'pr-2-'+S,requestKey:'e'.repeat(64),unitId:'app',version:'1.2.3',
     packageVersion:'1.2.3',tag:'v1.2.3',sourceSha:S,controllerSha:P,buildRef:'refs/heads/steward/build/pr-2-'+S,
@@ -123,7 +123,7 @@ for(const productFile of [false,true])test('formal release Pages uses frozen wor
     githubDelivery:{runId:111,attempt:1,artifactId:114,digest:'sha256:'+hash('archive')},
     manifestDigest:hash('private manifest'),notesDigest:hash(f.release.body),
     assets:f.assets.map(asset=>({id:'file-'+asset.id,path:asset.name,size:asset.size,sha256:hash(f.bytes.get(asset.id))}))};
-  const cycle={id:'pr-2-'+S,sourceSha:S,deliveryConfigSha:blob,units:[unit]};
+  const cycle={id:'pr-2-'+S,sourceSha:S,deliveryConfigSha:blob,workflowDelivery:true,units:[unit]};
   const ports={...f.ports,readCycle:async()=>({stateSha,cycle,unit}),
     readContent:(reader,path,ref)=>path==='.github/delivery.json'?delivery:path==='release-please-config.json'?settings:f.ports.readContent(reader,path,ref),
     verifyRelease:()=>assert.fail('uses the frozen publication facts')};
@@ -177,6 +177,33 @@ test('Pages skips a different unit’s formal workflow delivery without parsing 
   assert.equal(result.source.releaseId,f.release.id);
   assert.ok(f.calls.some(([,path])=>path.includes('/commits/'+sdk.tag_name)));
   assert.ok(f.calls.every(([,path])=>!path.includes('/releases/'+sdk.id+'/assets')));
+
+  delete cycle.units[1].githubDelivery;
+  const cyclePath='cycles/'+cycle.id+'.json';
+  f.cycleFiles.set(cyclePath,Buffer.from(JSON.stringify(cycle)));
+  assert.equal((await selectPagesSource(f.options,f.event,ports)).status,'READY');
+
+  const target=cycle.units[0];
+  for(const missing of ['release-id','artifact-id','receipt']) {
+    const changed=structuredClone(cycle);
+    if(missing==='release-id')changed.units[0].releaseId=null;
+    if(missing==='artifact-id')delete changed.units[0].githubDelivery.artifactId;
+    if(missing==='receipt')delete changed.units[0].githubDelivery;
+    f.cycleFiles.set(cyclePath,Buffer.from(JSON.stringify(changed)));
+    f.calls.length=0;
+    await assert.rejects(selectPagesSource(f.options,f.event,ports),missing==='artifact-id'?/invalid cycle record/:/PAGES_RELEASE_STATE/);
+    assert.ok(f.calls.every(([,path])=>!path.includes('/releases/'+target.releaseId+'/assets')));
+  }
+});
+for(const version of [1,2])test('Pages retains delivery v'+version+' when the default branch already uses workflow delivery',async t=>{
+  const f=await fixture(t,version);
+  const compact=Buffer.from(JSON.stringify({schemaVersion:3,repositoryAuthors:[{id:7,evidence:'fixture author'}]}));
+  const settings=Buffer.from(JSON.stringify({'include-component-in-tag':false,packages:{'.':{component:'app'}}}));
+  const ports={...f.ports,readContent:(reader,path,ref)=>path==='release-please-config.json'?settings:
+    path==='.github/delivery.json'&&ref===R?compact:f.ports.readContent(reader,path,ref)};
+  assert.equal((await selectPagesSource(f.options,f.event,ports)).status,'READY');
+  await assert.rejects(selectPagesSource(f.options,f.event,{...ports,readContent:(reader,path,ref)=>
+    path==='.github/delivery.json'?compact:ports.readContent(reader,path,ref)}),/PAGES_RELEASE_STATE/);
 });
 test('wired release mode uses the workflow pin at S even when main and coordinator advanced',async t=>{
   const f=await fixture(t),yaml=await readFile(new URL('../../templates/release/pages.yml',import.meta.url));
