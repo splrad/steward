@@ -16,7 +16,7 @@ import { Octokit } from '@octokit/rest';
 import { assertPipelineSource, type PipelineSource, type PublishPipelineRecord } from './release-pipeline-record.js';
 import { parsePipelineRecord, pipelineSource, type BuildPipelineRecord } from './release-pipeline-record.js';
 import { channelFiles, parseDeliveryConfig, deliveryAssetNames, assertDeliveryPath, type DeliveryUnit, type DeliveryConfig } from '../../core/src/delivery-config.js';
-import { defaultBuildWorkflow, dispatchWorkflow, githubDeliveryJobStep, githubDeliveryStep } from '../../core/src/release-workflow.js';
+import { defaultBuildWorkflow, dispatchWorkflow, encodeRepositoryPath, githubDeliveryJobStep, githubDeliveryStep } from '../../core/src/release-workflow.js';
 import { parseReleaseDescriptor,artifactNames } from '../../core/src/release-descriptor.js';
 import { parseLegacyRepositoryCatalog } from '../../core/src/legacy-repository-policy.js';
 import { decodeNormalizedDelivery,type NormalizedDeliveryEvidence } from '../../core/src/native-evidence.js';
@@ -28,7 +28,7 @@ import { verifyExecutionSource, verifyDispatchWorkflow, channelTargets, channelT
 import { parseDocument } from 'yaml';
 import { Version } from 'release-please/build/src/version.js';
 import { TagName } from 'release-please/build/src/util/tag-name.js';
-import { projectFrozenReleaseDownloads, renderFrozenReleaseNotes } from '../../core/src/release-template.js';
+import { productReleaseTemplatePath, sharedReleaseTemplatePath, projectFrozenReleaseDownloads, renderFrozenReleaseNotes } from '../../core/src/release-template.js';
 import { inspectProductArtifacts, validateProductManifest, validateWorkflowManifest, type ProductReleaseManifest, type WorkflowReleaseManifest } from './release-artifacts.js';
 
 export interface ProductBuildInput {
@@ -374,8 +374,10 @@ export async function pipelineIdentity(input: ProductBuildInput, environment: No
   if(!session.identity || !session.generated || session.pending || session.identity.authorsDigest!==hash(Buffer.from(JSON.stringify(delivery.repositoryAuthors))))
     fail('frozen candidate identities');
   if (JSON.stringify(cycle.units.map(unit => unit.id).sort()) !== JSON.stringify(session.generated.units.map((unit: { id: string }) => unit.id).sort())) fail('candidate release unit set');
-  const template = await source('.github/release-template.md.mustache');
-  if (!template.equals(await file(input.controllerDirectory, cycle.controllerSha, 'templates/repository/.github/release-template.md.mustache'))) fail('adopted notes template');
+  const sharedTemplate=await file(input.controllerDirectory,cycle.controllerSha,sharedReleaseTemplatePath);
+  const productTemplate=await localGitSnapshot.file(input.sourceDirectory,cycle.sourceSha,productReleaseTemplatePath);
+  const template=productTemplate??sharedTemplate;
+  if(!template.equals(sharedTemplate))fail('adopted notes template');
   const units: BuildPipelineRecord['units'] = [];
   for (const target of cycle.units) {
     const unit = delivery.units.find(unit => unit.id === target.id), frozen = session.generated.units.find((unit: any) => unit.id === target.id);
@@ -401,7 +403,7 @@ export async function pipelineIdentity(input: ProductBuildInput, environment: No
   return { status: 'ADMITTED' as const, record };
 }
 
-export async function pipelineNotes(record: BuildPipelineRecord, unitId: string, sourceDirectory: string) {
+export async function pipelineNotes(record: BuildPipelineRecord, unitId: string, sourceDirectory: string, controllerDirectory?:string) {
   const unit = record.units.find(unit => unit.id === unitId), delivery = record.delivery.units.find(unit => unit.id === unitId);
   if (!unit || !delivery) fail('notes unit');
   const read = async (path: string) => { const bytes = await localGitSnapshot.file(sourceDirectory, record.sourceSha, path); if (!bytes) fail('missing notes source'); return bytes.toString('utf8'); };
@@ -409,7 +411,11 @@ export async function pipelineNotes(record: BuildPipelineRecord, unitId: string,
   const changelogPath = options['changelog-path'] ?? 'CHANGELOG.md'; assertDeliveryPath(changelogPath);
   const changelogFile = delivery.path === '.' ? changelogPath : `${delivery.path}/${changelogPath}`;
   const changelog = await read(changelogFile);
-  const template = await read('.github/release-template.md.mustache'); if (hash(Buffer.from(template)) !== record.templateSha256) fail('notes template source');
+  let templateBytes=await localGitSnapshot.file(sourceDirectory,record.sourceSha,productReleaseTemplatePath);
+  if(!templateBytes&&controllerDirectory)
+    templateBytes=await localGitSnapshot.file(controllerDirectory,record.controllerSha,sharedReleaseTemplatePath);
+  if(!templateBytes||hash(templateBytes)!==record.templateSha256)fail('notes template source');
+  const template=templateBytes.toString('utf8');
   const publicNames=new Set(channelFiles(delivery,'github-release',unit.assets.map(asset=>({id:asset.id,path:asset.name}))));
   const { sourceLinkLabel, sourceUrl, commitUrl } = committedVersionNotes(changelog, unit.version, record.fullName, record.sourceSha, unit.tag,
     template.includes('{{controllerSha}}') ? undefined : changelogFile);
@@ -740,7 +746,7 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
     return records;
   }
   const source = async (repository: string, sha: string, path: string) => {
-    const value = await new NativeEvidenceReader(repository === context.repository ? io : controllerIo, repository).json(`contents/${path}?ref=${sha}`);
+    const value = await new NativeEvidenceReader(repository === context.repository ? io : controllerIo, repository).json(`contents/${encodeRepositoryPath(path)}?ref=${sha}`);
     if (value.type !== 'file' || value.encoding !== 'base64') fail('source file identity');
     const bytes = Buffer.from(value.content, 'base64');
     if (bytes.length !== value.size || createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex') !== value.sha) fail('source blob digest');
@@ -750,7 +756,10 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
   if (deliverySource.sha !== cycle.deliveryConfigSha) fail('frozen delivery source');
   const delivery = parseDeliveryConfig(JSON.parse(deliverySource.bytes.toString('utf8')));
   assertProductDelivery(delivery);
-  const template = await source(context.repository, cycle.sourceSha, '.github/release-template.md.mustache');
+  const template=await source(context.repository,cycle.sourceSha,productReleaseTemplatePath).catch(error=>{
+    if(!(error instanceof EvidenceReadError)||error.status!==404)throw error;
+    return source('splrad/steward',cycle.controllerSha,sharedReleaseTemplatePath);
+  });
   if (delivery.buildWorkflow !== cycle.buildWorkflow) fail('frozen delivery workflow');
   const workflow = await source(context.repository, cycle.sourceSha, delivery.buildWorkflow ?? defaultBuildWorkflow);
   const document = parseDocument(workflow.bytes.toString('utf8'), { uniqueKeys: true }); if (document.errors.length) fail('source workflow');

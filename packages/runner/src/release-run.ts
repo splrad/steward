@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { isolatedBuildEnvironment } from './build-environment.js';
 import { parseDeliveryConfig } from '../../core/src/delivery-config.js';
-import { dispatchWorkflow } from '../../core/src/release-workflow.js';
+import { dispatchWorkflow, encodeRepositoryPath } from '../../core/src/release-workflow.js';
 import { join } from 'node:path';
 import { downloadNativeArtifact } from './native-artifact-download.js';
 import { nativeJobOrigins, withinNativeJobWindow } from '../../core/src/native-job-origins.js';
@@ -97,9 +97,9 @@ export function verifyDispatchWorkflow(bytes:Uint8Array,request:Pick<Dispatch,'p
   const document=parseDocument(new TextDecoder('utf-8',{fatal:true}).decode(bytes),{uniqueKeys:true});
   if(document.errors.length)fail('dispatch workflow YAML');
   const workflow=document.toJS({maxAliasCount:0}),inputs=workflow?.on?.workflow_dispatch?.inputs;
-  if(request.buildWorkflow!==undefined && workflow?.['run-name']!=='Build ${{ inputs.operation_key }}')fail('dispatch workflow title');
-  if(!inputs||Object.keys(inputs).sort().join(',')!==Object.keys(request.inputs).sort().join(',')
-    ||Object.values(inputs).some((input:any)=>input?.type!=='string'||input.required!==true)
+  const required=Object.keys(request.inputs);
+  if(!inputs||required.some(key=>inputs[key]?.type!=='string'||inputs[key].required!==true)
+    ||Object.entries(inputs).some(([key,input]:[string,any])=>!required.includes(key)&&(request.buildWorkflow===undefined||input?.required===true))
     ||typeof workflow['run-name']!=='string'||!workflow['run-name'].includes(request.purpose==='build'?'${{ inputs.operation_key }}':'${{ inputs.request_key }}'))fail('dispatch workflow interface');
 }
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -498,7 +498,7 @@ export async function readChannelSourceRejections(context:EvidenceContext,histor
       return match?[JSON.parse(match[1]!)]:[];
     });
     if(markers.length!==1||JSON.stringify(markers[0])!==JSON.stringify({status:'REJECTED',reason:'SOURCE_REF_MOVED'}))continue;
-    const workflow=await reader.json(`contents/${run.path}?ref=${run.headSha}`),bytes=Buffer.from(workflow.content??'','base64');
+    const workflow=await reader.json(`contents/${encodeRepositoryPath(run.path)}?ref=${run.headSha}`),bytes=Buffer.from(workflow.content??'','base64');
     if(workflow.type!=='file'||workflow.encoding!=='base64'||workflow.size!==bytes.length||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==workflow.sha)fail('source rejection workflow');
     verifyDispatchWorkflow(bytes,request);
     const value:NativeSourceRejection={schemaVersion:1,repositoryId:context.repositoryId,cycleId:context.cycle.id,requestKey:request.requestKey,

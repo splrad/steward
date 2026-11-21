@@ -8,6 +8,7 @@ import { nativeRequestIdentity } from '../src/native-release-evidence.js';
 import type { ProductBuildInput } from '../src/release-pipeline.js';
 export function productPipelineFixture(attempts = 1, twoUnits = false, buildLock: string | string[] | null = 'global.json') {
   const f = evidenceFixture(attempts), candidateId = 'd'.repeat(64);
+  const sharedTemplate=readFileSync('templates/repository/.github/release-template.md.mustache','utf8');
   const delivery = { schemaVersion: 2, repositoryAuthors: [{ id: 44151430, evidence: 'User confirmed axiomoth; native ID verified.' }],
     units: [{ id: 'app', path: '.', ...(buildLock === null ? {} : {buildLocks: Array.isArray(buildLock) ? buildLock : [buildLock]}), notesPath: '.release-notes/app.md', assets: [{ id: 'app', name: 'app-${version}.exe', inspection: 'pe', mediaType: 'application/octet-stream' }], channels: [{ id: 'github-release', required: true, location: 'github', metadata: ['sbom.spdx.json','release-notes.md','artifact-manifest.json','SHA256SUMS'] }] }] };
   const workflow = { 'run-name': 'Build ${{ inputs.operation_key }}', on: { workflow_dispatch: { inputs: Object.fromEntries(['cycle_id', 'operation_key', 'source_sha', 'controller_sha'].map(key => [key, { type: 'string', required: true }])) } },
@@ -15,7 +16,7 @@ export function productPipelineFixture(attempts = 1, twoUnits = false, buildLock
   const source: Record<string, string> = { '.github/delivery.json': JSON.stringify(delivery), '.github/workflows/steward-release-publish.yml': YAML.stringify(workflow),
     'release-please-config.json': JSON.stringify({ 'include-component-in-tag': false, 'include-v-in-tag': true, packages: { '.': { 'release-type': 'simple', 'version-file': 'VERSION' } } }),
     '.release-please-manifest.json': '{".":"1.0.0"}', VERSION: '1.0.0\n', 'global.json': '{}',
-    '.github/release-template.md.mustache': readFileSync('templates/repository/.github/release-template.md.mustache', 'utf8') };
+    '.github/release-template.md.mustache': sharedTemplate };
   if (twoUnits) {
     delivery.units[0]!.path='packages/app';
     delivery.units.push({ ...structuredClone(delivery.units[0]!), id: 'other', path: 'packages/other', notesPath: '.release-notes/other.md' });
@@ -67,7 +68,7 @@ export function productPipelineFixture(attempts = 1, twoUnits = false, buildLock
   vi.spyOn(localGitSnapshot, 'head').mockImplementation(async directory => directory === 'source' ? S : C);
   vi.spyOn(localGitSnapshot, 'file').mockImplementation(async (directory, sha, path) => {
     if (sha !== (directory === 'source' ? S : C)) throw new Error('wrong source SHA');
-    const value = directory === 'source' ? source[path] : path === 'mise.lock' ? 'locked tools' : path === 'templates/repository/.github/release-template.md.mustache' ? source['.github/release-template.md.mustache'] : undefined;
+    const value = directory === 'source' ? source[path] : path === 'mise.lock' ? 'locked tools' : path === 'templates/repository/.github/release-template.md.mustache' ? sharedTemplate : undefined;
     return value === undefined ? null : Buffer.from(value);
   });
   return { ...f, input, environment, gh, source, delivery, nativeCalls: calls };

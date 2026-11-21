@@ -7,6 +7,7 @@ import { parsePipelineRecord, pipelineSource } from '../src/release-pipeline-rec
 import { productPipelineFixture } from './product-pipeline-fixture.js';
 import { nativeRequestIdentity } from '../src/native-release-evidence.js';
 import { defaultBuildWorkflow } from '../../core/src/release-workflow.js';
+import YAML from 'yaml';
 afterEach(() => vi.restoreAllMocks());
 it.each(['ghcr','unknown'])('rejects an external channel with no fixed implementation: %s',id=>{
   expect(()=>assertProductDelivery({units:[{id:'app',path:'.',notesPath:'.release-notes/app.md',assets:[],channels:[{id,required:true,location:'fixture'}]}]})).toThrow('fixed product implementation');
@@ -39,12 +40,16 @@ it('admits current canonical source without a Release, catalog or tag read; nati
   expect(JSON.stringify(f.input.state)).toBe(before);
   expect(JSON.stringify(result.record)).not.toMatch(/"(?:releaseId|policySha|observationSha|admitted|entrypoint)"/);
 });
-it('uses the adopted non-default workflow for a Node product and rejects a mismatched native Run path', async () => {
-  const f = productPipelineFixture(1, false, 'package-lock.json'), path = '.github/workflows/package-cli.yaml';
+it('admits a Node workflow with a localized path, optional input and shared release template', async () => {
+  const f = productPipelineFixture(1, false, 'package-lock.json'), path = '.github/workflows/发布 构建.yml';
   const delivery = { ...f.delivery, buildWorkflow:path };
   delivery.units[0]!.assets = [{id:'bundle',name:'package.json',inspection:'node-package',mediaType:'application/json'}];
-  f.source[path] = f.source[defaultBuildWorkflow]!.replace('windows-x64','linux-x64').replace('- app','- bundle');
+  const workflow=YAML.parse(f.source[defaultBuildWorkflow]!.replace('windows-x64','linux-x64').replace('- app','- bundle'));
+  workflow['run-name']='发行业务 ${{ inputs.operation_key }}';
+  workflow.on.workflow_dispatch.inputs.flavor={type:'choice',default:'ordinary',options:['ordinary','large']};
+  f.source[path]=YAML.stringify(workflow);
   delete f.source[defaultBuildWorkflow];
+  delete f.source['.github/release-template.md.mustache'];
   f.source['package.json'] = '{"name":"fixture-cli","version":"1.0.0"}';
   f.source['package-lock.json'] = '{}';
   f.source['release-please-config.json'] = '{"include-component-in-tag":false,"packages":{".":{"release-type":"node"}}}';
@@ -55,11 +60,16 @@ it('uses the adopted non-default workflow for a Node product and rejects a misma
   cycle.buildWorkflow=f.request.buildWorkflow=path;
   Object.assign(f.request,nativeRequestIdentity(f.context.repositoryId,cycle,f.request));
   f.input.operationKey=f.request.inputs.operation_key=f.request.operationKey;
-  f.runs.get(1).display_title='Build '+f.request.operationKey;
+  f.runs.get(1).display_title='发行业务 '+f.request.operationKey;
   f.runs.get(1).path=path;
   const admitted=await pipelineIdentity(f.input,f.environment,f.gh,f.io);
   expect(admitted).toMatchObject({status:'ADMITTED',record:{delivery:{buildWorkflow:path},
     units:[{packageVersion:'1.0.0',assets:[{id:'bundle',name:'package.json',build:'linux-x64'}]}]}});
+  workflow.on.workflow_dispatch.inputs.flavor.required=true;
+  f.source[path]=YAML.stringify(workflow);
+  await expect(pipelineIdentity(f.input,f.environment,f.gh,f.io)).rejects.toThrow('dispatch workflow interface');
+  delete workflow.on.workflow_dispatch.inputs.flavor.required;
+  f.source[path]=YAML.stringify(workflow);
   f.runs.get(1).path=defaultBuildWorkflow;
   await expect(pipelineIdentity(f.input,f.environment,f.gh,f.io)).rejects.toThrow('execution source');
 });
@@ -125,7 +135,7 @@ it('admits an original Run rerun by a maintainer without replaying failure histo
   const io={request:async()=>{throw Error('past-attempt inventory must not be fetched for admission');}};
   expect((await pipelineIdentity(f.input,f.environment,f.gh,io)).status).toBe('ADMITTED');
 });
-it.each(['source', 'controller', 'ref', 'repository', 'run-attempt', 'delivery', 'native-version', 'missing-template', 'rp-path', 'fork'])('rejects %s drift using the current source', async kind => {
+it.each(['source', 'controller', 'ref', 'repository', 'run-attempt', 'delivery', 'native-version', 'template-drift', 'rp-path', 'fork'])('rejects %s drift using the current source', async kind => {
   const f = productPipelineFixture();
   if (kind === 'source') f.environment.GITHUB_SHA = 'd'.repeat(40);
   if (kind === 'controller') f.input.controllerSha = 'd'.repeat(40);
@@ -134,7 +144,7 @@ it.each(['source', 'controller', 'ref', 'repository', 'run-attempt', 'delivery',
   if (kind === 'run-attempt') f.environment.GITHUB_RUN_ATTEMPT = '2';
   if (kind === 'delivery') f.source['.github/delivery.json'] += ' ';
   if (kind === 'native-version') f.source.VERSION = '2.0.0';
-  if (kind === 'missing-template') delete f.source['.github/release-template.md.mustache'];
+  if (kind === 'template-drift') f.source['.github/release-template.md.mustache'] += ' invalid';
   if (kind === 'rp-path') f.source['.release-please-manifest.json'] = '{"other":"1.0.0"}';
   if (kind === 'fork') f.runs.get(1).head_repository.id = 99;
   if (kind === 'run-attempt') expect((await pipelineIdentity(f.input, f.environment, f.gh, f.io)).status).toBe('REJECTED');

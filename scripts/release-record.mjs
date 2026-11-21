@@ -10,7 +10,7 @@ import { Octokit } from '@octokit/rest';
 import { completeNativeRuleParameters } from './native-rule-parameters.mjs';
 import { githubUnits, decodeReleaseRecord, decodeStateFile, stateRecordOwner, assertRepositoryWrite, isolatedBuildEnvironment, decodeBuildJson, assertMaintenanceProgress, assertPagesProgress,
   inspectNativeCycle, recoverNativeCycle, archiveFile, nativeReadFile, nativeEvidenceTransport,
-  dispatchNativeRun, prepareBuildDispatch, defaultBuildWorkflow, dispatchWorkflow, verifyDispatchWorkflow, inspectPublications, invokePublication, inspectCycleHistory, verifyFrozenReceipts, completionFile, decodeCompletionArchive,
+  dispatchNativeRun, prepareBuildDispatch, defaultBuildWorkflow, dispatchWorkflow, encodeRepositoryPath, verifyDispatchWorkflow, inspectPublications, invokePublication, inspectCycleHistory, verifyFrozenReceipts, completionFile, decodeCompletionArchive,
   pipelinePreparePublication, readCycleDelivery, prepareNormalizedDelivery, NativeGitHubRelease, nativeGhCommand, nativeReleaseDownload, NativeEvidenceReader, nativeRunFact,
   publicationManifestDigest,sameWorkflowDelivery,
   retainedChannelObservations, observeNativeChannels, readChannelSourceRejections, selectChannelDispatch, prepareChannelDispatch, channelTargetsDigest, verifyChannelResult, verifyContinuationReleases, evaluateCompletion } from '../packages/runner/dist/index.js';
@@ -943,7 +943,7 @@ export async function releaseCommand(command,request,{token,io=nativeEvidenceTra
     if(command!=='dispatch-build')return wait('CHANNEL_PROBE_REQUIRED');
     if(cycle.units.some(unit=>unit.releaseId!==null||unit.manifestDigest!==null))return wait('FROZEN_BUILD_CANNOT_BE_RECREATED');
     const buildWorkflow=cycle.buildWorkflow??defaultBuildWorkflow;
-    const workflow=await native('actions/workflows/'+buildWorkflow.split('/').at(-1));
+    const workflow=await native('actions/workflows/'+encodeURIComponent(buildWorkflow.split('/').at(-1)));
     if(workflow.path!==buildWorkflow||workflow.state!=='active')fail('build workflow identity');
     dispatch=prepareBuildDispatch({repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle},workflow.id,now());
     cycle.dispatches.push(dispatch);
@@ -952,7 +952,7 @@ export async function releaseCommand(command,request,{token,io=nativeEvidenceTra
   if(dispatch.purpose==='build')await assertReleaseWriterProtection(request.repository,dispatch.ref,io,{token});
   // The workflow must already exist at the current default branch and at the frozen execution source.
   for(const ref of [request.defaultBranch,dispatch.executionSha]) {
-    const file=await native(`contents/${dispatchWorkflow(dispatch)}?ref=${encodeURIComponent(ref)}`);
+    const file=await native(`contents/${encodeRepositoryPath(dispatchWorkflow(dispatch))}?ref=${encodeURIComponent(ref)}`);
     if(file.type!=='file'||file.encoding!=='base64'||typeof file.content!=='string')fail('dispatch workflow source');
     const bytes=Buffer.from(file.content,'base64');
     if(bytes.length!==file.size||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==file.sha)fail('dispatch workflow bytes');

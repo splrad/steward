@@ -19,7 +19,7 @@ type RelayProduct=ProductTarget & {publishWorkflowId?:number;channelWorkflowId?:
 const legacyWorkflowTarget={...TARGET,publishWorkflowId:410998652,channelWorkflowId:410998651};
 async function workflowProduct(g:GitReader,target:ProductTarget,path:string):Promise<RelayProduct> {
   ensure(isBuildWorkflow(path)||path===channelPath,'RELEASE_WORKFLOW_PATH');
-  const workflow=await g.json(target.id,`/repos/${target.name}/actions/workflows/${path.split('/').at(-1)}`);
+  const workflow=await g.json(target.id,`/repos/${target.name}/actions/workflows/${encodeURIComponent(path.split('/').at(-1)!)}`);
   ensure(workflow.path===path&&positive(workflow.id)&&workflow.state==='active','RELEASE_NATIVE_WORKFLOW');
   return {...target,...(path===channelPath?{channelWorkflowId:workflow.id}:{publishWorkflowId:workflow.id,buildWorkflow:path})};
 }
@@ -39,7 +39,8 @@ export function releaseHint(event: string, p: any, installation: string | undefi
   const run = p.workflow_run;
   if (run?.head_repository?.id !== product.id || run.status !== 'completed' || run.event !== 'workflow_dispatch' ||
       run.actor?.id !== 301115370 || !positive(run.id) || !positive(run.run_attempt)) return;
-  const publish = /^steward\/build\/[A-Za-z0-9_.-]{1,128}$/.test(run.head_branch) && run.workflow_id === product.publishWorkflowId && run.path === (product.buildWorkflow??publishPath) && /^Build [a-f0-9]{64}$/.test(run.display_title);
+  const buildTitle=product.buildWorkflow===undefined?/^Build [a-f0-9]{64}$/:/[a-f0-9]{64}/;
+  const publish = /^steward\/build\/[A-Za-z0-9_.-]{1,128}$/.test(run.head_branch) && run.workflow_id === product.publishWorkflowId && run.path === (product.buildWorkflow??publishPath) && buildTitle.test(run.display_title);
   const channels = run.head_branch===product.defaultBranch && run.workflow_id === product.channelWorkflowId && run.path === '.github/workflows/steward-release-channels.yml' && (/^Channels (submit|verify) [a-f0-9]{64}$/.test(run.display_title) || run.conclusion==='success' && /^Channels observe [a-f0-9]{64}$/.test(run.display_title));
   if (publish || channels) return {repositoryId: product.id, kind: 'run', runId: run.id, attempt: run.run_attempt};
 }
@@ -207,7 +208,8 @@ export class ReleaseRelay {
             const matches=cycle.dispatches?.filter((d:any)=>d.purpose==='build' && d.ref===run.head_branch &&
               d.executionSha===run.head_sha && d.sourceSha===cycle.sourceSha && cycle.sourceSha===run.head_sha &&
               d.workflowId===run.workflow_id && dispatchWorkflow(d)===run.path && (d.canonicalRunId===null || d.canonicalRunId===run.id) &&
-              run.display_title==='Build '+d.operationKey && Date.parse(run.created_at)>=Math.floor(Date.parse(d.sentAt)/1000)*1000);
+              (d.buildWorkflow===undefined?run.display_title==='Build '+d.operationKey:run.display_title.includes(d.operationKey)) &&
+              Date.parse(run.created_at)>=Math.floor(Date.parse(d.sentAt)/1000)*1000);
             ensure(matches?.length===1,'RELEASE_BUILD_DISPATCH');
           }
         }

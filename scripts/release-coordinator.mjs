@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
-import { nativeReleaseApp, nativeEvidenceTransport, isolatedBuildEnvironment, githubUnits,evaluateCompletion,parseDeliveryConfig,assertProductDelivery,verifyDispatchWorkflow } from '../packages/runner/dist/index.js';
+import { nativeReleaseApp, nativeEvidenceTransport, isolatedBuildEnvironment, githubUnits,evaluateCompletion,parseDeliveryConfig,assertProductDelivery,verifyDispatchWorkflow,encodeRepositoryPath } from '../packages/runner/dist/index.js';
 import { readReleaseRecords, writeReleaseRecords, releaseCommand, assertReleaseWriterProtection } from './release-record.mjs';
 import {servicePages,pagesGitStore} from './pages-maintenance.mjs';
 import {assertQualityProtection,qualityNativeIO} from './quality-language-summary.mjs';
@@ -165,7 +165,7 @@ export async function releaseParticipation(repository,io,{includeUnits=false}={}
   } else {
     if(files.some(x=>x.length!==1||x[0].type!=='blob'||x[0].mode!=='100644'))throw Error('RELEASE_CONFIGURATION_REQUIRED');
     const readSource=async(path,entry)=>{
-      const v=await read(`contents/${path}?ref=${ref.object.sha}`);
+      const v=await read(`contents/${encodeRepositoryPath(path)}?ref=${ref.object.sha}`);
       if(v.type!=='file'||v.path!==path||v.sha!==entry.sha||v.encoding!=='base64'||typeof v.content!=='string')throw Error('RELEASE_CONFIGURATION_INVALID');
       const bytes=Buffer.from(v.content,'base64');
       if(bytes.length!==v.size||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==v.sha)throw Error('RELEASE_CONFIGURATION_INVALID');
