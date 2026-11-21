@@ -41,7 +41,8 @@ export async function closeout192(plan,request,{token,io,centralIo,readRecords=r
   const candidate=async()=>{
     const pr=await product.json('pulls/201');
     if(pr.number!==201||pr.state!=='open'||pr.head?.repo?.id!==repository.id
-      ||pr.head.ref!=='steward/release-candidate'||pr.base?.ref!=='main'||!sha(pr.head.sha))fail('STATE_CHANGED');
+      ||pr.head.ref!=='steward/release-candidate'||pr.base?.repo?.id!==repository.id
+      ||pr.base.ref!=='main'||!sha(pr.head.sha))fail('STATE_CHANGED');
     return pr.head.sha;
   };
   const currentState=async()=>{
@@ -55,7 +56,7 @@ export async function closeout192(plan,request,{token,io,centralIo,readRecords=r
   if(before.head!==plan.closeoutHead||before.history.some(row=>row.status!=='DECODED')
     ||before.cycles.length!==1||entry.value.id!==closeoutCycle
     ||entry.value.units.length!==1||entry.value.units[0].releaseId!==450956063
-    ||before.repository?.candidate?.prNumber!==201)fail('STATE_CHANGED');
+    ||before.repository?.candidate?.prNumber!==201||before.repository.candidate.branch!=='steward/release-candidate')fail('STATE_CHANGED');
   const candidateState=before.repository.candidate;
   const sessionPrefix='generated/'+candidateState.id+'/session';
   const currentPaths=new Set(before.currentPaths);
@@ -69,7 +70,10 @@ export async function closeout192(plan,request,{token,io,centralIo,readRecords=r
   const chunks=[first];
   for(let index=1;index<first.count;index++)chunks.push(sessionChunk(sessionPrefix+'-'+index+'.json'));
   const session=await decodeCandidateDocument(chunks);
-  const approvedCandidateHead=session.manualValidation?.headSha??candidateState.publishedHead;
+  const manual=session.manualValidation;
+  if(manual&&(manual.prNumber!==candidateState.prNumber||manual.branch!==candidateState.branch
+    ||manual.sourceSha!==candidateState.baseSha))fail('STATE_CHANGED');
+  const approvedCandidateHead=manual?.headSha??candidateState.publishedHead;
   if(session.pending||candidateState.pendingWrite||approvedCandidateHead!==candidateHead)fail('STATE_CHANGED');
   const validateTarget=async expected=>{
     const main=await product.json('git/ref/heads/main');

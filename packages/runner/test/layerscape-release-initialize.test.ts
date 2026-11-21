@@ -98,7 +98,7 @@ function closeoutFixture(mode:'apply'|'closed'|'no-archive'|'moved-candidate'|'m
     documentDigest:digest(sessionText),index:0,count:1,content:sessionText}};
   const oldChunk={path:'generated/'+candidateId+'/session-1.json',
     value:{...session.value,index:1,count:2,documentDigest:digest('old session')}};
-  const active={activeCycleId:cycleId,lastCompletedCycleId:null,candidate:{prNumber:201,id:candidateId,publishedHead:head}};
+  const active={activeCycleId:cycleId,lastCompletedCycleId:null,candidate:{prNumber:201,id:candidateId,publishedHead:head,branch:'steward/release-candidate'}};
   const closed={...active,activeCycleId:null,lastCompletedCycleId:cycleId};
   const before={head:state,history:[],cycles:[{value:cycle}],repository:['closed','no-archive'].includes(mode)?closed:active,
     currentPaths:[sessionPath,oldChunk.path],domainRecords:mode==='no-archive'?[session,oldChunk]:
@@ -110,7 +110,7 @@ function closeoutFixture(mode:'apply'|'closed'|'no-archive'|'moved-candidate'|'m
     if(path.endsWith('/ref/heads/steward/release-state'))
       return bytes({ref:'refs/heads/steward/release-state',object:{type:'commit',sha:current}});
     if(path.endsWith('/pulls/201'))return bytes({number:201,state:'open',
-      head:{ref:'steward/release-candidate',repo:{id:1187527897},sha:mode==='moved-candidate'?state:head},base:{ref:'main'}});
+      head:{ref:'steward/release-candidate',repo:{id:1187527897},sha:mode==='moved-candidate'?state:head},base:{ref:'main',repo:{id:1187527897}}});
     const sources:Record<string,unknown>={'state.json':closed,['cycles/'+cycleId+'.json']:cycle,[completionPath]:completion};
     for(const [file,value] of Object.entries(sources))if(path.endsWith('/contents/'+file+'?ref='+applied))
       return bytes({path:file,encoding:'base64',content:Buffer.from(JSON.stringify(value)).toString('base64')});
