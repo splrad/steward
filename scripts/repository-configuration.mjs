@@ -26,7 +26,7 @@ async function snapshot(api,ref) {
   const relevant=new Set(['.github/release-template.md.mustache',page,ciPath,deliveryPath,versionsPath,lockPath,'.release-please-manifest.json']);
   for(const path of files.keys()) if(pathsForModel.test(path)||path.startsWith('.github/actions/configuration/')) relevant.add(path);
   for(const path of relevant) if(files.has(path)) files.set(path,await fileText(api,path,ref));
-  const model=inspectRepository(files);
+  const model=inspectRepository(files,{normalizeCompactDelivery:true});
   model.oids=new Map(tree.tree.filter(x=>files.has(x.path)).map(x=>[x.path,x.sha]));
   for(const [path,cfg] of Object.entries(model.versions?.packages??{})) {
     const version=cfg['version-file']??model.versions['version-file'];

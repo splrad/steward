@@ -313,7 +313,7 @@ test('validates a compact repository’s first notes with the release workflow�
     const sha=createHash('sha1').update(`blob ${template.length}\0`).update(template).digest('hex');
     return Response.json({type:'file',path:templatePath,encoding:'base64',size:template.length,content:template.toString('base64'),sha});
   })};
-  const model=inspectRepository(files);
+  const model=inspectRepository(files,{normalizeCompactDelivery:true});
   assert.equal(model.delivery.units[0].notesPath,notesPath);
   const form=configurationForm(model,'b'.repeat(40),{values:{'s1.use':true,'s1.unit':'desktop','s1.notes':notesPath}});
   assert.match(form.body,/按采用模板填写的新 Markdown 说明/);
@@ -323,9 +323,9 @@ test('validates a compact repository’s first notes with the release workflow�
 
   template=await readFile('packages/core/test/fixtures/release-template-compact.mustache');
   files.set('.github/release-template.md.mustache',await readFile(templatePath,'utf8'));
-  await assert.rejects(applySelection(inspectRepository(files),'configure',plan,context),/RELEASE_TEMPLATE/);
+  await assert.rejects(applySelection(inspectRepository(files,{normalizeCompactDelivery:true}),'configure',plan,context),/RELEASE_TEMPLATE/);
   files.set(workflow,files.get(workflow).replace(pin,'main'));
-  await assert.rejects(applySelection(inspectRepository(files),'configure',plan,context),/CANDIDATE_CONTROLLER_PIN_REQUIRED/);
+  await assert.rejects(applySelection(inspectRepository(files,{normalizeCompactDelivery:true}),'configure',plan,context),/CANDIDATE_CONTROLLER_PIN_REQUIRED/);
   assert.equal(requests.length,2);
 });
 
