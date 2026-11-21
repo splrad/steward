@@ -6,7 +6,7 @@ import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {isDeepStrictEqual} from 'node:util';
-import {completionFile,evaluateCompletion,isolatedBuildEnvironment,NativeEvidenceReader,nativeReleaseApp,nativeEvidenceTransport} from '../packages/runner/dist/index.js';
+import {completionFile,decodeCandidateDocument,evaluateCompletion,isolatedBuildEnvironment,NativeEvidenceReader,nativeReleaseApp,nativeEvidenceTransport} from '../packages/runner/dist/index.js';
 import {initializeReleaseAdoption} from './release-adoption.mjs';
 import {inspectRepositoryHistory,readNativeCompletion,readReleaseRecords} from './release-record.mjs';
 import {adoptionTransport} from './release-state-initialize.mjs';
@@ -56,6 +56,15 @@ export async function closeout192(plan,request,{token,io,centralIo,readRecords=r
     ||before.cycles.length!==1||entry.value.id!==closeoutCycle
     ||entry.value.units.length!==1||entry.value.units[0].releaseId!==450956063
     ||before.repository?.candidate?.prNumber!==201)fail('STATE_CHANGED');
+  const candidateState=before.repository.candidate;
+  const sessionPrefix='generated/'+candidateState.id+'/session';
+  const currentPaths=new Set(before.currentPaths);
+  const chunks=before.domainRecords.filter(row=>currentPaths.has(row.path)
+    &&(row.path===sessionPrefix+'.json'||row.path.startsWith(sessionPrefix+'-'))
+    &&row.value.documentKind==='session'&&row.value.candidateId===candidateState.id).map(row=>row.value);
+  const session=await decodeCandidateDocument(chunks);
+  const approvedCandidateHead=session.manualValidation?.headSha??candidateState.publishedHead;
+  if(session.pending||candidateState.pendingWrite||approvedCandidateHead!==candidateHead)fail('STATE_CHANGED');
   const validateTarget=async expected=>{
     const main=await product.json('git/ref/heads/main');
     if(main.ref!=='refs/heads/main'||main.object?.type!=='commit'||main.object.sha!==plan.baseSha
