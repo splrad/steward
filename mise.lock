@@ -3,20 +3,20 @@
 lockfile_version = 3
 
 [[tools."aqua:anchore/syft"]]
-version = "1.55.0"
+version = "1.57.2"
 backend = "aqua:anchore/syft"
 specifiers = ["latest"]
 
 [tools."aqua:anchore/syft"."platforms.linux-x64"]
-checksum = "sha256:bb65249542db5fedeeb4d3f9b018b75e7264dbfbbb10486f044581a92f90490d"
-url = "https://github.com/anchore/syft/releases/download/v1.55.0/syft_1.55.0_linux_amd64.tar.gz"
-url_api = "https://api.github.com/repos/anchore/syft/releases/assets/657153873"
+checksum = "sha256:ad92bd3ec1b94a3df01d4d0aec199afa9c42b72e86da436ff5f837914d32706b"
+url = "https://github.com/anchore/syft/releases/download/v1.57.2/syft_1.57.2_linux_amd64.tar.gz"
+url_api = "https://api.github.com/repos/anchore/syft/releases/assets/756262255"
 provenance = "cosign"
 
 [tools."aqua:anchore/syft"."platforms.windows-x64"]
-checksum = "sha256:ada4c9b93af575f479ce80fce6629897272a2d41f300a14bc49bace020767ca2"
-url = "https://github.com/anchore/syft/releases/download/v1.55.0/syft_1.55.0_windows_amd64.zip"
-url_api = "https://api.github.com/repos/anchore/syft/releases/assets/657153857"
+checksum = "sha256:0a10e03ffd124c304fd7e7491262dba2e5f68eb12378b106d7525146675b2e3a"
+url = "https://github.com/anchore/syft/releases/download/v1.57.2/syft_1.57.2_windows_amd64.zip"
+url_api = "https://api.github.com/repos/anchore/syft/releases/assets/756262238"
 provenance = "cosign"
 
 [[tools."aqua:astral-sh/ruff"]]
