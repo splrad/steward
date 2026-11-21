@@ -17,16 +17,17 @@ class ZipLayoutTests(unittest.TestCase):
         source = io.BytesIO()
         with zipfile.ZipFile(source, "w") as writer:
             writer.writestr("items.txt", "alpha")
-        with zipfile.ZipFile(source) as archive:
-            check(source, archive.infolist(), archive.start_dir)
-            for difference in (-1, 1):
-                with self.subTest(difference=difference), self.assertRaises(ValueError):
-                    check(source, archive.infolist(), archive.start_dir + difference)
-            for field in ("CRC", "compress_size", "file_size"):
-                with self.subTest(field=field), self.assertRaises(ValueError):
-                    record = copy(archive.infolist()[0])
-                    setattr(record, field, getattr(record, field) + 1)
-                    check(source, [record], archive.start_dir)
+        for workflow_paths in (False, True):
+            with self.subTest(workflow_paths=workflow_paths), zipfile.ZipFile(source) as archive:
+                check(source, archive.infolist(), archive.start_dir, workflow_paths=workflow_paths)
+                for difference in (-1, 1):
+                    with self.subTest(difference=difference), self.assertRaises(ValueError):
+                        check(source, archive.infolist(), archive.start_dir + difference, workflow_paths=workflow_paths)
+                for field in ("CRC", "compress_size", "file_size"):
+                    with self.subTest(field=field), self.assertRaises(ValueError):
+                        record = copy(archive.infolist()[0])
+                        setattr(record, field, getattr(record, field) + 1)
+                        check(source, [record], archive.start_dir, workflow_paths=workflow_paths)
 
     def test_directory_consumes_exactly_the_declared_extent(self):
         check = PARSER["check_zip_directory"]
@@ -37,29 +38,40 @@ class ZipLayoutTests(unittest.TestCase):
             writer.writestr(info, "alpha")
         footer_offset = len(source.getvalue()) - 22
         footer = source.getvalue()[footer_offset:]
-        with zipfile.ZipFile(source) as archive:
-            check(source, archive, footer, footer_offset)
-            with self.assertRaises(ValueError):
-                check(source, archive, footer, footer_offset + 1)
-            archive.infolist()[0].comment = b"short"
-            with self.assertRaises(ValueError):
-                check(source, archive, footer, footer_offset)
+        for workflow_paths in (False, True):
+            with self.subTest(workflow_paths=workflow_paths), zipfile.ZipFile(source) as archive:
+                check(source, archive, footer, footer_offset, workflow_paths=workflow_paths)
+                with self.assertRaises(ValueError):
+                    check(source, archive, footer, footer_offset + 1, workflow_paths=workflow_paths)
+                archive.infolist()[0].comment = b"short"
+                with self.assertRaises(ValueError):
+                    check(source, archive, footer, footer_offset, workflow_paths=workflow_paths)
 
     def test_zip64_end_records(self):
+        check = PARSER["check_zip_directory"]
         source = io.BytesIO()
         with patch.object(zipfile, "ZIP64_LIMIT", 32), zipfile.ZipFile(source, "w") as writer:
             writer.writestr("items.txt", "a" * 64)
         footer_offset = len(source.getvalue()) - 22
+        footer = source.getvalue()[footer_offset:]
+        sentinel_footer = footer[:4] + b"\xff" * 4 + footer[8:]
         with zipfile.ZipFile(source) as archive:
-            PARSER["check_zip_directory"](source, archive, source.getvalue()[footer_offset:], footer_offset)
+            check(source, archive, footer, footer_offset, workflow_paths=False)
+            check(source, archive, footer, footer_offset, workflow_paths=True)
+            check(source, archive, sentinel_footer, footer_offset, workflow_paths=True)
+            with self.assertRaises(ValueError):
+                check(source, archive, sentinel_footer, footer_offset, workflow_paths=False)
 
     def test_directory_local_name_must_match_the_central_name(self):
         source = io.BytesIO()
         with zipfile.ZipFile(source, "w") as writer:
             writer.writestr("资料/", b"")
-        with zipfile.ZipFile(source) as archive:
-            self.assertEqual([entry.filename for entry, _ in PARSER["zip_members"](archive)], ["资料/"])
-            record = archive.infolist()[0]
-            record.filename = record.orig_filename = "other/"
-            with self.assertRaises(zipfile.BadZipFile):
-                list(PARSER["zip_members"](archive))
+        members = PARSER["zip_members"]
+        for workflow_paths in (False, True):
+            with self.subTest(workflow_paths=workflow_paths), zipfile.ZipFile(source) as archive:
+                names = [(entry.filename, name) for entry, _, name in members(archive, workflow_paths=workflow_paths)]
+                self.assertEqual(names, [("资料/", "资料/")])
+                record = archive.infolist()[0]
+                record.filename = record.orig_filename = "other/"
+                with self.assertRaises(zipfile.BadZipFile):
+                    list(members(archive, workflow_paths=workflow_paths))
