@@ -230,3 +230,26 @@ test('same-base manual preview binds immutable notes, hides generated placeholde
   f.io.changedPaths=async()=>['CHANGELOG.md'];
   await assert.rejects(validateManualCandidate(f.session,f.producer,f.io),/MANUAL_NOTE_SCOPE/);
 });
+
+test('v3 wraps the final comment at its UTF-8 byte boundary and reuses its immutable archive',async()=>{
+  for(const fill of ['x','汉','😀'])for(const extra of [-1,0,1]){
+    const f=fixture(),previewLimit=48*1024;
+    const {manualCandidateBody}=await import('../../packages/runner/dist/index.js');
+    const cache={schemaVersion:3,candidateId:id,headSha:H,units:[f.unit],projection:{preview:'',bodyDigest:''}};
+    const size=previewLimit+extra-Buffer.byteLength(manualCandidateBody(cache)),width=Buffer.byteLength(fill);
+    cache.projection.preview=fill.repeat(Math.floor(size/width))+'x'.repeat(size%width);
+    cache.projection.bodyDigest=hash(manualCandidateBody(cache));
+    const files=new Map(),updates=[];
+    const io={...f.project,repository:'splrad/LayerScape',verify:async()=>cache,
+      save:async()=>{files.set(G,f.session.preview);return G;},
+      readPreview:async(commit,path)=>{assert.equal(path,`generated/${id}/preview.md`);return files.get(commit);},
+      updateComment:async(_,body)=>{updates.push(body);f.comments[0].body=body;}};
+    Object.assign(cache,{repositoryId:repo,prNumber:192,branch:'candidate',sourceSha:S,files:[]});
+    const result=await projectManualCandidate(f.session,cache,io),body=f.comments[0].body;
+    assert.equal(Buffer.byteLength(manualCandidateBody(cache)),previewLimit+extra);
+    assert.equal(body,extra<=0?manualCandidateBody(cache):manualCandidateBody(cache).slice(0,-cache.projection.preview.length)+`[完整预览](https://github.com/splrad/LayerScape/blob/${G}/generated/${id}/preview.md)\n`);
+    assert.equal(result.projectionEvidence.bodyDigest,hash(body));assert.equal(result.projectionEvidence.previewDigest,hash(cache.projection.preview));
+    await projectManualCandidate(f.session,cache,{...io,save:async()=>{throw Error('unexpected repeated save');}});
+    assert.equal(updates.length,1);
+  }
+});

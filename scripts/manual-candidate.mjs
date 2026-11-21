@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 import {TagName} from 'release-please/build/src/util/tag-name.js';
 import {Version} from 'release-please/build/src/version.js';
 import {candidateCycleIsSeparate,parseDeliveryConfig,assertProductDelivery,renderCandidateNote,parseSupplementalNotes,assertDeliveryPath,manualCandidateFacts,manualCandidatePreview,
-  manualCandidateBody,validateManualCandidateRecord} from '../packages/runner/dist/index.js';
+  candidateCommentFits,candidateStatusBody,manualCandidateBody,validateManualCandidateRecord} from '../packages/runner/dist/index.js';
 const hash=v=>createHash('sha256').update(typeof v==='string'?v:JSON.stringify(v)).digest('hex');
 const fail=code=>{throw Error(code);};
 export function matchesFrozenUnits(session,snapshot=session.generated) {
@@ -83,13 +83,31 @@ export async function validateManualCandidate(session,producer,io) {
 }
 /** Only the existing fixed status comment/preview is projected; all facts stay frozen. */
 export async function projectManualCandidate(session,cache,io) {
-  const candidate=session.repository.candidate,body=manualCandidateBody(cache),marker=`<!-- steward:candidate-status:${cache.candidateId} -->`;
+  let body=manualCandidateBody(cache);
+  const candidate=session.repository.candidate,marker=`<!-- steward:candidate-status:${cache.candidateId} -->`;
   const verify=async()=>{const now=await io.verify();if(JSON.stringify(manualCandidateFacts(now))!==JSON.stringify(manualCandidateFacts(cache)))fail('MANUAL_FACT_CHANGED');};
   await verify();
   const own=async()=> (await io.comments(candidate.prNumber)).filter(c=>c.authorId===io.appBotId&&c.body.includes(marker));
   let comments=await own();
   if(comments.length>1||candidate.statusCommentId!==null&&(comments.length!==1||comments[0].id!==candidate.statusCommentId))fail('MANUAL_COMMENT_OWNER');
   await verify();
+  if(cache.schemaVersion===3&&!candidateCommentFits(body)) {
+    const path=`generated/${cache.candidateId}/preview.md`;
+    const preview=cache.projection.preview;
+    const wrap=commit=>candidateStatusBody(io.repository,cache.candidateId,cache.units,cache.headSha,preview,commit);
+    const previous=comments[0]?.body;
+    const commit=previous?.match(/\/blob\/([a-f0-9]{40})\/generated\/[a-f0-9]{64}\/preview\.md\)\n$/)?.[1];
+    if(commit&&wrap(commit)===previous&&await io.readPreview(commit,path)===preview)body=previous;
+    else {
+      if(session.preview!==preview) {
+        session.preview=preview;session.repository.revision++;session.repository.lastProgressAt=io.now();
+      }
+      const archive=await io.save(session);
+      if(!/^[a-f0-9]{40}$/.test(archive)||await io.readPreview(archive,path)!==preview)fail('MANUAL_PREVIEW_ARCHIVE');
+      body=wrap(archive);
+    }
+    await verify();
+  }
   if(comments[0]) {if(comments[0].body!==body)await io.updateComment(comments[0].id,body);}
   else {try{await io.createComment(candidate.prNumber,body);}catch{/* Unknown writes must reconcile by the fixed native owner. */}}
   comments=await own();if(comments.length!==1||comments[0].body!==body)fail('MANUAL_COMMENT_UNKNOWN');

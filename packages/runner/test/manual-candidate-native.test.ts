@@ -12,7 +12,7 @@ import {releaseProtectionFixture} from './fixtures/release-protection.js';
 vi.setConfig({testTimeout:300000});
 vi.mock('../dist/index.js',async()=>import('../src/index.js'));
 const load=(path:string)=>import(pathToFileURL(resolve(path)).href);
-it.each([false,true])('native manual freeze and projection preserve Git objects (same base %s)',async(sameBase)=>{
+it.each([[false,false],[true,false],[true,true]])('native manual projection preserves Git objects (same base %s, large %s)',async(sameBase,large)=>{
   const {fixture}=await load('scripts/test/manual-candidate-fixture.mjs'),f=fixture();
   const {nativeReleaseCandidate}=await load('scripts/release-candidate.mjs');
   const {readReleaseRecords}=await load('scripts/release-record.mjs');
@@ -29,7 +29,7 @@ it.each([false,true])('native manual freeze and projection preserve Git objects 
     await git('add','.');await git('commit','-m','initial actual product');const G=await git('rev-parse','HEAD');
     if(!sameBase){await writeFile(join(directory,'source.txt'),'current source');await git('add','.');await git('commit','-m','current source');}
     const S=await git('rev-parse','HEAD');
-    await git('switch','-c',f.session.repository.candidate.branch);await writeFile(join(directory,'.release-notes/layerscape.md'),f.files['.release-notes/layerscape.md']+'\n人工补充。\n');
+    await git('switch','-c',f.session.repository.candidate.branch);await writeFile(join(directory,'.release-notes/layerscape.md'),f.files['.release-notes/layerscape.md']+'\n人工补充。\n'+(large?'长'.repeat(68000):''));
     if(!sameBase)await writeFile(join(directory,'CHANGELOG.md'),'合法人工更新 changelog\n');
     await git('add','.');await git('commit','-m','manual candidate');const H=await git('rev-parse','HEAD');
     f.pull.head.sha=H;f.session.generated.baseSha=G;
@@ -74,7 +74,16 @@ it.each([false,true])('native manual freeze and projection preserve Git objects 
     expect(await head('steward/release-state')).toBe(frozenState);expect(writes).toEqual([]);
     f.pull.merged=false;f.pull.state='open';delete f.pull.merge_commit_sha;
     const projected=await nativeReleaseCandidate(request,observeOptions);
-    if(sameBase)expect(comments[0]!.body).toContain('人工补充。');
+    if(large) {
+      const body=comments[0]!.body;
+      expect(Buffer.byteLength(body)).toBeLessThanOrEqual(48*1024);
+      const match=body.match(/\/blob\/([a-f0-9]{40})\/(generated\/[a-f0-9]{64}\/preview\.md)\)\n$/);
+      expect(match).toBeTruthy();
+      const archived=await git('-C',remote,'show',match![1]+':'+match![2]);
+      expect(archived).toContain('长'.repeat(68000));
+      expect(archived).toBe(session.manualValidation.projection.preview.trim());
+      expect(projected.projectionEvidence.bodyDigest).toBe(createHash('sha256').update(body).digest('hex'));
+    } else if(sameBase)expect(comments[0]!.body).toContain('人工补充。');
     expect(projected.reason).toBe('MANUAL_PROJECTION');expect(writes).toEqual(['comment']);session=await read();
     const completed=await head('steward/release-state');
     const replay=await nativeReleaseCandidate(request,{...options,manualCandidateProducer:{...f.producer,runId:43},expectedStateSha:completed});

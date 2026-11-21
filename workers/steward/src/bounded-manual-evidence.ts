@@ -1,3 +1,4 @@
+import {candidateCommentHeader,previewCommentMatches} from './preview-reference.js';
 import {renderCandidateNote} from '@splrad/steward-core/candidate-note';
 import {nativeTree,nativeTreeEntries,verifyManualManagedChanges} from './bounded-tree-evidence.js';
 import {createHash} from 'node:crypto';
@@ -7,7 +8,13 @@ import {APP_BOT_ID} from './bounded-winget-evidence.js';
 import type {Identity} from './bounded-recheck.js';
 export const exactManual=(v:any,keys:string)=>ensure(v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join(',')===keys,'MANUAL_FIELDS');
 const hex=(v:unknown,n:number)=>typeof v==='string'&&new RegExp(`^[a-f0-9]{${n}}$`).test(v);
-export function manualBody(m:any){return `<!-- steward:candidate-status:${m.candidateId} -->\n候选 head: ${m.headSha}\n${m.units.map((u:any)=>`${u.id}: ${u.version}`).join('\n')}\n\n${m.projection.preview}`;}
+export function manualBody(m:any){return candidateCommentHeader(m.candidateId,m.headSha,m.units)+m.projection.preview;}
+async function manualCommentMatches(g:GitReader,facts:any,body:string){
+ const m=facts.manual;
+ if(m.schemaVersion!==3)return body===manualBody(m);
+ return previewCommentMatches(g,body,m.projection.preview,m.candidateId,facts.evidence.stateCommit,
+   candidateCommentHeader(m.candidateId,m.headSha,m.units));
+}
 export function candidateVersion(units:{id:string;path:string;version:string;tag:string}[]) {
  ensure(Array.isArray(units)&&units.length>0&&new Set(units.map(u=>u.id)).size===units.length&&new Set(units.map(u=>u.path)).size===units.length,'MANUAL_UNIT');
  if(units.length===1)return units[0]!.version;
@@ -84,10 +91,10 @@ export async function verifyManualHead(g:GitReader,m:any,pull:any,generatedFiles
  ensure((await read(`git/ref/heads/${encodeURIComponent((g.target??TARGET).defaultBranch)}`)).object?.sha===m.sourceSha,'SOURCE_CHANGED');return p;
 }
 export async function verifyManualProjection(g:GitReader,facts:any,e:any){
- const m=facts.manual;exactManual(e,'bodyDigest,commentId,previewDigest');ensure(Number.isSafeInteger(e.commentId)&&e.commentId>0&&facts.state.candidate.statusCommentId===e.commentId&&facts.session.preview===m.projection.preview&&e.bodyDigest===m.projection.bodyDigest&&e.previewDigest===digest(m.projection.preview).slice(7),'MANUAL_PROJECTION_STATE');
+ const m=facts.manual;exactManual(e,'bodyDigest,commentId,previewDigest');ensure(Number.isSafeInteger(e.commentId)&&e.commentId>0&&facts.state.candidate.statusCommentId===e.commentId&&facts.session.preview===m.projection.preview&&e.previewDigest===digest(m.projection.preview).slice(7),'MANUAL_PROJECTION_STATE');
  const comments:any[]=[];let complete=false;for(let page=1;page<=5;page++){const batch=await g.json((g.target??TARGET).id,`/repos/${(g.target??TARGET).name}/issues/${m.prNumber}/comments?per_page=100&page=${page}`);ensure(Array.isArray(batch),'MANUAL_COMMENTS');comments.push(...batch);if(batch.length<100){complete=true;break;}}
  ensure(complete,'MANUAL_COMMENTS_PAGINATION');const marker=`<!-- steward:candidate-status:${m.candidateId} -->`,own=comments.filter(c=>typeof c.body==='string'&&c.body.includes(marker));
- ensure(own.length===1&&own[0].id===e.commentId&&own[0].user?.id===APP_BOT_ID&&own[0].issue_url===`https://api.github.com/repos/${(g.target??TARGET).name}/issues/${m.prNumber}`&&own[0].body===manualBody(m)&&digest(own[0].body).slice(7)===e.bodyDigest,'MANUAL_COMMENT_BINDING');
+ ensure(own.length===1&&own[0].id===e.commentId&&own[0].user?.id===APP_BOT_ID&&own[0].issue_url===`https://api.github.com/repos/${(g.target??TARGET).name}/issues/${m.prNumber}`&&await manualCommentMatches(g,facts,own[0].body)&&digest(own[0].body).slice(7)===e.bodyDigest,'MANUAL_COMMENT_BINDING');
  const pull=await verifyManualHead(g,m,facts.pull,facts.session.generated.files,{publishedHead:facts.state.candidate.publishedHead,session:facts.session});
  ensure((await g.json((g.target??TARGET).id,`/repos/${(g.target??TARGET).name}/git/ref/heads/steward/release-state`)).object?.sha===facts.evidence.stateCommit,'STATE_MOVED');return pull;
 }
@@ -98,5 +105,5 @@ export async function manualProjectionBefore(g:GitReader,facts:any){
  ensure(complete,'MANUAL_COMMENTS_PAGINATION');const marker=`<!-- steward:candidate-status:${m.candidateId} -->`,own=comments.filter(c=>typeof c.body==='string'&&c.body.includes(marker));
  ensure(own.length<=1,'MANUAL_COMMENT_AMBIGUOUS');const c=own[0];if(c)ensure(c.user?.id===APP_BOT_ID&&c.issue_url===`https://api.github.com/repos/${(g.target??TARGET).name}/issues/${m.prNumber}`&&facts.state.candidate.statusCommentId===c.id,'MANUAL_COMMENT_BINDING');else ensure(facts.state.candidate.statusCommentId===null,'MANUAL_COMMENT_MISSING');
  ensure(typeof facts.session.preview==='string','MANUAL_PREVIEW');const before={commentId:c?.id??null,bodyDigest:c?digest(c.body).slice(7):null,previewDigest:digest(facts.session.preview).slice(7)};
- return {before,pending:before.bodyDigest!==m.projection.bodyDigest||facts.session.preview!==m.projection.preview};
+ return {before,pending:!c||facts.session.preview!==m.projection.preview||!await manualCommentMatches(g,facts,c.body)};
 }

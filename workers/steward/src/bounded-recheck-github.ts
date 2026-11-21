@@ -1,3 +1,4 @@
+import {trustedActionsDownload} from '../support/github/client.js';
 import {GitHubRetryError} from './bounded-retry-after.js';
 import { createHash } from 'node:crypto';
 import { inflateRawSync } from 'node:zlib';
@@ -212,7 +213,7 @@ export class BoundedGitHub implements GitReader {
   const r=this.repo(id);const list=await this.json(id,`/repos/${r.name}/actions/runs/${runId}/artifacts?per_page=100`);ensure(Array.isArray(list.artifacts)&&list.total_count===list.artifacts.length,'ARTIFACT_PAGINATION');
   const matches=list.artifacts.filter((a:any)=>a.name===name&&!a.expired&&a.workflow_run?.id===runId);ensure(matches.length===1,'ARTIFACT_UNIQUE');const a=matches[0];ensure(/^sha256:[a-f0-9]{64}$/.test(a.digest)&&a.size_in_bytes<=2*1024*1024,'ARTIFACT_DIGEST');
   const token=await this.token(id);const redirect=await this.transport(`https://api.github.com/repos/${r.name}/actions/artifacts/${a.id}/zip`,{headers:{Authorization:`Bearer ${token}`,'X-GitHub-Api-Version':GITHUB_API_VERSION,'User-Agent':'splrad-bounded-recheck'},signal:this.signal(),redirect:'manual'});
-  rateLimitError(redirect);ensure(redirect.status===302,'ARTIFACT_REDIRECT');const url=new URL(redirect.headers.get('location')??'');ensure(url.protocol==='https:'&&!url.username&&!url.password,'ARTIFACT_ORIGIN');
+  rateLimitError(redirect);ensure(redirect.status===302,'ARTIFACT_REDIRECT');const url=new URL(redirect.headers.get('location')??'');ensure(trustedActionsDownload(url),'ARTIFACT_ORIGIN');
   // The API-issued signed URL gets no GitHub bearer token, and is never persisted/logged.
   const bytes=await limitedBytes(await this.transport(url,{signal:this.signal(),redirect:'manual'}),2*1024*1024);ensure(digest(bytes)===a.digest&&bytes.length===a.size_in_bytes,'ARTIFACT_BYTES');const current=await this.json(id,`/repos/${r.name}/actions/artifacts/${a.id}`);const fields=['id','name','digest','workflow_run','created_at','expired','size_in_bytes'];ensure(fields.every(k=>JSON.stringify(current[k])===JSON.stringify(a[k])),'ARTIFACT_CHANGED');return {value:readZipJson(bytes,file),artifactId:a.id,digest:a.digest,createdAt:a.created_at};
  }

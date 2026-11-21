@@ -50,12 +50,13 @@ export class ReleasePromotion {
         if(await t.get(name)===undefined)await t.put(name,0);
       }else{
         ensure(sha(b.controller),'PROMOTION_CONTROLLER');
-        if(await t.get('controller')!==b.controller){
+        if(await t.get('controller')!==b.controller||await t.get('notifiedPolicy')!==b.policy){
+          await t.put('notifiedPolicy',b.policy);
+          await t.put('promotionPolicy',b.policy);
           await t.put('controller',b.controller);
           await t.put('generation',++generation);
         }
       }
-      await t.put('promotionPolicy',b.policy);
       if((await t.list({start:'wait:',end:bucket(generation),limit:1})).size)await t.setAlarm(Date.now());
     });
   }

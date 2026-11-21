@@ -1,3 +1,4 @@
+import {candidateCommentHeader,formatPreviewBody} from '../src/preview-reference.js';
 import {promotedControllerFixture} from './promoted-controller-fixture.js';
 import {BoundedGitHub} from '../src/bounded-recheck-github.js';
 import {SqliteDurableStorage} from './bounded-storage.js';
@@ -191,7 +192,7 @@ describe('native ingress across a controller or deployment change',()=>{
 });
 
 describe('manual notes at the generated base',()=>{
- it.each(['valid','unrelated edit','unrelated head','undeclared notes','wrong preview'])('verifies the exact published-to-human change: %s',async scenario=>{
+ it.each(['valid','long preview','unrelated edit','unrelated head','undeclared notes','wrong preview'])('verifies the exact published-to-human change: %s',async scenario=>{
    const f=fixture(),m=f.m,notes=m.units[0].notesPath;
    m.schemaVersion=3;
    m.units[0].versionPath='VERSION';
@@ -201,12 +202,30 @@ describe('manual notes at the generated base',()=>{
    const declaration={id:'layerscape',path:'.',notesPath:scenario==='undeclared notes'?'other.md':notes};
    f.blobs['.github/delivery.json']=f.sourceBlobs['.github/delivery.json']=JSON.stringify({schemaVersion:2,units:[declaration]});
    f.blobs[notes]='## 更新内容\r\n\r\n人工修改。\r\n\r\n## 恢复\r\n\r\n当前发布资料未提供此项变化的确认信息。\r\n';
+   if(scenario==='long preview')f.blobs[notes]=f.blobs[notes].replace('人工修改。','稿'.repeat(68000));
    m.files=Object.keys(f.blobs).sort().map(path=>({path,sha256:digest(f.blobs[path]).slice(7)}));
    m.projection.preview='# '+notes+'\n\n## 更新内容\n\n人工修改。\n\n';
+   if(scenario==='long preview')m.projection.preview=m.projection.preview.replace('人工修改。','稿'.repeat(68000));
    if(scenario==='wrong preview')m.projection.preview+='旧稿';
    m.projection.bodyDigest=digest(manualBody(m)).slice(7);
    const published=f.state.candidate.publishedHead;
    const g:GitReader={...f.g,json:async(id,path)=>{
+     if(scenario==='long preview'){
+       const chunkPath=/\/contents\/(generated\/[a-f0-9]{64}\/session(?:-(\d+))?\.json)\?ref=/.exec(path);
+       if(chunkPath){
+         const text=JSON.stringify(f.session),parts=text.match(/[\s\S]{1,12000}/g)!;
+         const index=Number(chunkPath[2]??0);
+         const bytes=Buffer.from(JSON.stringify({schemaVersion:1,repositoryId:TARGET.id,candidateId:m.candidateId,
+           documentKind:'session',index,count:parts.length,documentDigest:digest(text).slice(7),content:parts[index]}));
+         return {path:chunkPath[1],type:'file',encoding:'base64',size:bytes.length,
+           sha:createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex'),content:bytes.toString('base64')};
+       }
+       const archive=sha('8'),stateCommit=sha('2'),name=`generated/${m.candidateId}/preview.md`;
+       const bytes=Buffer.from(m.projection.preview),blob=createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+       if(path.endsWith(`/compare/${archive}...${stateCommit}`))return {status:'ahead',base_commit:{sha:archive},merge_base_commit:{sha:archive}};
+       if(path.endsWith(`/git/trees/${archive}?recursive=1`))return {truncated:false,tree:[{path:name,type:'blob',mode:'100644',sha:blob}]};
+       if(path.endsWith(`/contents/${name}?ref=${archive}`))return {path:name,type:'file',encoding:'base64',size:bytes.length,sha:blob,content:bytes.toString('base64')};
+     }
      if(path.includes('/compare/'+published+'...'))return {base_commit:{sha:published},
        merge_base_commit:{sha:scenario==='unrelated head'?sha('9'):published},status:'ahead'};
      if(path.includes('/git/trees/'+published)){
@@ -216,9 +235,33 @@ describe('manual notes at the generated base',()=>{
      }
      return f.g.json(id,path);
    }};
-   const read=candidateFacts(g);
-   if(scenario==='valid')expect((await read).identity).toEqual(manualIdentity(m,f.state,f.session));
-   else await expect(read).rejects.toThrow({ 'unrelated edit':'MANUAL_NOTE_SCOPE','unrelated head':'MANUAL_PUBLISHED_ANCESTRY',
+   const read=()=>candidateFacts(g);
+   if(scenario==='long preview'){
+     f.session.preview=m.projection.preview;
+     const facts=await candidateFacts(g);
+     const header=candidateCommentHeader(m.candidateId,m.headSha,m.units);
+     const body=formatPreviewBody(header,m.projection.preview,m.candidateId,TARGET.name,sha('8'));
+     expect(Buffer.byteLength(manualBody(m))).toBeGreaterThan(65536);
+     expect(Buffer.byteLength(body)).toBeLessThan(48*1024);
+     f.comments[0].body=body;
+     const evidence={commentId:7,previewDigest:digest(m.projection.preview).slice(7),bodyDigest:digest(body).slice(7)};
+     expect(evidence.bodyDigest).not.toBe(m.projection.bodyDigest);
+     expect((await manualProjectionBefore(g,facts)).pending).toBe(false);
+     await verifyManualProjection(g,facts,evidence);
+     f.comments[0].body=body.replace(TARGET.name,'splrad/other');
+     expect((await manualProjectionBefore(g,facts)).pending).toBe(true);
+     await expect(verifyManualProjection(g,facts,evidence)).rejects.toThrow('MANUAL_COMMENT_BINDING');
+   }else if(scenario==='valid')expect((await read()).identity).toEqual(manualIdentity(m,f.state,f.session));
+   else await expect(read()).rejects.toThrow({ 'unrelated edit':'MANUAL_NOTE_SCOPE','unrelated head':'MANUAL_PUBLISHED_ANCESTRY',
      'undeclared notes':'MANUAL_NOTE_OWNER','wrong preview':'MANUAL_PROJECTION'}[scenario]);
  });
+});
+
+it('counts the entire UTF-8 status comment before choosing its archive link',()=>{
+ const id=key('a'),header=candidateCommentHeader(id,sha('b'),[{id:'包',version:'1'}]);
+ const available=48*1024-Buffer.byteLength(header);
+ const preview='界'.repeat(Math.floor(available/3))+'x'.repeat(available%3);
+ expect(Buffer.byteLength(header+preview)).toBe(48*1024);
+ expect(formatPreviewBody(header,preview,id,TARGET.name,sha('c'))).toBe(header+preview);
+ expect(formatPreviewBody(header,preview+'x',id,TARGET.name,sha('c'))).toContain('/blob/'+sha('c')+'/generated/'+id+'/preview.md');
 });

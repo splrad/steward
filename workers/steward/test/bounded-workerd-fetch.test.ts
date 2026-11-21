@@ -65,7 +65,7 @@ it('reads the target and dispatches the fixed workflow using the native Worker f
   }
 }, 30_000);
 
-it.each([200, 302])('validates an artifact when the signed URL returns HTTP %i', async signedStatus => {
+it.each([200, 302, 'untrusted origin'])('validates the artifact download target and response (%s)', async signedStatus => {
   // Stored ZIP with one member, value.json, containing {"ok":true}.
   const zip = Buffer.from('UEsDBBQAAAAAAAAAIQCQX9SnCwAAAAsAAAAKAAAAdmFsdWUuanNvbnsib2siOnRydWV9UEsBAhQAFAAAAAAAAAAhAJBf1KcLAAAACwAAAAoAAAAAAAAAAAAAAIABAAAAAHZhbHVlLmpzb25QSwUGAAAAAAEAAQA4AAAAMwAAAAAA', 'base64');
   const artifact = {
@@ -76,7 +76,7 @@ it.each([200, 302])('validates an artifact when the signed URL returns HTTP %i',
   const actions = api + '/repos/splrad/LayerScape/actions';
   const list = actions + '/runs/1/artifacts?per_page=100';
   const detail = actions + '/artifacts/2';
-  const signedUrl = 'https://signed.invalid/object';
+  const signedUrl = signedStatus === 'untrusted origin' ? 'https://signed.invalid/object' : 'https://fixture.blob.core.windows.net/object';
   const calls: { url: string; authenticated: boolean }[] = [];
   const runtime = await startWorker(`
     import { BoundedGitHub, TARGET } from './bounded-recheck-github.ts';
@@ -106,9 +106,10 @@ it.each([200, 302])('validates an artifact when the signed URL returns HTTP %i',
       expect(await response.json()).toEqual({ ok: true });
     } else {
       expect(response.status).toBe(502);
-      expect(await response.text()).toBe('HTTP_READ_FAILED');
+      expect(await response.text()).toBe(signedStatus === 'untrusted origin' ? 'ARTIFACT_ORIGIN' : 'HTTP_READ_FAILED');
     }
-    const expected = [api + mint, list, detail + '/zip', signedUrl];
+    const expected = [api + mint, list, detail + '/zip'];
+    if (signedStatus !== 'untrusted origin') expected.push(signedUrl);
     if (signedStatus === 200) expected.push(detail);
     expect(calls).toEqual(expected.map(url => ({ url, authenticated: url !== signedUrl })));
   } finally {

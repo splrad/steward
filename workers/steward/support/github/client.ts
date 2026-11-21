@@ -44,6 +44,10 @@ export const closingIssuesReferencesQuery = `query PullRequestClosingIssues($own
   }
 }`;
 
+export function trustedActionsDownload(location:URL):boolean {
+  return location.protocol==='https:'&&!location.username&&!location.password&&!location.port&&!location.hash&&
+    ['.blob.core.windows.net','.actions.githubusercontent.com'].some(suffix=>location.hostname.endsWith(suffix));
+}
 export class GitHubRequestError extends Error {
   constructor(public readonly status: number, public readonly method: string, public readonly path: string, message: string, public readonly retryAt?:number) {
     super(`${method} ${path}: ${status} ${message}`);
@@ -97,8 +101,7 @@ export class GitHubClient {
     });
     if (response.status === 302) {
       const location = new URL(response.headers.get("location") ?? "");
-      if (location.protocol !== "https:" || location.username || location.password || location.port || location.hash
-        || ![".blob.core.windows.net", ".actions.githubusercontent.com"].some(suffix => location.hostname.endsWith(suffix))) throw new Error("运行日志下载地址无效");
+      if (!trustedActionsDownload(location)) throw new Error("运行日志下载地址无效");
       response = await this.transport.call(globalThis, location.href, { redirect: "error" });
     }
     if (!response.ok || !response.body) throw new Error("运行日志读取失败");

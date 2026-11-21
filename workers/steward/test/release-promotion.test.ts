@@ -33,4 +33,12 @@ it('wakes original requests for a superseding controller including registration 
   await broker.update('/promoted',{policy,controller:'3'.repeat(40)});
   await broker.alarm();
   expect(wakes.at(-1)).toEqual({id:'native:v1:'+'f'.repeat(64),policy,controller:'3'.repeat(40)});
+  const nextPolicy='b'.repeat(40);
+  await broker.update('/wait',{kind:'native',key:'e'.repeat(64),policy:nextPolicy,generation:2});
+  expect(await storage.get('promotionPolicy')).toBe(policy);
+  await broker.update('/promoted',{policy:nextPolicy,controller:'3'.repeat(40)});
+  await broker.alarm();
+  expect(wakes.at(-1)).toEqual({id:'native:v1:'+'e'.repeat(64),policy:nextPolicy,controller:'3'.repeat(40)});
+  expect(await storage.get('generation')).toBe(3);
+
 });

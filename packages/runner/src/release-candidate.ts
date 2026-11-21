@@ -94,10 +94,14 @@ export function candidateProjectionPreview(session:CandidateSession):string {
     return renderCandidateNote(f.path,f.content!,unit.contributors.contributors);
   }).join('\n').replace(/\r\n?/g,'\n');
 }
+export function candidateCommentFits(body:string):boolean { return Buffer.byteLength(body)<=48*1024; }
 export function candidateStatusBody(repository:string,candidateId:string,units:{id:string;version:string}[],head:string,preview:string,previewCommit:string):string {
   const header=`<!-- steward:candidate-status:${candidateId} -->\n候选 head: ${head}\n${units.map(u=>`${u.id}: ${u.version}`).join('\n')}\n\n`;
   const body=header+preview;
-  return Buffer.byteLength(body)<=48*1024?body:`${header}[完整预览](https://github.com/${repository}/blob/${previewCommit}/generated/${candidateId}/preview.md)\n`;
+  if(candidateCommentFits(body))return body;
+  const linked=`${header}[完整预览](https://github.com/${repository}/blob/${previewCommit}/generated/${candidateId}/preview.md)\n`;
+  if(!candidateCommentFits(linked))throw Error('CANDIDATE_STATUS_HEADER_TOO_LARGE');
+  return linked;
 }
 export async function advanceReleaseCandidate(session: CandidateSession, io: CandidateRuntime, observation?: CandidateObservation) {
   const repository = session.repository;
