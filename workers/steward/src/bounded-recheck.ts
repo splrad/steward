@@ -92,13 +92,26 @@ export class BoundedRecheck {
     if(r.status==='PENDING'){await this.wake(locator);return;}
     if(r.status!=='NEEDS_ATTENTION'||r.reason!=='UNKNOWN_DELIVERY'||intent.runId!==locator.runId)return;
     if(Math.max(r.retryAfter??0,intent.retryAfter??0)>this.clock())return;
-    const outcome=await this.effects.confirm(r,intent,locator.runId);
-    if(outcome.kind!=='done')return;
+    let outcome:Outcome;
+    try { outcome=await this.effects.confirm(r,intent,locator.runId); }
+    catch(error){
+      // Manual archival can arrive after the business deadline. Use the existing
+      // one-minute fallback for a provider limit without a usable retry time.
+      const now=this.clock(),floor=retryAfterTime(error,now,now+minute-1);
+      if(floor===undefined)throw error;
+      outcome={kind:'unknown',retryAfter:floor};
+    }
+    if(outcome.kind!=='done'&&(outcome.kind!=='unknown'||outcome.retryAfter===undefined))return;
     await this.store.transaction(current=>{
       if(current?.status==='NEEDS_ATTENTION'&&current.reason==='UNKNOWN_DELIVERY'&&
          current.generation===r.generation&&current.intent?.key===intent.key&&current.intent.runId===locator.runId){
-        current.evidence=outcome.evidence;
-        stop(current,'DONE','VERIFIED_DONE');
+        if(outcome.kind==='done'){
+          current.evidence=outcome.evidence;
+          stop(current,'DONE','VERIFIED_DONE');
+        }else{
+          current.retryAfter=Math.max(current.retryAfter??0,current.intent.retryAfter??0,outcome.retryAfter!);
+          current.intent.retryAfter=current.retryAfter;
+        }
       }
       return {record:current,result:undefined};
     });

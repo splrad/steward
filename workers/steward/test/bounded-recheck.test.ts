@@ -121,3 +121,25 @@ it.each(['duplicate','cancel','incomplete'])('reconciles an exact late receipt a
  expect(f.effects.observe).toHaveBeenCalledTimes(1);
  expect(f.store.alarm()).toBeNull();
 });
+
+it('retains provider backoff on terminal receipts across reconstruction without an alarm',async()=>{
+ const f=fixture({kind:'unknown',runId:42});
+ await f.engine().register(input());
+ await f.engine().wake();
+ for(const offset of [1,5,15]){f.time(t0+offset*m);await f.engine().wake();}
+ const before=(await f.store.read())!,now=before.deadline+m;
+ f.time(now);
+ const locator={identity:before.identity,requestKey:before.intent!.key,runId:42,attempt:1,policySha:before.policySha};
+ vi.mocked(f.effects.confirm).mockRejectedValueOnce(new GitHubRetryError(429,'120',false));
+ await f.engine().receipt(locator);
+ const floor=now+2*m;
+ expect(await f.store.read()).toEqual({...before,retryAfter:floor,intent:{...before.intent,retryAfter:floor}});
+ await f.engine().receipt(locator);
+ expect(f.effects.confirm).toHaveBeenCalledTimes(4);
+ f.time(floor);
+ vi.mocked(f.effects.confirm).mockResolvedValueOnce({kind:'done',evidence:'original'});
+ await f.engine().receipt(locator);
+ expect((await f.store.read())?.status).toBe('DONE');
+ expect(f.effects.observe).toHaveBeenCalledTimes(1);
+ expect(f.store.alarm()).toBeNull();
+});
