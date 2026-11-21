@@ -22,7 +22,7 @@ async function fixture(channelIds=['ghcr-assets']) {
     if(path.includes('/commits/'))return f.response({sha:D});
     if(path.endsWith('/pulls/33'))return f.response(pr);
     if(path.endsWith('actions/workflows/steward-release-channels.yml'))return f.response({id:10,path:'.github/workflows/steward-release-channels.yml',state:'active'});
-    if(path.includes('/contents/')){const b=path.includes('delivery.json')?bytes:workflow;return f.response({type:'file',encoding:'base64',content:b.toString('base64'),size:b.length,sha:blob(b)});}
+    if(path.includes('/contents/')){const file=path.split('/contents/')[1]!.split('?')[0],b=path.includes('delivery.json')?bytes:workflow;return f.response({type:'file',path:file,encoding:'base64',content:b.toString('base64'),size:b.length,sha:blob(b)});}
     if(path.includes('/runs?'))return f.response({total_count:0,workflow_runs:[]});
     throw Error('unexpected '+path);
   }};

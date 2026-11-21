@@ -2,11 +2,10 @@ import {expect,it} from 'vitest';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {createHash} from 'node:crypto';
-const {fetchState,recordCentralHealth,coordinateReleaseWake,releaseParticipation}=await import(pathToFileURL(resolve('scripts/release-coordinator.mjs')).href);
+const {fetchState,coordinateReleaseWake,releaseParticipation}=await import(pathToFileURL(resolve('scripts/release-coordinator.mjs')).href);
 const {validateReleaseConfiguration}=await import(pathToFileURL(resolve('scripts/release-adoption.mjs')).href);
 const repository={id:1296724484,full_name:'splrad/steward',default_branch:'main',archived:false,disabled:false};
 const sha='a'.repeat(40),head='b'.repeat(40);
-const summary={observedAt:'2026-11-13T12:00:00.000Z',scanCompletedAt:null,errorCodes:['RELEASE_BOOTSTRAP_REQUIRED'],counts:{scanned:1,completed:0,waiting:1,failed:0,unknown:1}};
 it('shares adopted config validation while retaining an empty first-release manifest',()=>{
   const d={units:[{path:'.'}]},c={'separate-pull-requests':false,packages:{'.':{'release-type':'simple'}}};
   expect(()=>validateReleaseConfiguration(d,c,{})).not.toThrow();
@@ -27,7 +26,8 @@ it('allows only protected fixed central missing refs, never product 404 or forbi
       rules:path.endsWith('/1')?[{type:'creation'},{type:'update',parameters:{update_allows_fetch_and_merge:false}}]:[{type:'non_fast_forward'},{type:'deletion'}]};
     return new Response(JSON.stringify(data));
   };
-  for(const ref of ['steward/release-state','steward/automation-health'])expect((await fetchState('',repository,'fixture',ref,{fetcher,centralFirstUse:true})).snapshot.head).toBeNull();
+  expect((await fetchState('',repository,'fixture','steward/release-state',{fetcher,centralFirstUse:true})).snapshot.head).toBeNull();
+  await expect(fetchState('',repository,'fixture','steward/automation-health',{fetcher,centralFirstUse:true})).rejects.toThrow('RELEASE_CENTRAL_STATE_IDENTITY');
   await expect(fetchState('',repository,'fixture','steward/release-state',{fetcher})).rejects.toThrow('RELEASE_BOOTSTRAP_REQUIRED');
   await expect(fetchState('',{...repository,id:7},'fixture','steward/release-state',{fetcher,centralFirstUse:true})).rejects.toThrow('RELEASE_CENTRAL_STATE_IDENTITY');
   status=403;await expect(fetchState('',repository,'fixture','steward/release-state',{fetcher,centralFirstUse:true})).rejects.toThrow('RELEASE_STATE_UNAVAILABLE');
@@ -36,29 +36,6 @@ it('allows only protected fixed central missing refs, never product 404 or forbi
   confirmed=[{}];await expect(fetchState('',repository,'fixture','steward/release-state',{fetcher,centralFirstUse:true})).rejects.toThrow('RELEASE_STATE_IDENTITY');
   confirmed=[{ref:'refs/heads/steward/release-state',object:{type:'commit',sha}}];await expect(fetchState('',repository,'fixture','steward/release-state',{fetcher,centralFirstUse:true})).rejects.toThrow('RELEASE_STATE_MOVED');confirmed=[];
   status=404;protectedWriter=false;await expect(fetchState('',repository,'fixture','steward/release-state',{fetcher,centralFirstUse:true})).rejects.toThrow();
-});
-function fixture(){
-  let bytes:Buffer|null=null,existing=false,writes=0;
-  const run={id:77,workflow_id:11,run_attempt:1,repository:{id:repository.id},head_repository:{id:repository.id},path:'.github/workflows/release.yml',head_sha:sha,head_branch:'main',event:'schedule'};
-  const refresh=async()=>({snapshot:{repositoryId:repository.id,targetRef:'steward/automation-health',head:existing?head:null,currentPaths:bytes?['health.json']:[]},remote:'https://github.com/splrad/steward.git',
-    io:{request:async()=>({status:200,bytes:Buffer.from(JSON.stringify(run))})},readBytes:async()=>{if(!bytes)throw Error('missing health file');return bytes;}});
-  const input={refresh,summary,repository,controllerSha:sha,runId:77,runAttempt:1,directory:resolve('fixture-health')};
-  const write=async(request:any)=>{writes++;expect(request.expectedHead).toBe(existing?head:null);expect(request.changes[0].previousSha256).toBe(bytes?createHash('sha256').update(bytes).digest('hex'):null);bytes=Buffer.from(request.changes[0].content);existing=true;return {status:'APPLIED',head};};
-  return {input,write,run,missingExisting:()=>{existing=true;},written:()=>bytes&&JSON.parse(bytes.toString()),writes:()=>writes};
-}
-it('archives a real first incomplete scan and reads it back without manufacturing success',async()=>{
-  const f=fixture();await recordCentralHealth(f.input,f.write);
-  expect(f.written()).toMatchObject({...summary,runId:77,runAttempt:1,workflowId:11,controllerSha:sha});
-  await recordCentralHealth(f.input,f.write);expect(f.writes()).toBe(1);
-  const complete={...summary,observedAt:'2026-11-13T12:05:00.000Z',scanCompletedAt:'2026-11-13T12:05:00.000Z',errorCodes:[],counts:{scanned:1,completed:1,waiting:0,failed:0,unknown:0}};
-  await recordCentralHealth({...f.input,summary:complete},f.write);expect(f.writes()).toBe(2);expect(f.written().scanCompletedAt).toBe(complete.scanCompletedAt);
-  await recordCentralHealth({...f.input,summary:{...summary,observedAt:'2026-11-13T12:10:00.000Z'}},f.write);expect(f.writes()).toBe(3);expect(f.written().scanCompletedAt).toBeNull();
-});
-it('refuses an existing ref missing health.json, a foreign native run, and unconfirmed writes',async()=>{
-  const missing=fixture();missing.missingExisting();await expect(recordCentralHealth(missing.input,missing.write)).rejects.toThrow('missing health file');expect(missing.writes()).toBe(0);
-  const foreign=fixture();foreign.run.head_branch='other';await expect(recordCentralHealth(foreign.input,foreign.write)).rejects.toThrow('RUN_IDENTITY');expect(foreign.writes()).toBe(0);
-  const unknown=fixture();await expect(recordCentralHealth(unknown.input,async()=>({status:'UNKNOWN',head:null}))).rejects.toThrow('WRITE_UNCONFIRMED');
-  const lost=fixture();await expect(recordCentralHealth(lost.input,async()=>({status:'APPLIED',head}))).rejects.toThrow('READBACK');
 });
 it('retains maintenance and bootstrap failures after product side effects, without repeating service',async()=>{
   let writes=0;const reports:any[]=[];

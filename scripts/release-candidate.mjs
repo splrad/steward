@@ -11,7 +11,8 @@ import { Version } from 'release-please/build/src/version.js';
 import { parseDocument } from 'yaml';
 import { advanceReleaseCandidate, pushPreparedCandidate, collectContentInput, planContentBatches,
   resumeContentBatches, assembleUnitNotes, copilotReleaseClient, decodeCandidateDocument, splitContentText, selectReleaseContributors, releaseAffectedUnitIds, isolatedBuildEnvironment,
-  candidateObservationIdentity, parseDeliveryConfig, parseSupplementalNotes, assertDeliveryPath, assertProductDelivery, mergedBuildCycle, assertRepositoryWrite, completeMergedPull } from '../packages/runner/dist/index.js';
+  candidateObservationIdentity, parseDeliveryConfig, parseSupplementalNotes, assertDeliveryPath, assertProductDelivery, mergedBuildCycle, assertRepositoryWrite, completeMergedPull,
+  defaultBuildWorkflow, productReleaseTemplatePath, sharedReleaseTemplatePath, NativeEvidenceReader, nativeEvidenceTransport } from '../packages/runner/dist/index.js';
 import { readReleaseRecords, writeReleaseRecords, assertReleaseWriterProtection } from './release-record.mjs';
 import { restoreContentRecovery } from './release-content-recovery.mjs';
 
@@ -76,12 +77,26 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     }
     fail('CANDIDATE_PAGINATION_INCOMPLETE');
   };
-  const fileAt = async (sha, path) => {
+  const fileAt = async (sha, path, optional=false) => {
     if(!validSha(sha))fail('CANDIDATE_SOURCE_IDENTITY');assertDeliveryPath(path);
     const entry=(await git('ls-tree','-z',sha,'--',path)).toString('utf8');
+    if(optional&&!entry)return null;
     if(!new RegExp('^100(?:644|755) blob [a-f0-9]{40}\\t').test(entry)||entry.slice(entry.indexOf('\t')+1)!==path+'\0')fail('CANDIDATE_REGULAR_SOURCE_REQUIRED');
     return (await git('cat-file','blob',entry.slice(12,52))).toString('utf8');
   };
+  const templateAt=async(sha,pin,delivery)=>{
+    const local=await fileAt(sha,productReleaseTemplatePath,delivery.buildWorkflow!==undefined);
+    if(local!==null)return local;
+    const reader=new NativeEvidenceReader(nativeEvidenceTransport(undefined,fetcher),'splrad/steward');
+    const file=await reader.json(`contents/${sharedReleaseTemplatePath}?ref=${pin}`);
+    if(file.type!=='file'||file.path!==sharedReleaseTemplatePath||file.encoding!=='base64'||typeof file.content!=='string')
+      fail('CANDIDATE_RELEASE_TEMPLATE');
+    const bytes=Buffer.from(file.content,'base64');
+    if(bytes.length!==file.size||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==file.sha)
+      fail('CANDIDATE_RELEASE_TEMPLATE');
+    return new TextDecoder('utf-8',{fatal:true}).decode(bytes);
+  };
+  const checkPolicyAt=async(sha,delivery)=>checkRepositoryPolicy?.(path=>fileAt(sha,path),{buildWorkflow:delivery.buildWorkflow});
   const fetchBranch = async branch => {
     const ref = await api('GET', `/repos/${request.repository}/git/ref/heads/${branch}`, undefined, true);
     if (!ref) return null;
@@ -135,12 +150,12 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     const source = async () => {
       const baseSha = await fetchBranch(request.defaultBranch); if (!baseSha) fail('CANDIDATE_DEFAULT_BRANCH_UNAVAILABLE');
       if(expectedSourceSha!==undefined&&baseSha!==expectedSourceSha)fail('CANDIDATE_EVENT_SOURCE_CHANGED');
-      await checkRepositoryPolicy?.(path=>fileAt(baseSha,path));
       const config = await fileAt(baseSha, 'release-please-config.json'), manifest = await fileAt(baseSha, '.release-please-manifest.json');
       delivery = parseDeliveryConfig(JSON.parse(await fileAt(baseSha, '.github/delivery.json')));
       assertProductDelivery(delivery,request.repository);
       const rules = await native(`rules/branches/${encodeURIComponent(request.defaultBranch)}`);
       if (!Array.isArray(rules) || !rules.some(r => r.type === 'non_fast_forward') || !rules.some(r => r.type === 'deletion')) fail('CANDIDATE_SOURCE_PROTECTION_REQUIRED');
+      await checkPolicyAt(baseSha,delivery);
       const settings = JSON.parse(config), versions = JSON.parse(manifest);
       const initial = Object.values(versions).every(version => !version || version === '0.0.0');
       const releases = initial ? await pages('releases') : [], tags = initial ? await pages('tags') : [];
@@ -364,7 +379,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       updateComment: (id, body) => api('PATCH', `/repos/${request.repository}/issues/comments/${id}`, { body }),
     };
     const manualBlobs=new Map(),manualFetched=new Set();
-    const manualIO={activeCycle,
+    const manualIO={activeCycle,readTemplate:(commit,delivery)=>templateAt(commit,controllerSha,delivery),
       product:{id:request.repositoryId,name:request.repository,defaultBranch:request.defaultBranch},
       pull:()=>native(`pulls/${session.repository.candidate.prNumber}`),
       changedPaths:async(base,head)=>{
@@ -470,13 +485,10 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         const reviewedTree = (await git('rev-parse', `${pull.head.sha}^{tree}`)).toString().trim();
         const delivery = parseDeliveryConfig(JSON.parse(await fileAt(sourceSha, '.github/delivery.json')));
         const versions = JSON.parse(await fileAt(sourceSha, '.release-please-manifest.json'));
-        const template = await fileAt(sourceSha, '.github/release-template.md.mustache');
-        for (const unit of delivery.units.filter(unit => data.generated.units.some(generated => generated.id === unit.id)))
-          parseSupplementalNotes(await fileAt(sourceSha, unit.notesPath), template);
         if (data.identity.authorsDigest !== hash(JSON.stringify(delivery.repositoryAuthors))
           || data.generated.units.some(unit => versions[unit.path] !== unit.version)) fail('MERGED_CANDIDATE_INPUT_DRIFT');
         // The merged source fixes its execution controller, independently of this wake.
-        const document = parseDocument(await fileAt(sourceSha, '.github/workflows/steward-release-publish.yml'), { uniqueKeys: true });
+        const document = parseDocument(await fileAt(sourceSha, delivery.buildWorkflow ?? defaultBuildWorkflow), { uniqueKeys: true });
         if (document.errors.length) fail('CANDIDATE_CONTROLLER_PIN_INVALID');
         const workflow = document.toJS({ maxAliasCount: 0 }), jobs = workflow?.jobs;
         if (!jobs || typeof jobs !== 'object' || Array.isArray(jobs)) fail('CANDIDATE_CONTROLLER_PIN_REQUIRED');
@@ -491,6 +503,9 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         if (!checkouts.length) fail('CANDIDATE_CONTROLLER_PIN_REQUIRED');
         if (checkouts.some(step => !/^actions\/checkout@[a-f0-9]{40}$/.test(step.uses ?? '')
           || step.with.repository !== 'splrad/steward' || step.with.ref !== cycleControllerSha)) fail('CANDIDATE_CONTROLLER_PIN_CONFLICT');
+        const template=await templateAt(sourceSha,cycleControllerSha,delivery);
+        for (const unit of delivery.units.filter(unit => data.generated.units.some(generated => generated.id === unit.id)))
+          parseSupplementalNotes(await fileAt(sourceSha,unit.notesPath),template);
         const deliveryBlobSha = (await git('rev-parse', `${sourceSha}:.github/delivery.json`)).toString().trim();
         const cycle = mergedBuildCycle({ prNumber: pull.number, sourceSha, controllerSha:cycleControllerSha, sourceTree, reviewedTree, deliveryBlobSha, delivery, units: data.generated.units, repository:request.repository, repositoryId:request.repositoryId });
         const {repository:ignored,...archivedSession}=data;
@@ -509,14 +524,14 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     if(session.repository.candidate?.prNumber) {
       const value=await mergedSnapshot(session.repository.candidate,session,expectedHead);
       if(value) {
-        const {cycle,mergedArchive,sourceSha,defaultSha}=value;
+        const {cycle,mergedArchive,sourceSha,defaultSha,delivery}=value;
         if(!verifyHandoff)return {status:'WAIT',reason:'MERGED_CANDIDATE_VERIFICATION_REQUIRED'};
         const history=await verifyHandoff(cycle);
         const eligible=history?.result==='PASS';
         if(!eligible||history.inventoryComplete!==true||history.pendingHandoff!==cycle.id
           ||history.defaultHead!==defaultSha||history.stateHead!==expectedHead)
           return {status:'WAIT',reason:'MERGED_CANDIDATE_SOURCE_UNVERIFIED',history};
-        await checkRepositoryPolicy?.(path=>fileAt(sourceSha,path));
+        await checkPolicyAt(sourceSha,delivery);
         if(await fetchBranch(request.defaultBranch)!==defaultSha||await fetchBranch('steward/release-state')!==expectedHead)
           return {status:'WAIT',reason:'MERGED_CANDIDATE_SOURCE_MOVED'};
         session.repository.activeCycleId = cycle.id; session.repository.candidate = null; session.repository.revision++; session.repository.lastProgressAt = now();

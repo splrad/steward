@@ -583,6 +583,20 @@ test('central Pages consumer blocks recovery for disabled and build-only sites a
     io:{request:async method=>{assert.equal(method,'GET');return {status:404};}}}),/PAGES_REPOSITORY_POLICY_CONFLICT/);
 });
 
+test('a native release entry needs no central registration and honors a migrated pause',async()=>{
+  let reads=0,policy={adoption:'central',policy:{release:{units:[]}}};
+  const guard=releasePolicyGuard({},product,async()=>{reads++;return policy;});
+  const read=async()=>assert.fail('native admission must not read fixed legacy workflow paths');
+  await guard(read,{nativeEntry:true,priorRegistration:false});
+  assert.equal(reads,0);
+  await guard(read,{nativeEntry:true,priorRegistration:true});
+  assert.equal(reads,1);
+  policy={adoption:'central',policy:{release:null}};
+  await assert.rejects(guard(read,{nativeEntry:true,priorRegistration:true}),/CANDIDATE_REPOSITORY_POLICY_DISABLED/);
+  policy={adoption:'paused',policy:{release:null}};
+  await assert.rejects(guard(read,{nativeEntry:true,priorRegistration:true}),/CANDIDATE_REPOSITORY_POLICY_DISABLED/);
+});
+
 test('private receiver accepts verified metadata and one ID for recovery', () => {
   assert.deepEqual(registrationIds(event(body('repository','created',[governance.id])),'repository_dispatch'),[governance.id]);
   assert.deepEqual(registrationIds(event(body('installation_repositories','added',[governance.id,product.id])),

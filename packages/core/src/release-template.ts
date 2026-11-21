@@ -218,3 +218,5 @@ export function renderFrozenReleaseNotes(template: string, data: FrozenReleaseNo
     sourceSha: data.sourceSha, controllerSha: data.controllerSha, channels, hasContributors: contributors.length > 0, contributors } as ReleaseTemplateData;
   return renderCommittedReleaseNotes(template, values);
 }
+export const productReleaseTemplatePath = '.github/release-template.md.mustache';
+export const sharedReleaseTemplatePath = 'templates/repository/' + productReleaseTemplatePath;

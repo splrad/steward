@@ -3,14 +3,13 @@ import { promisify } from 'node:util';
 import { mkdtemp } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { nativeEvidenceTransport, isolatedBuildEnvironment, githubUnits,evaluateCompletion,parseDeliveryConfig,assertProductDelivery } from '../packages/runner/dist/index.js';
-import { readReleaseRecords, writeReleaseRecords, assertReleaseWriterProtection } from './release-record.mjs';
+import { nativeEvidenceTransport, isolatedBuildEnvironment, githubUnits,evaluateCompletion,parseDeliveryConfig,assertProductDelivery,verifyDispatchWorkflow,encodeRepositoryPath } from '../packages/runner/dist/index.js';
+import { readReleaseRecords, assertReleaseWriterProtection } from './release-record.mjs';
 import {servicePages,pagesGitStore} from './pages-maintenance.mjs';
 import {assertQualityProtection,qualityNativeIO} from './quality-language-summary.mjs';
 import {validateReleaseConfiguration} from './release-adoption.mjs';
 import {mergedRepositoryPolicy} from './repository-policy-read.mjs';
 
-const hash=value=>createHash('sha256').update(value).digest('hex');
 const identity={name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'};
 const safeCode=error=>error instanceof Error && /^RELEASE_[A-Z_]+$/.test(error.message)?error.message:'RELEASE_NATIVE_UNAVAILABLE';
 const iso=clock=>new Date(clock()).toISOString();
@@ -161,19 +160,25 @@ export async function releaseParticipation(repository,io,{includeUnits=false}={}
     status='NOT_APPLICABLE';
   } else {
     if(files.some(x=>x.length!==1||x[0].type!=='blob'||x[0].mode!=='100644'))throw Error('RELEASE_CONFIGURATION_REQUIRED');
-    const contents=[];
-    for(let i=0;i<names.length;i++) {
-      const v=await read(`contents/${names[i]}?ref=${ref.object.sha}`);
-      if(v.type!=='file'||v.path!==names[i]||v.sha!==files[i][0].sha||v.encoding!=='base64')throw Error('RELEASE_CONFIGURATION_INVALID');
+    const readSource=async(path,entry)=>{
+      const v=await read(`contents/${encodeRepositoryPath(path)}?ref=${ref.object.sha}`);
+      if(v.type!=='file'||v.path!==path||v.sha!==entry.sha||v.encoding!=='base64'||typeof v.content!=='string')throw Error('RELEASE_CONFIGURATION_INVALID');
       const bytes=Buffer.from(v.content,'base64');
       if(bytes.length!==v.size||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==v.sha)throw Error('RELEASE_CONFIGURATION_INVALID');
-      try{contents.push(JSON.parse(bytes.toString('utf8')));}catch{throw Error('RELEASE_CONFIGURATION_INVALID');}
-    }
+      return bytes;
+    };
     try {
+      const contents=await Promise.all(names.map(async(path,i)=>JSON.parse(await readSource(path,files[i][0]))));
       const delivery=parseDeliveryConfig(contents[0]);assertProductDelivery(delivery,repository.full_name);
       validateReleaseConfiguration(delivery,contents[1],contents[2]);
+      if(delivery.buildWorkflow!==undefined) {
+        const publisher=tree.tree.find(entry=>entry.path===delivery.buildWorkflow);
+        if(publisher?.type!=='blob'||publisher.mode!=='100644')throw Error('RELEASE_CONFIGURATION_INVALID');
+        verifyDispatchWorkflow(await readSource(delivery.buildWorkflow,publisher), {purpose:'build',buildWorkflow:delivery.buildWorkflow,
+          inputs:{cycle_id:'',operation_key:'',source_sha:'',controller_sha:''}});
+      }
       if(includeUnits)units=delivery.units.map(({id,path,notesPath})=>({id,path,notesPath}));
-    }catch{throw Error('RELEASE_CONFIGURATION_INVALID');}
+    }catch(error){if(error.message==='AUTHOR_IDENTITY_UNVERIFIED')throw error;throw Error('RELEASE_CONFIGURATION_INVALID');}
   }
   if(absenceFacts) {
     const after=[await read('git/matching-refs/heads/steward/release-candidate'),await read('git/matching-refs/heads/steward/build/'),await read('releases?per_page=1')];
@@ -188,7 +193,7 @@ export async function releaseParticipation(repository,io,{includeUnits=false}={}
 export async function fetchState(root,repository,token,targetRef='steward/release-state',{governanceAppId,fetcher=fetch,includeHistory=targetRef!=='steward/release-state',centralFirstUse=false,readCentralMaintenanceRules,withGovernanceRules}={}) {
   const io=nativeEvidenceTransport(token,fetcher),remote=`https://github.com/${repository.full_name}.git`;
   if(centralFirstUse) {
-    if(repository.id!==1296724484||repository.full_name!=='splrad/steward'||!['steward/release-state','steward/automation-health'].includes(targetRef))throw new Error('RELEASE_CENTRAL_STATE_IDENTITY');
+    if(repository.id!==1296724484||repository.full_name!=='splrad/steward'||targetRef!=='steward/release-state')throw new Error('RELEASE_CENTRAL_STATE_IDENTITY');
     const response=await io.request('GET','/repos/splrad/steward');
     if(response.status!==200)throw new Error('RELEASE_CENTRAL_STATE_UNAVAILABLE');
     const actual=JSON.parse(Buffer.from(response.bytes).toString('utf8'));
@@ -202,7 +207,7 @@ export async function fetchState(root,repository,token,targetRef='steward/releas
   else await assertReleaseWriterProtection(repository.full_name,targetRef,io,{token,fetcher,readCentralMaintenanceRules});
   const response=await io.request('GET',`/repos/${repository.full_name}/git/ref/heads/${targetRef}`);
   // Only these two fixed central consumers may start with no records. No branch
-  // is seeded: the first real maintenance fact or health summary creates it.
+  // is seeded: the first real maintenance fact creates it.
   if(response.status===404&&centralFirstUse) {
     const confirmation=await io.request('GET',`/repos/${repository.full_name}/git/matching-refs/heads/${targetRef}`);
     if(confirmation.status!==200)throw new Error('RELEASE_STATE_UNAVAILABLE');
@@ -241,30 +246,6 @@ export async function fetchState(root,repository,token,targetRef='steward/releas
 }
 
 /** The first central health record describes this real wake, including incomplete scans. */
-export async function recordCentralHealth({refresh,summary,repository,controllerSha,runId,runAttempt,directory,token},write=writeReleaseRecords) {
-  if(repository.id!==1296724484||repository.full_name!=='splrad/steward')throw new Error('RELEASE_HEALTH_REPOSITORY');
-  const state=await refresh();
-  if(state.snapshot.repositoryId!==repository.id||state.snapshot.targetRef!=='steward/automation-health')throw new Error('RELEASE_HEALTH_STATE_IDENTITY');
-  const old=state.snapshot.head===null?null:await state.readBytes('health.json');
-  const prior=old===null?null:JSON.parse(old.toString('utf8'));
-  if(prior?.observedAt.slice(0,10)===summary.observedAt.slice(0,10)
-    &&(prior.scanCompletedAt===null)===(summary.scanCompletedAt===null)
-    &&JSON.stringify(prior.errorCodes)===JSON.stringify(summary.errorCodes)&&JSON.stringify(prior.counts)===JSON.stringify(summary.counts))return {status:'UNCHANGED'};
-  const response=await state.io.request('GET',`/repos/splrad/steward/actions/runs/${runId}`);
-  if(response.status!==200)throw new Error('RELEASE_HEALTH_RUN_UNAVAILABLE');
-  const run=JSON.parse(Buffer.from(response.bytes).toString('utf8'));
-  if(run.id!==runId||run.run_attempt!==runAttempt||run.repository?.id!==repository.id||run.head_repository?.id!==repository.id
-    ||run.path!=='.github/workflows/release.yml'||run.head_sha!==controllerSha||run.head_branch!==repository.default_branch
-    ||!['schedule','workflow_dispatch'].includes(run.event))throw new Error('RELEASE_HEALTH_RUN_IDENTITY');
-  const content=JSON.stringify({schemaVersion:1,workflowId:run.workflow_id,runId:run.id,runAttempt:run.run_attempt,controllerSha,...summary},null,2)+'\n';
-  const written=await write({directory,remote:state.remote,repositoryId:repository.id,defaultBranch:repository.default_branch,targetRef:'steward/automation-health',writer:'health',
-    expectedHead:state.snapshot.head,allowedPaths:['health.json'],changes:[{path:'health.json',content,sha256:hash(content),previousSha256:old===null?null:hash(old)}],identity},{token});
-  if(!['APPLIED','UNCHANGED'].includes(written.status))throw new Error('RELEASE_HEALTH_WRITE_UNCONFIRMED');
-  const after=await refresh();
-  if(after.snapshot.head!==written.head||!after.snapshot.currentPaths.includes('health.json')||(await after.readBytes('health.json')).toString('utf8')!==content)throw new Error('RELEASE_HEALTH_READBACK');
-  return written;
-}
-
 export async function serviceRepositoryPages({app,root,repository,coordinator,completion,site}) {
   return app.forPagesRepository(repository.id,async token=>{
     const io=nativeEvidenceTransport(token);
