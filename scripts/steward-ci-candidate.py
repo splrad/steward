@@ -68,7 +68,10 @@ def checked_records(original, candidate):
 
 
 def verify_other_locks(base, head):
-    before = tomllib.loads(lock_blob("policy", base, "mise.lock").decode())
+    # On default-branch pushes the full target history contains the pre-push tree.
+    # A PR base must come from the separate policy checkout because forks can lack it.
+    base_repo = "target" if os.environ.get("GITHUB_EVENT_NAME") == "push" else "policy"
+    before = tomllib.loads(lock_blob(base_repo, base, "mise.lock").decode())
     after = tomllib.loads(lock_blob("target", head, "mise.lock").decode())
     platform = rules.PLATFORMS[int(os.name == "nt")]
     for key, previous, item in checked_records(before, after):
@@ -76,7 +79,7 @@ def verify_other_locks(base, head):
             if key != "npm":
                 continue
             directory = previous["aube"]["path"]
-            if all(lock_blob("policy", base, f"{directory}/{name}") == lock_blob("target", head, f"{directory}/{name}")
+            if all(lock_blob(base_repo, base, f"{directory}/{name}") == lock_blob("target", head, f"{directory}/{name}")
                    for name in ("aube-lock.yaml", "package.json")):
                 continue
         version = item["version"]

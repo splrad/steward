@@ -82,8 +82,20 @@ class LockContractTest(unittest.TestCase):
             self.assertNotEqual(refs[0], refs[1])
             result = subprocess.run(["git", "-C", repo, "cat-file", "-e", refs[0]], capture_output=True)
             self.assertNotEqual(result.returncode, 0)
-            with chdir(directory):
+            with chdir(directory), patch.dict(os.environ, {"GITHUB_EVENT_NAME": "pull_request"}):
                 candidate["verify_other_locks"](*refs)
+
+    def test_full_push_uses_pre_push_lock(self):
+        locks = {
+            ("target", "before", "mise.lock"): b"lockfile_version = 3\n[tools]\n",
+            ("target", "after", "mise.lock"): b"lockfile_version = 4\n[tools]\n",
+        }
+        verify = candidate["verify_other_locks"]
+        with patch.dict(os.environ, {"GITHUB_EVENT_NAME": "push"}), patch.dict(
+            verify.__globals__, {"lock_blob": lambda *args: locks[args]}
+        ):
+            with self.assertRaisesRegex(ValueError, "Unsupported lockfile contract change"):
+                verify("before", "after")
 
 
 if __name__ == "__main__":
