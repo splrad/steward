@@ -69,12 +69,13 @@ it.each(['search','native-response'])('archives a moved source through %s only w
   const native={...f.runs.get(1),head_sha:'f'.repeat(40),head_branch:'trunk',path:f.run.path,display_title:f.run.displayTitle};
   const job={...f.jobs.get(1)![0],head_sha:native.head_sha,name:'source-check',steps:[{number:2,name:'Verify native source',started_at:START,completed_at:END,conclusion:'failure'}]};
   const bytes=Buffer.from(JSON.stringify({'run-name':'Channels ${{ inputs.request_key }}',on:{workflow_dispatch:{inputs:Object.fromEntries(Object.keys(f.request.inputs).map(key=>[key,{type:'string',required:true}]))}}}));
+  let wrongPath=false;
   const io={request:async(method:string,path:string)=>{
     expect(method).toBe('GET');
     if(path.includes('/workflows/10/runs?')){expect(mode).toBe('search');expect(path).not.toContain('head_sha');return f.response({total_count:1,workflow_runs:[native]});}
     if(path.includes('/jobs?'))return f.response({total_count:1,jobs:[job]});
     if(path.endsWith('/logs'))return f.response(`${END} STEWARD_SOURCE_REJECTED {"status":"REJECTED","reason":"SOURCE_REF_MOVED"}\n`);
-    if(path.includes('/contents/'))return f.response({type:'file',path:path.split('/contents/')[1]!.split('?')[0],encoding:'base64',content:bytes.toString('base64'),size:bytes.length,sha:createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')});
+    if(path.includes('/contents/'))return f.response({type:'file',path:wrongPath?'.github/workflows/other.yml':native.path,encoding:'base64',content:bytes.toString('base64'),size:bytes.length,sha:createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')});
     return f.response(native);
   }};
   const value:any={schemaVersion:1,repositoryId:f.context.repositoryId,cycleId:f.context.cycle.id,requestKey:f.request.requestKey,observedAt:NOW,
@@ -82,6 +83,9 @@ it.each(['search','native-response'])('archives a moved source through %s only w
     html_url:`https://github.com/${f.context.repository}/actions/runs/${native.id}`},run:null,window:null,pages:[],matches:[],errorCode:null,nextCheckAt:null};
   const responses=mode==='native-response'?[{path:dispatchObservationFile(value).path,commit:D,value}]:[];
   const files=await readChannelSourceRejections(f.context,[],io,NOW,responses);expect(files).toHaveLength(1);
+  wrongPath=true;
+  await expect(readChannelSourceRejections(f.context,[],io,NOW,responses)).rejects.toThrow('source rejection workflow');
+  wrongPath=false;
   const proof={path:files[0]!.path,commit:D,value:decodeNativeSourceRejection(Buffer.from(files[0]!.content))};
   expect(selectChannelDispatch(f.context,f.report.items,[],[proof]).kind).toBe('reselect');
   expect((await inspectNativeCycle(f.context,[],f.io,NOW,{complete:true,observations:[],sourceRejections:[proof]})).readObservation.disposition).toBe('COMPLETE');

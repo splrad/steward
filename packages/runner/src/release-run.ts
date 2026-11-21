@@ -495,7 +495,7 @@ export async function readChannelSourceRejections(context:EvidenceContext,histor
     });
     if(markers.length!==1||JSON.stringify(markers[0])!==JSON.stringify({status:'REJECTED',reason:'SOURCE_REF_MOVED'}))continue;
     const workflow=await reader.json(`contents/${encodeRepositoryPath(run.path)}?ref=${run.headSha}`),bytes=Buffer.from(workflow.content??'','base64');
-    if(workflow.type!=='file'||workflow.encoding!=='base64'||workflow.size!==bytes.length||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==workflow.sha)fail('source rejection workflow');
+    if(workflow.path!==run.path||workflow.type!=='file'||workflow.encoding!=='base64'||workflow.size!==bytes.length||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==workflow.sha)fail('source rejection workflow');
     verifyDispatchWorkflow(bytes,request);
     const value:NativeSourceRejection={schemaVersion:1,repositoryId:context.repositoryId,cycleId:context.cycle.id,requestKey:request.requestKey,
       expectedExecutionSha:request.executionSha,observedAt,workflowBlobSha:workflow.sha,run,jobs,logDigest:createHash('sha256').update(logs).digest('hex'),reason:'SOURCE_REF_MOVED'};

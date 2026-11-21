@@ -314,7 +314,7 @@ async function workflowSource(reader: NativeEvidenceReader, run: NativeRun) {
   const key=JSON.stringify([source.repository,path,commitSha]);if(visited.has(key))return;visited.add(key);
   check(visited.size<=100,'workflow source bound');
   const blob = await source.json(`contents/${encodeRepositoryPath(path)}?ref=${commitSha}`);
-  check(blob.type === 'file' && blob.encoding === 'base64' && typeof blob.content === 'string' && blob.size <= 512*1024, 'workflow blob');
+  check(blob.path === path && blob.type === 'file' && blob.encoding === 'base64' && typeof blob.content === 'string' && blob.size <= 512*1024, 'workflow blob');
   const bytes = Buffer.from(blob.content, 'base64');
   check(bytes.length === blob.size && createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex') === blob.sha, 'workflow bytes');
   sourceBlobs.push({repository:source.repository,path,commitSha,blobSha:blob.sha});

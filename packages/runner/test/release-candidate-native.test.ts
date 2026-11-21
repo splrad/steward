@@ -154,7 +154,9 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   } };
   const request = { directory, writeDirectory: join(root, 'writes'), remote, repository: 'fixture/product', repositoryId: 1, defaultBranch: 'main', appBotId: 301115370, identity };
   await mkdir(request.writeDirectory);
-  const options = { token: 'fixture-write', readToken: 'fixture-read', controllerSha: 'f'.repeat(40), fetcher, generator, language, temporaryRoot: root, now: () => '2026-10-27T00:00:00Z' };
+  const unregisteredPolicy=explicitWorkflow?releasePolicyGuard({},request,async()=>({adoption:'legacy',policy:null})):undefined;
+  const options = { token: 'fixture-write', readToken: 'fixture-read', controllerSha: 'f'.repeat(40), fetcher, generator, language, temporaryRoot: root,
+    checkRepositoryPolicy:unregisteredPolicy,now: () => '2026-10-27T00:00:00Z' };
   const pausedPolicy=releasePolicyGuard({},request,async()=>({adoption:'paused',policy:null}));
   if(explicitWorkflow) {
     const state=await head('steward/release-state'),start=requests.length;
@@ -334,12 +336,14 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     expect(modelCalls).toBe(firstCalls);
   }
   const handed=await releaseCommand('candidate',{...request,cycleId:null,runId:null,writeDirectory:join(root,'merge-writes')},
-    {token:options.token,candidateReadToken:options.readToken,controllerSha:options.controllerSha,now:options.now,io});
+    {token:options.token,candidateReadToken:options.readToken,controllerSha:options.controllerSha,now:options.now,io,
+      candidateRuntime:{checkRepositoryPolicy:unregisteredPolicy}});
   expect(handed).toMatchObject({ status: 'CYCLE_READY', sourceSha: S, cycleId: `pr-9-${S}` });
   expect(modelCalls).toBe(firstCalls); await refresh();
   const merged = await readReleaseRecords({ directory, targetRef: 'steward/release-state', repositoryId: 1 });
   expect(merged.repository.activeCycleId).toBe(`pr-9-${S}`);
   expect(merged.cycles[0].value.controllerSha).toBe(sourceControllerSha);
+  expect(merged.cycles[0].value.buildWorkflow).toBe(explicitWorkflow);
   expect(merged.repository.releaseAdoption).toEqual(repository.releaseAdoption);
   expect(merged.cycles[0].value.units[0]).toMatchObject({ releaseId: null, manifestDigest: null });
   const chunks = merged.domainRecords.filter((record: any) => record.value.documentKind === 'merged-candidate').map((record: any) => record.value);

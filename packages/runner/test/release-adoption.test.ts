@@ -160,7 +160,7 @@ it.each(['terminal','missing','in-progress'])('restores original cycle cache onl
       else if(path.includes('/actions/runs/100')&&path.includes('/artifacts'))value={total_count:0,artifacts:[]};
       else if(path.includes('/actions/runs/100'))value=run;
       else if(path.includes('/actions/workflows/10'))value={id:10,path:run.path};
-      else if(path.includes('/contents/.github/workflows/'))value={type:'file',encoding:'base64',content:workflow.toString('base64'),size:workflow.length,sha:createHash('sha1').update(`blob ${workflow.length}\0`).update(workflow).digest('hex')};
+      else if(path.includes('/contents/.github/workflows/'))value={path:path.split('/contents/')[1]!.split('?')[0],type:'file',encoding:'base64',content:workflow.toString('base64'),size:workflow.length,sha:createHash('sha1').update(`blob ${workflow.length}\0`).update(workflow).digest('hex')};
       else return original(method,path);
       expect(method).toBe('GET');return {status:200,bytes:new Uint8Array(Buffer.from(JSON.stringify(value))),headers:new Headers()};
     };
