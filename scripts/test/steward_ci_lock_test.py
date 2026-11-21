@@ -135,6 +135,18 @@ class LockContractTest(unittest.TestCase):
                 with self.subTest(before=before):
                     candidate["verify_other_locks"](before, "b" * 40)
 
+    def test_tool_directory_retries_windows_sharing_violation(self):
+        locked = PermissionError("file is still in use")
+        locked.winerror = 32
+        with patch("tempfile.TemporaryDirectory") as temporary, patch("time.sleep") as sleep:
+            directory = temporary.return_value
+            directory.name = "candidate"
+            directory.cleanup.side_effect = [locked, None]
+            with candidate["tool_directory"]() as path:
+                self.assertEqual(path, Path(directory.name))
+            self.assertEqual(directory.cleanup.call_count, 2)
+            sleep.assert_called_once_with(0.1)
+
 
 if __name__ == "__main__":
     unittest.main()

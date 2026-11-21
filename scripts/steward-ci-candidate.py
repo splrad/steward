@@ -1,5 +1,6 @@
 """Run the selected supplier binary on the runner using data from immutable Git trees."""
 import base64
+from contextlib import contextmanager
 import hashlib
 import http.server
 import importlib.util
@@ -13,6 +14,7 @@ import tomllib
 import tarfile
 import tempfile
 import threading
+import time
 import urllib.parse
 import urllib.request
 import zipfile
@@ -35,6 +37,25 @@ def child_env():
 def read_url(url):
     with urllib.request.urlopen(url, timeout=120) as response:
         return response.read()
+
+
+@contextmanager
+def tool_directory():
+    directory = tempfile.TemporaryDirectory()
+    try:
+        yield Path(directory.name)
+    finally:
+        # Windows may briefly retain a handle to a freshly executed binary.
+        for delay in (0.1, 0.2, 0.4, 0.8):
+            try:
+                directory.cleanup()
+                break
+            except PermissionError as error:
+                if getattr(error, "winerror", None) not in (32, 33):
+                    raise
+                time.sleep(delay)
+        else:
+            directory.cleanup()
 
 
 def lock_blob(repo, ref, path):
@@ -248,8 +269,8 @@ if __name__ == "__main__":
     require(rules.classify(base, head) == profile, "Candidate profile changed")
     if profile == "tool":
         for key, item in rules.tool_changes(*(rules.blob(ref, "mise.lock") for ref in (base, head))).items():
-            with tempfile.TemporaryDirectory() as directory:
-                tool(key, item, Path(directory))
+            with tool_directory() as directory:
+                tool(key, item, directory)
     elif profile == "docs":
         key = "aqua:lycheeverse/lychee"
         item, = tomllib.loads(lock_blob("policy", "HEAD", "mise.lock").decode())["tools"][key]
