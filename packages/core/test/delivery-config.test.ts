@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertDeliveryPath, assertDeliveryArtifactMapping, assertDeliveryAssetName } from '../src/delivery-config.js';
+import { assertDeliveryPath, assertDeliveryArtifactMapping, assertDeliveryAssetName, parseDeliveryConfig } from '../src/delivery-config.js';
 
 it.each(['dist/widget.zip', '部件.zip', 'widget file.zip', '.hidden', 'con.zip', 'widget.', 'widget-*.zip', '*.tgz', 'a'.repeat(201)])('rejects materialized asset name %s', name => {
   expect(() => assertDeliveryAssetName(name)).toThrow('DELIVERY_ASSET_NAME');
@@ -14,6 +14,16 @@ it('validates multiple producers and their complete asset sets without mutation'
   input.builds[0]!.expectedArtifacts.reverse(); before.builds[0]!.expectedArtifacts.reverse();
   expect(() => assertDeliveryArtifactMapping(input)).not.toThrow();
   expect(input).toEqual(before);
+});
+it('uses Release Please root and subdirectory packages together in compact delivery', () => {
+  const delivery={schemaVersion:3,repositoryAuthors:[{id:12,evidence:'Confirmed repository authorship'}]};
+  const settings={packages:{'.':{component:'desktop'},'tools/python':{component:'python'}}};
+  expect(parseDeliveryConfig(delivery,settings).units.map(({id,path,notesPath})=>({id,path,notesPath}))).toEqual([
+    {id:'desktop',path:'.',notesPath:'.release-notes/desktop.md'},
+    {id:'python',path:'tools/python',notesPath:'.release-notes/python.md'},
+  ]);
+  expect(()=>parseDeliveryConfig({...delivery,notes:{'.':'.release-notes/python.md'}},settings)).toThrow('DELIVERY_DUPLICATE_NOTES_PATH');
+  expect(()=>parseDeliveryConfig(delivery,{packages:{'.':{component:'desktop'},'tools/python':{component:'desktop'}}})).toThrow('DELIVERY_DUPLICATE_IDENTITY');
 });
 it.each(['duplicate-producer', 'duplicate-asset', 'unknown-producer', 'inherited-key', 'missing-asset', 'missing-reference', 'duplicate-reference', 'empty-producers', 'empty-assets'])('rejects %s in finite producer data', kind => {
   const input = mapping();

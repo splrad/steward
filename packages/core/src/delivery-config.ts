@@ -114,7 +114,9 @@ export function parseDeliveryConfig(input: unknown, releasePlease?:{packages?:Re
     || !unique(value.repositoryAuthors.map(author => author.id)) || value.repositoryAuthors.some(author => !author.evidence.trim()))
     throw new Error('DELIVERY_DUPLICATE_IDENTITY');
   const paths=value.units.map(unit=>unit.path.toLowerCase());
-  if(paths.some((path,i)=>paths.some((other,j)=>i!==j&&(path==='.'||other.startsWith(path+'/')))))throw new Error('DELIVERY_NESTED_UNIT_PATH');
+  if(value.schemaVersion===3) {
+    if(!unique(value.units.map(unit=>unit.notesPath.toLowerCase())))throw new Error('DELIVERY_DUPLICATE_NOTES_PATH');
+  } else if(paths.some((path,i)=>paths.some((other,j)=>i!==j&&(path==='.'||other.startsWith(path+'/')))))throw new Error('DELIVERY_NESTED_UNIT_PATH');
   for (const unit of value.units) {
     // Version 1 implicitly published the entire seal to GitHub. In version 2 omission disables it.
     if (value.schemaVersion === 2 && !unit.channels.some(channel => channel.id === 'github-release'))
