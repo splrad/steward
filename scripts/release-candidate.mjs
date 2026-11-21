@@ -84,9 +84,11 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     if(!new RegExp('^100(?:644|755) blob [a-f0-9]{40}\\t').test(entry)||entry.slice(entry.indexOf('\t')+1)!==path+'\0')fail('CANDIDATE_REGULAR_SOURCE_REQUIRED');
     return (await git('cat-file','blob',entry.slice(12,52))).toString('utf8');
   };
-  const templateAt=async(sha,pin,schemaVersion)=>{
-    const local=schemaVersion===3?null:await fileAt(sha,productReleaseTemplatePath,true);
-    if(local!==null)return local;
+  const templateAt=async(sha,pin,delivery)=>{
+    if(delivery.schemaVersion!==3) {
+      const local=await fileAt(sha,productReleaseTemplatePath,delivery.buildWorkflow!==undefined);
+      if(local!==null)return local;
+    }
     const reader=new NativeEvidenceReader(nativeEvidenceTransport(undefined,fetcher),'splrad/steward');
     const file=await reader.json(`contents/${sharedReleaseTemplatePath}?ref=${pin}`);
     if(file.type!=='file'||file.path!==sharedReleaseTemplatePath||file.encoding!=='base64'||typeof file.content!=='string')
@@ -98,7 +100,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
   };
   const checkPolicyAt=async(sha,delivery)=>{
     if(!checkRepositoryPolicy)return;
-    const nativeEntry=delivery.buildWorkflow!==undefined;
+    const nativeEntry=delivery.schemaVersion===3;
     const priorRegistration=nativeEntry&&(await fileAt(sha,'.github/steward-central-policy',true))!==null;
     await checkRepositoryPolicy(path=>fileAt(sha,path),{nativeEntry,priorRegistration});
   };
@@ -384,7 +386,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       updateComment: (id, body) => api('PATCH', `/repos/${request.repository}/issues/comments/${id}`, { body }),
     };
     const manualBlobs=new Map(),manualFetched=new Set();
-    const manualIO={activeCycle,readTemplate:(commit,schemaVersion)=>templateAt(commit,controllerSha,schemaVersion),
+    const manualIO={activeCycle,readTemplate:(commit,delivery)=>templateAt(commit,controllerSha,delivery),
       product:{id:request.repositoryId,name:request.repository,defaultBranch:request.defaultBranch},
       pull:()=>native(`pulls/${session.repository.candidate.prNumber}`),
       changedPaths:async(base,head)=>{
@@ -513,7 +515,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         if(!validSha(cycleControllerSha))fail('CANDIDATE_CONTROLLER_PIN_INVALID');
         if (checkouts.some(step => !/^actions\/checkout@[a-f0-9]{40}$/.test(step.uses ?? '')
           || step.with.repository !== 'splrad/steward' || step.with.ref !== cycleControllerSha)) fail('CANDIDATE_CONTROLLER_PIN_CONFLICT');
-        const template=await templateAt(sourceSha,cycleControllerSha,delivery.schemaVersion);
+        const template=await templateAt(sourceSha,cycleControllerSha,delivery);
         for (const unit of delivery.units.filter(unit => data.generated.units.some(generated => generated.id === unit.id)))
           parseSupplementalNotes(await fileAt(sourceSha,unit.notesPath),template);
         const deliveryBlobSha = (await git('rev-parse', `${sourceSha}:.github/delivery.json`)).toString().trim();

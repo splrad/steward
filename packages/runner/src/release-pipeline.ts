@@ -441,8 +441,8 @@ export async function pipelineIdentity(input: ProductBuildInput, environment: No
     }))};
   }
   const sharedTemplate=await file(input.controllerDirectory,cycle.controllerSha,sharedReleaseTemplatePath);
-  const productTemplate=await localGitSnapshot.file(input.sourceDirectory,cycle.sourceSha,productReleaseTemplatePath);
-  const template=productTemplate??sharedTemplate;
+  const template=delivery.buildWorkflow===undefined?await source(productReleaseTemplatePath):
+    await localGitSnapshot.file(input.sourceDirectory,cycle.sourceSha,productReleaseTemplatePath)??sharedTemplate;
   if(!template.equals(sharedTemplate))fail('adopted notes template');
   const units: BuildPipelineRecord['units'] = [];
   for (const target of cycle.units) {
@@ -478,7 +478,7 @@ export async function pipelineNotes(record: BuildPipelineRecord, unitId: string,
   const changelogFile = delivery.path === '.' ? changelogPath : `${delivery.path}/${changelogPath}`;
   const changelog = await read(changelogFile);
   let templateBytes=await localGitSnapshot.file(sourceDirectory,record.sourceSha,productReleaseTemplatePath);
-  if(!templateBytes&&controllerDirectory)
+  if(!templateBytes&&record.delivery.buildWorkflow!==undefined&&controllerDirectory)
     templateBytes=await localGitSnapshot.file(controllerDirectory,record.controllerSha,sharedReleaseTemplatePath);
   if(!templateBytes||hash(templateBytes)!==record.templateSha256)fail('notes template source');
   const template=templateBytes.toString('utf8');
@@ -971,7 +971,7 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
   const sharedTemplate=()=>source('splrad/steward',cycle.controllerSha,sharedReleaseTemplatePath);
   const template=delivery.schemaVersion===3?await sharedTemplate():
     await source(context.repository,cycle.sourceSha,productReleaseTemplatePath).catch(error=>{
-      if(!(error instanceof EvidenceReadError)||error.status!==404)throw error;
+      if(delivery.buildWorkflow===undefined||!(error instanceof EvidenceReadError)||error.status!==404)throw error;
       return sharedTemplate();
     });
   if (delivery.buildWorkflow !== cycle.buildWorkflow) fail('frozen delivery workflow');

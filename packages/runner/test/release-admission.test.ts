@@ -79,6 +79,11 @@ it('treats concurrent protected state advancement as UNKNOWN without product adm
     ? JSON.stringify({ ref: 'refs/heads/steward/release-state', object: { type: 'commit', sha: 'e'.repeat(40) } }) : f.gh(args);
   expect(await pipelineIdentity(f.input, f.environment, gh, f.io)).toMatchObject({ status: 'UNKNOWN', reason: 'STATE_SOURCE_MOVED' });
 });
+it('requires the product template for a legacy cycle without an explicit native entry', async () => {
+  const f=productPipelineFixture();
+  delete f.source['.github/release-template.md.mustache'];
+  await expect(pipelineIdentity(f.input,f.environment,f.gh,f.io)).rejects.toThrow('missing source input: .github/release-template.md.mustache');
+});
 it.each(['valid', 'unit', 'template', 'version', 'compare'])('renders reviewed notes at S without a catalog reader: %s', async kind => {
   const f = productPipelineFixture(), result = await pipelineIdentity(f.input, f.environment, f.gh, f.io);
   if (result.status !== 'ADMITTED') throw new Error('fixture admission');
