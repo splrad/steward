@@ -296,9 +296,9 @@ test('validates a compact repository’s first notes with the release workflow�
   const pin='a'.repeat(40), workflow='.github/workflows/build-release.yml';
   const templatePath='templates/repository/.github/release-template.md.mustache';
   const body='## ⚡ 改进\n\n**更清晰的输出**。显示实际文件名。';
-  const notesPath='.release-notes/desktop.md';
+  const notesPath='docs/release-current.md';
   const files=new Map([
-    ['.github/delivery.json',JSON.stringify({schemaVersion:3,buildWorkflow:workflow})],
+    ['.github/delivery.json',JSON.stringify({schemaVersion:3,buildWorkflow:workflow,notes:{'.':notesPath}})],
     ['release-please-config.json',JSON.stringify({packages:{'.':{component:'desktop'}}})],
     [workflow,YAML.stringify({jobs:{publish:{steps:[{with:{repository:'splrad/steward',path:'controller',ref:pin}}]}}})],
     ['VERSION','1.0.0\n'],['CHANGELOG.md','# Change history\n'],
@@ -320,6 +320,9 @@ test('validates a compact repository’s first notes with the release workflow�
   const saved=await applySelection(model,'configure',plan,context);
   assert.equal(saved.get(notesPath),body+'\n');
   assert.deepEqual(requests,[`https://api.github.com/repos/splrad/steward/contents/${templatePath}?ref=${pin}`]);
+  const unrelated={...plan,units:[{...plan.units[0],notesPath:'docs/other.md'}]};
+  await assert.rejects(applySelection(model,'configure',unrelated,context),/交付配置中为此单元声明的说明路径/);
+  assert.equal(requests.length,1);
 
   template=await readFile('packages/core/test/fixtures/release-template-compact.mustache');
   files.set('.github/release-template.md.mustache',await readFile(templatePath,'utf8'));

@@ -249,18 +249,6 @@ export async function applySelection(model,operation,plan,context) {
     const manifest=JSON.parse(model.files.get(manifestPath)??'{}');
     const configuredUnits=(plan.units??[]).filter(u=>!requested.some(t=>t.unit===u.id) || targets.some(t=>t.unit===u.id));
     const newNotes=configuredUnits.filter(unit=>unit.notesBody && !model.files.has(unit.notesPath));
-    let template=model.files.get(productReleaseTemplatePath)??'';
-    if(newNotes.length && delivery?.schemaVersion===3) {
-      const pin=releaseTemplateControllerPin(model.files.get(delivery.buildWorkflow));
-      template=await (context.readControllerTemplate??readControllerReleaseTemplate)(pin);
-      if(isConditionalTemplate(template))
-        must(await isAdoptedOrganizationReleaseTemplate(template),'请先采用组织发行说明模板，再保存发行配置。');
-    }
-    for(const unit of newNotes) {
-      must(repositoryPath(unit.notesPath).startsWith('.release-notes/') && unit.notesPath.endsWith('.md'),'New notes belong in the release notes directory');
-      parseSupplementalNotes(unit.notesBody,template);
-      changes.set(unit.notesPath,unit.notesBody+'\n');
-    }
     const config=structuredClone(model.versions??{'separate-pull-requests':false,packages:{}});
     for(const unit of plan.versions.filter(v=>!(plan.units??[]).some(u=>u.path===v.path) || configuredUnits.some(u=>u.path===v.path))) {
       const path=repositoryPath(unit.path,true), version=repositoryPath(unit.versionFile), log=repositoryPath(unit.changelog);
@@ -285,6 +273,31 @@ export async function applySelection(model,operation,plan,context) {
       config.packages[path]={...tagPolicy,...config.packages[path],'release-type':unit.releaseType??config.packages[path]?.['release-type']??config['release-type']??'simple','version-file':version,'changelog-path':log};
     }
     changes.set(versionsPath,jsonFile(config));
+    if(newNotes.length) {
+      let template=model.files.get(productReleaseTemplatePath)??'';
+      const compact=delivery?.schemaVersion===3
+        ?parseDeliveryConfig(JSON.parse(model.files.get(deliveryPath)),config):null;
+      for(const unit of newNotes) {
+        const path=repositoryPath(unit.notesPath);
+        if(compact) {
+          must(compact.units.some(declared=>declared.id===unit.id && declared.path===unit.path && declared.notesPath===path),
+            '请使用交付配置中为此单元声明的说明路径。');
+          must(!changes.has(path),'说明路径与本次修改的其他配置文件冲突。');
+        } else {
+          must(path.startsWith('.release-notes/') && path.endsWith('.md'),'New notes belong in the release notes directory');
+        }
+      }
+      if(compact) {
+        const pin=releaseTemplateControllerPin(model.files.get(compact.buildWorkflow));
+        template=await (context.readControllerTemplate??readControllerReleaseTemplate)(pin);
+        if(isConditionalTemplate(template))
+          must(await isAdoptedOrganizationReleaseTemplate(template),'请先采用组织发行说明模板，再保存发行配置。');
+      }
+      for(const unit of newNotes) {
+        parseSupplementalNotes(unit.notesBody,template);
+        changes.set(unit.notesPath,unit.notesBody+'\n');
+      }
+    }
   }
   if(plan.site) {
     const doc=YAML.parseDocument(model.files.get(pagesPath)??'');
