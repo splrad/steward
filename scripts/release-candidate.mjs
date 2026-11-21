@@ -102,7 +102,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     if(!checkRepositoryPolicy)return;
     const nativeEntry=delivery.schemaVersion===3;
     const priorRegistration=nativeEntry&&(await fileAt(sha,'.github/steward-central-policy',true))!==null;
-    await checkRepositoryPolicy(path=>fileAt(sha,path),{nativeEntry,priorRegistration});
+    await checkRepositoryPolicy(path=>fileAt(sha,path),{nativeEntry,priorRegistration,buildWorkflow:delivery.buildWorkflow});
   };
   const fetchBranch = async branch => {
     const ref = await api('GET', `/repos/${request.repository}/git/ref/heads/${branch}`, undefined, true);

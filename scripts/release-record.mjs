@@ -994,9 +994,10 @@ export async function releaseCommand(command,request,{token,io=nativeEvidenceTra
   if(dispatch.canonicalRunId!==null)return {status:'BOUND',canonicalRunId:dispatch.canonicalRunId,reason:'CANONICAL_RUN_IMMUTABLE',publishInvoked:false,...deliveryDetails};
   if(dispatch.purpose==='build')await assertReleaseWriterProtection(request.repository,dispatch.ref,io,{token});
   // The workflow must already exist at the current default branch and at the frozen execution source.
+  const workflowPath=dispatchWorkflow(dispatch);
   for(const ref of [request.defaultBranch,dispatch.executionSha]) {
-    const file=await native(`contents/${encodeRepositoryPath(dispatchWorkflow(dispatch))}?ref=${encodeURIComponent(ref)}`);
-    if(file.type!=='file'||file.encoding!=='base64'||typeof file.content!=='string')fail('dispatch workflow source');
+    const file=await native(`contents/${encodeRepositoryPath(workflowPath)}?ref=${encodeURIComponent(ref)}`);
+    if(file.path!==workflowPath||file.type!=='file'||file.encoding!=='base64'||typeof file.content!=='string')fail('dispatch workflow source');
     const bytes=Buffer.from(file.content,'base64');
     if(bytes.length!==file.size||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==file.sha)fail('dispatch workflow bytes');
     verifyDispatchWorkflow(bytes,dispatch);

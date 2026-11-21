@@ -24,6 +24,7 @@ vi.mock('../dist/index.js', async () => import('../src/index.js'));
 const { nativeReleaseCandidate, mergedContributorIdentity } = await import(pathToFileURL(resolve('scripts/release-candidate.mjs')).href);
 const { advanceEvent } = await import(pathToFileURL(resolve('scripts/release-cycle-event.mjs')).href);
 const { releaseParticipation } = await import(pathToFileURL(resolve('scripts/release-coordinator.mjs')).href);
+const { releasePolicyGuard } = await import(pathToFileURL(resolve('scripts/release-repository-policy.mjs')).href);
 
 it('projects legacy web-flow cache at merge while preserving original actors and rejecting other drift', () => {
   const bot = {id:19864447, login:'web-flow', type:'User', profileUrl:'https://github.com/web-flow', avatarUrl:'https://avatars.githubusercontent.com/u/19864447?v=4'};
@@ -53,14 +54,17 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   await git('init', '--initial-branch=main'); await git('config', 'user.name', identity.name); await git('config', 'user.email', identity.email);
   await mkdir(join(directory, '.github'));
   await mkdir(join(directory,'.github/workflows'));
-  const compact=pinCase==='compact',publisher='.github/workflows/steward-release-publish.yml';
+  const compact=pinCase==='compact';
+  const explicitWorkflow=pinCase==='new-source'?'.github/workflows/fixture-release.yaml':undefined;
+  const buildWorkflow=explicitWorkflow??'.github/workflows/steward-release-publish.yml';
   const notesPath=compact?'.release-notes/root.md':'.release-notes/app.md';
-  for(const path of (compact?[publisher]:[publisher,'.github/workflows/steward-release-channels.yml','.github/release-template.md.mustache']))
+  for(const path of (compact?[buildWorkflow]:[buildWorkflow,'.github/workflows/steward-release-channels.yml','.github/release-template.md.mustache']))
     await writeFile(join(directory,path),'# offline adopted source\n');
   const sourceControllerSha = (pinCase === 'new-source' ? 'f' : 'e').repeat(40);
-  if (pinCase !== 'missing-pin') await writeFile(join(directory,'.github/workflows/steward-release-publish.yml'),
-    `jobs:\n  build:\n    steps:\n      - uses: actions/checkout@${'a'.repeat(40)}\n        with:\n          repository: splrad/steward\n          path: controller\n          ref: ${pinCase === 'conflicting-pin' ? 'b'.repeat(40) : sourceControllerSha}\n  sign:\n    uses: splrad/steward/.github/workflows/product-release.yml@${sourceControllerSha}\n`);
-  if(compact)await writeFile(join(directory,publisher),JSON.stringify({'run-name':'打包 ${{ inputs.operation_key }}',
+  const publisherMatrix=explicitWorkflow?'    strategy:\n      matrix:\n        include:\n          - {unit: app, target: fixture}\n':'';
+  if (pinCase !== 'missing-pin') await writeFile(join(directory,buildWorkflow),
+    `jobs:\n  build:\n${publisherMatrix}    steps:\n      - uses: actions/checkout@${'a'.repeat(40)}\n        with:\n          repository: splrad/steward\n          path: controller\n          ref: ${pinCase === 'conflicting-pin' ? 'b'.repeat(40) : sourceControllerSha}\n  sign:\n    uses: splrad/steward/.github/workflows/product-release.yml@${sourceControllerSha}\n`);
+  if(compact)await writeFile(join(directory,buildWorkflow),JSON.stringify({'run-name':'打包 ${{ inputs.operation_key }}',
     on:{workflow_dispatch:{inputs:Object.fromEntries(['cycle_id','operation_key','source_sha','controller_sha'].map(key=>[key,{required:true,type:'string'}]))}},
     jobs:{package:{name:'delivery/root',steps:[
       {uses:'actions/checkout@'+'a'.repeat(40),with:{repository:'splrad/steward',path:'controller',ref:sourceControllerSha}},
@@ -69,8 +73,10 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     ]}}}));
   const config = { 'separate-pull-requests': false, 'include-component-in-tag': false, packages: { '.': { 'release-type': 'simple', 'version-file': 'VERSION' } } };
   const repositoryAuthors=[{id:7,evidence:'offline explicit authorship record'}];
-  const delivery=compact?{schemaVersion:3,repositoryAuthors}:{schemaVersion:1,repositoryAuthors,units:[{id:'app',path:'.',notesPath:'.release-notes/app.md',
-    assets:[{id:'app',name:'app-${version}.zip',mediaType:'application/zip'}],channels:[]}]};
+  const delivery=compact?{schemaVersion:3,repositoryAuthors}:{schemaVersion:explicitWorkflow?2:1,buildWorkflow:explicitWorkflow,
+    repositoryAuthors,units:[{id:'app',path:'.',notesPath:'.release-notes/app.md',
+      assets:[{id:'app',name:'app-${version}.zip',mediaType:'application/zip'}],channels:explicitWorkflow
+        ?[{id:'github-release',required:true,location:'github',artifactIds:['app'],metadata:[]}]:[]}]};
   for (const [path, text] of Object.entries({ 'README.md': '# 应用\n\n公开使用说明。\n', 'VERSION': '0.0.0\n', 'release-please-config.json': JSON.stringify(config),
     '.release-please-manifest.json': '{".":"0.0.0"}', '.github/delivery.json': JSON.stringify(delivery), 'code.txt': '功能实现\n' })) await writeFile(join(directory, path), text);
   await git('add', '.'); await git('commit', '--signoff', '-m', 'feat: initial product'); const B = await git('rev-parse', 'HEAD');
@@ -177,7 +183,9 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   } };
   const request = { directory, writeDirectory: join(root, 'writes'), remote, repository: 'fixture/product', repositoryId: 1, defaultBranch: 'main', appBotId: 301115370, identity };
   await mkdir(request.writeDirectory);
-  const options = { token: 'fixture-write', readToken: 'fixture-read', controllerSha: 'f'.repeat(40), fetcher, generator, language, temporaryRoot: root, now: () => '2026-10-27T00:00:00Z' };
+  const unregisteredPolicy=explicitWorkflow||compact?releasePolicyGuard({},request,async()=>({adoption:'legacy',policy:null})):undefined;
+  const options = { token: 'fixture-write', readToken: 'fixture-read', controllerSha: 'f'.repeat(40), fetcher, generator, language, temporaryRoot: root,
+    checkRepositoryPolicy:unregisteredPolicy,now: () => '2026-10-27T00:00:00Z' };
   if(compact) {
     const transport={request:async(method:'GET'|'POST',path:string)=>{
       const response=await fetcher('https://api.github.com'+path,{method,headers:{authorization:'Bearer fixture-read'}});
@@ -185,6 +193,16 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     }};
     expect(await releaseParticipation({id:1,full_name:request.repository,default_branch:request.defaultBranch},transport,{includeUnits:true}))
       .toEqual({status:'APPLICABLE',sourceSha:B,units:[{id:'root',path:'.',notesPath}]});
+  }
+  const pausedPolicy=releasePolicyGuard({},request,async()=>({adoption:'paused',policy:null}));
+  const registered=(channels:NonNullable<typeof delivery.units>[number]['channels'])=>({adoption:'central',policy:{
+    repositoryId:1,repository:request.repository,release:{buildWorkflow:'.github/workflows/steward-release-publish.yml',units:[{id:'app',channels}]},
+  }});
+  if(explicitWorkflow) {
+    const state=await head('steward/release-state'),start=requests.length;
+    await expect(nativeReleaseCandidate(request,{...options,checkRepositoryPolicy:pausedPolicy})).rejects.toThrow('CANDIDATE_REPOSITORY_POLICY_DISABLED');
+    expect(requests.slice(start).every(request=>request.method==='GET')).toBe(true);
+    expect(modelCalls).toBe(0);expect(pr).toBeNull();expect(await head('steward/release-state')).toBe(state);
   }
   if(pinCase==='old-source') {
     const originalState=await head('steward/release-state');
@@ -316,6 +334,20 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     expect(await head('steward/release-state')).toBe(before);expect(modelCalls).toBe(firstCalls);
     return;
   }
+  if(explicitWorkflow) {
+    const before=await head('steward/release-state'),start=requests.length;
+    await expect(releaseCommand('candidate',{...request,cycleId:null,runId:null,writeDirectory:join(root,'paused-handoff')},
+      {token:options.token,candidateReadToken:options.readToken,controllerSha:options.controllerSha,now:options.now,io,
+        candidateRuntime:{checkRepositoryPolicy:pausedPolicy}})).rejects.toThrow('CANDIDATE_REPOSITORY_POLICY_DISABLED');
+    expect(requests.slice(start).every(request=>request.method==='GET')).toBe(true);
+    expect(await head('steward/release-state')).toBe(before);expect(modelCalls).toBe(firstCalls);
+    const conflictingPolicy=releasePolicyGuard({},request,async()=>registered(delivery.units[0]!.channels.map(channel=>({...channel,artifactIds:['other']}))));
+    await expect(releaseCommand('candidate',{...request,cycleId:null,runId:null,writeDirectory:join(root,'conflicting-handoff')},
+      {token:options.token,candidateReadToken:options.readToken,controllerSha:options.controllerSha,now:options.now,io,
+        candidateRuntime:{checkRepositoryPolicy:conflictingPolicy}})).rejects.toThrow('CANDIDATE_REPOSITORY_POLICY_CONFLICT');
+    expect(requests.slice(start).every(request=>request.method==='GET')).toBe(true);
+    expect(await head('steward/release-state')).toBe(before);expect(modelCalls).toBe(firstCalls);
+  }
   if(pinCase==='old-source') {
     const before=await head('steward/release-state');
     await expect(releaseCommand('candidate',{...request,cycleId:null,runId:null,writeDirectory:join(root,'denied-handoff')},{
@@ -349,14 +381,21 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     expect(await head('steward/release-state')).toBe(before);
     expect(modelCalls).toBe(firstCalls);
   }
+  let adoptedReads=0;
+  const adoptedPolicy=explicitWorkflow?releasePolicyGuard({},request,async()=>{
+    adoptedReads++;
+    return registered(delivery.units[0]!.channels);
+  }):undefined;
   const handed=await releaseCommand('candidate',{...request,cycleId:null,runId:null,writeDirectory:join(root,'merge-writes')},
-    {token:options.token,candidateReadToken:options.readToken,controllerSha:options.controllerSha,now:options.now,io});
+    {token:options.token,candidateReadToken:options.readToken,controllerSha:options.controllerSha,now:options.now,io,
+      candidateRuntime:{checkRepositoryPolicy:adoptedPolicy}});
   expect(handed).toMatchObject({ status: 'CYCLE_READY', sourceSha: S, cycleId: `pr-9-${S}` });
+  if(explicitWorkflow)expect(adoptedReads).toBe(2);
   expect(modelCalls).toBe(firstCalls); await refresh();
   const merged = await readReleaseRecords({ directory, targetRef: 'steward/release-state', repositoryId: 1 });
   expect(merged.repository.activeCycleId).toBe(`pr-9-${S}`);
   expect(merged.cycles[0].value.controllerSha).toBe(sourceControllerSha);
-  if(compact)expect(merged.cycles[0].value.buildWorkflow).toBe(publisher);
+  expect(merged.cycles[0].value.buildWorkflow).toBe(compact?buildWorkflow:explicitWorkflow);
   expect(merged.repository.releaseAdoption).toEqual(repository.releaseAdoption);
   expect(merged.cycles[0].value.units[0]).toMatchObject({ releaseId: null, manifestDigest: null });
   const chunks = merged.domainRecords.filter((record: any) => record.value.documentKind === 'merged-candidate').map((record: any) => record.value);

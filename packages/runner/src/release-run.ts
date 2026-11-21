@@ -258,7 +258,7 @@ export async function readDirectChannelTargets(context:EvidenceContext,targets:C
     }
   }
   const bytes=legacy?Buffer.from(JSON.stringify(legacy)):Buffer.from(source.content??'','base64');
-  if(!legacy&&(source.type!=='file'||source.encoding!=='base64'||source.size!==bytes.length||source.sha!==context.cycle.deliveryConfigSha
+  if(!legacy&&(source.path!=='.github/delivery.json'||source.type!=='file'||source.encoding!=='base64'||source.size!==bytes.length||source.sha!==context.cycle.deliveryConfigSha
     ||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==source.sha))fail('direct delivery source');
   const delivery=legacy?.normalizedDelivery??parseDeliveryConfig(JSON.parse(bytes.toString('utf8'))),sources:NativeChannelRead['sources']=[];
   for(const target of targets) {
@@ -502,7 +502,7 @@ export async function readChannelSourceRejections(context:EvidenceContext,histor
     });
     if(markers.length!==1||JSON.stringify(markers[0])!==JSON.stringify({status:'REJECTED',reason:'SOURCE_REF_MOVED'}))continue;
     const workflow=await reader.json(`contents/${encodeRepositoryPath(run.path)}?ref=${run.headSha}`),bytes=Buffer.from(workflow.content??'','base64');
-    if(workflow.type!=='file'||workflow.encoding!=='base64'||workflow.size!==bytes.length||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==workflow.sha)fail('source rejection workflow');
+    if(workflow.path!==run.path||workflow.type!=='file'||workflow.encoding!=='base64'||workflow.size!==bytes.length||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==workflow.sha)fail('source rejection workflow');
     verifyDispatchWorkflow(bytes,request);
     const value:NativeSourceRejection={schemaVersion:1,repositoryId:context.repositoryId,cycleId:context.cycle.id,requestKey:request.requestKey,
       expectedExecutionSha:request.executionSha,observedAt,workflowBlobSha:workflow.sha,run,jobs,logDigest:createHash('sha256').update(logs).digest('hex'),reason:'SOURCE_REF_MOVED'};
