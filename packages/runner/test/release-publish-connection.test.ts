@@ -170,7 +170,7 @@ it('prepares a single native Node delivery, changes the public set in its workfl
   const initial=['fixture-cli.tgz'];
   const sharedTemplate=source['.github/release-template.md.mustache']!;
   source['.github/release-template.md.mustache']='disallowed product override';
-  source[workflow]=adoptedWorkflow(initial);
+  source[workflow]=adoptedWorkflow(['dist/fixture-cli.tgz','dist/fixture-cli-*.sha256']);
   source['.github/delivery.json']=JSON.stringify({schemaVersion:3,repositoryAuthors:f.delivery.repositoryAuthors});
   const sourceConfig=source['.github/delivery.json'];
   const bytes=Buffer.from(sourceConfig);
@@ -182,6 +182,7 @@ it('prepares a single native Node delivery, changes the public set in its workfl
   f.runs.get(2).display_title='为 GitHub 打包 '+f.request.operationKey;
   expect(await pipelineIdentity(f.input,f.environment,f.gh,f.io)).toMatchObject({status:'SOURCE_VERIFIED',
     units:[{unit:'app',tag:'v1.0.0',version:'1.0.0',packageVersion:'1.0.0'}]});
+  const originalBuild = {...f.runs.get(2),status:'completed',conclusion:'success',run_attempt:1};
   Object.assign(f.runs.get(2),{status:'completed',conclusion:'success'});
   const history=[mergedCandidateFixture(f.input)];
   const artifact={id:810,name:['delivery','github-release',context.repositoryId,'app',S,100,1].join('-'),expired:false,
@@ -201,6 +202,7 @@ it('prepares a single native Node delivery, changes the public set in its workfl
         sha:createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex')});
     }
     if(path.endsWith('/runs/100'))return f.response(f.runs.get(2));
+    if(path.endsWith('/runs/100/attempts/1'))return f.response(originalBuild);
     if(path.includes('/artifacts?'))return f.response({total_count:1,artifacts:[artifact]});
     if(path.includes('/attempts/1/jobs?'))return f.response({total_count:1,jobs:[{id:1100,name:'delivery/app',run_id:100,run_attempt:1,
       head_sha:S,status:'completed',conclusion:deliveryConclusion,steps:[{name:'Upload GitHub release delivery',status:'completed',conclusion:'success',started_at:START,completed_at:END}]}]});
@@ -256,7 +258,17 @@ it('prepares a single native Node delivery, changes the public set in its workfl
   source['.release-notes/app.md']=notes;
   const retained:WorkflowDeliveryReceipt={artifactId:artifact.id,runId:100,attempt:1,digest:artifact.digest};
   Object.assign(context.cycle.units[0]!,{githubDelivery:retained});
-  expect(await prepare('retry',initial)).toMatchObject([{githubDelivery:retained,manifest:{artifacts:[{path:'fixture-cli.tgz',sha256:digest(packageBytes)}]}}]);
+  for(const [status,conclusion] of [['in_progress',null],['completed','failure'],['completed','success']]) {
+    Object.assign(f.runs.get(2),{status,conclusion});
+    expect(await prepare('retry-'+(conclusion??status),initial)).toMatchObject([
+      {githubDelivery:retained,manifest:{artifacts:[{path:'fixture-cli.tgz',sha256:digest(packageBytes)}]}},
+    ]);
+  }
+  originalBuild.run_attempt=2;
+  await expect(prepare('wrong-original-run-attempt',initial)).rejects.toThrow('original workflow build attempt identity');
+  originalBuild.run_attempt=1;originalBuild.conclusion='failure';
+  await expect(prepare('failed-original-run-attempt',initial)).rejects.toThrow('original GitHub delivery build not ready');
+  originalBuild.conclusion='success';
   deliveryConclusion='failure';
   await expect(prepare('failed-delivery-job',initial)).rejects.toThrow('successful GitHub delivery artifact missing');
   deliveryConclusion='success';
@@ -278,8 +290,17 @@ it('prepares a single native Node delivery, changes the public set in its workfl
     {manifest:{artifacts:[{path:'checksums.txt'},{path:'fixture-cli.tgz'}]}},
   ]);
 
-  source[workflow]=adoptedWorkflow(['dist/app']);
-  await expect(prepare('allow-native-directory-root',initial)).resolves.toMatchObject([{manifest:{artifacts:[{path:'fixture-cli.tgz'}]}}]);
+  for(const leaf of ['app','v1.2.3','net8.0','README']) {
+    source[workflow]=adoptedWorkflow(['dist/'+leaf]);
+    await expect(prepare('native-directory-root-'+leaf,initial)).resolves.toMatchObject([{manifest:{artifacts:[{path:'fixture-cli.tgz'}]}}]);
+  }
+  source[workflow]=adoptedWorkflow(['dist/README']);
+  await expect(prepare('native-single-extensionless-file',['README'])).resolves.toMatchObject([{manifest:{artifacts:[{path:'README'}]}}]);
+  source[workflow]=adoptedWorkflow(['dist/README','dist/fixture-cli.tgz']);
+  await expect(prepare('literal-siblings-at-proven-root',['README',...initial])).resolves.toMatchObject([
+    {manifest:{artifacts:[{path:'README'},{path:'fixture-cli.tgz'}]}},
+  ]);
+  await expect(prepare('missing-literal-at-proven-root',initial)).rejects.toThrow('RN_DELIVERY_SELECTION');
   source[workflow]=adoptedWorkflow(['dist/app','dist/fixture-cli.tgz']);
   await expect(prepare('missing-extensionless-sibling',initial)).rejects.toThrow('RN_DELIVERY_SELECTION');
   await expect(prepare('extensionless-sibling-has-no-format-inspector',[...initial,'app'])).rejects.toThrow('RN_DELIVERY_UNSUPPORTED: app');
@@ -362,7 +383,7 @@ it('prepares a single native Node delivery, changes the public set in its workfl
   request.inputs.operation_key=request.operationKey;
   scoped.dispatches.push(request);
   context.cycle=scoped;
-  f.runs.get(2).display_title='为 GitHub 打包 '+request.operationKey;
+  f.runs.get(2).display_title=originalBuild.display_title='为 GitHub 打包 '+request.operationKey;
   await expect(prepare('only-matrix-unit-delivers',platformFiles)).resolves.toMatchObject([
     {unitId:'app',githubDelivery:{artifactId:811,attempt:1}},
   ]);
@@ -414,6 +435,7 @@ it('selects separate GitHub and authorized channel assemblies and restores only 
       const bytes=Buffer.from(value);return f.response({type:'file',path:name,encoding:'base64',size:bytes.length,content:bytes.toString('base64'),sha:gitBlob(value)});
     }
     if(path.endsWith('/runs/100'))return f.response(run);
+    if(path.endsWith('/runs/100/attempts/1'))return f.response({...run,status:'completed',conclusion:'success',run_attempt:1});
     if(path.includes('/artifacts?'))return f.response({total_count:artifacts.length,artifacts});
     if(path.includes('/attempts/1/jobs?'))return f.response({total_count:1,jobs:[{name:'delivery/layerscape',id:1001,
       run_id:100,run_attempt:1,head_sha:S,status:'completed',conclusion:'success',
@@ -469,11 +491,15 @@ it('selects separate GitHub and authorized channel assemblies and restores only 
   const {delivery}=await readCycleDelivery(context,[],io);
   const source={unit:delivery.units.find(unit=>unit.id==='layerscape')!,controllerDirectory:root,history:[]};
   const target={unitId:'layerscape',channelId:'ghcr-assets',releaseId:50,manifestDigest:unit.manifestDigest!,version:unit.version};
-  run.run_attempt=2;artifacts.push(makeArtifact(811,2));
+  Object.assign(run,{run_attempt:2,status:'in_progress',conclusion:null});artifacts.push(makeArtifact(811,2));
   vi.stubEnv('GH_TOKEN','fixture-token');
+  const beforeRetry=reads.length;
   await expect(pipelineChannelDownload(context,target,join(root,'retry'),undefined,undefined,source,io,download))
     .resolves.toMatchObject({channelFiles:['registry.tgz'],delivery:{artifactId:810,attempt:1,runId:100}});
   expect(await readdir(join(root,'retry'))).toEqual(['registry.tgz']);
+  expect(reads.slice(beforeRetry).filter(path=>/\/runs\/100(?:\/attempts\/\d+)?$/.test(path))).toEqual([
+    '/repos/'+repository+'/actions/runs/100/attempts/1',
+  ]);
   expect(reads.some(path=>path.includes('/attempts/2/jobs?')||path.includes('tools'))).toBe(false);
   bytes='drifted registry archive';
   await expect(pipelineChannelDownload(context,target,join(root,'drift'),undefined,undefined,source,io,download)).rejects.toThrow('frozen channel bytes changed');

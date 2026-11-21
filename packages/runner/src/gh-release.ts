@@ -196,8 +196,9 @@ export class NativeGitHubRelease {
     const uri = certificate?.runInvocationURI;
     if (typeof uri !== 'string' || !uri.startsWith(invocation)) return false;
     const attempt = uri.slice(invocation.length);
-    return /^[1-9][0-9]*$/.test(attempt) && Number.isSafeInteger(Number(attempt)) && Number(attempt) >= target.manifest.attempt
-      && certificate.sourceRepositoryIdentifier === String(target.manifest.repositoryId) && certificate.buildTrigger === 'workflow_dispatch';
+    return /^[1-9][0-9]*$/.test(attempt) && Number.isSafeInteger(Number(attempt))
+      && (m.schemaVersion===4?Number(attempt)===m.attempt:Number(attempt)>=m.attempt)
+      && certificate.sourceRepositoryIdentifier === String(m.repositoryId) && certificate.buildTrigger === 'workflow_dispatch';
   })) reject('attestation run identity');
     return attestation;
   }
@@ -205,12 +206,14 @@ export class NativeGitHubRelease {
     if (target.manifest.schemaVersion === 2) reject('historical manifest is read-only');
     const m = target.manifest;
     await verifyPublicationFiles(target.directory, m);
-    const run = await this.json(['api', `repos/${m.fullName}/actions/runs/${m.runId}`]);
+    const runPath = 'repos/'+m.fullName+'/actions/runs/'+m.runId;
+    const run = await this.json(['api', m.schemaVersion===4?runPath+'/attempts/'+m.attempt:runPath]);
     if (run.id !== m.runId || run.repository?.id !== m.repositoryId || run.head_repository?.id !== m.repositoryId
       || run.head_sha !== m.sourceSha || run.head_branch !== m.buildRef.slice('refs/heads/'.length)
       || run.event !== 'workflow_dispatch' || run.path !== (m.buildWorkflow ?? defaultBuildWorkflow)
       || m.schemaVersion===4&&run.workflow_id!==m.workflowId
-      || run.actor?.id !== target.appBotId || run.status !== 'completed' || run.conclusion !== 'success' || run.run_attempt < m.attempt) reject('completed product Run required');
+      || run.actor?.id !== target.appBotId || run.status !== 'completed' || run.conclusion !== 'success'
+      || (m.schemaVersion===4?run.run_attempt!==m.attempt:run.run_attempt<m.attempt)) reject('completed product Run required');
     if(m.schemaVersion!==4||m.attested)
       for (const name of this.names(target)) await this.verifyAttestation(target, resolve(target.directory, name));
     return run;
