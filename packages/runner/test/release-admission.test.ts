@@ -5,6 +5,8 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { pipelineIdentity, pipelineNotes, mergedBuildCycle, assertProductDelivery, assertRegisteredAdapters } from '../src/release-pipeline.js';
 import { parsePipelineRecord, pipelineSource } from '../src/release-pipeline-record.js';
 import { productPipelineFixture } from './product-pipeline-fixture.js';
+import { nativeRequestIdentity } from '../src/native-release-evidence.js';
+import { defaultBuildWorkflow } from '../../core/src/release-workflow.js';
 afterEach(() => vi.restoreAllMocks());
 it.each(['ghcr','unknown'])('rejects an external channel with no fixed implementation: %s',id=>{
   expect(()=>assertProductDelivery({units:[{id:'app',path:'.',notesPath:'.release-notes/app.md',assets:[],channels:[{id,required:true,location:'fixture'}]}]})).toThrow('fixed product implementation');
@@ -36,6 +38,30 @@ it('admits current canonical source without a Release, catalog or tag read; nati
   expect(f.nativeCalls.some(path => /releases|catalog|tags|compare|pulls/.test(path))).toBe(false);
   expect(JSON.stringify(f.input.state)).toBe(before);
   expect(JSON.stringify(result.record)).not.toMatch(/"(?:releaseId|policySha|observationSha|admitted|entrypoint)"/);
+});
+it('uses the adopted non-default workflow for a Node product and rejects a mismatched native Run path', async () => {
+  const f = productPipelineFixture(1, false, 'package-lock.json'), path = '.github/workflows/package-cli.yaml';
+  const delivery = { ...f.delivery, buildWorkflow:path };
+  delivery.units[0]!.assets = [{id:'bundle',name:'package.json',inspection:'node-package',mediaType:'application/json'}];
+  f.source[path] = f.source[defaultBuildWorkflow]!.replace('windows-x64','linux-x64').replace('- app','- bundle');
+  delete f.source[defaultBuildWorkflow];
+  f.source['package.json'] = '{"name":"fixture-cli","version":"1.0.0"}';
+  f.source['package-lock.json'] = '{}';
+  f.source['release-please-config.json'] = '{"include-component-in-tag":false,"packages":{".":{"release-type":"node"}}}';
+  f.source['.github/delivery.json'] = JSON.stringify(delivery);
+  const bytes=Buffer.from(f.source['.github/delivery.json']);
+  const cycle=f.context.cycle;
+  cycle.deliveryConfigSha=createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex');
+  cycle.buildWorkflow=f.request.buildWorkflow=path;
+  Object.assign(f.request,nativeRequestIdentity(f.context.repositoryId,cycle,f.request));
+  f.input.operationKey=f.request.inputs.operation_key=f.request.operationKey;
+  f.runs.get(1).display_title='Build '+f.request.operationKey;
+  f.runs.get(1).path=path;
+  const admitted=await pipelineIdentity(f.input,f.environment,f.gh,f.io);
+  expect(admitted).toMatchObject({status:'ADMITTED',record:{delivery:{buildWorkflow:path},
+    units:[{packageVersion:'1.0.0',assets:[{id:'bundle',name:'package.json',build:'linux-x64'}]}]}});
+  f.runs.get(1).path=defaultBuildWorkflow;
+  await expect(pipelineIdentity(f.input,f.environment,f.gh,f.io)).rejects.toThrow('execution source');
 });
 it('treats concurrent protected state advancement as UNKNOWN without product admission', async () => {
   const f = productPipelineFixture();

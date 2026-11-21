@@ -138,9 +138,9 @@ export async function validationInput(workspace,env=process.env) {
   const productApplicable=files.includes(declaration)||requiresProductCI(files,dependency,administrator);
   const available=files.includes(declaration)
     ? productWorkflows(JSON.parse(await readFile(await regular(workspace,declaration),'utf8')),files) : [];
-  const organizationRepository=event.repository.full_name.startsWith('splrad/');
-  if(organizationRepository&&env.GITHUB_ACTIONS==='true')check(env.REPOSITORY_POLICY_TOKEN,'REPOSITORY_POLICY_TOKEN');
-  const policyReader=env.REPOSITORY_POLICY_TOKEN&&organizationRepository
+  const legacyPolicy=event.repository.full_name.startsWith('splrad/')&&event.repository.private!==false;
+  if(legacyPolicy&&env.GITHUB_ACTIONS==='true')check(env.REPOSITORY_POLICY_TOKEN,'REPOSITORY_POLICY_TOKEN');
+  const policyReader=env.REPOSITORY_POLICY_TOKEN&&legacyPolicy
     ? new NativeEvidenceReader(nativeEvidenceTransport(env.REPOSITORY_POLICY_TOKEN),event.repository.full_name) : null;
   const selection=policyReader?await readRepositoryPolicySelection(policyReader,repositoryId,{useOptionalProjection:true}):null;
   const workflows=selectedProductWorkflows(selection,available,productApplicable);

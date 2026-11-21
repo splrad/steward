@@ -10,7 +10,7 @@ import { Octokit } from '@octokit/rest';
 import { completeNativeRuleParameters } from './native-rule-parameters.mjs';
 import { githubUnits, decodeReleaseRecord, decodeStateFile, stateRecordOwner, assertRepositoryWrite, isolatedBuildEnvironment, decodeBuildJson, assertMaintenanceProgress, assertPagesProgress,
   inspectNativeCycle, recoverNativeCycle, archiveFile, nativeReadFile, nativeEvidenceTransport,
-  dispatchNativeRun, prepareBuildDispatch, verifyDispatchWorkflow, inspectPublications, invokePublication, inspectCycleHistory, verifyFrozenReceipts, completionFile, decodeCompletionArchive,
+  dispatchNativeRun, prepareBuildDispatch, defaultBuildWorkflow, dispatchWorkflow, verifyDispatchWorkflow, inspectPublications, invokePublication, inspectCycleHistory, verifyFrozenReceipts, completionFile, decodeCompletionArchive,
   pipelinePreparePublication, readCycleDelivery, prepareNormalizedDelivery, NativeGitHubRelease, nativeGhCommand, nativeReleaseDownload, NativeEvidenceReader, nativeRunFact,
   retainedChannelObservations, observeNativeChannels, readChannelSourceRejections, selectChannelDispatch, prepareChannelDispatch, channelTargetsDigest, verifyChannelResult, verifyContinuationReleases, evaluateCompletion } from '../packages/runner/dist/index.js';
 
@@ -20,7 +20,7 @@ const refs = new Set(['steward/release-state','steward/governance-state','stewar
 const hash = value => typeof value==='string' && /^[a-f0-9]{40}$/.test(value) && value.length===40;
 const ordered = values => [...values].sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));
 function compatibleCycle(a,b) {
-  if (a.sourceSha!==b.sourceSha || a.controllerSha!==b.controllerSha || a.deliveryConfigSha!==b.deliveryConfigSha || a.repairOf!==b.repairOf
+  if (a.sourceSha!==b.sourceSha || a.controllerSha!==b.controllerSha || a.deliveryConfigSha!==b.deliveryConfigSha || a.buildWorkflow!==b.buildWorkflow || a.repairOf!==b.repairOf
     || JSON.stringify(ordered(a.requiredChannels.map(x=>[x.unitId,x.channelId])))!==JSON.stringify(ordered(b.requiredChannels.map(x=>[x.unitId,x.channelId])))
     || JSON.stringify(ordered(a.units.map(x=>[x.id,x.version,x.tag])))!==JSON.stringify(ordered(b.units.map(x=>[x.id,x.version,x.tag])))) return false;
   for (const unit of a.units) {
@@ -273,7 +273,7 @@ function cycleProgress(before,after) {
   for(const old of before.dispatches) {
     const current=after.dispatches.find(item=>item.requestKey===old.requestKey);
     if(!current)fail('dispatch fact removed');
-    for(const key of ['requestKey','operationKey','purpose','workflowId','ref','sourceSha','targetKey','inputs','inputDigest','executionSha','sentAt','continuationOfRunId','retryLimitEvidencePath'])
+    for(const key of ['requestKey','operationKey','purpose','workflowId','buildWorkflow','ref','sourceSha','targetKey','inputs','inputDigest','executionSha','sentAt','continuationOfRunId','retryLimitEvidencePath'])
       if(JSON.stringify(old[key])!==JSON.stringify(current[key]))fail('immutable dispatch conflict');
     if(old.canonicalRunId!==null && old.canonicalRunId!==current.canonicalRunId)fail('canonical Run conflict');
     if(old.canonicalRunId!==null && old.nativeResponseEvidencePath!==current.nativeResponseEvidencePath)fail('canonical evidence conflict');
@@ -921,8 +921,9 @@ export async function releaseCommand(command,request,{token,io=nativeEvidenceTra
   if(!dispatch) {
     if(command!=='dispatch-build')return wait('CHANNEL_PROBE_REQUIRED');
     if(cycle.units.some(unit=>unit.releaseId!==null||unit.manifestDigest!==null))return wait('FROZEN_BUILD_CANNOT_BE_RECREATED');
-    const workflow=await native('actions/workflows/steward-release-publish.yml');
-    if(workflow.path!=='.github/workflows/steward-release-publish.yml'||workflow.state!=='active')fail('build workflow identity');
+    const buildWorkflow=cycle.buildWorkflow??defaultBuildWorkflow;
+    const workflow=await native('actions/workflows/'+buildWorkflow.split('/').at(-1));
+    if(workflow.path!==buildWorkflow||workflow.state!=='active')fail('build workflow identity');
     dispatch=prepareBuildDispatch({repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle},workflow.id,now());
     cycle.dispatches.push(dispatch);
   }
@@ -930,7 +931,7 @@ export async function releaseCommand(command,request,{token,io=nativeEvidenceTra
   if(dispatch.purpose==='build')await assertReleaseWriterProtection(request.repository,dispatch.ref,io,{token});
   // The workflow must already exist at the current default branch and at the frozen execution source.
   for(const ref of [request.defaultBranch,dispatch.executionSha]) {
-    const file=await native(`contents/.github/workflows/steward-release-${dispatch.purpose==='build'?'publish':'channels'}.yml?ref=${encodeURIComponent(ref)}`);
+    const file=await native(`contents/${dispatchWorkflow(dispatch)}?ref=${encodeURIComponent(ref)}`);
     if(file.type!=='file'||file.encoding!=='base64'||typeof file.content!=='string')fail('dispatch workflow source');
     const bytes=Buffer.from(file.content,'base64');
     if(bytes.length!==file.size||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==file.sha)fail('dispatch workflow bytes');

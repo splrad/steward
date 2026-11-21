@@ -41,6 +41,8 @@ function fixture() {
       const content=state.workflowBytes??bytes;
       return response({type:'file',path:'.github/workflows/pages.yml',encoding:'base64',content:content.toString('base64'),size:content.length,sha:createHash('sha1').update(`blob ${content.length}\0`).update(content).digest('hex')});
     }
+    if(p==='/actions/variables/STEWARD_PAGES_BUILD_ONLY')return state.buildOnly===undefined
+      ? {...response({}),status:404} : response({name:'STEWARD_PAGES_BUILD_ONLY',value:state.buildOnly});
     if(p.startsWith('/actions/variables/'))return response({name:p.split('/').at(-1),value:p.endsWith('/STEWARD_DOCS_UNIT')?(state.unit??''):state.mode});
     if(p==='/actions/workflows/pages.yml')return response(workflow);
     if(p==='/actions/workflows/5/runs') {
@@ -89,6 +91,13 @@ test('public maintenance requires the approved mode and release unit before disp
     const options=await sourceOptions(f.reader,f.repo,pin,301115370);
     assert.equal(options.mode,'release');assert.equal(options.unitId,'maps');
   }
+});
+
+test('a repository build-only setting disables public Pages maintenance writes',async()=>{
+  const f=fixture();f.state.buildOnly='true';
+  assert.deepEqual(await f.service(),{status:'BUILD_ONLY'});
+  assert.equal(f.calls.some(call=>call.method==='POST'),false);
+  assert.equal(f.records.size,0);
 });
 
 test('native YAML separates source, secret-free build and Pages deployment with same-Run artifacts',()=>{

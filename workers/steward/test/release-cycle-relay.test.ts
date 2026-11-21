@@ -95,6 +95,17 @@ it('binds a protected build ref and the original operation before dispatch',asyn
  const h=releaseHint('workflow_run',{...payload,action:'completed',workflow_run:run},'7')!;
  await relay.register(h);await relay.alarm();expect(JSON.parse(post.inputs.event_json)).toEqual({repositoryId:TARGET.id,kind:'run',runId:101,attempt:2});
 });
+it('treats a validated custom path as a build completion and rejects the same Run with a different path',()=>{
+ const path='.github/workflows/package-cli.yaml',workflowId=300,source='a'.repeat(40);
+ const target={...TARGET,buildWorkflow:path,publishWorkflowId:workflowId},run={
+  id:20,run_attempt:1,status:'completed',event:'workflow_dispatch',actor:{id:301115370},
+  head_repository:{id:TARGET.id},head_branch:'steward/build/pr-1-'+source,display_title:'Build '+'b'.repeat(64),
+  workflow_id:workflowId,path
+ };
+ const hint=(workflow_run:typeof run)=>releaseHint('workflow_run',{...payload,action:'completed',workflow_run},'7',target);
+ expect(hint(run)).toEqual({repositoryId:TARGET.id,kind:'run',runId:20,attempt:1});
+ expect(hint({...run,path:'.github/workflows/other-cli.yaml'})).toBeUndefined();
+});
 it('verifies the original reservation before forwarding a repaired publication artifact from attempt two',async()=>{
  const f=fixture(), firstTime=new Date(f.state.now).toISOString(), after=new Date(f.state.now+3600000).toISOString();
  const source={...receipt,created_at:firstTime,status:'completed'}, second={...source,run_attempt:2,created_at:after};

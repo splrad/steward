@@ -67,6 +67,8 @@ export async function sourceOptions(reader,repository,controllerSha,appBotId) {
     check(value.name===name&&typeof value.value==='string','VARIABLE');return value.value;
   };
   const mode=await read('STEWARD_DOCS_SOURCE');
+  const buildOnly=await read('STEWARD_PAGES_BUILD_ONLY');
+  check(['','true','false'].includes(buildOnly),'BUILD_ONLY');
   let unitId='';
   if(mode) {
     check(['default-branch','release'].includes(mode),'MODE');
@@ -82,7 +84,7 @@ export async function sourceOptions(reader,repository,controllerSha,appBotId) {
       if(declared && (!unitId || workflow.env.STEWARD_DOCS_UNIT!==unitId))return {status:'SOURCE_UNIT_CONFLICT'};
     }
   }
-  return {reader,repositoryId:repository.id,mode,unitId,controllerSha,appBotId};
+  return {reader,repositoryId:repository.id,mode,unitId,controllerSha,appBotId,...(buildOnly==='true'?{buildOnly:true}:{})};
 }
 
 /** Fixed product Pages consumer. Records and API writes remain in this repository; no release cycle mutation. */
@@ -104,6 +106,7 @@ export async function servicePages({io,repository,store,coordinator,appBotId,tok
     if(site!==undefined&&site?.mode!=='build-and-deploy')return {status:'DISABLED'};
     const options=await sourceOptions(reader,repository,coordinator.controllerSha,appBotId);
     if(options.status)return options;
+    if(options.buildOnly)return {status:'BUILD_ONLY'};
     if(site)check(site.workflow===pagesWorkflow&&site.source===options.mode
       &&(site.unit??'')===options.unitId,'REPOSITORY_POLICY_CONFLICT');
     return currentPagesSource({...options,publicOnly:completion!==undefined},{

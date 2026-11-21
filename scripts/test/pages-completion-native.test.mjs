@@ -88,6 +88,7 @@ test('registered native entry separates Pages writes from administrator policy r
       const k=p.slice(prefix.length);
       if(k==='')return json(repo);
       if(k==='/actions/variables/STEWARD_DOCS_SOURCE')return json({name:'STEWARD_DOCS_SOURCE',value:'default-branch'});
+      if(k==='/actions/variables/STEWARD_PAGES_BUILD_ONLY')return json({},404);
       if(k==='/git/ref/heads/main')return json({ref:'refs/heads/main',object:{type:'commit',sha}});
       if(k==='/contents/'+target)return json({type:'file',path:target,encoding:'base64',size:wf.length,content:wf.toString('base64'),
         sha:createHash('sha1').update('blob '+wf.length+'\0').update(wf).digest('hex')});
@@ -119,9 +120,8 @@ test('registered native entry separates Pages writes from administrator policy r
     ruleProblem='';await main(env);
     assert.deepEqual(actions,['/actions/runs/12/rerun']);assert.equal(revoked,tokenRequests.length);
     assert.equal(tokenRequests.filter(request=>request.repository_ids[0]===repo.id).length,4);
-    assert.ok(tokenRequests.some(request=>request.repository_ids[0]===admin.id));
-    for(const request of tokenRequests)assert.deepEqual(request.permissions,request.repository_ids[0]===admin.id
-      ?{metadata:'read',contents:'read'}:{metadata:'read',contents:'write',actions:'write',administration:'read',
+    assert.ok(tokenRequests.every(request=>request.repository_ids[0]!==admin.id));
+    for(const request of tokenRequests)assert.deepEqual(request.permissions,{metadata:'read',contents:'write',actions:'write',administration:'read',
         actions_variables:'read',deployments:'read',attestations:'read',organization_administration:'write'});
     const record=JSON.parse(await git('--git-dir='+remote,'show',branch+':maintenance/pages/12.json'));
     assert.equal(record.runId,12);assert.equal(record.requests[0].responseStatus,201);
