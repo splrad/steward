@@ -1,7 +1,7 @@
 import {isDeepStrictEqual} from 'node:util';
 import {inspectRepository,deliveryPath,publishPath,versionsPath} from './configuration-view.mjs';
 import {mergedRepositoryPolicy} from './repository-policy-read.mjs';
-import {releaseRegistration} from './repository-registration.mjs';
+import {releaseRegistration} from './repository-registration-policy.mjs';
 
 // Releases already in progress use their frozen source. This guard admits new candidates.
 export function releasePolicyGuard(app, repository, readPolicy=mergedRepositoryPolicy) {

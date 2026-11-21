@@ -4,11 +4,17 @@ import { dirname, join, resolve } from 'node:path';
 import { downloadNativeArtifact } from '../packages/runner/dist/index.js';
 import { must, positive, sha } from './configuration-native.mjs';
 import { centralRegistrationWorkflow, registrationWorkflow } from './repository-registration-policy.mjs';
+import apiVersion from '../config/github-api.json' with { type: 'json' };
 
 export const adminId = 1447987054;
 export const centralId = 1296724484;
 export const registrationEvent = 'steward-registration-request';
 export const requestFile = 'repository-registration.json';
+const quiet = { debug() {}, info() {}, warn() {}, error() {} };
+export const registrationGitHubOptions = {
+  log: quiet,
+  request: { log: quiet, headers: { 'x-github-api-version': apiVersion.version } }
+};
 const maxRequestBytes = 1024 * 1024;
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const types = ['repository_dispatch', 'workflow_dispatch', 'push'];
@@ -63,17 +69,19 @@ export async function extractPrivateRequest(artifact, admin, token) {
   }
 }
 
-export async function loadPrivateRequest(api, admin, token, requestId, extract = extractPrivateRequest) {
+export async function loadPrivateRequest(api, admin, token, requestId, extract = extractPrivateRequest, markStage = () => {}) {
   const name = 'repository-registration-' + wakePayload(requestId).requestId;
+  markStage('artifact_lookup');
   const { data: found } = await api.rest.actions.listArtifactsForRepo({ ...api.target, name, per_page: 100 });
   must(found.total_count === 1 && found.artifacts?.length === 1, 'Registration request missing or ambiguous');
   const artifact = found.artifacts[0];
-  const producer = artifact.workflow_run;
   must(artifact.name === name && artifact.expired === false && /^sha256:[a-f0-9]{64}$/.test(artifact.digest) &&
     positive(artifact.id) && Number.isSafeInteger(artifact.size_in_bytes) &&
-    artifact.size_in_bytes > 0 && artifact.size_in_bytes <= maxRequestBytes &&
-    producer?.repository_id === adminId && producer.head_repository_id === adminId &&
-    producer.head_branch === 'main' && sha(producer.head_sha) && positive(producer.id), 'Invalid private registration artifact');
+    artifact.size_in_bytes > 0 && artifact.size_in_bytes <= maxRequestBytes, 'Invalid private registration artifact');
+  markStage('producer_source');
+  const producer = artifact.workflow_run;
+  must(producer?.repository_id === adminId && producer.head_repository_id === adminId &&
+    producer.head_branch === 'main' && sha(producer.head_sha) && positive(producer.id), 'Invalid private registration producer');
   const { data: workflow } = await api.rest.actions.getWorkflow({ ...api.target,
     workflow_id: registrationWorkflow.split('/').at(-1) });
   must(workflow.path === registrationWorkflow && workflow.state === 'active' && positive(workflow.id),
@@ -85,11 +93,14 @@ export async function loadPrivateRequest(api, admin, token, requestId, extract =
       basehead: producer.head_sha + '...' + main.commit.sha });
     must(compare.merge_base_commit?.sha === producer.head_sha, 'Registration producer commit is outside main');
   }
+  markStage('artifact_content');
   const request = await extract(artifact, admin, token);
   must(exact(request, ['schemaVersion', 'requestId', 'repositoryIds', 'sourceSha', 'runId', 'attempt', 'event']) &&
     request.schemaVersion === 1 && request.requestId === requestId && request.sourceSha === producer.head_sha &&
     request.runId === producer.id && types.includes(request.event) &&
     Number.isSafeInteger(request.attempt) && request.attempt > 0, 'Registration request provenance mismatch');
+  const repositoryIds = validIds(request.repositoryIds);
+  markStage('producer_run');
   const { data: run } = await api.rest.actions.getWorkflowRunAttempt({ ...api.target,
     run_id: request.runId, attempt_number: request.attempt });
   must(run.id === request.runId && run.run_attempt === request.attempt && run.workflow_id === workflow.id &&
@@ -99,5 +110,5 @@ export async function loadPrivateRequest(api, admin, token, requestId, extract =
       (run.actor?.type === 'User' || request.event === 'push' && run.actor?.type === 'Bot') &&
       Number.isSafeInteger(run.actor.id) && run.actor.id > 0),
   'Untrusted registration producer run');
-  return {repositoryIds:validIds(request.repositoryIds),event:request.event};
+  return {repositoryIds,event:request.event};
 }

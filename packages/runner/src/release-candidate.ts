@@ -1,3 +1,4 @@
+import { previewUnitNotes } from '../../core/src/release-template.js';
 import { manualCandidateFacts, type ManualCandidate } from '../../core/src/manual-candidate.js';
 import { createHash } from 'node:crypto';
 import { candidateId, candidateCreationBody, selectReleaseContributors, renderReleaseContributors, type CandidateSnapshot, type ReleaseActor, type RepositoryAuthor } from '../../core/src/release-candidate.js';
@@ -77,7 +78,7 @@ export function candidateProjectionPreview(session:CandidateSession):string {
     const unit=session.identity!.units.find(u=>`.release-notes/${u.id}.md`===f.path)
       ??(session.identity!.units.length===1?session.identity!.units[0]:undefined);
     if(!unit)throw Error('CANDIDATE_PROJECTION_UNIT');
-    return `# ${f.path}\n\n${f.content}`+renderReleaseContributors(unit.contributors.contributors);
+    return `# ${f.path}\n\n${previewUnitNotes(f.content!)}`+renderReleaseContributors(unit.contributors.contributors);
   }).join('\n').replace(/\r\n?/g,'\n');
 }
 export function candidateStatusBody(repository:string,candidateId:string,units:{id:string;version:string}[],head:string,preview:string,previewCommit:string):string {
@@ -285,7 +286,7 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   }
   if (observed.pr.state === 'closed') return { status: 'WAIT', reason: 'CLOSED_PR' };
   session.preview = merged.files.filter(f => f.path.startsWith('.release-notes/') && f.content !== null)
-    .map(f => `# ${f.path}\n\n${f.content}` + renderReleaseContributors(session.identity!.units.find(u => `.release-notes/${u.id}.md` === f.path)!.contributors.contributors)).join('\n').replace(/\r\n?/g, '\n');
+    .map(f => `# ${f.path}\n\n${previewUnitNotes(f.content!)}` + renderReleaseContributors(session.identity!.units.find(u => `.release-notes/${u.id}.md` === f.path)!.contributors.contributors)).join('\n').replace(/\r\n?/g, '\n');
   const archive = await save(); await statusComment(session.preview, archive, observed.pr.head);
   return { status: 'READY', prNumber: candidate.prNumber, head: candidate.publishedHead };
 }
