@@ -187,7 +187,7 @@ export async function pipelineChannelDownload(context:EvidenceContext,target:Cha
     if (!publicSelection.every(path=>unit.assets.some(asset=>asset.path===path))) {
       const root=await mkdtemp(join(tmpdir(),'steward-channel-freeze-'));
       try {
-        const records=await pipelinePreparePublication(context,root,source.controllerDirectory,token,gh,undefined,undefined,download,source.history);
+        const records=await pipelinePreparePublication(context,root,source.controllerDirectory,token,gh,undefined,undefined,download,source.history,new Set([target.unitId]));
         if (!Array.isArray(records)) return fail('channel freeze unavailable');
         const record=records.find(record=>record.unitId===target.unitId);
         if (!record || (await fileDigest(record.directory,'artifact-manifest.json')).sha256!==target.manifestDigest) return fail('channel freeze identity');
@@ -605,12 +605,12 @@ export async function pipelineVerifyPublished(record: PublishPipelineRecord, uni
 export async function pipelinePreparePublication(context: EvidenceContext, root: string, controllerDirectory: string, token: string,
   gh: GhCommand = args => nativeGhCommand(args, token), io: EvidenceTransport = nativeEvidenceTransport(token),
   controllerIo:EvidenceTransport=nativeEvidenceTransport(undefined),download:ReleaseDownload=nativeReleaseDownload(token),
-  history:{path:string;commit:string;value:unknown}[]=[]) {
+  history:{path:string;commit:string;value:unknown}[]=[],unitIds?:ReadonlySet<string>) {
   const { cycle } = context, reader = new NativeEvidenceReader(io, context.repository);
   const original=await readCycleDelivery(context,history,io);
   if(original.legacy) {
     const records:{build:null;unitId:string;directory:string;manifest:ReleaseManifest}[]=[];
-    for(const unit of cycle.units) {
+    for(const unit of cycle.units.filter(unit=>!unitIds||unitIds.has(unit.id))) {
       if(unit.releaseId===null)fail('legacy existing release required');
       const manifest:unknown=JSON.parse(original.legacy.manifests.find(m=>m.unitId===unit.id)!.content);validateReleaseManifest(manifest);
       const release=await reader.json(`releases/${unit.releaseId}`),assets=await reader.pages(`releases/${unit.releaseId}/assets`,'');
@@ -648,7 +648,7 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
     const prefix = `repos/${context.repository}/`; if (!path.startsWith(prefix)) fail('native page target');
     return reader.pages(path.slice(prefix.length).replace('?per_page=100', ''), field);
   };
-  for (const unit of githubUnits(cycle)) {
+  for (const unit of githubUnits(cycle).filter(unit=>!unitIds||unitIds.has(unit.id))) {
     const declared = delivery.units.find(value => value.id === unit.id); if (!declared) return fail('publication unit');
     const effective = original.delivery.units.find(value => value.id === unit.id)!;
     const packageVersion=projection.versions.get(unit.id)!;

@@ -665,26 +665,31 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
   const root=await mkdtemp(join(tmpdir(),'steward-publication-'));
   try {
     let snapshot=await readReleaseRecords({directory:request.directory,targetRef:'steward/release-state',repositoryId:request.repositoryId,includeHistory:false});
-  const recovered=await recoverReleaseCaches(request,snapshot,{token,io,centralIo,now});snapshot=recovered.snapshot;request={...request,directory:recovered.directory};assertRepositoryWrite(snapshot.repository);
+    const recovered=await recoverReleaseCaches(request,snapshot,{token,io,centralIo,now});snapshot=recovered.snapshot;request={...request,directory:recovered.directory};assertRepositoryWrite(snapshot.repository);
     const cycle=structuredClone(snapshot.cycles.find(record=>record.value.id===request.cycleId)?.value);
     if(!cycle)fail('registered publication cycle required');
     const context={repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle};
     const normalized=await ensureCycleDelivery(request,snapshot,cycle,{token,io,centralIo,now});snapshot=normalized.snapshot;request={...request,directory:normalized.directory};
     const selection=snapshot.domainRecords.find(record=>releaseAssetSelectionPath.exec(record.path)?.[1]===cycle.id);
-    if(selection && githubUnits(cycle).every(unit=>unit.releaseId!==null)) {
+    const units=githubUnits(cycle),verified=new Set();
+    if(selection) {
       const reader=new NativeEvidenceReader(io,request.repository);
-      const releases=await Promise.all(githubUnits(cycle).map(unit=>reader.json(`releases/${unit.releaseId}`)));
-      if(releases.every(release=>release.draft===false)) {
-        for(const {unitId} of selection.value.units) {
-          const unit=cycle.units.find(item=>item.id===unitId), delivery=normalized.delivery.units.find(item=>item.id===unitId);
+      const bound=await Promise.all(units.filter(unit=>unit.releaseId!==null).map(async unit=>({unit,release:await reader.json(`releases/${unit.releaseId}`)})));
+      for(const {unit,release} of bound) {
+        if(release.draft!==false)continue;
+        if(selection.value.units.some(item=>item.unitId===unit.id)) {
+          const delivery=normalized.delivery.units.find(item=>item.id===unit.id);
           if(JSON.stringify(channelFiles(delivery,'github-release',unit.assets))!==JSON.stringify(unit.assets.map(asset=>asset.path).sort()))
             fail('frozen release asset selection changed');
         }
-        await verifyContinuationReleases(context,io);
-        return {status:'OBSERVED',reason:'FORMAL_RELEASES_VERIFIED',publishInvoked:false};
+        verified.add(unit.id);
       }
+      if(verified.size)await verifyContinuationReleases(context,io,verified);
+      if(verified.size && verified.size===units.length)
+        return {status:'OBSERVED',reason:'FORMAL_RELEASES_VERIFIED',publishInvoked:false};
     }
-    const records=await pipelinePreparePublication(context,root,controllerDirectory,token,undefined,io,undefined,undefined,snapshot.domainRecords);
+    const pending=verified.size?new Set(units.filter(unit=>!verified.has(unit.id)).map(unit=>unit.id)):undefined;
+    const records=await pipelinePreparePublication(context,root,controllerDirectory,token,undefined,io,undefined,undefined,snapshot.domainRecords,pending);
     if(!Array.isArray(records))return records;
     const adapter=new NativeGitHubRelease(args=>nativeGhCommand(args,token),nativeReleaseDownload(token));
     const target=(item,releaseId)=>({delivery:item.delivery,publicBody:item.publicBody,manifest:item.manifest,
@@ -715,7 +720,7 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
       Object.assign(unit,frozen);
     }
     const adopted=await adoptReleaseCycle(request,snapshot,cycle,{token,io});request={...request,directory:adopted.directory};
-    if(!publicationUnits.length)return confirmFrozenCycle(request,adopted.snapshot,cycle,{token,io,now});
+    if(!githubUnits(cycle).length)return confirmFrozenCycle(request,adopted.snapshot,cycle,{token,io,now});
     // Already-public reentry verifies bytes and does not create a new business invocation.
     if(githubUnits(cycle).every(unit=>unit.releaseId!==null)) {
       const targets=publicationUnits.map(item=>target(item,cycle.units.find(unit=>unit.id===item.unitId).releaseId));

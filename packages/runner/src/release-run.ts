@@ -396,9 +396,9 @@ export interface DispatchHistory { complete: boolean; observations:NativeDispatc
   publication?:NonNullable<import('./native-release-evidence.js').ReadHistory['publication']> }
 
 /** Download and verify the original formal bytes; continuation never selects a build. */
-export async function verifyContinuationReleases(context:EvidenceContext,io:EvidenceTransport) {
+export async function verifyContinuationReleases(context:EvidenceContext,io:EvidenceTransport,unitIds?:ReadonlySet<string>) {
   const reader=await formalReleaseReader(context,io);
-  for(const unit of githubUnits(context.cycle)) {
+  for(const unit of githubUnits(context.cycle).filter(unit=>!unitIds||unitIds.has(unit.id))) {
     if(unit.releaseId===null||!unit.assets.length||unit.manifestDigest===null||unit.notesDigest===null)fail('frozen release required');
     const release=await reader.json(`releases/${unit.releaseId}`),assets=await reader.pages(`releases/${unit.releaseId}/assets`,'');
     if(release.id!==unit.releaseId||release.tag_name!==unit.tag||release.author?.id!==context.appBotId||release.draft!==false||release.immutable!==true
