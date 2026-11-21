@@ -71,6 +71,17 @@ def verify_other_locks(base, head):
     # On default-branch pushes the full target history contains the pre-push tree.
     # A PR base must come from the separate policy checkout because forks can lack it.
     base_repo = "target" if os.environ.get("GITHUB_EVENT_NAME") == "push" else "policy"
+    if base_repo == "target":
+        base = base or "0" * 40
+        require(re.fullmatch(r"[0-9a-f]{40}", base), "Invalid default-branch push baseline")
+        previous_commit = subprocess.run(
+            ["git", "-C", base_repo, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"],
+            stdout=subprocess.DEVNULL,
+        )
+        if previous_commit.returncode == 1:
+            print("Pre-push commit unavailable: running the full suite with the locked toolchain")
+            return
+        previous_commit.check_returncode()
     before = tomllib.loads(lock_blob(base_repo, base, "mise.lock").decode())
     after = tomllib.loads(lock_blob("target", head, "mise.lock").decode())
     platform = rules.PLATFORMS[int(os.name == "nt")]
@@ -214,6 +225,7 @@ def title(base, head, root):
     with http.server.ThreadingHTTPServer(("127.0.0.1", 0), PullRequest) as server:
         threading.Thread(target=server.serve_forever, daemon=True).start()
         env = {**child_env(), "GITHUB_EVENT_PATH": str(event), "GITHUB_TOKEN": "fixture",
+               "GITHUB_REPOSITORY": "example/steward",
                "INPUT_GITHUBBASEURL": f"http://127.0.0.1:{server.server_port}",
                "INPUT_TYPES": "\n".join(types), "INPUT_REQUIRESCOPE": "false",
                "INPUT_VALIDATESINGLECOMMIT": "false", "INPUT_WIP": "false"}

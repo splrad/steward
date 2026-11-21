@@ -86,16 +86,28 @@ class LockContractTest(unittest.TestCase):
                 candidate["verify_other_locks"](*refs)
 
     def test_full_push_uses_pre_push_lock(self):
+        before, after = "a" * 40, "b" * 40
         locks = {
-            ("target", "before", "mise.lock"): b"lockfile_version = 3\n[tools]\n",
-            ("target", "after", "mise.lock"): b"lockfile_version = 4\n[tools]\n",
+            ("target", before, "mise.lock"): b"lockfile_version = 3\n[tools]\n",
+            ("target", after, "mise.lock"): b"lockfile_version = 4\n[tools]\n",
         }
         verify = candidate["verify_other_locks"]
-        with patch.dict(os.environ, {"GITHUB_EVENT_NAME": "push"}), patch.dict(
+        with patch.dict(os.environ, {"GITHUB_EVENT_NAME": "push"}), patch(
+            "subprocess.run", return_value=subprocess.CompletedProcess([], 0)
+        ), patch.dict(
             verify.__globals__, {"lock_blob": lambda *args: locks[args]}
         ):
             with self.assertRaisesRegex(ValueError, "Unsupported lockfile contract change"):
-                verify("before", "after")
+                verify(before, after)
+
+    def test_full_push_with_missing_baseline_preserves_full_suite(self):
+        with tempfile.TemporaryDirectory() as directory, chdir(directory), patch.dict(
+            os.environ, {"GITHUB_EVENT_NAME": "push"}
+        ):
+            subprocess.run(["git", "init", "-q", "target"], check=True)
+            for before in ("", "0" * 40, "a" * 40):
+                with self.subTest(before=before):
+                    candidate["verify_other_locks"](before, "b" * 40)
 
 
 if __name__ == "__main__":
