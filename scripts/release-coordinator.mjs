@@ -206,8 +206,8 @@ export async function fetchState(root,repository,token,targetRef='steward/releas
   }
   else await assertReleaseWriterProtection(repository.full_name,targetRef,io,{token,fetcher,readCentralMaintenanceRules});
   const response=await io.request('GET',`/repos/${repository.full_name}/git/ref/heads/${targetRef}`);
-  // Only these two fixed central consumers may start with no records. No branch
-  // is seeded: the first real maintenance fact creates it.
+  // The central maintenance consumer starts without records until its first
+  // real maintenance result creates steward/release-state.
   if(response.status===404&&centralFirstUse) {
     const confirmation=await io.request('GET',`/repos/${repository.full_name}/git/matching-refs/heads/${targetRef}`);
     if(confirmation.status!==200)throw new Error('RELEASE_STATE_UNAVAILABLE');
