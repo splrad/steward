@@ -75,7 +75,7 @@ test('closeout stops before Git or state writes when the approved release-state 
   assert.deepEqual(f.calls,[]);
 }));
 
-function closeoutFixture(mode:'apply'|'closed'|'no-archive'|'moved-candidate'|'moved-main'|'moved-controller'|'moved-state') {
+function closeoutFixture(mode:'apply'|'closed'|'no-archive'|'historical-proof-only'|'moved-candidate'|'moved-main'|'moved-controller'|'moved-state') {
   const sourceSha='3755e1426c3d9776927658480fe610b298c27813',cycleId='pr-192-'+sourceSha,applied='d'.repeat(40);
   const digest=(text:string)=>createHash('sha256').update(text).digest('hex');
   const observedAt='2026-11-19T06:55:17Z',requiredChannels=['ghcr-assets','winget'].map(channelId=>({
@@ -100,8 +100,9 @@ function closeoutFixture(mode:'apply'|'closed'|'no-archive'|'moved-candidate'|'m
     value:{...session.value,index:1,count:2,documentDigest:digest('old session')}};
   const active={activeCycleId:cycleId,lastCompletedCycleId:null,candidate:{prNumber:201,id:candidateId,publishedHead:head,branch:'steward/release-candidate'}};
   const closed={...active,activeCycleId:null,lastCompletedCycleId:cycleId};
-  const before={head:state,history:[],cycles:[{value:cycle}],repository:['closed','no-archive'].includes(mode)?closed:active,
-    currentPaths:[sessionPath,oldChunk.path],domainRecords:mode==='no-archive'?[session,oldChunk]:
+  const before={head:state,history:[],cycles:[{value:cycle}],repository:['closed','no-archive','historical-proof-only'].includes(mode)?closed:active,
+    currentPaths:[sessionPath,oldChunk.path,completionPath,...(mode==='historical-proof-only'?[]:[provenance[0]!.path])],
+    domainRecords:mode==='no-archive'?[session,oldChunk]:
       [session,oldChunk,{path:completionPath,value:completion},{path:provenance[0]!.path,content:payload}]};
   let current=state,currentMain=head,currentController=controller,writes=0;
   const bytes=(value:unknown)=>({status:200,bytes:Buffer.from(JSON.stringify(value))});
@@ -143,6 +144,11 @@ test('a fully evidenced closeout can be read again without a write',async()=>{
 });
 test('a completed pointer without its archive is rejected',async()=>{
   const f=closeoutFixture('no-archive');
+  await assert.rejects(f.run(),/NOT_APPLIED/);
+  assert.equal(f.writes,0);
+});
+test('a closeout replay requires original provenance in the current tree',async()=>{
+  const f=closeoutFixture('historical-proof-only');
   await assert.rejects(f.run(),/NOT_APPLIED/);
   assert.equal(f.writes,0);
 });

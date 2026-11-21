@@ -86,9 +86,9 @@ export async function closeout192(plan,request,{token,io,centralIo,readRecords=r
   if(evaluateCompletion(completion.source,completion.observation,new Date().toISOString()).result!=='PASS')fail('NOT_APPLIED');
   if(before.repository.activeCycleId===null&&before.repository.lastCompletedCycleId===closeoutCycle) {
     const archive=before.domainRecords.find(row=>row.path===entry.value.completedEvidencePath)?.value;
-    if(!archive||!isDeepStrictEqual(archive.source,completion.source)
+    if(!archive||!currentPaths.has(entry.value.completedEvidencePath)||!isDeepStrictEqual(archive.source,completion.source)
       ||evaluateCompletion(archive.source,archive.observation,archive.observation.observedAt).result!=='PASS'
-      ||archive.provenance.some(proof=>!before.domainRecords.some(record=>record.path===proof.path
+      ||archive.provenance.some(proof=>!currentPaths.has(proof.path)||!before.domainRecords.some(record=>record.path===proof.path
         &&typeof record.content==='string'&&createHash('sha256').update(record.content).digest('hex')===proof.digest)))
       fail('NOT_APPLIED');
     await validateTarget(before.head);
