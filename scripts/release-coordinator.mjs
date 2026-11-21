@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
-import { nativeReleaseApp, nativeEvidenceTransport, isolatedBuildEnvironment, githubUnits,evaluateCompletion,parseDeliveryConfig,assertProductDelivery } from '../packages/runner/dist/index.js';
+import { nativeReleaseApp, nativeEvidenceTransport, isolatedBuildEnvironment, githubUnits,evaluateCompletion,parseDeliveryConfig,assertProductDelivery,verifyDispatchWorkflow,encodeRepositoryPath } from '../packages/runner/dist/index.js';
 import { readReleaseRecords, writeReleaseRecords, releaseCommand, assertReleaseWriterProtection } from './release-record.mjs';
 import {servicePages,pagesGitStore} from './pages-maintenance.mjs';
 import {assertQualityProtection,qualityNativeIO} from './quality-language-summary.mjs';
@@ -164,19 +164,25 @@ export async function releaseParticipation(repository,io,{includeUnits=false}={}
     status='NOT_APPLICABLE';
   } else {
     if(files.some(x=>x.length!==1||x[0].type!=='blob'||x[0].mode!=='100644'))throw Error('RELEASE_CONFIGURATION_REQUIRED');
-    const contents=[];
-    for(let i=0;i<names.length;i++) {
-      const v=await read(`contents/${names[i]}?ref=${ref.object.sha}`);
-      if(v.type!=='file'||v.path!==names[i]||v.sha!==files[i][0].sha||v.encoding!=='base64')throw Error('RELEASE_CONFIGURATION_INVALID');
+    const readSource=async(path,entry)=>{
+      const v=await read(`contents/${encodeRepositoryPath(path)}?ref=${ref.object.sha}`);
+      if(v.type!=='file'||v.path!==path||v.sha!==entry.sha||v.encoding!=='base64'||typeof v.content!=='string')throw Error('RELEASE_CONFIGURATION_INVALID');
       const bytes=Buffer.from(v.content,'base64');
       if(bytes.length!==v.size||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==v.sha)throw Error('RELEASE_CONFIGURATION_INVALID');
-      try{contents.push(JSON.parse(bytes.toString('utf8')));}catch{throw Error('RELEASE_CONFIGURATION_INVALID');}
-    }
+      return bytes;
+    };
     try {
+      const contents=await Promise.all(names.map(async(path,i)=>JSON.parse(await readSource(path,files[i][0]))));
       const delivery=parseDeliveryConfig(contents[0]);assertProductDelivery(delivery,repository.full_name);
       validateReleaseConfiguration(delivery,contents[1],contents[2]);
+      if(delivery.buildWorkflow!==undefined) {
+        const publisher=tree.tree.find(entry=>entry.path===delivery.buildWorkflow);
+        if(publisher?.type!=='blob'||publisher.mode!=='100644')throw Error('RELEASE_CONFIGURATION_INVALID');
+        verifyDispatchWorkflow(await readSource(delivery.buildWorkflow,publisher), {purpose:'build',buildWorkflow:delivery.buildWorkflow,
+          inputs:{cycle_id:'',operation_key:'',source_sha:'',controller_sha:''}});
+      }
       if(includeUnits)units=delivery.units.map(({id,path,notesPath})=>({id,path,notesPath}));
-    }catch{throw Error('RELEASE_CONFIGURATION_INVALID');}
+    }catch(error){if(error.message==='AUTHOR_IDENTITY_UNVERIFIED')throw error;throw Error('RELEASE_CONFIGURATION_INVALID');}
   }
   if(absenceFacts) {
     const after=[await read('git/matching-refs/heads/steward/release-candidate'),await read('git/matching-refs/heads/steward/build/'),await read('releases?per_page=1')];

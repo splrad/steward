@@ -139,10 +139,12 @@ export async function validationInput(workspace,env=process.env) {
   const available=files.includes(declaration)
     ? productWorkflows(JSON.parse(await readFile(await regular(workspace,declaration),'utf8')),files) : [];
   const organizationRepository=event.repository.full_name.startsWith('splrad/');
+  const useOptionalProjection=event.repository.private!==false;
+  if((!organizationRepository||!useOptionalProjection)&&productApplicable)check(available.length>0,'PRODUCT_CI_NOT_CONFIGURED');
   if(organizationRepository&&env.GITHUB_ACTIONS==='true')check(env.REPOSITORY_POLICY_TOKEN,'REPOSITORY_POLICY_TOKEN');
   const policyReader=env.REPOSITORY_POLICY_TOKEN&&organizationRepository
     ? new NativeEvidenceReader(nativeEvidenceTransport(env.REPOSITORY_POLICY_TOKEN),event.repository.full_name) : null;
-  const selection=policyReader?await readRepositoryPolicySelection(policyReader,repositoryId,{useOptionalProjection:true}):null;
+  const selection=policyReader?await readRepositoryPolicySelection(policyReader,repositoryId,{useOptionalProjection}):null;
   const workflows=selectedProductWorkflows(selection,available,productApplicable);
   const boundNames=[];
   for(const path of workflows){

@@ -8,7 +8,7 @@ import {pathToFileURL,fileURLToPath} from 'node:url';
 import {TagName} from 'release-please/build/src/util/tag-name.js';
 import {Version} from 'release-please/build/src/version.js';
 import {isolatedBuildEnvironment,parseDeliveryConfig,NativeEvidenceReader,nativeEvidenceTransport,
-  inspectNativeCycle,inspectPublications,decodeReleaseRecord,assertRepositoryWrite,readNativeUnitVersion} from '../packages/runner/dist/index.js';
+  inspectNativeCycle,inspectPublications,decodeReleaseRecord,assertRepositoryWrite,readNativeUnitVersion,defaultBuildWorkflow,productReleaseTemplatePath} from '../packages/runner/dist/index.js';
 
 const fail=reason=>{throw new Error('RELEASE_ADOPTION: '+reason);};
 const sha=value=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
@@ -34,7 +34,8 @@ export function validateReleaseConfiguration(delivery,settings,versions) {
 // The channel workflow is product-owned. This list describes files to verify or
 // materialize from reviewed product sources; it never selects a product template.
 export function releaseAdoptionPlan(delivery) {
-  const files=['.github/workflows/steward-release-publish.yml','.github/release-template.md.mustache'];
+  const files=[delivery.buildWorkflow??defaultBuildWorkflow];
+  if(delivery.buildWorkflow===undefined)files.push(productReleaseTemplatePath);
   const externalTargets=delivery.units.flatMap(unit=>unit.channels
     .filter(channel=>channel.required && channel.id!=='github-release')
     .map(channel=>({unitId:unit.id,channelId:channel.id,location:channel.location})));

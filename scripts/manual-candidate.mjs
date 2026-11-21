@@ -39,7 +39,7 @@ export async function validateManualCandidate(session,producer,io) {
   if(JSON.stringify(Object.keys(settings.packages??{}).sort())!==JSON.stringify(paths)||
      !manifest||typeof manifest!=='object'||Array.isArray(manifest)||Object.keys(manifest).some(path=>!paths.includes(path)))fail('MANUAL_UNIT_COVERAGE');
   if(!matchesFrozenUnits(session))fail('MANUAL_UNIT_COVERAGE');
-  const template=await io.read(before.headSha,'.github/release-template.md.mustache');
+  const template=io.readTemplate?await io.readTemplate(before.headSha,delivery):await io.read(before.headSha,'.github/release-template.md.mustache');
   const units=[],notes=new Set(),noteContents=[];
   for(const generated of session.generated.units) {
     const unit=delivery.units.find(unit=>unit.id===generated.id&&unit.path===generated.path);
