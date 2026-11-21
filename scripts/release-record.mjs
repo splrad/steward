@@ -651,7 +651,7 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
     if(!cycle)fail('registered publication cycle required');
     const context={repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle};
     const normalized=await ensureCycleDelivery(request,snapshot,cycle,{token,io,centralIo,now});snapshot=normalized.snapshot;request={...request,directory:normalized.directory};
-    const alreadyPublished=new Set(),unavailable=new Set(),reader=new NativeEvidenceReader(io,request.repository),targets=githubUnits(cycle);
+    const alreadyPublished=new Set(),unavailable=new Set(),rejected=[],reader=new NativeEvidenceReader(io,request.repository),targets=githubUnits(cycle);
     for(const unit of targets.filter(unit=>unit.releaseId!==null&&unit.githubDelivery)) {
       const release=await reader.json('releases/'+unit.releaseId);
       if(release.draft===false) {
@@ -663,9 +663,12 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
     const pending=alreadyPublished.size||unavailable.size
       ?new Set(targets.filter(unit=>!alreadyPublished.has(unit.id)&&!unavailable.has(unit.id)).map(unit=>unit.id)):undefined;
     const records=await pipelinePreparePublication(context,root,controllerDirectory,token,undefined,io,undefined,undefined,snapshot.domainRecords,
-      pending,undefined,cycle.workflowDelivery?unitId=>unavailable.add(unitId):undefined);
+      pending,undefined,cycle.workflowDelivery?unitId=>unavailable.add(unitId):undefined,
+      cycle.workflowDelivery?(unitId,reason)=>rejected.push({unitId,channelId:'github-release',reason}):undefined);
     if(!Array.isArray(records))return records;
-    if(!records.length&&unavailable.size)return {status:'UNKNOWN',reason:'WORKFLOW_GITHUB_DELIVERY_REQUIRED',units:[...unavailable].sort(),publishInvoked:false};
+    const deliveryDetails={...(unavailable.size?{units:[...unavailable].sort()}:{}),...(rejected.length?{rejected}:{})};
+    if(!records.length&&rejected.length)return {status:'BLOCKED',reason:'WORKFLOW_GITHUB_DELIVERY_INVALID',publishInvoked:false,...deliveryDetails};
+    if(!records.length&&unavailable.size)return {status:'UNKNOWN',reason:'WORKFLOW_GITHUB_DELIVERY_REQUIRED',publishInvoked:false,...deliveryDetails};
     const adapter=new NativeGitHubRelease(args=>nativeGhCommand(args,token),nativeReleaseDownload(token));
     const target=(item,releaseId)=>({delivery:item.delivery,publicBody:item.publicBody,manifest:item.manifest,
       directory:item.directory,releaseId,appBotId:request.appBotId});
@@ -705,7 +708,7 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
       const releases=await Promise.all(publicationTargets.map(item=>adapter.read(item)));
       if(releases.every(release=>!release.draft)) {
         for(const item of publicationTargets)await adapter.verify(item);
-        return {status:'OBSERVED',reason:'FORMAL_RELEASES_VERIFIED',publishInvoked:false};
+        return {status:'OBSERVED',reason:'FORMAL_RELEASES_VERIFIED',publishInvoked:false,...deliveryDetails};
       }
     }
     const result=await inspectReleaseEvidence(request,{token,io,centralIo,centralInvocation,now,
@@ -719,7 +722,7 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
         await adapter.publish(bound);
       }
     }});
-    return unavailable.size?{...result,units:[...unavailable].sort()}:result;
+    return {...result,...deliveryDetails};
   }finally{await rm(root,{recursive:true,force:true});}
 }
 
@@ -929,6 +932,7 @@ export async function releaseCommand(command,request,{token,io=nativeEvidenceTra
   if(actual.id!==request.repositoryId||actual.full_name!==request.repository||actual.default_branch!==request.defaultBranch||actual.archived||actual.disabled)fail('native repository identity');
   await assertReleaseWriterProtection(request.repository,'steward/release-state',io,{token});
   let dispatch=cycle.dispatches.filter(item=>command==='dispatch-build'?item.purpose==='build':item.purpose!=='build').at(-1);
+  let rejectedDeliveries=[];
   if(command==='dispatch-channel') {
     const context={repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle};
     if(!cycle.requiredChannels.length)return wait('NO_REQUIRED_CHANNELS');
@@ -940,6 +944,7 @@ export async function releaseCommand(command,request,{token,io=nativeEvidenceTra
         const prepared=await prepareWorkflowChannelReceipts(context,root,controllerDirectory,token,snapshot.domainRecords,io);
         const {receipts}=prepared;
         missing=prepared.missing;
+        rejectedDeliveries=prepared.rejected;
         for(const {unitId,frozen} of receipts) {
           const unit=cycle.units.find(unit=>unit.id===unitId);
           (unit.channelDeliveries??=[]).push(frozen);
@@ -959,8 +964,10 @@ export async function releaseCommand(command,request,{token,io=nativeEvidenceTra
       catch {const raw=snapshot.domainRecords.filter(record=>record.path.startsWith('evidence/native/')&&record.value.run.id===prior.canonicalRunId).sort((a,b)=>b.value.run.runAttempt-a.value.run.runAttempt)[0];if(!raw)return wait('CHANNEL_NATIVE_RUN_UNKNOWN');runs.push(raw.value.run);}
     }
     const selected=selectChannelDispatch(context,reads,runs,snapshot.domainRecords.filter(record=>record.path.startsWith('evidence/source-rejection/')));
-    if(selected.kind==='wait'||selected.kind==='unknown')return missing.length
-      ?{...wait('WORKFLOW_CHANNEL_DELIVERY_REQUIRED'),missing}:wait(selected.kind==='wait'?'CHANNEL_INDEX_PENDING':'CHANNEL_PROBE_REQUIRED');
+    if(selected.kind==='wait'||selected.kind==='unknown') {
+      if(rejectedDeliveries.length)return {status:'BLOCKED',reason:'WORKFLOW_CHANNEL_DELIVERY_INVALID',publishInvoked:false,rejected:rejectedDeliveries,missing};
+      return missing.length?{...wait('WORKFLOW_CHANNEL_DELIVERY_REQUIRED'),missing}:wait(selected.kind==='wait'?'CHANNEL_INDEX_PENDING':'CHANNEL_PROBE_REQUIRED');
+    }
     if(selected.kind==='existing')dispatch=selected.request;
     else if(selected.kind==='reselect') {
       const original=selected.request,executionSha=(await native(`commits/${encodeURIComponent(request.defaultBranch)}`)).sha;
@@ -983,7 +990,8 @@ export async function releaseCommand(command,request,{token,io=nativeEvidenceTra
     dispatch=prepareBuildDispatch({repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle},workflow.id,now());
     cycle.dispatches.push(dispatch);
   }
-  if(dispatch.canonicalRunId!==null)return {status:'BOUND',canonicalRunId:dispatch.canonicalRunId,reason:'CANONICAL_RUN_IMMUTABLE',publishInvoked:false};
+  const deliveryDetails=rejectedDeliveries.length?{rejected:rejectedDeliveries}:{};
+  if(dispatch.canonicalRunId!==null)return {status:'BOUND',canonicalRunId:dispatch.canonicalRunId,reason:'CANONICAL_RUN_IMMUTABLE',publishInvoked:false,...deliveryDetails};
   if(dispatch.purpose==='build')await assertReleaseWriterProtection(request.repository,dispatch.ref,io,{token});
   // The workflow must already exist at the current default branch and at the frozen execution source.
   for(const ref of [request.defaultBranch,dispatch.executionSha]) {
@@ -1033,10 +1041,11 @@ export async function releaseCommand(command,request,{token,io=nativeEvidenceTra
     try {await verifyHead(readback.head);}catch{return {status:'UNKNOWN',head:readback.head};}
     snapshot=readback;directory=nextDirectory;cycle=nextCycle;return written;
   }};
-  return dispatchNativeRun({repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle},dispatch.requestKey,store,
+  const dispatched=await dispatchNativeRun({repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle},dispatch.requestKey,store,
     {complete:true,observations:snapshot.domainRecords.filter(record=>record.path.startsWith('evidence/dispatch/')).map(record=>record.value),
       channelEvidence:snapshot.domainRecords.filter(record=>record.path.startsWith('evidence/channel/')||record.path.startsWith('evidence/channel-read/')),sourceRejections:snapshot.domainRecords.filter(record=>record.path.startsWith('evidence/source-rejection/')),retryLimits:snapshot.domainRecords.filter(record=>record.path.startsWith('evidence/retry-limit/')),
       archives:snapshot.domainRecords.filter(record=>record.path.startsWith('evidence/native/')),publication},io,now());
+  return {...dispatched,...deliveryDetails};
 }
 
 export async function main(argv=process.argv.slice(2)) {

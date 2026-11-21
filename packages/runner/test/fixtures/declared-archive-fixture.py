@@ -3,9 +3,11 @@ import gzip
 import io
 import sys
 import sqlite3
+import struct
 import tarfile
 import zipapp
 import zipfile
+import zlib
 from pathlib import Path
 
 root = Path(sys.argv[1])
@@ -24,6 +26,30 @@ for name, entries in {
     with zipfile.ZipFile(root / name, "w") as archive:
         for member, data in entries:
             archive.writestr(member, data)
+with zipfile.ZipFile(root / "vendor.zip", "w") as archive:
+    archive.write(Path(__file__).with_name("native-release") / "fixture.dll", "vendor/fixture.dll")
+    archive.writestr("VERSION", "2.0.0\n")
+
+with zipfile.ZipFile(root / "application.msix", "w") as archive:
+    archive.writestr("AppxManifest.xml", '<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10">'
+                                       '<Identity Name="SPLRAD.Fixture" Publisher="CN=Example" Version="1.2.3.0" /></Package>')
+    archive.writestr("[Content_Types].xml", "<Types/>")
+    archive.writestr("AppxBlockMap.xml", "<BlockMap/>")
+
+
+class LegacyPath(zipfile.ZipInfo):
+    def _encodeFilenameFlags(self):
+        return self.filename.encode("cp437"), self.flag_bits
+
+
+for name, alias in (("unicode-font.zip", "中文/font.shx"), ("unicode-traversal.zip", "../font.shx")):
+    path = "catalogue/font.shx"
+    entry = LegacyPath(path)
+    data = struct.pack("<BI", 1, zlib.crc32(path.encode("ascii"))) + alias.encode("utf-8")
+    entry.extra = struct.pack("<HH", 0x7075, len(data)) + data
+    with zipfile.ZipFile(root / name, "w") as archive:
+        archive.writestr(entry, b"AutoCAD-86 shapes 1.0")
+
 class StreamingOutput(io.BytesIO):
     def seek(self, *args):
         raise io.UnsupportedOperation("streaming writer")

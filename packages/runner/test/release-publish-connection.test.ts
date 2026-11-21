@@ -8,10 +8,10 @@ import { githubUnits, parseReleaseRecord } from '../../core/src/release-observat
 import { parseDeliveryConfig } from '../../core/src/delivery-config.js';
 import { sealProductArtifacts, fileDigest, type ProductReleaseManifest } from '../src/release-artifacts.js';
 import * as downloads from '../src/native-artifact-download.js';
-import { productPipelineFixture } from './product-pipeline-fixture.js';
-import { S, C, START, END, digest } from './native-evidence-fixture.js';
+import { mergedCandidateFixture, productPipelineFixture } from './product-pipeline-fixture.js';
+import { S, C, START, END, digest, npmPackageFixture } from './native-evidence-fixture.js';
 import { nativeRequestIdentity } from '../src/native-release-evidence.js';
-import { permitOfflineScript } from './offline-fixtures.js';
+import { permitOfflineScript, registerOfflineFixtureRoot } from './offline-fixtures.js';
 import type { WorkflowDeliveryReceipt } from '../../core/src/release-observation.js';
 const roots:string[]=[];
 afterEach(async()=>{vi.restoreAllMocks();vi.unstubAllEnvs();for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
@@ -104,6 +104,8 @@ it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-r
 
 it('prepares a single native Node delivery, changes the public set in its workflow, and reuses the original attempt',async()=>{
   const f=productPipelineFixture(2,false,[]),{context,source}=f;
+  permitOfflineScript(resolve('scripts/inspect-python-release.py'));
+  f.input.controllerDirectory=process.cwd();
   const workflow='.github/workflows/steward-release-publish.yml';
   const settings={'include-component-in-tag':false,packages:{'.':{'release-type':'node',component:'app'}}};
   source['release-please-config.json']=JSON.stringify(settings);
@@ -135,14 +137,7 @@ it('prepares a single native Node delivery, changes the public set in its workfl
   expect(await pipelineIdentity(f.input,f.environment,f.gh,f.io)).toMatchObject({status:'SOURCE_VERIFIED',
     units:[{unit:'app',tag:'v1.0.0',version:'1.0.0',packageVersion:'1.0.0'}]});
   Object.assign(f.runs.get(2),{status:'completed',conclusion:'success'});
-  const chunk=f.input.state.domainRecords[0]!.value as {candidateId:string;content:string;documentDigest:string},
-    candidate={...f.input.state.repository.candidate!,generatedSnapshotPath:'generated/'+chunk.candidateId+'/generated.json'};
-  const merged=JSON.stringify({schemaVersion:1,cycleId:context.cycle.id,sourceSha:S,stateCommit:f.input.state.head,candidate,
-    session:JSON.parse(chunk.content),pull:{number:context.cycle.prNumber,head:candidate.publishedHead,branch:candidate.branch,base:'main',
-      repositoryId:context.repositoryId,mergedAt:START,mergeCommitSha:S},
-    documents:[{path:'generated/'+chunk.candidateId+'/session.json',sha256:chunk.documentDigest},{path:candidate.generatedSnapshotPath,sha256:'a'.repeat(64)}]});
-  const history=[{path:'generated/'+chunk.candidateId+'/cycles/'+context.cycle.id+'.json',commit:f.input.state.head,
-    value:{...chunk,schemaVersion:1,repositoryId:context.repositoryId,index:0,count:1,documentKind:'merged-candidate',content:merged,documentDigest:digest(merged)}}];
+  const history=[mergedCandidateFixture(f.input)];
   const artifact={id:810,name:['delivery','github-release',context.repositoryId,'app',S,100,1].join('-'),expired:false,
     digest:'sha256:'+digest('node archive'),workflow_run:{id:100,head_sha:S},created_at:'2026-10-26T00:00:30.000Z'};
   let deliveryConclusion='success',wrongSourcePath=false,notesStatus=200;
@@ -165,15 +160,23 @@ it('prepares a single native Node delivery, changes the public set in its workfl
       head_sha:S,status:'completed',conclusion:deliveryConclusion,steps:[{name:'Upload GitHub release delivery',status:'completed',conclusion:'success',started_at:START,completed_at:END}]}]});
     throw Error('Unexpected workflow publication source '+path);
   }};
-  const output=await mkdtemp(join(tmpdir(),'direct-github-delivery-'));roots.push(output);
+  const output=await mkdtemp(join(tmpdir(),'direct-github-delivery-'));roots.push(output);registerOfflineFixtureRoot(output);
+  const packageBytes=npmPackageFixture('1.0.0');
+  let delivered:Uint8Array|string=packageBytes;
   const prepare=async (child:string,selected:string[],unavailable?:(id:string)=>void)=>{
     const directory=join(output,child);await mkdir(directory);
     return pipelinePreparePublication(context,directory,f.input.controllerDirectory,'fixture-token',async()=>{throw Error('unexpected gh command');},
       io,io,undefined,history,undefined,async input=>{
         expect(input).toMatchObject({artifactId:artifact.id,digest:artifact.digest});
-        await mkdir(input.directory);for(const name of selected)await writeFile(join(input.directory,name),'built '+name);
+        await mkdir(input.directory);for(const name of selected)await writeFile(join(input.directory,name),name.endsWith('.tgz')?delivered:'checksums\n');
       },unavailable);
   };
+  delivered='incorrect archive bytes';
+  await expect(prepare('invalid-format',initial)).rejects.toThrow('RN_DELIVERY_FORMAT: fixture-cli.tgz');
+  delivered=npmPackageFixture('2.0.0');
+  await expect(prepare('wrong-embedded-version',initial)).rejects.toThrow('RN_DELIVERY_VERSION: fixture-cli.tgz');
+  delivered=packageBytes;
+  await expect(prepare('unselected-file',[...initial,'unexpected.txt'])).rejects.toThrow('RN_DELIVERY_SELECTION');
   wrongSourcePath=true;
   await expect(prepare('wrong-source-path',initial)).rejects.toThrow('source file identity');
   wrongSourcePath=false;
@@ -195,7 +198,7 @@ it('prepares a single native Node delivery, changes the public set in its workfl
   source['.release-notes/app.md']=notes;
   const retained:WorkflowDeliveryReceipt={artifactId:artifact.id,runId:100,attempt:1,digest:artifact.digest};
   Object.assign(context.cycle.units[0]!,{githubDelivery:retained});
-  expect(await prepare('retry',initial)).toMatchObject([{githubDelivery:retained,manifest:{artifacts:[{path:'fixture-cli.tgz'}]}}]);
+  expect(await prepare('retry',initial)).toMatchObject([{githubDelivery:retained,manifest:{artifacts:[{path:'fixture-cli.tgz',sha256:digest(packageBytes)}]}}]);
   deliveryConclusion='failure';
   await expect(prepare('failed-delivery-job',initial)).rejects.toThrow('successful GitHub delivery artifact missing');
   deliveryConclusion='success';
@@ -224,9 +227,10 @@ it('prepares a single native Node delivery, changes the public set in its workfl
 });
 
 it('selects separate GitHub and authorized channel assemblies and restores only the original external bytes',async()=>{
+  permitOfflineScript(resolve('scripts/inspect-python-release.py'));
   const f=productPipelineFixture(1),repository='splrad/LayerScape',repositoryId=1187527897,appBotId=42;
   const workflow='.github/workflows/steward-release-publish.yml',compact=JSON.stringify({schemaVersion:3,repositoryAuthors:f.delivery.repositoryAuthors});
-  const settings={packages:{'packages/desktop':{component:'layerscape'},'packages/tools':{component:'tools'}}};
+  const settings={'release-type':'simple',packages:{'packages/desktop':{component:'layerscape'},'packages/tools':{component:'tools'}}};
   const step=(id:string,name:string,channel:string,location?:string)=>({id,name,uses:'actions/upload-artifact@'+'a'.repeat(40),
     with:{name:deliveryName(channel,'layerscape'),path:channel+'/*'},...(location?{env:{STEWARD_CHANNEL_LOCATION:location}}:{})});
   const definition={jobs:{deliver:{name:'delivery/layerscape',steps:[
@@ -256,7 +260,7 @@ it('selects separate GitHub and authorized channel assemblies and restores only 
     assets:[{id:'desktop',path:'desktop.exe',size:8,sha256:digest('public!!')}]});
   const run={...f.runs.get(1),repository:{id:repositoryId},head_repository:{id:repositoryId},path:workflow,
     status:'completed',conclusion:'success',run_attempt:1,display_title:'Build '+request.operationKey};
-  const makeArtifact=(id:number,attempt:number)=>({id,name:['delivery','ghcr-assets',repositoryId,unit.id,S,100,attempt].join('-'),
+  const makeArtifact=(id:number,attempt:number,channel='ghcr-assets')=>({id,name:['delivery',channel,repositoryId,unit.id,S,100,attempt].join('-'),
     expired:false,digest:'sha256:'+digest(String(id)),workflow_run:{id:100,head_sha:S},created_at:'2026-10-26T00:00:30.000Z'});
   const artifacts=[makeArtifact(810,1)],reads:string[]=[];
   let publicBytes='public!!',publicStatus=200;
@@ -271,7 +275,7 @@ it('selects separate GitHub and authorized channel assemblies and restores only 
     if(path.includes('/artifacts?'))return f.response({total_count:artifacts.length,artifacts});
     if(path.includes('/attempts/1/jobs?'))return f.response({total_count:1,jobs:[{name:'delivery/layerscape',id:1001,
       run_id:100,run_attempt:1,head_sha:S,status:'completed',conclusion:'success',
-      steps:[{name:'Upload GHCR assets delivery',status:'completed',conclusion:'success',started_at:START,completed_at:END}]}]});
+      steps:['Upload GHCR assets delivery','Upload WinGet delivery'].map(name=>({name,status:'completed',conclusion:'success',started_at:START,completed_at:END}))}]});
     if(path.endsWith('/assets/51'))return f.response(publicBytes,publicStatus);
     if(path.includes('/releases/50/assets?'))return f.response([{id:51,name:'desktop.exe',size:8,state:'uploaded'}]);
     if(path.endsWith('/releases/50'))return f.response({id:50,tag_name:unit.tag,author:{id:appBotId},body:'approved notes',draft:false,immutable:true});
@@ -279,21 +283,37 @@ it('selects separate GitHub and authorized channel assemblies and restores only 
     if(path==='/repos/'+repository)return f.response({id:repositoryId,full_name:repository,private:false,archived:false,disabled:false});
     throw Error('unexpected request '+path);
   }};
-  const root=await mkdtemp(join(tmpdir(),'channel-workflow-delivery-'));roots.push(root);
-  let bytes='frozen registry archive';
+  const root=await mkdtemp(join(tmpdir(),'channel-workflow-delivery-'));roots.push(root);registerOfflineFixtureRoot(root);
+  let bytes:Uint8Array|string=npmPackageFixture('2.0.0');
   const download=async(input:Parameters<typeof downloads.downloadWorkflowArtifact>[0])=>{
+    if(input.artifactId===820) {
+      await mkdir(input.directory);await writeFile(join(input.directory,'desktop.exe'),'wrong installer format');return;
+    }
     expect(input).toMatchObject({artifactId:810,digest:artifacts[0]!.digest});
     await mkdir(input.directory);await writeFile(join(input.directory,'registry.tgz'),bytes);
   };
-  const prepared=await prepareWorkflowChannelReceipts(context,root,root,'fixture-token',[],io,download);
+  const invalid=join(root,'wrong-version');await mkdir(invalid);
+  const controller=process.cwd();
+  await expect(prepareWorkflowChannelReceipts(context,invalid,controller,'fixture-token',[],io,download)).resolves.toMatchObject({
+    receipts:[],rejected:[{unitId:'layerscape',channelId:'ghcr-assets',reason:'RN_DELIVERY_VERSION: registry.tgz'}],
+  });
+  bytes=npmPackageFixture('1.0.0');
+  const mixed=join(root,'mixed');await mkdir(mixed);
+  artifacts.push(makeArtifact(820,1,'winget'));
+  await expect(prepareWorkflowChannelReceipts(context,mixed,controller,'fixture-token',[],io,download)).resolves.toMatchObject({
+    receipts:[{unitId:'layerscape',frozen:{channelId:'ghcr-assets'}}],
+    missing:[],rejected:[{unitId:'layerscape',channelId:'winget',reason:'RN_DELIVERY_FORMAT: desktop.exe'}],
+  });
+  artifacts.pop();
+  const prepared=await prepareWorkflowChannelReceipts(context,root,controller,'fixture-token',[],io,download);
   expect(prepared.missing).toEqual([{unitId:'layerscape',channelId:'winget'}]);
   expect(prepared.receipts).toMatchObject([{unitId:'layerscape',frozen:{channelId:'ghcr-assets',delivery:{artifactId:810,attempt:1,runId:100},
     assets:[{path:'registry.tgz',sha256:digest(bytes)}]}}]);
   publicBytes='conflict';
-  await expect(prepareWorkflowChannelReceipts(context,root,root,'fixture-token',[],io,download)).rejects.toThrow('formal release bytes');
+  await expect(prepareWorkflowChannelReceipts(context,root,controller,'fixture-token',[],io,download)).rejects.toThrow('formal release bytes');
   publicBytes='public!!';
   publicStatus=404;
-  await expect(prepareWorkflowChannelReceipts(context,root,root,'fixture-token',[],io,download)).rejects.toMatchObject({status:404});
+  await expect(prepareWorkflowChannelReceipts(context,root,controller,'fixture-token',[],io,download)).rejects.toMatchObject({status:404});
   publicStatus=200;
   unit.channelDeliveries=prepared.receipts.map(receipt=>receipt.frozen);
   expect(parseReleaseRecord('cycle',cycle).units[0]?.channelDeliveries).toEqual(unit.channelDeliveries);

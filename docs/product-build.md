@@ -8,7 +8,9 @@ LayerScape 的产品入口是 [steward-release-publish.yml](https://github.com/s
 
 用产品自己的脚本构建，并在同一 Run 中对每个发行单位交付一次。工作流声明 `workflow_dispatch`，接收 `cycle_id`、`source_sha`、`operation_key`、`controller_sha`。运行名称包含 operation key，以便派发响应丢失时恢复。固定中央控制器提交，使用 `release-pipeline identity` 核验来源。交付 job 的原生名称为 `delivery/<unit-id>`。其中一步使用固定提交的 `actions/upload-artifact`，ID 为 `upload-github-release`，步骤名称为 `Upload GitHub release delivery`。制品名称格式为 `delivery-github-release-<repository-id>-<unit-id>-<source-sha>-<run-id>-<attempt>`。
 
-该制品的文件集合就是 GitHub Release 的公开附件。增减文件时调整这个上传步骤的输入。中央核对原生 Run、成功交付 job、制品 ID、摘要和适用的构建证明，随后独立发布。草稿恢复使用已冻结的 attempt 与制品 ID。已有完整冻结包的产品仍可从原冻结包取得所选文件，并由中央逐字节比较公开交件与完整冻结包。历史 `delivery.json` v1/v2 保留原有解码规则。
+该制品的文件集合就是 GitHub Release 的公开附件。增减文件时调整这个上传步骤的 `with.path`。中央核对原生 Run、成功交付 job、制品 ID、摘要和适用的构建证明。针对平铺字面文件名和形如 `*.tar.gz` 的简单文件名模式，再从这一次声明核对实际文件名。目录表达式、复杂模式和运行时选出的文件仍由受审上传步骤决定。草稿恢复使用已冻结的 attempt、制品 ID 和文件摘要。已有完整冻结包的产品仍可从原冻结包取得所选文件，并由中央逐字节比较公开交件与完整冻结包。历史 `delivery.json` v1/v2 保留原有解码规则。
+
+中央在冻结交件和写入发布前检查文件格式与适用版本。独立 PE 检查 EXE 或 DLL 类型及版本资源，Python wheel/sdist 与 npm 包检查原生包元数据，AppX/MSIX 检查包或 bundle manifest 的版本。通用 ZIP/TAR 检查容器结构和已识别资源，根 `VERSION` 存在时核对发行单位版本。归档中的第三方 PE 文件可有自己的版本，中央检查其 PE 格式。字体、校验和、文字说明等无内嵌版本的资料走各自的结构和字节检查。格式错误、版本错误和未支持格式分别报告。遇到未支持格式（例如 MSI）时暂停该交件，适用检查需要随产品采用确认。成员路径只表达归档结构，所有公开文件仍由上传步骤选择。
 
 单位只有声明了相应交件步骤才加入该渠道。不同单位可使用各自的 `delivery/<unit-id>` job，也可用名为 `delivery/${{ matrix.unit }}` 的 job 为全部单位采用相同渠道。受信外部适配器使用同一 Run 中各自独立的制品。GHCR 对应 `upload-ghcr-assets` 和 `Upload GHCR assets delivery`，WinGet 对应 `upload-winget` 和 `Upload WinGet delivery`。制品名称按上述格式替换渠道段。外部步骤的 `env.STEWARD_CHANNEL_LOCATION` 需与已授权适配器目标匹配。现有外部适配器仍要求单位的正式 GitHub Release，WinGet 还核对公开安装文件的原名与字节。缺少外部制品时，该渠道保留待处理状态。
 

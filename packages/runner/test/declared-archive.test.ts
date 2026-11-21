@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { inspectDeclaredAsset } from '../src/release-native.js';
+import { inspectDeclaredAsset, inspectWorkflowAsset } from '../src/release-native.js';
 import { parseDeliveryConfig, type DeliveryUnit } from '../../core/src/delivery-config.js';
 import { permitOfflineScript, registerOfflineFixtureRoot } from './offline-fixtures.js';
 let root: string;
@@ -73,4 +73,23 @@ it('preserves an ordinary binary SQLite resource without a member format declara
   const staging = join(root, 'database-stage');
   await expect(inspectDeclaredAsset(join(root, 'database.zip'), asset, '1.2.3', process.cwd(), root, staging)).resolves.toBe('1.2.3');
   expect(await readFile(join(staging, 'data/stations.db'))).toEqual(await readFile(join(root, 'stations.db')));
+});
+
+it('checks the archive release version and retains a DLL dependency with its own version', async () => {
+  const check=(version:string)=>inspectWorkflowAsset(join(root,'vendor.zip'),'simple',version,process.cwd(),root);
+  await expect(check('2.0.0')).resolves.toBeUndefined();
+  await expect(check('1.2.3')).rejects.toThrow('RN_DELIVERY_VERSION');
+});
+
+it('reads a valid ZIP Unicode path and rejects a traversal in the effective member name', async () => {
+  const check=(file:string)=>inspectWorkflowAsset(join(root,file),'simple','1.2.3',process.cwd(),root);
+  await expect(check('unicode-font.zip')).resolves.toBeUndefined();
+  await expect(check('unicode-traversal.zip')).rejects.toThrow('RN_DELIVERY_FORMAT');
+});
+
+it('reads the embedded version of a format-supported Windows installer', async () => {
+  const check=(version:string)=>inspectWorkflowAsset(join(root,'application.msix'),'simple',version,process.cwd(),root);
+  await expect(check('1.2.3')).resolves.toBeUndefined();
+  await expect(check('1.2.4')).rejects.toThrow('RN_DELIVERY_VERSION');
+  await expect(inspectWorkflowAsset(join(root,'bad-font.zip'),'simple','1.2.3',process.cwd(),root)).rejects.toThrow('RN_DELIVERY_FORMAT');
 });

@@ -4,13 +4,29 @@ import { constants } from 'node:fs';
 import { BuildContractError, decodeBuildJson } from '../../core/src/build-manifest.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { isolatedBuildEnvironment } from './build-environment.js';
 import { type NativeVersionInspector, type NativeVersionResult } from './build-manifest.js';
 import { releaseAssert } from '../../core/src/release-note-receipt.js';
 import { safeGitPath } from './git-snapshot.js';
 import type { DeliveryUnit } from '../../core/src/delivery-config.js';
 export const nativeInspectionTimeoutMs = 120000;
+
+export class WorkflowDeliveryValidationError extends Error {}
+
+export async function inspectWorkflowAsset(path:string,releaseType:string,version:string,controller:string,home:string):Promise<void> {
+  const python=resolve(controller,'tools/template/.venv',process.platform==='win32'?'Scripts/python.exe':'bin/python');
+  const helper=resolve(controller,'scripts/inspect-python-release.py');
+  const result=await promisify(execFile)(python,['-I',helper,'--workflow',path,releaseType,version],{
+    env:isolatedBuildEnvironment(process.env,home),cwd:home,timeout:nativeInspectionTimeoutMs,maxBuffer:65536,windowsHide:true,encoding:'utf8',
+  }).catch(error=>{
+    const code=/^\{"error":"(RN_DELIVERY_(?:FORMAT|VERSION|UNSUPPORTED))"\}$/.exec(error.stdout?.trim()??'')?.[1];
+    if(error.code===2&&code)throw new WorkflowDeliveryValidationError(`${code}: ${basename(path)}`);
+    throw error;
+  });
+  if(!['{"versionChecked":true}','{"versionChecked":false}'].includes(result.stdout.trim()))
+    throw new Error('RN_DELIVERY_INSPECTION_RESULT');
+}
 /** Parse exact S bytes using the same trusted packaging runtime as wheel/sdist inspection. */
 export async function nativePythonSourceVersion(controllerDirectory:string,bytes:Buffer,releaseVersion:string):Promise<string> {
   if(bytes.length>512*1024)throw new BuildContractError('RN_BUILD_LIMIT');

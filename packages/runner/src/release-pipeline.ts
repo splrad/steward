@@ -9,7 +9,7 @@ import { selectReleaseProducers, producerArtifactName } from './release-run.js';
 import { jobFact } from './native-release-evidence.js';
 import { originalJobExecutions, type NativeJobAttempt } from '../../core/src/native-job-origins.js';
 import { verifySealedArtifacts, validateReleaseManifest, fileDigest, type ReleaseManifest } from './release-artifacts.js';
-import { inspectDeclaredAsset, readNativeUnitVersion } from './release-native.js';
+import { inspectDeclaredAsset, inspectWorkflowAsset, readNativeUnitVersion, WorkflowDeliveryValidationError } from './release-native.js';
 import { committedVersionNotes } from '../../core/src/release-template.js';
 import { downloadNativeArtifact, downloadWorkflowArtifact } from './native-artifact-download.js';
 import { Octokit } from '@octokit/rest';
@@ -122,7 +122,7 @@ export async function readCycleDelivery(context:EvidenceContext,records:{path:st
   const workflow=await readNativeSourceFile(reader,sourceSha,delivery.buildWorkflow!);
   const handoff=applyWorkflowDelivery(delivery,workflow.bytes);
   assertFrozenWorkflowChannels(delivery,context.cycle);
-  return {delivery,legacy:null,handoff};
+  return {delivery,legacy:null,handoff,releasePlease:settings};
 }
 
 function assertFrozenWorkflowChannels(delivery:DeliveryConfig,cycle:CycleRecord) {
@@ -211,8 +211,8 @@ export async function pipelineChannelDownload(context:EvidenceContext,target:Cha
     await verifyContinuationReleases(context,io,new Set([target.unitId]));
     const handoff=original.handoff;
     if(!handoff?.units.get(unit.id)?.has(frozen.channelId))fail('frozen channel source');
-    const attested=handoff.attestations.get(unit.id)?.has(frozen.channelId)===true;
-    const {manifest}=await readWorkflowChannel(context,unit,frozen.channelId,attested,directory,source.controllerDirectory,token!,io,workflowDownload,gh);
+    const releaseType=workflowReleaseType(original.releasePlease,original.delivery,unit.id);
+    const {manifest}=await readWorkflowChannel(context,unit,frozen.channelId,handoff,releaseType,directory,source.controllerDirectory,token!,io,workflowDownload,gh);
     return {...manifest,channelFiles:manifest.artifacts.map(asset=>asset.path)};
   }
   let publicSelection:string[]|undefined;
@@ -713,7 +713,8 @@ const deliverySteps={
   winget:'Upload WinGet delivery',
 } as const;
 type WorkflowChannel=keyof typeof deliverySteps;
-type WorkflowHandoff={units:Map<string,Map<WorkflowChannel,string>>;attestations:Map<string,Set<WorkflowChannel>>;attested:boolean};
+type WorkflowHandoff={units:Map<string,Map<WorkflowChannel,string>>;attestations:Map<string,Set<WorkflowChannel>>;
+  paths:Map<string,Map<WorkflowChannel,string[]>>;attested:boolean};
 function matchesDeliveryName(name:unknown,channel:WorkflowChannel,unit?:string) {
   if(typeof name!=='string')return false;
   const actual=name.replace(/\$\{\{\s*([a-z_.]+)\s*}}/g,'${{$1}}');
@@ -732,12 +733,28 @@ function deliveryPaths(value:unknown) {
   return typeof value==='string'?value.split(/\r?\n/).map(path=>path.trim()).filter(Boolean).sort():[];
 }
 
+function assertFlatWorkflowSelection(paths:string[],files:{path:string}[]) {
+  const leaves=paths.map(path=>path.split(/[\\/]/).at(-1)!);
+  // Only compare flat names when every include has a literal filename or a simple filename glob.
+  if(paths.some(path=>path.startsWith('!'))||leaves.some(leaf=>!/^[-\w.*]+$/.test(leaf)||leaf.indexOf('*')!==leaf.lastIndexOf('*')
+    ||!(leaf.includes('*')||leaf.includes('.')||/^(?:README|LICENSE|NOTICE|SHA(?:256|512)SUMS)$/.test(leaf))))return;
+  const matches=(name:string,leaf:string)=>{
+    const [prefix,suffix]=leaf.split('*');
+    return suffix===undefined?name===prefix:
+      name.length>=prefix!.length+suffix.length&&name.startsWith(prefix!)&&name.endsWith(suffix);
+  };
+  if(files.some(file=>!leaves.some(leaf=>matches(file.path,leaf)))
+    ||leaves.some(leaf=>!leaf.includes('*')&&!files.some(file=>file.path===leaf)))
+    throw new WorkflowDeliveryValidationError('RN_DELIVERY_SELECTION: workflow delivery file selection');
+}
+
 export function applyWorkflowDelivery(delivery:DeliveryConfig,bytes:Uint8Array):WorkflowHandoff {
   const document=parseDocument(new TextDecoder('utf-8',{fatal:true}).decode(bytes),{uniqueKeys:true});
   if(document.errors.length)fail('source workflow');
   const workflow=document.toJS({maxAliasCount:0}),jobs=Object.values(workflow?.jobs??{}) as any[];
   if(!jobs.length)fail('workflow delivery jobs');
   const known=new Map(delivery.units.map(unit=>[unit.id,new Map<WorkflowChannel,string>()]));
+  const pathsByUnit=new Map(delivery.units.map(unit=>[unit.id,new Map<WorkflowChannel,string[]>()]));
   const attestations=new Map<string,Set<WorkflowChannel>>();
   const submissions=new Set<unknown>();
   const allSteps=jobs.flatMap(job=>job.steps??[]);
@@ -750,18 +767,20 @@ export function applyWorkflowDelivery(delivery:DeliveryConfig,bytes:Uint8Array):
     const ids=explicit?[explicit]:/^delivery\/\$\{\{\s*matrix\.unit\s*}}$/.test(job.name??'')?[...known.keys()]:[];
     const location=channel==='github-release'?'github':step.env?.STEWARD_CHANNEL_LOCATION;
     const proof=step.env?.STEWARD_DELIVERY_ATTESTED;
+    const paths=deliveryPaths(step.with?.path);
     if(!ids.length||ids.some(id=>!known.has(id)||known.get(id)!.has(channel))
       ||typeof location!=='string'||!location||/[\r\n\0]/.test(location)
       ||step.name!==deliverySteps[channel]||!/^actions\/upload-artifact@[a-f0-9]{40}$/.test(step.uses??'')
       ||!matchesDeliveryName(step.with?.name,channel,explicit)
+      ||!paths.length
       ||![undefined,false,'false'].includes(step.with.overwrite)
       ||![undefined,true,'true'].includes(proof))fail('workflow channel delivery step');
-    const paths=deliveryPaths(step.with.path);
     const attested=proof===true||proof==='true'||paths.length>0&&job.steps.some((candidate:any)=>
       /^actions\/attest(?:-build-provenance)?@[a-f0-9]{40}$/.test(candidate?.uses??'')
       &&JSON.stringify(deliveryPaths(candidate.with?.['subject-path']))===JSON.stringify(paths));
     for(const id of ids) {
       known.get(id)!.set(channel,location);
+      pathsByUnit.get(id)!.set(channel,paths);
       if(attested) {
         let channels=attestations.get(id);
         if(!channels)attestations.set(id,channels=new Set());
@@ -779,7 +798,7 @@ export function applyWorkflowDelivery(delivery:DeliveryConfig,bytes:Uint8Array):
     }
   }
   for(const unit of delivery.units)unit.channels=[...known.get(unit.id)!].map(([id,location])=>({id,location,required:true}));
-  return {units:known,attestations,attested:attestations.size>0};
+  return {units:known,attestations,paths:pathsByUnit,attested:attestations.size>0};
 }
 
 async function workflowDeliveryArtifact(record:DeliveryRun,unitId:string,jobName:string,channel:WorkflowChannel,stepName:string,
@@ -814,8 +833,15 @@ async function workflowDeliveryArtifact(record:DeliveryRun,unitId:string,jobName
   return unavailable('successful '+(channel==='github-release'?'GitHub delivery':channel)+' artifact missing: '+unitId);
 }
 
+function workflowReleaseType(settings:any,delivery:DeliveryConfig,unitId:string):string {
+  const unit=delivery.units.find(value=>value.id===unitId);
+  const type=unit&&(settings?.packages?.[unit.path]?.['release-type']??settings?.['release-type']);
+  if(typeof type!=='string'||!type)fail('workflow native release type');
+  return type;
+}
+
 async function readWorkflowChannel(context:EvidenceContext,unit:CycleRecord['units'][number],channelId:WorkflowChannelReceipt['channelId'],
-  attested:boolean,directory:string,controllerDirectory:string,token:string,io:EvidenceTransport,
+  handoff:WorkflowHandoff,releaseType:string,directory:string,controllerDirectory:string,token:string,io:EvidenceTransport,
   download:typeof downloadWorkflowArtifact,gh:GhCommand) {
   const {cycle}=context,reader=new NativeEvidenceReader(io,context.repository);
   const requests=cycle.dispatches.filter(request=>request.purpose==='build'&&request.canonicalRunId!==null);
@@ -837,6 +863,10 @@ async function readWorkflowChannel(context:EvidenceContext,unit:CycleRecord['uni
     policyDirectory:controllerDirectory,home:directory+'-download'},token);
   const artifacts=await workflowFiles(directory);
   if(selected&&JSON.stringify(selected.assets)!==JSON.stringify(artifacts))fail('frozen channel bytes changed');
+  assertFlatWorkflowSelection(handoff.paths.get(unit.id)!.get(channelId)!,artifacts);
+  // Product channel jobs consume the original bytes already inspected by the central freeze.
+  if(!selected)await inspectWorkflowFiles(directory,artifacts,releaseType,unit.version,controllerDirectory);
+  const attested=handoff.attestations.get(unit.id)?.has(channelId)===true;
   const manifest:WorkflowReleaseManifest={schemaVersion:4,repositoryId:context.repositoryId,fullName:context.repository,cycleId:cycle.id,
     unitId:unit.id,version:unit.version,packageVersion:unit.version,tag:unit.tag,sourceSha:cycle.sourceSha,buildWorkflow:dispatchWorkflow(request),
     buildRef:'refs/heads/'+request.ref,workflowId:run.workflowId,runId:run.id,attempt:receipt.attempt,delivery:receipt,attested,artifacts};
@@ -854,11 +884,12 @@ async function readWorkflowChannel(context:EvidenceContext,unit:CycleRecord['uni
 export async function prepareWorkflowChannelReceipts(context:EvidenceContext,root:string,controllerDirectory:string,token:string,
   history:{path:string;commit:string;value:unknown}[],io:EvidenceTransport=nativeEvidenceTransport(token),
   download:typeof downloadWorkflowArtifact=downloadWorkflowArtifact,gh:GhCommand=args=>nativeGhCommand(args,token)) {
-  const {delivery,handoff}=await readCycleDelivery(context,history,io);
-  if(!handoff)return {receipts:[],missing:[]};
+  const {delivery,handoff,releasePlease}=await readCycleDelivery(context,history,io);
+  if(!handoff)return {receipts:[],missing:[],rejected:[]};
   assertRegisteredAdapters(context.repositoryId,context.repository,delivery);
   const reader=new NativeEvidenceReader(io,context.repository);
   const receipts:{unitId:string;frozen:WorkflowChannelReceipt}[]=[],missing:{unitId:string;channelId:string}[]=[];
+  const rejected:{unitId:string;channelId:string;reason:string}[]=[];
   for(const {unitId,channelId} of context.cycle.requiredChannels) {
     if(channelId!=='ghcr-assets'&&channelId!=='winget')fail('workflow channel implementation');
     const unit=context.cycle.units.find(unit=>unit.id===unitId)!;
@@ -870,15 +901,16 @@ export async function prepareWorkflowChannelReceipts(context:EvidenceContext,roo
     await verifyContinuationReleases(context,io,new Set([unitId]));
     try {
       const directory=join(root,unitId+'-'+channelId);
-      const attested=handoff.attestations.get(unitId)?.has(channelId)===true;
-      const {frozen}=await readWorkflowChannel(context,unit,channelId,attested,directory,controllerDirectory,token,io,download,gh);
+      const releaseType=workflowReleaseType(releasePlease,delivery,unitId);
+      const {frozen}=await readWorkflowChannel(context,unit,channelId,handoff,releaseType,directory,controllerDirectory,token,io,download,gh);
       receipts.push({unitId,frozen});
     } catch(error) {
-      if(!isWorkflowDeliveryUnavailable(error))throw error;
-      missing.push({unitId,channelId});
+      if(error instanceof WorkflowDeliveryValidationError)rejected.push({unitId,channelId,reason:error.message});
+      else if(isWorkflowDeliveryUnavailable(error))missing.push({unitId,channelId});
+      else throw error;
     }
   }
-  return {receipts,missing};
+  return {receipts,missing,rejected};
 }
 
 async function workflowFiles(directory:string) {
@@ -888,6 +920,10 @@ async function workflowFiles(directory:string) {
     artifacts.push({id:'file-'+hash(Buffer.from(name)).slice(0,40),...file});
   }
   return artifacts;
+}
+
+async function inspectWorkflowFiles(directory:string,files:{path:string}[],releaseType:string,version:string,controller:string) {
+  for(const file of files)await inspectWorkflowAsset(join(directory,file.path),releaseType,version,controller,directory);
 }
 
 export async function verifyWorkflowDelivery(selection:string[],staged:string,sealed:string,unit:DeliveryUnit,manifest:ProductReleaseManifest) {
@@ -907,12 +943,12 @@ type PublicationUnit={unitId:string;directory:string;manifest:ProductReleaseMani
   archive:{artifactId:number;digest:string;runId:number;attempt:number;producerAttempt:number}|null};
 
 async function prepareWorkflowPublication(options:{
-  context:EvidenceContext;delivery:DeliveryConfig;units:CycleRecord['units'];versions:Map<string,string>;
+  context:EvidenceContext;delivery:DeliveryConfig;units:CycleRecord['units'];versions:Map<string,string>;releasePlease:any;
   reader:NativeEvidenceReader;pages:NativePages;source:(path:string)=>Promise<string>;template:string;
   root:string;controllerDirectory:string;token:string;history:{path:string;commit:string;value:unknown}[];
-  handoff:WorkflowHandoff;unavailable?:(unitId:string)=>void;
+  handoff:WorkflowHandoff;unavailable?:(unitId:string)=>void;reject?:(unitId:string,reason:string)=>void;
 },download:typeof downloadWorkflowArtifact) {
-  const {context,delivery,units,versions,reader,pages,source,template,root,controllerDirectory,token,history,handoff}=options;
+  const {context,delivery,units,versions,releasePlease,reader,pages,source,template,root,controllerDirectory,token,history,handoff}=options;
   const {cycle}=context,requests=cycle.dispatches.filter(dispatch=>dispatch.purpose==='build');
   if(requests.length!==1||requests[0]!.canonicalRunId===null)
     return {status:'WAIT' as const,reason:'BUILD_BINDING_REQUIRED',publishInvoked:false as const};
@@ -924,7 +960,6 @@ async function prepareWorkflowPublication(options:{
   const merged=await decodeCandidateDocument(chunks);
   if(merged.cycleId!==cycle.id||merged.sourceSha!==cycle.sourceSha||merged.pull.number!==cycle.prNumber
     ||merged.session.identity?.authorsDigest!==hash(Buffer.from(JSON.stringify(delivery.repositoryAuthors))))fail('workflow delivery reviewed source');
-  const settings=JSON.parse(await source('release-please-config.json'));
   const records:PublicationUnit[]=[];
   for(const target of units) {
     const unit=delivery.units.find(unit=>unit.id===target.id);
@@ -948,12 +983,21 @@ async function prepareWorkflowPublication(options:{
       continue;
     }
     const artifacts=await workflowFiles(directory);
+    try {
+      assertFlatWorkflowSelection(handoff.paths.get(unit.id)!.get('github-release')!,artifacts);
+      const releaseType=workflowReleaseType(releasePlease,delivery,unit.id);
+      await inspectWorkflowFiles(directory,artifacts,releaseType,packageVersion,controllerDirectory);
+    } catch(error) {
+      if(!options.reject||!(error instanceof WorkflowDeliveryValidationError))throw error;
+      options.reject(target.id,error.message);
+      continue;
+    }
     const attested=handoff.attestations.get(unit.id)?.has('github-release')===true;
     const manifest:WorkflowReleaseManifest={schemaVersion:4,repositoryId:context.repositoryId,fullName:context.repository,cycleId:cycle.id,
       unitId:unit.id,version:target.version,packageVersion,tag:target.tag,sourceSha:cycle.sourceSha,buildWorkflow:dispatchWorkflow(request),
       buildRef:'refs/heads/'+request.ref,workflowId:run.workflowId,runId:run.id,attempt:nativeReceipt.attempt,delivery:nativeReceipt,attested,artifacts};
     validateWorkflowManifest(manifest);
-    const config={...settings,...settings.packages[unit.path]},changelog=config['changelog-path']??'CHANGELOG.md';
+    const config={...releasePlease,...releasePlease.packages[unit.path]},changelog=config['changelog-path']??'CHANGELOG.md';
     assertDeliveryPath(changelog);
     const changelogFile=unit.path==='.'?changelog:unit.path+'/'+changelog;
     const links=committedVersionNotes(await source(changelogFile),target.version,context.repository,cycle.sourceSha,target.tag,
@@ -972,7 +1016,7 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
   gh: GhCommand = args => nativeGhCommand(args, token), io: EvidenceTransport = nativeEvidenceTransport(token),
   controllerIo:EvidenceTransport=nativeEvidenceTransport(undefined),download:ReleaseDownload=nativeReleaseDownload(token),
   history:{path:string;commit:string;value:unknown}[]=[],unitIds?:ReadonlySet<string>,
-  workflowDownload=downloadWorkflowArtifact,unavailable?:(unitId:string)=>void) {
+  workflowDownload=downloadWorkflowArtifact,unavailable?:(unitId:string)=>void,reject?:(unitId:string,reason:string)=>void) {
   const { cycle } = context, reader = new NativeEvidenceReader(io, context.repository);
   const units=githubUnits(cycle).filter(unit=>!unitIds||unitIds.has(unit.id));
   if(unitIds&&units.length!==unitIds.size)fail('unknown publication unit');
@@ -1018,7 +1062,7 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
   };
   if(workflowDelivery&&!workflowDelivery.sealed)fail('legacy workflow delivery requires its complete original freeze');
   if(delivery.schemaVersion===3)
-    return prepareWorkflowPublication({context,delivery,units,versions:projection.versions,reader,pages,template:template.bytes.toString('utf8'),
+    return prepareWorkflowPublication({context,delivery,units,versions:projection.versions,releasePlease:original.releasePlease,reader,pages,template:template.bytes.toString('utf8'),
       source:async path=>{
         try {return (await source(context.repository,cycle.sourceSha,path)).bytes.toString('utf8');}
         catch(error) {
@@ -1027,7 +1071,7 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
         }
       },
       root,controllerDirectory,token,history,handoff:original.handoff!,
-      ...(unavailable?{unavailable}:{})},workflowDownload);
+      ...(unavailable?{unavailable}:{}),...(reject?{reject}:{})},workflowDownload);
   if (!Array.isArray(matrix) || !matrix.length) fail('native producer matrix');
   const toolLocks = { 'controller/mise.lock': hash((await source('splrad/steward', cycle.controllerSha, 'mise.lock')).bytes),...projection.toolLocks };
   const records:PublicationUnit[]=[];

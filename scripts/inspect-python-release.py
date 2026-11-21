@@ -1,4 +1,4 @@
-"""Inspect Python distribution metadata without extracting or executing package files."""
+"""Inspect release formats and embedded versions without executing package files."""
 from pathlib import Path
 from contextlib import contextmanager, nullcontext
 import json
@@ -8,6 +8,7 @@ import stat
 import struct
 import sys
 import tarfile
+from xml.etree import ElementTree
 import zipfile
 import zlib
 import tomllib
@@ -21,6 +22,8 @@ MAX_ENTRIES = 4096
 MAX_EXPANDED = 256 * 1024 * 1024
 MAX_METADATA = 512 * 1024
 MAX_ZIP_READ = 1024 * 1024
+MAX_RELEASE_TEXT = 16 * 1024 * 1024
+MAX_PE_RESOURCE = 32 * 1024 * 1024
 
 
 def require(condition):
@@ -62,7 +65,25 @@ def zip_local_sizes(extra, expanded, compressed):
     return sizes
 
 
-def check_zip_records(source, entries, central_start):
+def zip_unicode_path(name, flags, extra):
+    unicode_name = None
+    offset = 0
+    while offset + 4 <= len(extra):
+        tag, size = struct.unpack_from("<HH", extra, offset)
+        offset += 4
+        require(offset + size <= len(extra))
+        if tag == 0x7075:
+            data = extra[offset:offset + size]
+            require(unicode_name is None and size > 5 and data[0] == 1)
+            original = name.encode("utf-8" if flags & 0x800 else "cp437")
+            require(zlib.crc32(original) == int.from_bytes(data[1:5], "little"))
+            unicode_name = data[5:].decode("utf-8")
+            require(name.endswith("/") == unicode_name.endswith("/"))
+        offset += size
+    return unicode_name
+
+
+def check_zip_records(source, entries, central_start, workflow_paths):
     """Account for each physical local header, compressed payload and descriptor."""
     require(0 < len(entries) <= MAX_ENTRIES)
     ordered = sorted(entries, key=lambda item: item.header_offset)
@@ -78,6 +99,9 @@ def check_zip_records(source, entries, central_start):
         crc, compressed, expanded = struct.unpack_from("<III", header, 14)
         source.seek(name_size, io.SEEK_CUR)
         extra = source.read(extra_size)
+        if workflow_paths:
+            local_name = zip_unicode_path(entry.orig_filename, flags, extra)
+            require(local_name is None or local_name == zip_unicode_path(entry.orig_filename, flags, entry.extra))
         require(len(extra) == extra_size)
         expanded, compressed = zip_local_sizes(extra, expanded, compressed)
         for local, central in ((crc, entry.CRC), (compressed, entry.compress_size), (expanded, entry.file_size)):
@@ -135,9 +159,9 @@ def check_zip_directory(source, archive, footer, footer_offset):
 
 
 @contextmanager
-def release_zip(path):
+def release_zip(path, workflow_paths=False):
     with BoundedZipReader(io.FileIO(path, "r")) as bounded, zipfile.ZipFile(bounded) as archive:
-        check_zip_records(bounded, archive.infolist(), archive.start_dir)
+        check_zip_records(bounded, archive.infolist(), archive.start_dir, workflow_paths)
         # A ZIP ends with its 22-byte EOCD followed by exactly its declared
         # comment. ZipFile itself tolerates both extra bytes and short comments.
         end = bounded.seek(0, io.SEEK_END)
@@ -151,15 +175,23 @@ def release_zip(path):
         yield archive
 
 
-def zip_members(archive):
+def zip_members(archive, workflow_paths=False):
     # ZipFile.open compares the local and central names, including for
     # directories that do not need to be extracted into staging.
+    original_paths = set()
     for entry in archive.infolist():
-        require(entry.orig_filename == entry.filename and not entry.flag_bits & 1)
+        require(not entry.flag_bits & 1)
+        if workflow_paths:
+            member_path(entry.orig_filename, original_paths)
+            name = zip_unicode_path(entry.orig_filename, entry.flag_bits, entry.extra) or entry.orig_filename
+            require(entry.filename in (entry.orig_filename, name))
+        else:
+            require(entry.orig_filename == entry.filename)
+            name = entry.filename
         with archive.open(entry) as stream:
             if entry.is_dir():
                 require(entry.file_size == 0 and not stream.read(1))
-            yield entry, stream
+            yield entry, stream, name
 
 
 class ExpandedReader:
@@ -230,8 +262,8 @@ def inspect(path):
         with release_zip(path) as archive:
             info_roots = set()
             files = set()
-            for entry, stream in zip_members(archive):
-                parts = member_path(entry.filename, seen)
+            for entry, stream, member in zip_members(archive):
+                parts = member_path(member, seen)
                 file_type = stat.S_IFMT(entry.external_attr >> 16)
                 require(file_type in (0, stat.S_IFREG, stat.S_IFDIR))
                 if parts[0].endswith(".dist-info"):
@@ -343,7 +375,13 @@ def executable_elf(data):
     require(executable)
 
 
-def inspect_declared(path, contract, destination=None):
+def font_file(suffix, data):
+    return (suffix == ".ttf" and data[:4] in (b"\x00\x01\x00\x00", b"true", b"ttcf")
+            or suffix == ".otf" and data.startswith(b"OTTO")
+            or suffix == ".shx" and re.match(rb"^AutoCAD-86 (shapes|unifont|bigfont)", data[:64]))
+
+
+def inspect_declared(path, contract, destination=None, inspect_member=None, workflow_paths=False):
     """Read every member of the declared container. Never restore filesystem metadata."""
     adapter = contract["inspection"]
     members = {item["path"]: item["format"] for item in contract.get("members", [])}
@@ -374,15 +412,15 @@ def inspect_declared(path, contract, destination=None):
         if destination:
             target = destination.joinpath(*parts)
             target.parent.mkdir(parents=True, exist_ok=True)
+        check_member = inspect_member(name) if inspect_member else None
         with (target.open("xb") if destination else nullcontext()) as output:
-            data = read_member(stream, size, retain=fmt is not None or adapter == "font-zip",
+            data = read_member(stream, size, retain=fmt is not None or adapter == "font-zip" or check_member is not None,
                                max_retained=32 * 1024**2, output=output)
         suffix = Path(name).suffix.lower()
         if adapter == "font-zip":
-            valid = (suffix == ".ttf" and data[:4] in (b"\x00\x01\x00\x00", b"true", b"ttcf")
-                     or suffix == ".otf" and data.startswith(b"OTTO")
-                     or suffix == ".shx" and re.match(rb"^AutoCAD-86 (shapes|unifont|bigfont)", data[:64]))
-            require(valid)
+            require(font_file(suffix, data))
+        if check_member is not None:
+            check_member(data)
         if fmt is not None:
             if fmt == "elf":
                 executable_elf(data)
@@ -396,11 +434,11 @@ def inspect_declared(path, contract, destination=None):
         found.add(name)
 
     if adapter in ("zip", "dll-zip", "font-zip"):
-        with release_zip(path) as archive:
-            for entry, stream in zip_members(archive):
+        with release_zip(path, workflow_paths) as archive:
+            for entry, stream, name in zip_members(archive, workflow_paths):
                 directory = entry.is_dir()
                 require(stat.S_IFMT(entry.external_attr >> 16) in (0, stat.S_IFDIR if directory else stat.S_IFREG))
-                consume(entry.filename, directory, entry.file_size, stream)
+                consume(name, directory, entry.file_size, stream)
     else:
         require(adapter == "tar-gzip")
         with gzip.open(path, "rb") as compressed:
@@ -418,9 +456,162 @@ def inspect_declared(path, contract, destination=None):
     return contract["version"]
 
 
-if __name__ == "__main__":
+class DeliveryVersionError(ValueError):
+    pass
+
+
+class UnsupportedDeliveryFormat(ValueError):
+    pass
+
+
+def require_delivery_version(actual, expected):
+    if actual != expected:
+        raise DeliveryVersionError("delivery version mismatch")
+
+
+def inspect_pe(suffix, version=None, **source):
+    # Version resources work for Windows native apphosts as well as managed DLLs.
+    # Parse only the resource directory using the locked, portable reader.
+    from pefile import DIRECTORY_ENTRY, PE, PEFormatError
+
+    index = DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_RESOURCE"]
     try:
-        if len(sys.argv) in (4, 5) and sys.argv[1] == "--declared":
+        with PE(fast_load=True, **source) as pe:
+            require(0 < pe.FILE_HEADER.NumberOfSections <= 96)
+            require(pe.is_dll() if suffix == ".dll" else pe.is_exe() and not pe.is_dll())
+            if version is None:
+                return
+            public = version.partition("+")[0]
+            numbers = re.fullmatch(r"([0-9]+)\.([0-9]+)\.([0-9]+)(?:-[0-9A-Za-z.-]+)?", public)
+            require(numbers)
+            numeric = ".".join(numbers.groups())
+            fixed = tuple(map(int, numbers.groups())) + (0,)
+            require(len(pe.OPTIONAL_HEADER.DATA_DIRECTORY) > index)
+            resources = pe.OPTIONAL_HEADER.DATA_DIRECTORY[index]
+            require(0 < resources.Size <= MAX_PE_RESOURCE and resources.VirtualAddress > 0)
+            pe.parse_data_directories(directories=[index])
+            entries = getattr(pe, "VS_FIXEDFILEINFO", [])
+            strings = [table.entries for block in getattr(pe, "FileInfo", []) for group in block
+                       if group.Key == b"StringFileInfo" for table in group.StringTable]
+            require(entries and strings)
+            for entry in entries:
+                require(entry.Signature == 0xfeef04bd)
+                for high, low in ((entry.FileVersionMS, entry.FileVersionLS),
+                                  (entry.ProductVersionMS, entry.ProductVersionLS)):
+                    require_delivery_version((high >> 16, high & 0xffff, low >> 16, low & 0xffff), fixed)
+            for table in strings:
+                name = table.get(b"FileVersion", b"").decode("utf-8")
+                product = table.get(b"ProductVersion", b"").decode("utf-8").partition("+")[0]
+                if name == numeric + ".0":
+                    name = numeric
+                if product == numeric + ".0":
+                    product = numeric
+                require_delivery_version(name, numeric)
+                require_delivery_version(product, public)
+    except PEFormatError as error:
+        raise ValueError("invalid PE") from error
+
+
+def delivery_text(data, limit=MAX_RELEASE_TEXT):
+    require(len(data) <= limit)
+    value = data.decode("utf-8-sig")
+    require(all(char.isprintable() or char in "\r\n\t" for char in value))
+    return value
+
+
+def node_delivery_version(data, version):
+    package = json.loads(delivery_text(data, MAX_METADATA))
+    require(isinstance(package, dict) and isinstance(package.get("name"), str) and package["name"].strip())
+    require(isinstance(package.get("version"), str) and package["version"].strip())
+    require_delivery_version(package["version"], version)
+
+
+def windows_package_version(data, version, bundle):
+    text = delivery_text(data, MAX_METADATA)
+    require(not re.search(r"<!\s*(?:DOCTYPE|ENTITY)\b", text, re.I))
+    document = ElementTree.fromstring(text)
+    root = "Bundle" if bundle else "Package"
+    require(document.tag.startswith("{http://schemas.microsoft.com/appx/") and document.tag.split("}")[-1] == root)
+    namespace = document.tag[:-len(root)]
+    identities = document.findall(namespace + "Identity")
+    require(len(identities) == 1 and identities[0].get("Name") and identities[0].get("Publisher"))
+    embedded = identities[0].get("Version", "")
+    require(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+", embedded))
+    require_delivery_version(embedded, version + ".0")
+
+
+def inspect_workflow(path, release_type, version):
+    name, suffix = path.name.lower(), path.suffix.lower()
+    size = path.stat().st_size
+    require(0 < size < 2**31)
+    if suffix in (".exe", ".dll"):
+        inspect_pe(suffix, version, name=str(path))
+        return True
+    elif suffix == ".whl" or release_type == "python" and name.endswith(".tar.gz"):
+        require_delivery_version(Version(inspect(path)), Version(version))
+        return True
+    elif suffix in (".msix", ".appx", ".msixbundle", ".appxbundle"):
+        bundle = suffix.endswith("bundle")
+        manifest = "AppxMetadata/AppxBundleManifest.xml" if bundle else "AppxManifest.xml"
+        required = {manifest, "[Content_Types].xml", "AppxBlockMap.xml"}
+
+        def check_manifest(member):
+            required.discard(member)
+            if member != manifest:
+                return None
+            return lambda data: windows_package_version(data, version, bundle)
+
+        inspect_declared(path, {"inspection": "zip", "version": version}, inspect_member=check_manifest, workflow_paths=True)
+        require(not required)
+        return True
+    elif suffix in (".zip", ".tgz") or name.endswith(".tar.gz"):
+        node_package = version_marker = False
+
+        def check_member(member):
+            nonlocal node_package, version_marker
+            if member == "package/package.json":
+                node_package = True
+                return lambda data: node_delivery_version(data, version)
+            if member == "VERSION":
+                version_marker = True
+                return lambda data: require_delivery_version(delivery_text(data, MAX_METADATA).strip(), version)
+            extension = Path(member).suffix.lower()
+            if extension in (".dll", ".exe"):
+                # Generic archives may include dependencies with independent versions.
+                return lambda data: inspect_pe(extension, data=data)
+            if extension in (".otf", ".ttf", ".shx"):
+                return lambda data: require(font_file(extension, data))
+            return None
+
+        adapter = "zip" if suffix == ".zip" else "tar-gzip"
+        inspect_declared(path, {"inspection": adapter, "version": version}, inspect_member=check_member, workflow_paths=True)
+        if release_type == "node" and suffix == ".tgz":
+            require(node_package)
+        return node_package or version_marker
+    elif suffix in (".otf", ".ttf", ".shx"):
+        with path.open("rb") as file:
+            require(font_file(suffix, file.read(64)))
+    elif name == "package.json":
+        require(size <= MAX_METADATA)
+        node_delivery_version(path.read_bytes(), version)
+        return True
+    elif suffix in (".json", ".md", ".txt", ".csv", ".sha256", ".sha512", ".asc") or name in ("readme", "license", "notice", "sha256sums", "sha512sums"):
+        require(size <= MAX_RELEASE_TEXT)
+        text = delivery_text(path.read_bytes())
+        if suffix == ".json":
+            json.loads(text)
+    else:
+        raise UnsupportedDeliveryFormat("unsupported delivery format")
+    return False
+
+
+if __name__ == "__main__":
+    workflow_delivery = sys.argv[1:2] == ["--workflow"]
+    try:
+        if len(sys.argv) == 5 and workflow_delivery:
+            print(json.dumps({"versionChecked": inspect_workflow(Path(sys.argv[2]), sys.argv[3], sys.argv[4])}, separators=(",", ":")))
+            sys.exit(0)
+        elif len(sys.argv) in (4, 5) and sys.argv[1] == "--declared":
             version = inspect_declared(Path(sys.argv[2]), json.loads(Path(sys.argv[3]).read_text(encoding="utf-8")),
                                        Path(sys.argv[4]) if len(sys.argv) == 5 else None)
         elif len(sys.argv) == 4 and sys.argv[1] == "--stage":
@@ -446,6 +637,12 @@ if __name__ == "__main__":
             require(len(sys.argv) == 2)
             version = inspect(Path(sys.argv[1]))
         print(json.dumps({"version": version}, separators=(",", ":")))
-    except (ValueError, ExceptionGroup, EOFError, NotImplementedError, gzip.BadGzipFile, zlib.error, zipfile.BadZipFile, tarfile.TarError):
-        print('{"error":"RN_NATIVE_INVALID_ASSET"}')
+    except DeliveryVersionError:
+        print('{"error":"RN_DELIVERY_VERSION"}')
+        sys.exit(2)
+    except UnsupportedDeliveryFormat:
+        print('{"error":"RN_DELIVERY_UNSUPPORTED"}')
+        sys.exit(2)
+    except (ValueError, ExceptionGroup, EOFError, NotImplementedError, gzip.BadGzipFile, zlib.error, zipfile.BadZipFile, tarfile.TarError, ElementTree.ParseError):
+        print('{"error":"RN_DELIVERY_FORMAT"}' if workflow_delivery else '{"error":"RN_NATIVE_INVALID_ASSET"}')
         sys.exit(2)
