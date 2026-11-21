@@ -605,7 +605,8 @@ test('a native release entry needs no central registration and honors a migrated
   await guard(read,{nativeEntry:true,priorRegistration:true});
   assert.equal(reads,1);
   policy={adoption:'central',policy:{release:null}};
-  await assert.rejects(guard(read,{nativeEntry:true,priorRegistration:true}),/CANDIDATE_REPOSITORY_POLICY_DISABLED/);
+  await guard(read,{nativeEntry:true,priorRegistration:true});
+  await assert.rejects(guard(read),/CANDIDATE_REPOSITORY_POLICY_DISABLED/);
   policy={adoption:'paused',policy:{release:null}};
   await assert.rejects(guard(read,{nativeEntry:true,priorRegistration:true}),/CANDIDATE_REPOSITORY_POLICY_DISABLED/);
 });

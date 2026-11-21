@@ -49,7 +49,7 @@ const { readReleaseRecords,writeReleaseRecords,releaseCommand } = await import(p
 const roots: string[] = [];
 afterEach(async () => { vi.unstubAllGlobals();for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-recovery', 'pending-recovery', 'legacy-pending-cancel',
-  'compact', 'conditional-organization', 'conditional-compact', 'conditional-tampered'])('runs the native candidate adapter through protected state, real Git, upstream generation, fake SDK and same-PR editing: %s', async pinCase => {
+  'compact', 'compact-registered', 'conditional-organization', 'conditional-compact', 'conditional-tampered'])('runs the native candidate adapter through protected state, real Git, upstream generation, fake SDK and same-PR editing: %s', async pinCase => {
   const root = await mkdtemp(join(tmpdir(), 'candidate-native-test-')); roots.push(root); registerOfflineFixtureRoot(root);
   const directory = join(root, 'source'), remote = join(root, 'remote.git'); await mkdir(directory);
   const env = isolatedBuildEnvironment(process.env, root), identity = { name: 'Fixture', email: 'fixture@example.invalid' };
@@ -58,7 +58,9 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   await git('init', '--initial-branch=main'); await git('config', 'user.name', identity.name); await git('config', 'user.email', identity.email);
   await mkdir(join(directory, '.github'));
   await mkdir(join(directory,'.github/workflows'));
-  const compact=pinCase==='compact'||pinCase==='conditional-compact';
+  const compactRegistered=pinCase==='compact-registered'||pinCase==='conditional-compact';
+  const compact=pinCase==='compact'||compactRegistered;
+  if(compactRegistered)await writeFile(join(directory,'.github/steward-central-policy'),'central\n');
   const explicitWorkflow=pinCase==='new-source'?'.github/workflows/fixture-release.yaml':undefined;
   const buildWorkflow=explicitWorkflow??'.github/workflows/steward-release-publish.yml';
   const notesPath=compact?(conditional?'docs/release-current.md':'.release-notes/root.md'):'.release-notes/app.md';
@@ -218,9 +220,16 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   } };
   const request = { directory, writeDirectory: join(root, 'writes'), remote, repository: 'fixture/product', repositoryId: 1, defaultBranch: 'main', appBotId: 301115370, identity };
   await mkdir(request.writeDirectory);
-  const unregisteredPolicy=explicitWorkflow||compact?releasePolicyGuard({},request,async()=>({adoption:'legacy',policy:null})):undefined;
+  let compactPolicyReads=0;
+  const sourcePolicy=explicitWorkflow||compact?releasePolicyGuard({},request,async()=>{
+    if(compactRegistered) {
+      compactPolicyReads++;
+      return {adoption:'central',policy:{repositoryId:1,repository:request.repository,release:null}};
+    }
+    return {adoption:'legacy',policy:null};
+  }):undefined;
   const options = { token: 'fixture-write', readToken: 'fixture-read', controllerSha: 'f'.repeat(40), fetcher, generator, language, temporaryRoot: root,
-    checkRepositoryPolicy:unregisteredPolicy,now: () => '2026-10-27T00:00:00Z' };
+    checkRepositoryPolicy:sourcePolicy,now: () => '2026-10-27T00:00:00Z' };
   if(pinCase==='conditional-tampered') {
     await expect(nativeReleaseCandidate(request,options)).rejects.toThrow('CANDIDATE_ORGANIZATION_TEMPLATE');
     expect(modelCalls).toBe(0);
@@ -238,7 +247,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   const registered=(channels:typeof registeredChannels)=>({adoption:'central',policy:{
     repositoryId:1,repository:request.repository,release:{buildWorkflow:'.github/workflows/steward-release-publish.yml',units:[{id:'app',channels}]},
   }});
-  if(explicitWorkflow) {
+  if(explicitWorkflow||compactRegistered) {
     const state=await head('steward/release-state'),start=requests.length;
     await expect(nativeReleaseCandidate(request,{...options,checkRepositoryPolicy:pausedPolicy})).rejects.toThrow('CANDIDATE_REPOSITORY_POLICY_DISABLED');
     expect(requests.slice(start).every(request=>request.method==='GET')).toBe(true);
@@ -446,16 +455,29 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     expect(await head('steward/release-state')).toBe(before);
     expect(modelCalls).toBe(firstCalls);
   }
+  if(compactRegistered) {
+    const before=await head('steward/release-state'),start=requests.length;
+    await expect(releaseCommand('candidate',{...request,cycleId:null,runId:null,writeDirectory:join(root,'paused-compact-handoff')},
+      {token:options.token,candidateReadToken:options.readToken,controllerSha:options.controllerSha,now:options.now,io,
+        candidateRuntime:{checkRepositoryPolicy:pausedPolicy}})).rejects.toThrow('CANDIDATE_REPOSITORY_POLICY_DISABLED');
+    expect(requests.slice(start).every(request=>request.method==='GET')).toBe(true);
+    expect(await head('steward/release-state')).toBe(before);expect(modelCalls).toBe(firstCalls);
+  }
+  const compactReadsBeforeHandoff=compactPolicyReads;
   let adoptedReads=0;
   const adoptedPolicy=explicitWorkflow?releasePolicyGuard({},request,async()=>{
     adoptedReads++;
     return registered(registeredChannels);
-  }):undefined;
+  }):compact?sourcePolicy:undefined;
   const handed=await releaseCommand('candidate',{...request,cycleId:null,runId:null,writeDirectory:join(root,'merge-writes')},
     {token:options.token,candidateReadToken:options.readToken,controllerSha:options.controllerSha,now:options.now,io,
       candidateRuntime:{checkRepositoryPolicy:adoptedPolicy}});
   expect(handed).toMatchObject({ status: 'CYCLE_READY', sourceSha: S, cycleId: `pr-9-${S}` });
   if(explicitWorkflow)expect(adoptedReads).toBe(2);
+  if(compactRegistered) {
+    expect(compactReadsBeforeHandoff).toBeGreaterThan(0);
+    expect(compactPolicyReads).toBeGreaterThan(compactReadsBeforeHandoff);
+  }
   expect(modelCalls).toBe(firstCalls); await refresh();
   const merged = await readReleaseRecords({ directory, targetRef: 'steward/release-state', repositoryId: 1 });
   expect(merged.repository.activeCycleId).toBe(`pr-9-${S}`);
