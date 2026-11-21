@@ -102,25 +102,32 @@ export async function servicePages({io,repository,store,coordinator,appBotId,tok
   },...(transport.anonymous?{anonymous:()=>scopedTransport(transport.anonymous())}:{})});
   const bounded=scopedTransport(io);
   const reader=new NativeEvidenceReader(bounded,repository.full_name);
+  const sitePolicy=registration=>registration?.adoption==='central'?registration.policy.site:undefined;
+  const disabled=registration=>{
+    const site=sitePolicy(registration);
+    return registration?.adoption==='paused'||(site!==undefined && site?.mode!=='build-and-deploy');
+  };
   const current=ports.currentSource??(async()=>{
+    const publicRepository=repository.private===false;
+    let registration;
+    if(!publicRepository&&readPolicy)registration=await readPolicy();
+    if(disabled(registration))return {status:'DISABLED'};
     const options=await sourceOptions(reader,repository,coordinator.controllerSha,appBotId);
     if(options.status)return options;
     if(options.buildOnly)return {status:'BUILD_ONLY'};
-    if(!options.mode)return {status:'DISABLED'};
-    let registration;
-    if(readPolicy) {
-      if(repository.private!==false || !options.declared)registration=await readPolicy();
+    if(publicRepository&&readPolicy&&options.mode) {
+      if(!options.declared)registration=await readPolicy();
       else {
         const marker=await bounded.request('GET',reader.path('contents/.github/steward-central-policy?ref='+options.defaultSha));
         check(marker.status===200||marker.status===404,'REPOSITORY_POLICY_UNAVAILABLE');
         if(marker.status===200)registration=await readPolicy();
       }
     }
-    if(registration?.adoption==='paused')return {status:'DISABLED'};
-    const site=registration?.adoption==='central'?registration.policy.site:undefined;
-    if(site!==undefined&&site?.mode!=='build-and-deploy')return {status:'DISABLED'};
+    if(disabled(registration))return {status:'DISABLED'};
+    const site=sitePolicy(registration);
     if(site)check(site.workflow===pagesWorkflow&&site.source===options.mode
       &&(site.unit??'')===options.unitId,'REPOSITORY_POLICY_CONFLICT');
+    if(!options.mode)return {status:'DISABLED'};
     return currentPagesSource({...options,publicOnly:completion!==undefined},{
       verifyRelease:input=>verifyPagesRelease(input,{gh:args=>nativeGhCommand(args,token),download:nativeReleaseDownload(token)})});
   });
