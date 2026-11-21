@@ -30,8 +30,11 @@ export async function trustedWorkflow(api,path,source,base) {
   must(actual && actual===current,'Adopt the reviewed configuration workflow first');
   const bytes=actual.replaceAll('\r\n','\n');
   if(bytes===expected.replaceAll('\r\n','\n'))return true;
+  const digest=createHash('sha256').update(bytes).digest('hex');
+  // Copier preserves installed trial callers. Recognize the reviewed previous setup-node caller.
+  if(path===trialPath && digest==='e7dfc0db8e93c5078d30543a4d1ea24823e40dfa5cf5ae24835e33e3504446e2')return true;
   // Products can finish their current configuration PR before adopting the dashboard workflow.
-  must(path===requestPath && createHash('sha256').update(bytes).digest('hex')==='bc3ccfbbd3718cc66e2286553940644f7a733bf94e7fd048e7de119e6c744146','Adopt the reviewed configuration workflow first');
+  must(path===requestPath && digest==='bc3ccfbbd3718cc66e2286553940644f7a733bf94e7fd048e7de119e6c744146','Adopt the reviewed configuration workflow first');
   return false;
 }
 

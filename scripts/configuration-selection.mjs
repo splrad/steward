@@ -40,9 +40,11 @@ export function prepareTarget(model,target) {
 
 function prepareScripts(path,recipe) {
   const directory=posix.dirname(path), files=new Map(), commands=[], tools={};
+  const nodeInputs=['node','node-version','node-version-file'];
   const allowed={
     'actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68':['dotnet','dotnet-version','global-json-file'],
-    'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020':['node','node-version','node-version-file']
+    'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020':nodeInputs,
+    'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1':nodeInputs
   };
   for(const [index,step] of recipe.steps.entries()) {
     if(step.uses) {

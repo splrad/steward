@@ -9,7 +9,7 @@ import {execFileSync} from 'node:child_process';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {authorizePull,checkEvent,protectedChanges,requestPath} from '../configuration-authorization.mjs';
-import {dispatchTrial,findEvidence,nativeChannelJobs,requestFromRun,rerunValidation,trialInventory} from '../configuration-native.mjs';
+import {dispatchTrial,findEvidence,nativeChannelJobs,requestFromRun,rerunValidation,trialInventory,trustedWorkflow} from '../configuration-native.mjs';
 import {inspectRepository,versionsPath,pagesPath} from '../configuration-view.mjs';
 import {applySelection,assertChannelWorkflow,prepareTarget,trialKey} from '../configuration-selection.mjs';
 import {optionState,reconcile} from '../repository-configuration.mjs';
@@ -276,6 +276,16 @@ test('an existing container job with a service can provide bound native evidence
   doc.on={workflow_dispatch:{inputs:{flavor:{type:'choice',options:['debug','release']}}}};
   const inputsModel=inspectRepository(new Map([[path,YAML.stringify(doc)]]));
   assert.equal(await findEvidence(api,'',repo,B,A,{unit:'x',target:'one',workflow:path,job:'pack',matrix:{},archive:'bin'},inputsModel),undefined);
+});
+test('trusts the previously installed trial caller only at its reviewed content',async()=>{
+  const path='.github/workflows/repository-configuration-trial.yml';
+  const current=await readFile('templates/repository/'+path,'utf8');
+  const previous=current.replace('949feb2413d6458794dcd2491c4babbbce0c15c1','820762786026740c76f36085b0efc47a31fe5020');
+  assert.notEqual(previous,current);
+  const check=(source,base)=>trustedWorkflow(fake(new Map([[A+'/'+path,source],[B+'/'+path,base]])),path,A,B);
+  assert.equal(await check(previous,previous),true);
+  await assert.rejects(check(previous,current),/Adopt the reviewed/);
+  await assert.rejects(check(previous+'# edited',previous+'# edited'),/Adopt the reviewed/);
 });
 test('a successful trial with an expired artifact can be requested again',async()=>{
   const path='.github/workflows/repository-configuration-trial.yml';
