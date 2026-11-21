@@ -23,7 +23,7 @@ type MatrixRow = Record<string,unknown>;
 const matrixRecord=(value:unknown):value is MatrixRow=>Boolean(value)&&typeof value==='object'&&!Array.isArray(value);
 
 export function staticMatrixRows(matrix:unknown,maxCombinations=Infinity):MatrixRow[]|null {
-  if(!matrix)return [{}];
+  if(!matrix)return maxCombinations>=1?[{}]:null;
   if(!matrixRecord(matrix))return null;
   const axes=Object.entries(matrix).filter(([key])=>key!=='include'&&key!=='exclude');
   const include=matrix.include??[],exclude=matrix.exclude??[];
@@ -43,7 +43,10 @@ export function staticMatrixRows(matrix:unknown,maxCombinations=Infinity):Matrix
         rows[index]={...rows[index],...entry};merged=true;
       }
     });
-    if(!merged)rows.push({...entry});
+    if(!merged) {
+      if(rows.length>=maxCombinations)return null;
+      rows.push({...entry});
+    }
   }
   return rows;
 }
