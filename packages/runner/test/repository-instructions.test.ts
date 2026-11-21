@@ -154,6 +154,30 @@ it('allows only the trusted central template source and compares its complete by
     await expect(assertRepositoryInstructions(root,bytes,{templateSource:true})).rejects.toThrow('INSTRUCTIONS_CARRIER_REQUIRES_MIGRATION');
   }finally{await rm(root,{recursive:true,force:true});}
 });
+it('requires the central template in the reviewed commit',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'repository-instructions-'));registerOfflineFixtureRoot(root);
+  try{
+    const git=(...args:string[])=>execFileSync('git',args,{cwd:root,windowsHide:true});
+    git('init','--quiet');
+    git('config','core.autocrlf','false');
+    git('config','user.name','Fixture');
+    git('config','user.email','fixture@example.invalid');
+    const bytes=await expected(),template='templates/repository/AGENTS.md';
+    await writeFile(join(root,'AGENTS.md'),bytes);
+    await mkdir(join(root,template,'..'),{recursive:true});
+    await writeFile(join(root,template),bytes);
+    git('add','--','AGENTS.md',template);
+    git('commit','--no-gpg-sign','-qm','Include the central template');
+    const present=git('rev-parse','HEAD').toString().trim();
+    await expect(assertRepositoryInstructions(root,bytes,{templateSource:true,head:present})).resolves.toBeUndefined();
+    git('rm','--quiet','--',template);
+    git('commit','--no-gpg-sign','-qm','Remove the central template');
+    const missing=git('rev-parse','HEAD').toString().trim();
+    await expect(assertRepositoryInstructions(root,bytes,{head:missing})).resolves.toBeUndefined();
+    await expect(assertRepositoryInstructions(root,bytes,{templateSource:true,head:missing}))
+      .rejects.toThrow('INSTRUCTIONS_BYTES_DIFFER: '+template);
+  }finally{await rm(root,{recursive:true,force:true});}
+});
 it('admits the next central template only through the earlier trusted repository/digest transition',async()=>{
   const root=await mkdtemp(join(tmpdir(),'repository-instructions-'));registerOfflineFixtureRoot(root);
   try{

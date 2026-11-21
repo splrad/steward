@@ -64,6 +64,8 @@ export async function assertRepositoryInstructions(workspace:string, expected:Bu
       try{metadata=await lstat(current);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'){present=false;break;}throw error;}
       if(metadata.isSymbolicLink()||(index<parts.length-1?!metadata.isDirectory():!metadata.isFile()))throw Error('INSTRUCTIONS_PATH_TYPE: '+path);
     }
+    const centralTemplate=transition.templateSource&&path==='templates/repository/AGENTS.md';
+    if(!present&&centralTemplate)throw Error('INSTRUCTIONS_BYTES_DIFFER: '+path);
     if(path==='AGENTS.md') {
       if(!present)throw Error('INSTRUCTIONS_BYTES_DIFFER: AGENTS.md');
       const actual=reviewTemplateForm(head ? git(['show',`${head}:${path}`]) : await readFile(current));
@@ -72,7 +74,7 @@ export async function assertRepositoryInstructions(workspace:string, expected:Bu
       // The central source is a template artifact, not a second repository review policy.
       // A prior trusted validator must be able to admit the separately approved
       // next public template via its repository-bound digest transition.
-      if(transition.templateSource&&path==='templates/repository/AGENTS.md') {
+      if(centralTemplate) {
         const actual = head ? git(['show',`${head}:${path}`]) : await readFile(current);
         if (reviewTemplateForm(actual)?.equals(actual) && acceptedTemplate(actual)) continue;
       }
