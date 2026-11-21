@@ -224,6 +224,12 @@ export async function nativeReleaseCli(argv: readonly string[]) {
       const admission = await pipelineIdentity({ cycleId: prior?.cycleId ?? required('cycle-id'), operationKey: operation,
         sourceSha: prior?.sourceSha ?? required('source-sha'), controllerSha: prior?.controllerSha ?? required('controller-sha'),
         sourceDirectory: resolve(required('source-dir')), controllerDirectory, state });
+      if(admission.status==='SOURCE_VERIFIED') {
+        if(command!=='release-pipeline identity')throw new Error('RELEASE_RECORD: workflow-owned delivery uses native jobs');
+        await writeFile(required('output'),JSON.stringify(admission,null,2)+'\n',{flag:'wx'});
+        if(process.env.GITHUB_OUTPUT)await appendFile(process.env.GITHUB_OUTPUT,`units=${JSON.stringify({include:admission.units})}\n`);
+        return;
+      }
       if (admission.status !== 'ADMITTED') {
         await writeFile(required('output'), JSON.stringify(admission, null, 2) + '\n', { flag: 'wx' });
         process.exitCode = admission.status === 'REJECTED' ? 1 : 75; return;

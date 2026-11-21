@@ -1,6 +1,6 @@
 # 正式发布正文
 
-正式模板的中央来源是 `templates/repository/.github/release-template.md.mustache`。Copier 将其递送到产品 `.github/release-template.md.mustache`；构建预检核对产品 S 与执行器提交中的模板字节。产品 `.release-notes/<unitId>.md` 是候选审阅文稿，保留在产品源码中，后续由同一候选的生成和编辑保护流程维护。
+正式模板来自已核验控制器提交的 `templates/repository/.github/release-template.md.mustache`。已有产品的模板副本从受审产品提交 S 读取，冻结时绑定对应字节摘要。产品 `.release-notes/<unitId>.md` 是候选审阅文稿，保留在产品源码中，后续由同一候选的生成和编辑保护流程维护。
 
 单位说明包含概述和更新内容，按实际需要填写兼容性、升级与迁移、安装说明、已知问题和恢复。渲染器提取原文，只在展示副本调整下级标题；中文、链接、代码和 HTML 保留。缺少必填节、重复标题、未填写提示、未知模板变量、动态或不安全的模板用法会使构建失败。
 

@@ -9,10 +9,11 @@ import { permitOfflineScript, registerOfflineFixtureRoot } from './offline-fixtu
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 const run = promisify(execFile);
-it.each(['valid', 'digest', 'traversal', 'duplicate', 'link', 'extra'])('verifies actual ZIP bytes before extracting: %s', async kind => {
+it.each(['valid', 'digest', 'traversal', 'duplicate', 'link', 'extra', 'workflow-flat', 'workflow-nested'])('verifies actual ZIP bytes before extracting: %s', async kind => {
   const root = await mkdtemp(join(tmpdir(), 'artifact-zip-')); roots.push(root); registerOfflineFixtureRoot(root);
   const creator = join(root, 'create.ps1'), archive = join(root, 'artifact.zip'), names = join(root, 'names.json'), output = join(root, 'out');
-  const entries = kind === 'traversal' ? ['../app.exe'] : kind === 'duplicate' ? ['app.exe', 'app.exe'] : kind === 'extra' ? ['app.exe', 'extra.exe'] : ['app.exe'];
+  const entries = kind === 'traversal' ? ['../app.exe'] : kind === 'duplicate' ? ['app.exe', 'app.exe'] : kind === 'extra' ? ['app.exe', 'extra.exe'] :
+    kind === 'workflow-nested' ? ['dist/app.exe'] : ['app.exe'];
   await writeFile(join(root, 'entries.json'), JSON.stringify(entries));
   await writeFile(creator, `param([string]$Archive,[string]$Entries,[bool]$Link=$false)
 $ErrorActionPreference='Stop'
@@ -31,9 +32,14 @@ try { foreach($name in (Get-Content -LiteralPath $Entries -Raw | ConvertFrom-Jso
   const digest = createHash('sha256').update(await readFile(archive)).digest('hex');
   const extractor = resolve('scripts/expand-release-artifact.ps1'); permitOfflineScript(extractor);
   const invoke = () => run('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', extractor, '-Archive', archive,
-    '-ExpectedSha256', kind === 'digest' ? '0'.repeat(64) : digest, '-ExpectedNames', names, '-OutputDirectory', output]);
-  if (kind === 'valid') { await invoke(); expect(await readFile(join(output, 'app.exe'), 'utf8')).toBe('fixture bytes'); await expect(invoke()).rejects.toThrow(); }
-  else { await expect(invoke()).rejects.toThrow(); await expect(stat(output)).rejects.toThrow(); }
+    '-ExpectedSha256', kind === 'digest' ? '0'.repeat(64) : digest, '-ExpectedNames', names, '-OutputDirectory', output,
+    ...(kind.startsWith('workflow-')?['-DiscoverNames']:[])]);
+  if (kind === 'valid'||kind==='workflow-flat') { await invoke(); expect(await readFile(join(output, 'app.exe'), 'utf8')).toBe('fixture bytes'); await expect(invoke()).rejects.toThrow(); }
+  else {
+    if(kind==='workflow-nested')await expect(invoke()).rejects.toMatchObject({stderr:expect.stringContaining('Unsafe file name')});
+    else await expect(invoke()).rejects.toThrow();
+    await expect(stat(output)).rejects.toThrow();
+  }
 }, 30_000);
 import { vi } from 'vitest';
 import { zip } from './fixtures/artifact-envelope.js';

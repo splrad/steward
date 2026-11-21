@@ -26,7 +26,7 @@ it.each([false,true])('channel consumption downloads and verifies all seven form
   await f.preload();f.state.private=isPrivate;
   Object.assign(f.release,{draft:false,immutable:true,body:await readFile(join(f.target.directory,'release-notes.md'),'utf8')});
   const manifest=f.target.manifest,cycle=evidenceFixture().context.cycle,manifestDigest=digest(await readFile(join(f.target.directory,'artifact-manifest.json')));
-  Object.assign(cycle,{sourceSha:manifest.sourceSha,controllerSha:manifest.schemaVersion===3?manifest.controllerSha:manifest.policySha,
+  Object.assign(cycle,{sourceSha:manifest.sourceSha,controllerSha:manifest.controllerSha,
     units:[{id:'app',version:'1.2.3',tag:'v1.2.3',releaseId:20,manifestDigest,notesDigest:digest(f.release.body),
       assets:[...f.remote].map(([path,a])=>({id:path,path,size:a.bytes.length,sha256:digest(a.bytes)}))}],requiredChannels:[{unitId:'app',channelId:'ghcr-assets'}]});
   const context={repository:'fixture/product',repositoryId:1,appBotId:42,cycle};

@@ -85,8 +85,10 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     return (await git('cat-file','blob',entry.slice(12,52))).toString('utf8');
   };
   const templateAt=async(sha,pin,delivery)=>{
-    const local=await fileAt(sha,productReleaseTemplatePath,delivery.buildWorkflow!==undefined);
-    if(local!==null)return local;
+    if(delivery.schemaVersion!==3) {
+      const local=await fileAt(sha,productReleaseTemplatePath,delivery.buildWorkflow!==undefined);
+      if(local!==null)return local;
+    }
     const reader=new NativeEvidenceReader(nativeEvidenceTransport(undefined,fetcher),'splrad/steward');
     const file=await reader.json(`contents/${sharedReleaseTemplatePath}?ref=${pin}`);
     if(file.type!=='file'||file.path!==sharedReleaseTemplatePath||file.encoding!=='base64'||typeof file.content!=='string')
@@ -96,7 +98,12 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       fail('CANDIDATE_RELEASE_TEMPLATE');
     return new TextDecoder('utf-8',{fatal:true}).decode(bytes);
   };
-  const checkPolicyAt=async(sha,delivery)=>checkRepositoryPolicy?.(path=>fileAt(sha,path),{buildWorkflow:delivery.buildWorkflow});
+  const checkPolicyAt=async(sha,delivery)=>{
+    if(!checkRepositoryPolicy)return;
+    const nativeEntry=delivery.schemaVersion===3;
+    const priorRegistration=nativeEntry&&(await fileAt(sha,'.github/steward-central-policy',true))!==null;
+    await checkRepositoryPolicy(path=>fileAt(sha,path),{nativeEntry,priorRegistration,buildWorkflow:delivery.buildWorkflow});
+  };
   const fetchBranch = async branch => {
     const ref = await api('GET', `/repos/${request.repository}/git/ref/heads/${branch}`, undefined, true);
     if (!ref) return null;
@@ -151,12 +158,12 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       const baseSha = await fetchBranch(request.defaultBranch); if (!baseSha) fail('CANDIDATE_DEFAULT_BRANCH_UNAVAILABLE');
       if(expectedSourceSha!==undefined&&baseSha!==expectedSourceSha)fail('CANDIDATE_EVENT_SOURCE_CHANGED');
       const config = await fileAt(baseSha, 'release-please-config.json'), manifest = await fileAt(baseSha, '.release-please-manifest.json');
-      delivery = parseDeliveryConfig(JSON.parse(await fileAt(baseSha, '.github/delivery.json')));
-      assertProductDelivery(delivery,request.repository);
+      const settings=JSON.parse(config),versions=JSON.parse(manifest);
+      delivery=parseDeliveryConfig(JSON.parse(await fileAt(baseSha,'.github/delivery.json')),settings);
+      assertProductDelivery(delivery);
       const rules = await native(`rules/branches/${encodeURIComponent(request.defaultBranch)}`);
       if (!Array.isArray(rules) || !rules.some(r => r.type === 'non_fast_forward') || !rules.some(r => r.type === 'deletion')) fail('CANDIDATE_SOURCE_PROTECTION_REQUIRED');
       await checkPolicyAt(baseSha,delivery);
-      const settings = JSON.parse(config), versions = JSON.parse(manifest);
       const initial = Object.values(versions).every(version => !version || version === '0.0.0');
       const releases = initial ? await pages('releases') : [], tags = initial ? await pages('tags') : [];
       if(JSON.stringify(Object.keys(settings.packages??{}).sort())!==JSON.stringify(delivery.units.map(unit=>unit.path).sort()))fail('CANDIDATE_UNIT_COVERAGE');
@@ -439,7 +446,8 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         const source=await manualIO.source();
         validate=session.generated.baseSha!==source;
         if(!validate&&published&&await manualIO.isAncestor(published,pull.head.sha)) {
-          const delivery=parseDeliveryConfig(JSON.parse(await manualIO.read(source,'.github/delivery.json')));
+          const raw=JSON.parse(await manualIO.read(source,'.github/delivery.json'));
+          const delivery=parseDeliveryConfig(raw,raw.schemaVersion===3?JSON.parse(await manualIO.read(source,'release-please-config.json')):undefined);
           const paths=new Set(delivery.units.filter(u=>session.generated.units.some(g=>g.id===u.id&&g.path===u.path)).map(u=>u.notesPath));
           const edits=await manualIO.changedPaths(published,pull.head.sha);
           validate=edits.length>0&&edits.every(path=>paths.has(path));
@@ -483,31 +491,36 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         data = { ...data, conflict: null };
         const sourceTree = (await git('rev-parse', `${sourceSha}^{tree}`)).toString().trim();
         const reviewedTree = (await git('rev-parse', `${pull.head.sha}^{tree}`)).toString().trim();
-        const delivery = parseDeliveryConfig(JSON.parse(await fileAt(sourceSha, '.github/delivery.json')));
+        const rawDelivery=JSON.parse(await fileAt(sourceSha,'.github/delivery.json'));
+        const releasePlease=rawDelivery.schemaVersion===3?JSON.parse(await fileAt(sourceSha,'release-please-config.json')):undefined;
+        const delivery=parseDeliveryConfig(rawDelivery,releasePlease);
         const versions = JSON.parse(await fileAt(sourceSha, '.release-please-manifest.json'));
         if (data.identity.authorsDigest !== hash(JSON.stringify(delivery.repositoryAuthors))
           || data.generated.units.some(unit => versions[unit.path] !== unit.version)) fail('MERGED_CANDIDATE_INPUT_DRIFT');
         // The merged source fixes its execution controller, independently of this wake.
-        const document = parseDocument(await fileAt(sourceSha, delivery.buildWorkflow ?? defaultBuildWorkflow), { uniqueKeys: true });
+        const workflowSource=await fileAt(sourceSha, delivery.buildWorkflow ?? defaultBuildWorkflow);
+        const document = parseDocument(workflowSource, { uniqueKeys: true });
         if (document.errors.length) fail('CANDIDATE_CONTROLLER_PIN_INVALID');
         const workflow = document.toJS({ maxAliasCount: 0 }), jobs = workflow?.jobs;
         if (!jobs || typeof jobs !== 'object' || Array.isArray(jobs)) fail('CANDIDATE_CONTROLLER_PIN_REQUIRED');
         const calls = Object.values(jobs).filter(job => typeof job?.uses === 'string'
           && job.uses.includes('/.github/workflows/product-release.yml@'));
-        if (calls.length !== 1) fail('CANDIDATE_CONTROLLER_PIN_REQUIRED');
-        const match = /^splrad\/steward\/\.github\/workflows\/product-release\.yml@([a-f0-9]{40})$/.exec(calls[0].uses);
-        if (!match) fail('CANDIDATE_CONTROLLER_PIN_INVALID');
-        const cycleControllerSha = match[1];
+        if(calls.length>1||delivery.schemaVersion!==3&&calls.length!==1)fail('CANDIDATE_CONTROLLER_PIN_REQUIRED');
+        const match=calls.length?/^splrad\/steward\/\.github\/workflows\/product-release\.yml@([a-f0-9]{40})$/.exec(calls[0].uses):null;
+        if(calls.length&&!match)fail('CANDIDATE_CONTROLLER_PIN_INVALID');
         const checkouts = Object.values(jobs).flatMap(job => Array.isArray(job?.steps) ? job.steps : [])
           .filter(step => step?.with?.path === 'controller' || step?.with?.repository === 'splrad/steward');
         if (!checkouts.length) fail('CANDIDATE_CONTROLLER_PIN_REQUIRED');
+        const cycleControllerSha=match?.[1]??checkouts[0].with.ref;
+        if(!validSha(cycleControllerSha))fail('CANDIDATE_CONTROLLER_PIN_INVALID');
         if (checkouts.some(step => !/^actions\/checkout@[a-f0-9]{40}$/.test(step.uses ?? '')
           || step.with.repository !== 'splrad/steward' || step.with.ref !== cycleControllerSha)) fail('CANDIDATE_CONTROLLER_PIN_CONFLICT');
         const template=await templateAt(sourceSha,cycleControllerSha,delivery);
         for (const unit of delivery.units.filter(unit => data.generated.units.some(generated => generated.id === unit.id)))
           parseSupplementalNotes(await fileAt(sourceSha,unit.notesPath),template);
         const deliveryBlobSha = (await git('rev-parse', `${sourceSha}:.github/delivery.json`)).toString().trim();
-        const cycle = mergedBuildCycle({ prNumber: pull.number, sourceSha, controllerSha:cycleControllerSha, sourceTree, reviewedTree, deliveryBlobSha, delivery, units: data.generated.units, repository:request.repository, repositoryId:request.repositoryId });
+        const cycle=mergedBuildCycle({prNumber:pull.number,sourceSha,controllerSha:cycleControllerSha,sourceTree,reviewedTree,
+          deliveryBlobSha,delivery:rawDelivery,releasePlease,workflow:Buffer.from(workflowSource),units:data.generated.units,repository:request.repository,repositoryId:request.repositoryId});
         const {repository:ignored,...archivedSession}=data;
         const documents=await candidateDocumentsAt(stateCommit,candidate.id);
         const mergedArchive = archive('merged-candidate', candidate.id, `generated/${candidate.id}/cycles/${cycle.id}.json`, {

@@ -3,7 +3,7 @@ import {decodeCompletionArchive,reconcileCycleHistory,type CompletionArchive,typ
 import {githubUnits,evaluateCompletion,type CycleRecord,type RepositoryRecord} from '../../core/src/release-observation.js';
 import {readCycleDelivery} from './release-pipeline.js';
 import {verifyExecutionSource} from './release-run.js';
-import {NativeEvidenceReader,EvidenceReadError,nativeRunFact,type EvidenceContext,type EvidenceTransport} from './native-release-evidence.js';
+import {archiveFile,NativeEvidenceReader,EvidenceReadError,nativeRunFact,type EvidenceContext,type EvidenceTransport} from './native-release-evidence.js';
 
 interface ProtectedRecord {path:string;commit:string;value:any;content?:string}
 export interface HistorySnapshot {
@@ -18,8 +18,36 @@ export function completionFile(value:CompletionArchive) {
 }
 export async function verifyFrozenReceipts(context:EvidenceContext,records:ProtectedRecord[],io:EvidenceTransport,alreadyCompleted=false) {
   const {cycle}=context,reader=new NativeEvidenceReader(io,context.repository);
-  if (!cycle.freezeOnly?.length) throw Error('missing freeze receipts');
   const {delivery}=await readCycleDelivery(context,records,io);
+  if(delivery.schemaVersion===3 && !cycle.requiredChannels.length && cycle.units.every(unit=>unit.githubDisabled)) {
+    const builds=cycle.dispatches.filter(request=>request.purpose==='build'&&request.canonicalRunId!==null);
+    if(builds.length!==1)throw Error('missing unique original build');
+    const request=builds[0]!,identity={...context,request},runPath='actions/runs/'+request.canonicalRunId;
+    let attempt=cycle.freezeBuildAttempt;
+    if(attempt===undefined) {
+      const deadline=cycle.freezeCompletedAt?Date.parse(cycle.freezeCompletedAt):Infinity;
+      const archived=new Set<number>();
+      for(const {path,commit,value} of records) {
+        if(!path.startsWith('evidence/native/'+request.canonicalRunId+'-')||value.cycleId!==cycle.id
+          ||value.run?.status!=='completed'||value.run.conclusion!=='success'||Date.parse(value.observedAt)>deadline)continue;
+        if(value.repository!==context.repository||value.repositoryId!==context.repositoryId||value.sourceSha!==cycle.sourceSha
+          ||value.requestKey!==request.requestKey||value.inputDigest!==request.inputDigest||!(/^[a-f0-9]{40}$/.test(commit))
+          ||archiveFile(value).path!==path)throw Error('freeze build archive provenance');
+        archived.add(verifyExecutionSource(value.run,identity).runAttempt);
+      }
+      if(cycle.freezeCompletedAt) {
+        if(archived.size!==1)throw Error('original frozen build attempt is unproven');
+        attempt=[...archived][0]!;
+      } else {
+        attempt=archived.size?Math.min(...archived):verifyExecutionSource(nativeRunFact(await reader.json(runPath)),identity).runAttempt;
+      }
+    }
+    const run=verifyExecutionSource(nativeRunFact(await reader.json(runPath+'/attempts/'+attempt)),identity);
+    if(run.runAttempt!==attempt)throw Error('frozen build attempt identity');
+    if(run.conclusion!=='success'||run.status!=='completed')throw Error('BUILD_RUN_NOT_READY');
+    return attempt;
+  }
+  if (!cycle.freezeOnly?.length) throw Error('missing freeze receipts');
   if(cycle.freezeOnly.some(receipt=>!delivery.units.some(declared=>declared.id===receipt.unitId &&
       declared.channels.some(channel=>channel.id==='github-release'&&!channel.required) && !declared.channels.some(channel=>channel.required))))
     throw Error('freeze-only configuration');
@@ -95,7 +123,7 @@ export async function inspectCycleHistory(snapshot:HistorySnapshot,io:EvidenceTr
   const latest=[...previous].sort((a,b)=>a.mergedAt.localeCompare(b.mergedAt)).at(-1)?.id;
   const verifiedFreezes:string[]=[];
   for(const {value:cycle} of snapshot.cycles) {
-    if(!cycle.freezeOnly)continue;
+    if(!cycle.freezeOnly&&!cycle.freezeCompletedAt)continue;
     try {
       const context={repository:snapshot.repository,repositoryId:snapshot.repositoryId,appBotId:snapshot.appBotId,cycle};
       await verifyFrozenReceipts(context,snapshot.domainRecords,io,Boolean(cycle.freezeCompletedAt) ||

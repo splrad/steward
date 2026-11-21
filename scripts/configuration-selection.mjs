@@ -102,6 +102,8 @@ export function assertChannelWorkflow(workflow,targets,nativeJobs=new Set()) {
 }
 
 export async function applySelection(model,operation,plan,context) {
+  if(model.delivery?.schemaVersion===3)
+    must(operation!=='select'&&(operation==='trial'||!plan.channels?.length),'请在受审产品工作流中编辑各渠道的交付文件');
   const changes=new Map(),targets=[],prepared=[],formal=[];
   const requested=plan.targets??[];
   must(Array.isArray(requested),'Expected a list of build targets');

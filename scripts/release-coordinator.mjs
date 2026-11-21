@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
-import { nativeReleaseApp, nativeEvidenceTransport, isolatedBuildEnvironment, githubUnits,evaluateCompletion,parseDeliveryConfig,assertProductDelivery,verifyDispatchWorkflow,encodeRepositoryPath } from '../packages/runner/dist/index.js';
+import { nativeReleaseApp, nativeEvidenceTransport, isolatedBuildEnvironment, githubUnits,evaluateCompletion,parseDeliveryConfig,assertProductDelivery,verifyDispatchWorkflow,encodeRepositoryPath,applyWorkflowDelivery,assertRegisteredAdapters } from '../packages/runner/dist/index.js';
 import { readReleaseRecords, writeReleaseRecords, releaseCommand, assertReleaseWriterProtection } from './release-record.mjs';
 import {servicePages,pagesGitStore} from './pages-maintenance.mjs';
 import {assertQualityProtection,qualityNativeIO} from './quality-language-summary.mjs';
@@ -39,7 +39,7 @@ export async function serviceReleaseWake(request,refresh,invoke,clock=Date.now) 
   snapshot=await refresh();
   const results=[];
   for(const {value:registered} of snapshot.cycles) {
-    if(registered.freezeOnly && !githubUnits(registered).length) {
+    if((registered.freezeOnly||registered.freezeCompletedAt) && !registered.requiredChannels?.length && !githubUnits(registered).length) {
       if(!registered.freezeCompletedAt)results.push(await invoke('observe-channel',{...request,cycleId:registered.id,runId:null}));
       continue;
     }
@@ -173,13 +173,18 @@ export async function releaseParticipation(repository,io,{includeUnits=false}={}
     };
     try {
       const contents=await Promise.all(names.map(async(path,i)=>JSON.parse(await readSource(path,files[i][0]))));
-      const delivery=parseDeliveryConfig(contents[0]);assertProductDelivery(delivery,repository.full_name);
+      const delivery=parseDeliveryConfig(contents[0],contents[1]);assertProductDelivery(delivery);
       validateReleaseConfiguration(delivery,contents[1],contents[2]);
       if(delivery.buildWorkflow!==undefined) {
         const publisher=tree.tree.find(entry=>entry.path===delivery.buildWorkflow);
         if(publisher?.type!=='blob'||publisher.mode!=='100644')throw Error('RELEASE_CONFIGURATION_INVALID');
-        verifyDispatchWorkflow(await readSource(delivery.buildWorkflow,publisher), {purpose:'build',buildWorkflow:delivery.buildWorkflow,
+        const workflow=await readSource(delivery.buildWorkflow,publisher);
+        verifyDispatchWorkflow(workflow, {purpose:'build',buildWorkflow:delivery.buildWorkflow,
           inputs:{cycle_id:'',operation_key:'',source_sha:'',controller_sha:''}});
+        if(delivery.schemaVersion===3) {
+          applyWorkflowDelivery(delivery,workflow);
+          assertRegisteredAdapters(repository.id,repository.full_name,delivery);
+        }
       }
       if(includeUnits)units=delivery.units.map(({id,path,notesPath})=>({id,path,notesPath}));
     }catch(error){if(error.message==='AUTHOR_IDENTITY_UNVERIFIED')throw error;throw Error('RELEASE_CONFIGURATION_INVALID');}
