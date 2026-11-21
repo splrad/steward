@@ -575,7 +575,8 @@ export async function inspectReleaseEvidence(request,{token,io=nativeEvidenceTra
       for(const id of publicationUnits) {
         const delivery=cycle.units.find(unit=>unit.id===id)?.githubDelivery;
         if(!delivery)fail('publication frozen workflow delivery required');
-        frozenPublicationBuilds.set(delivery.runId,Math.max(delivery.attempt,frozenPublicationBuilds.get(delivery.runId)??0));
+        const buildAttempt=delivery.buildAttempt??delivery.attempt;
+        frozenPublicationBuilds.set(delivery.runId,Math.max(buildAttempt,frozenPublicationBuilds.get(delivery.runId)??0));
       }
     }
     const observation=await inspectNativeCycle(context,history,io,observedAt,{...readHistory,frozenPublicationBuilds});

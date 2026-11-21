@@ -198,6 +198,7 @@ it.each(['legacy','conditional'])('prepares a native Node delivery with the %s n
     units:[{unit:'app',tag:'v1.0.0',version:'1.0.0',packageVersion:'1.0.0'}]});
   const originalBuild = {...f.runs.get(2),status:'completed',conclusion:'success',run_attempt:1};
   Object.assign(f.runs.get(2),{status:'completed',conclusion:'success'});
+  const successfulRerun={...f.runs.get(2)};
   const history=[mergedCandidateFixture(f.input)];
   if(conditional) {
     const chunk=history[0]!.value;
@@ -211,6 +212,9 @@ it.each(['legacy','conditional'])('prepares a native Node delivery with the %s n
   const artifact={id:810,name:['delivery','github-release',context.repositoryId,'app',S,100,1].join('-'),expired:false,
     digest:'sha256:'+digest('node archive'),workflow_run:{id:100,head_sha:S},created_at:'2026-10-26T00:00:30.000Z'};
   let deliveryConclusion='success',wrongSourcePath=false,notesStatus=200;
+  let repeatedDelivery:'none'|'retained'|'replacement'='none';
+  const deliveryJob=()=>({id:1100,name:'delivery/app',run_id:100,run_attempt:1,head_sha:S,status:'completed',conclusion:deliveryConclusion,
+    started_at:START,completed_at:END,steps:[{number:1,name:'Upload GitHub release delivery',status:'completed',conclusion:'success',started_at:START,completed_at:END}]});
   const io={request:async(method:string,path:string)=>{
     expect(method).toBe('GET');
     if(path.includes('/contents/')) {
@@ -226,9 +230,14 @@ it.each(['legacy','conditional'])('prepares a native Node delivery with the %s n
     }
     if(path.endsWith('/runs/100'))return f.response(f.runs.get(2));
     if(path.endsWith('/runs/100/attempts/1'))return f.response(originalBuild);
+    if(path.endsWith('/runs/100/attempts/2'))return f.response(successfulRerun);
     if(path.includes('/artifacts?'))return f.response({total_count:1,artifacts:[artifact]});
-    if(path.includes('/attempts/1/jobs?'))return f.response({total_count:1,jobs:[{id:1100,name:'delivery/app',run_id:100,run_attempt:1,
-      head_sha:S,status:'completed',conclusion:deliveryConclusion,steps:[{name:'Upload GitHub release delivery',status:'completed',conclusion:'success',started_at:START,completed_at:END}]}]});
+    if(path.includes('/attempts/1/jobs?'))return f.response({total_count:1,jobs:[deliveryJob()]});
+    if(path.includes('/attempts/2/jobs?')) {
+      const jobs=repeatedDelivery==='none'?[]:[{...deliveryJob(),run_attempt:2,id:2100,
+        started_at:repeatedDelivery==='replacement'?END:START}];
+      return f.response({total_count:jobs.length,jobs});
+    }
     throw Error('Unexpected workflow publication source '+path);
   }};
   const output=await mkdtemp(join(tmpdir(),'direct-github-delivery-'));roots.push(output);registerOfflineFixtureRoot(output);
@@ -292,6 +301,22 @@ it.each(['legacy','conditional'])('prepares a native Node delivery with the %s n
   expect(skipped).not.toHaveBeenCalled();
   source['.release-notes/app.md']=notes;
   const retained:WorkflowDeliveryReceipt={artifactId:artifact.id,runId:100,attempt:1,digest:artifact.digest};
+  originalBuild.conclusion='failure';
+  const carried={...retained,buildAttempt:2};
+  const carriedManifest={attempt:2,delivery:carried,artifacts:[{path:'fixture-cli.tgz',sha256:digest(packageBytes)}]};
+  await expect(prepare('partial-rerun-inherits-successful-upload',initial)).resolves.toMatchObject([{githubDelivery:carried,manifest:carriedManifest}]);
+  repeatedDelivery='retained';
+  await expect(prepare('partial-rerun-reports-successful-upload-alias',initial)).resolves.toMatchObject([{githubDelivery:carried,manifest:carriedManifest}]);
+  repeatedDelivery='replacement';
+  await expect(prepare('later-upload-execution-cannot-inherit-old-file',initial)).rejects.toThrow('successful GitHub delivery artifact missing');
+  repeatedDelivery='none';
+  context.cycle.units[0]!.githubDelivery=carried;
+  Object.assign(f.runs.get(2),{status:'in_progress',conclusion:null,run_attempt:3});
+  await expect(prepare('retry-carried-original-after-third-attempt-starts',initial)).resolves.toMatchObject([
+    {githubDelivery:carried,manifest:carriedManifest},
+  ]);
+  Object.assign(f.runs.get(2),{status:'completed',conclusion:'success',run_attempt:2});
+  originalBuild.conclusion='success';
   Object.assign(context.cycle.units[0]!,{githubDelivery:retained});
   for(const [status,conclusion] of [['in_progress',null],['completed','failure'],['completed','success']]) {
     Object.assign(f.runs.get(2),{status,conclusion});

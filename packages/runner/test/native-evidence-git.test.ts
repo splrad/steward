@@ -140,17 +140,18 @@ it.each([false,true])('keeps the archived snapshot and Git object directory pair
     Object.assign(unit,{manifestDigest:digest('manifest'),notesDigest:digest('notes'),assets:[{id:'app',path:'app.zip',size:1,sha256:digest('f')}]});
     if(workflowOwned) {
       cycle.workflowDelivery=true;
-      unit.githubDelivery={runId:100,attempt:1,artifactId:910,digest:'sha256:'+digest('delivery')};
-      native.runs.get(1).conclusion='success';
+      unit.githubDelivery={runId:100,attempt:1,buildAttempt:2,artifactId:910,digest:'sha256:'+digest('delivery')};
       native.jobs.get(1)![0].conclusion='success';
       native.jobs.get(1)![0].steps=[];
+      native.runs.set(2,{...native.runs.get(1),run_attempt:2,conclusion:'success'});
+      native.jobs.set(2,[{...native.jobs.get(1)![0],id:2000,run_attempt:2,name:'recovered-tests'}]);
     }
   });
   if(workflowOwned) {
-    f.native.overrides.set('GET /repos/example/product/actions/runs/100',f.native.response({...f.native.runs.get(1),run_attempt:2,status:'in_progress',conclusion:null}));
+    f.native.overrides.set('GET /repos/example/product/actions/runs/100',f.native.response({...f.native.runs.get(1),run_attempt:3,status:'in_progress',conclusion:null}));
     let reads=0;
     f.native.overrides.set('GET /repos/example/product/actions/runs/100/artifacts?per_page=100',()=>f.native.response({
-      total_count:1,artifacts:[{id:920+(++reads),name:'steward-result-100-2-'+reads+'-1'}],
+      total_count:1,artifacts:[{id:920+(++reads),name:'steward-result-100-3-'+reads+'-1'}],
     }));
   }
   f.native.overrides.set('GET /repos/example/product/releases/tags/v1.0.0',f.native.response({},404));
@@ -184,7 +185,8 @@ it.each([false,true])('keeps the archived snapshot and Git object directory pair
   expect(saveError).toBeUndefined();expect(saved).toBe(true);
   if(workflowOwned) {
     expect(f.native.calls.some(call=>call.endsWith('/actions/runs/100/attempts/1'))).toBe(true);
-    expect(f.native.calls.some(call=>call.endsWith('/actions/runs/100')||call.includes('/attempts/2'))).toBe(false);
+    expect(f.native.calls.some(call=>call.endsWith('/actions/runs/100/attempts/2'))).toBe(true);
+    expect(f.native.calls.some(call=>call.endsWith('/actions/runs/100')||call.includes('/attempts/3'))).toBe(false);
   }
   const readback=await readReleaseRecords({directory:f.remote,targetRef:'steward/release-state',repositoryId:1});
   expect(readback.cycles[0].value.units[0].releaseId).toBe(20);

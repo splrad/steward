@@ -38,6 +38,11 @@ export async function ghReleaseFixture(sourceShaOverride?:string, notesBody?:str
       const body = args.includes('--input') && !endpoint.startsWith('https:') ? JSON.parse(await readFile(args[args.indexOf('--input') + 1]!, 'utf8')) : null;
       if (method === 'GET') {
         if (endpoint === 'repos/fixture/product') return JSON.stringify({ id: 1, full_name: 'fixture/product', archived: false, disabled: state.disabled, private: state.private });
+        if (endpoint.endsWith('/actions/runs/10/attempts/2')) {
+          return JSON.stringify({id:10,workflow_id:22,run_attempt:2,repository:{id:1},head_repository:{id:1},head_sha:sourceSha,
+            head_branch:manifest.buildRef.slice(11),path:'.github/workflows/steward-release-publish.yml',event:'workflow_dispatch',actor:{id:42},
+            status:'completed',conclusion:'success'});
+        }
         if (endpoint.endsWith('/actions/runs/10')||endpoint.endsWith('/actions/runs/10/attempts/1')) {
           const original=endpoint.endsWith('/attempts/1');
           return JSON.stringify({id:10,workflow_id:22,run_attempt:original?state.originalAttempt:2,repository:{id:1},head_repository:{id:1},head_sha:sourceSha,
