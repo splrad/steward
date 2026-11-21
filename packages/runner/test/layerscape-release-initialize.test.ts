@@ -7,7 +7,7 @@ import {join} from 'node:path';
 import {validateInitialization,initializeProduct} from '../../../scripts/layerscape-release-initialize.mjs';
 
 afterEach(()=>vi.unstubAllEnvs());
-type Options={remoteHead?:string;fetchedHead?:string;stateStatus?:number;private?:boolean;matches?:unknown;matchesStatus?:number};
+type Options={remoteHead?:string;fetchedHead?:string;stateStatus?:number;private?:boolean;matches?:unknown;matchesStatus?:number;closeoutHead?:string};
 type Fixture={run:()=>Promise<{status:string}>;calls:string[][];reads:Array<{url:string;init:RequestInit|undefined}>;readonly writes:number};
 
 const head='a'.repeat(40),controller='b'.repeat(40),state='c'.repeat(40);
@@ -19,12 +19,19 @@ test('only the approved controller, main workflow and explicit target head are a
   for(const key of Object.keys(env))assert.throws(()=>validateInitialization({...env,[key]:'invalid'}),/SOURCE/);
   assert.throws(()=>validateInitialization({...env,GITHUB_RUN_ATTEMPT:'2'}),/SOURCE/);
 });
+test('the closeout operation requires an exact state head and central read token',()=>{
+  const env={...environment(),RELEASE_OPERATION:'closeout-192',EXPECTED_STATE_HEAD:state,GITHUB_TOKEN:'read-only'};
+  assert.equal(validateInitialization(env).closeoutHead,state);
+  for(const change of [{EXPECTED_STATE_HEAD:''},{RELEASE_OPERATION:'closeout'},{GITHUB_TOKEN:''}])
+    assert.throws(()=>validateInitialization({...env,...change}),/SOURCE/);
+});
 
 async function fixture(options:Options,operation:(fixture:Fixture)=>Promise<void>) {
   vi.stubEnv('STEWARD_APP_PRIVATE_KEY','test-only-private-key-sentinel');
   const root=await mkdtemp(join(tmpdir(),'layerscape-init-test-'));
   const calls:string[][]=[],reads:Fixture['reads']=[];let writes=0;
-  const plan=validateInitialization(environment());
+  const plan=validateInitialization(options.closeoutHead?{...environment(),RELEASE_OPERATION:'closeout-192',
+    EXPECTED_STATE_HEAD:options.closeoutHead,GITHUB_TOKEN:'read-only'}:environment());
   const app={appBotId:301115370,forRepository:async(id:number,fn:(token:string)=>Promise<unknown>)=>{assert.equal(id,1187527897);return fn('writer');},
     forCandidateReadRepository:async(id:number,fn:(token:string)=>Promise<unknown>)=>{assert.equal(id,1187527897);return fn('reader');}};
   const fetcher=async(url:string|URL|Request,init?:RequestInit)=>{
@@ -48,7 +55,7 @@ async function fixture(options:Options,operation:(fixture:Fixture)=>Promise<void
     assert.equal(credentials.token,'writer');assert.equal(request.remote,'https://github.com/splrad/LayerScape.git');
     return {status:options.stateStatus===200?'UNCHANGED':'APPLIED',head:state};
   };
-  try {await operation({run:()=>initializeProduct(plan,{root,app,fetcher,execute,initialize}),calls,reads,get writes(){return writes;}});}
+  try {await operation({run:()=>initializeProduct(plan,{root,app,fetcher,execute,initialize,centralIo:{}}),calls,reads,get writes(){return writes;}});}
   finally {await rm(root,{recursive:true,force:true});}
 }
 test('fresh initialization delegates to the existing writer once without product checkout',async()=>fixture({},async f=>{
@@ -58,6 +65,13 @@ test('fresh initialization delegates to the existing writer once without product
 test('existing state is fetched and delegated for native idempotent reconciliation',async()=>fixture({stateStatus:200},async f=>{
   assert.equal((await f.run()).status,'UNCHANGED');assert.equal(f.writes,1);
   assert.ok(f.calls.some(args=>args.includes('refs/heads/steward/release-state:refs/heads/steward/release-state')));
+}));
+test('closeout stops before Git or state writes when the approved release-state head moved',async()=>fixture({
+  stateStatus:200,closeoutHead:head,
+},async f=>{
+  await assert.rejects(f.run(),/STATE_CHANGED/);
+  assert.equal(f.writes,0);
+  assert.deepEqual(f.calls,[]);
 }));
 for(const options of [{remoteHead:state},{fetchedHead:state},{stateStatus:403},{private:true},
   {matches:[{ref:'refs/heads/steward/release-state'}]},{matches:{}},{matchesStatus:403}]) {
