@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 import {TagName} from 'release-please/build/src/util/tag-name.js';
 import {Version} from 'release-please/build/src/version.js';
 import {candidateCycleIsSeparate,parseDeliveryConfig,assertProductDelivery,renderCandidateNote,parseSupplementalNotes,assertDeliveryPath,manualCandidateFacts,manualCandidatePreview,
-  candidateCommentFits,candidateStatusBody,manualCandidateBody,validateManualCandidateRecord} from '../packages/runner/dist/index.js';
+  candidateCommentFits,candidateStatusBody,manualCandidateBody,validateManualCandidateRecord,isConditionalTemplate,selectReleaseContributors} from '../packages/runner/dist/index.js';
 const hash=v=>createHash('sha256').update(typeof v==='string'?v:JSON.stringify(v)).digest('hex');
 const fail=code=>{throw Error(code);};
 export function matchesFrozenUnits(session,snapshot=session.generated) {
@@ -40,10 +40,20 @@ export async function validateManualCandidate(session,producer,io) {
      !manifest||typeof manifest!=='object'||Array.isArray(manifest)||Object.keys(manifest).some(path=>!paths.includes(path)))fail('MANUAL_UNIT_COVERAGE');
   if(!matchesFrozenUnits(session))fail('MANUAL_UNIT_COVERAGE');
   const template=io.readTemplate?await io.readTemplate(before.headSha,delivery):await io.read(before.headSha,'.github/release-template.md.mustache');
+  const conditional=isConditionalTemplate(template);
+  if(session.identity.noteTemplate!==(conditional?template:undefined))fail('MANUAL_NOTE_TEMPLATE');
+  if(conditional) {
+    const confirmedHumans=await io.confirmedHumans(before.sourceSha);
+    if(session.identity.authorsDigest!==hash(delivery.repositoryAuthors)
+      || session.identity.units.some(unit=>JSON.stringify(selectReleaseContributors(unit.actors,delivery.repositoryAuthors,confirmedHumans))!==JSON.stringify(unit.contributors)))
+      fail('MANUAL_CONTRIBUTOR_POLICY');
+  }
   const units=[],notes=new Set(),noteContents=[];
   for(const generated of session.generated.units) {
     const unit=delivery.units.find(unit=>unit.id===generated.id&&unit.path===generated.path);
     if(!unit||manifest[unit.path]!==generated.version)fail('MANUAL_UNIT_COVERAGE');
+    const frozen=session.identity.units.find(value=>value.id===unit.id);
+    if((conditional||delivery.schemaVersion===3)&&(frozen?.notesPath??`.release-notes/${unit.id}.md`)!==unit.notesPath)fail('MANUAL_NOTE_PATH');
     const options={...settings,...settings.packages[unit.path]};
     if(options['release-type']!=='simple'||typeof options['version-file']!=='string')fail('MANUAL_VERSION_ADAPTER');
     assertDeliveryPath(options['version-file']);
@@ -73,7 +83,8 @@ export async function validateManualCandidate(session,producer,io) {
     fail('MANUAL_MANAGED_STRUCTURE');
   const result={schemaVersion:sameBase?3:legacy?1:2,kind:'validated-manual-candidate',repositoryId:product.id,candidateId:c.id,prNumber:c.prNumber,
     branch:c.branch,...before,units,files:[...files].sort(([a],[b])=>a<b?-1:a>b?1:0).map(([path,sha256])=>({path,sha256})),
-    projection:sameBase?{preview:units.map((unit,i)=>renderCandidateNote(unit.notesPath,noteContents[i],session.identity.units.find(u=>u.id===unit.id).contributors.contributors)).join('\n').replace(/\r\n?/g,'\n'),bodyDigest:''}:{preview:manualCandidatePreview(before),bodyDigest:''},producer};
+    projection:sameBase?{preview:units.map((unit,i)=>renderCandidateNote(unit.notesPath,noteContents[i],session.identity.units.find(u=>u.id===unit.id).contributors.contributors,
+      conditional?{template,repository:product.name,sourceSha:before.sourceSha,tag:unit.tag}:undefined)).join('\n').replace(/\r\n?/g,'\n'),bodyDigest:''}:{preview:manualCandidatePreview(before),bodyDigest:''},producer};
   result.projection.bodyDigest=hash(manualCandidateBody(result));
   await validateManualCandidateRecord(result,product.id,c.id);
   if(JSON.stringify(await inspect())!==JSON.stringify(before))fail('MANUAL_NATIVE_MOVED');

@@ -109,6 +109,7 @@ export interface BuildPipelineRecord {
   cycleId: string; requestKey: string; sourceSha: string; controllerSha: string; buildRef: string;
   runId: number; runAttempt: number; toolLocks: Record<string, string>;
   delivery: DeliveryConfig; deliverySha256: string; templateSha256: string;
+  noteFormat?: 'conditional';
   units: (Omit<PipelineSource['unit'], 'deliverySha256' | 'templateSha256'> & {
     contributors: ReleaseContributor[];
   })[];
@@ -135,8 +136,9 @@ const buildFields = {
 };
 const releases = { type: 'array', minItems: 1, items: exactObject({ unitId: key, releaseId: id, manifestDigest: digest }) };
 const recordAjv = new Ajv2020({ strict: false }).addSchema(deliverySchema);
-const validateRecord = recordAjv.compile({ oneOf: [exactObject(buildFields),
-  exactObject({ schemaVersion: { const: 1 }, kind: { const: 'publish' }, build: exactObject(buildFields), releases }),
+const buildRecordSchema = { ...exactObject(buildFields), properties: { ...buildFields, noteFormat: { const: 'conditional' } } };
+const validateRecord = recordAjv.compile({ oneOf: [buildRecordSchema,
+  exactObject({ schemaVersion: { const: 1 }, kind: { const: 'publish' }, build: buildRecordSchema, releases }),
   exactObject({ schemaVersion: { const: 1 }, kind: { const: 'channel' }, repositoryId: id, fullName: properties.fullName,
     cycleId: buildFields.cycleId, sourceSha: sha, controllerSha: sha, requestKey: digest, runId: id, runAttempt: id, releases }),
 ] });
@@ -149,7 +151,8 @@ export function parsePipelineRecord(input: unknown): PipelineRecord {
   if (!identity.cycleId.endsWith('-' + identity.sourceSha) || identity.fullName.split('/').some(part => part === '.' || part === '..'))
     throw new Error('RELEASE_RECORD: source identity');
   if (build) {
-    parseDeliveryConfig(build.delivery);
+    const { repositoryAuthors } = parseDeliveryConfig(build.delivery);
+    build.delivery.repositoryAuthors = repositoryAuthors;
     if (build.buildRef !== `refs/heads/steward/build/${build.cycleId}`
       || new Set(build.units.map(unit => unit.id)).size !== build.units.length) throw new Error('RELEASE_RECORD: build identity');
     const jobs = new Set<string>(), assetNames=new Set<string>();
@@ -166,7 +169,8 @@ export function parsePipelineRecord(input: unknown): PipelineRecord {
       for (const producer of unit.builds) {
         if (jobs.has(producer.jobName)) throw new Error('RELEASE_RECORD: duplicate product job'); jobs.add(producer.jobName);
       }
-      const selected = selectReleaseContributors(unit.contributors.map(person => ({ ...person, type: 'User' })), build.delivery.repositoryAuthors);
+      const selected = selectReleaseContributors(unit.contributors.map(person => ({ ...person, type: 'User' })),
+        repositoryAuthors, build.noteFormat === 'conditional' ? unit.contributors : undefined);
       if (JSON.stringify(selected.contributors) !== JSON.stringify(unit.contributors)) throw new Error('RELEASE_RECORD: frozen contributor identity');
     }
   }

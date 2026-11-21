@@ -6,7 +6,7 @@ import { readFile, writeFile, appendFile, realpath } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { assertRegisteredAdapters, pipelineRecoverCycleFinal, pipelineIdentity, pipelineChannelIdentity, pipelineChannelDownload, pipelineProducers, pipelineDownloadProducers, pipelineCollect, pipelineInspect, pipelineNotes, pipelinePublish, pipelineVerifyPublished, pipelineDownloadPhase } from './release-pipeline.js';
+import { assertRegisteredAdapters, pipelineRecoverCycleFinal, pipelineIdentity, pipelineChannelIdentity, pipelineChannelDownload, pipelineProducers, pipelineDownloadProducers, pipelineCollect, pipelineInspect, pipelineNotes, pipelineExpectedNotes, pipelinePublish, pipelineVerifyPublished, pipelineDownloadPhase } from './release-pipeline.js';
 import { generateReleaseSbom } from './release-sbom.js';
 import { assertReleaseJobResults, productBusinessResults, channelBusinessResults, channelReadyTargets, channelPreparationResults, type ChannelProbe } from './release-run.js';
 import { nativePages, findFrozenFinal } from './release-pipeline.js';
@@ -266,7 +266,11 @@ export async function nativeReleaseCli(argv: readonly string[]) {
           if (manifest.repositoryId !== record.repositoryId || manifest.runId !== record.runId || manifest.attempt !== record.runAttempt
             || manifest.sourceSha !== record.sourceSha || manifest.controllerSha !== record.controllerSha || manifest.unitId !== source.unit.id
             || manifest.cycleId !== record.cycleId || manifest.requestKey !== record.requestKey) throw new Error('RELEASE_RECORD: seal source');
-          result = await sealProductArtifacts(required('directory'), manifest);
+          const expectedNotes = await pipelineExpectedNotes(record, required('unit'), required('source-dir'), controllerDirectory);
+          if (expectedNotes !== undefined && (manifest.version !== source.unit.version || manifest.tag !== source.unit.tag
+            || manifest.templateSha256 !== record.templateSha256 || manifest.deliverySha256 !== record.deliverySha256))
+            throw new Error('RELEASE_RECORD: seal notes identity');
+          result = await sealProductArtifacts(required('directory'), manifest, expectedNotes);
         }
       }
     }
