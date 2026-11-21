@@ -53,8 +53,13 @@ async function closeout192(plan,request,{token,io,centralIo}) {
   if(before.repository.activeCycleId===null&&before.repository.lastCompletedCycleId===closeoutCycle)
     return {status:'UNCHANGED',archiveHead:before.head,cycleId:closeoutCycle,candidateHead};
   if(before.repository.activeCycleId!==closeoutCycle)fail('STATE_CHANGED');
+  // The history reader takes its evaluation time before it asks for evidence.
+  const completion=await readNativeCompletion(request,entry.value,{io,centralIo});
   const result=await inspectRepositoryHistory(request,{token,io,centralIo,
-    completionReader:cycle=>readNativeCompletion(request,cycle,{io,centralIo})});
+    completionReader:cycle=>{
+      if(cycle.id!==closeoutCycle)fail('STATE_CHANGED');
+      return completion;
+    }});
   if(result.result!=='PASS'||result.lastCompletedCycleId!==closeoutCycle||!sha(result.archiveHead))fail('NOT_APPLIED');
   // The native history writer preserves the next candidate and archives fresh completion proof.
   const state=async path=>{
