@@ -19,7 +19,7 @@ export async function ghReleaseFixture(sourceShaOverride?:string) {
   for (const asset of manifest.artifacts) await writeFile(join(directory, asset.path), 'app');
   await writeFile(join(directory, 'sbom.spdx.json'), JSON.stringify({ spdxVersion: 'SPDX-2.3', SPDXID: 'SPDXRef-DOCUMENT', packages: [] }));
   await writeFile(join(directory, 'release-notes.md'), `1.2.3\n${sourceSha}\n${manifest.controllerSha}\n`);
-  const target: ReleaseTarget = { directory, releaseId: 20, appBotId: 42, manifest: await sealProductArtifacts(directory, manifest) };
+  const target: ReleaseTarget & {manifest:ProductReleaseManifest} = { directory, releaseId: 20, appBotId: 42, manifest: await sealProductArtifacts(directory, manifest) };
   const remote = new Map<string, { bytes: Buffer; id: number; state: string; label: string; uploader: { id: number } }>(); const calls: string[][] = [];
   const release = { id: 20, author: { id: 42 }, tag_name: 'v1.2.3', target_commitish: sourceSha, draft: true, immutable: false, body: 'draft',
     html_url: 'https://github.com/fixture/product/releases/tag/v1.2.3', upload_url: 'https://uploads.github.com/repos/fixture/product/releases/20/assets{?name,label}' };
@@ -37,7 +37,7 @@ export async function ghReleaseFixture(sourceShaOverride?:string) {
       const body = args.includes('--input') && !endpoint.startsWith('https:') ? JSON.parse(await readFile(args[args.indexOf('--input') + 1]!, 'utf8')) : null;
       if (method === 'GET') {
         if (endpoint === 'repos/fixture/product') return JSON.stringify({ id: 1, full_name: 'fixture/product', archived: false, disabled: state.disabled, private: state.private });
-        if (endpoint.endsWith('/actions/runs/10')) return JSON.stringify({ id: 10, run_attempt: 2, repository: { id: 1 }, head_repository: { id: 1 }, head_sha: sourceSha,
+        if (endpoint.endsWith('/actions/runs/10')) return JSON.stringify({ id: 10, workflow_id: 22, run_attempt: 2, repository: { id: 1 }, head_repository: { id: 1 }, head_sha: sourceSha,
           head_branch: manifest.buildRef.slice(11), path: '.github/workflows/steward-release-publish.yml', event: 'workflow_dispatch', actor: { id: 42 }, status: state.runStatus, conclusion: state.runConclusion });
         if (endpoint.endsWith('/git/ref/tags/v1.2.3')) {
           if (!state.tag) throw Object.assign(new Error('not found'), { status: 404 });

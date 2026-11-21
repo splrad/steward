@@ -1,11 +1,31 @@
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
-import type { ProductReleaseManifest } from '../src/release-artifacts.js';
+import { fileDigest, type ProductReleaseManifest, type WorkflowReleaseManifest } from '../src/release-artifacts.js';
 import { ghReleaseFixture as fixture } from './gh-release-fixture.js';
 
 const writes = (f: Awaited<ReturnType<typeof fixture>>) => f.calls.filter(args => args.includes('--method'));
+
+it('finishes a single-file workflow delivery from the same draft after a label write failure',async()=>{
+  const f=await fixture(),archived=f.target.manifest;
+  const directory=join(f.target.directory,'single-workflow-delivery');
+  await mkdir(directory);await writeFile(join(directory,'cli.tgz'),'retained package');
+  const manifest:WorkflowReleaseManifest={schemaVersion:4,repositoryId:archived.repositoryId,fullName:archived.fullName,
+    cycleId:archived.cycleId,unitId:archived.unitId,version:archived.version,packageVersion:archived.packageVersion,tag:archived.tag,
+    sourceSha:archived.sourceSha,buildWorkflow:'.github/workflows/steward-release-publish.yml',buildRef:archived.buildRef,workflowId:22,
+    runId:10,attempt:1,delivery:{runId:10,attempt:1,artifactId:90,digest:'sha256:'+'8'.repeat(64)},
+    attested:false,artifacts:[{id:'cli',...await fileDigest(directory,'cli.tgz')}]};
+  const target={...f.target,directory,manifest,publicBody:'Reviewed 1.2.3 release'};
+  f.state.blockLabel=true;
+  await expect(f.adapter.publish(target)).rejects.toThrow();
+  expect(f.remote.get('cli.tgz')?.bytes.toString()).toBe('retained package');
+  f.state.blockLabel=false;
+  await expect(f.adapter.publish(target)).resolves.toMatchObject({releaseId:20,mode:'verified'});
+  expect(writes(f).filter(args=>args.includes('POST'))).toHaveLength(1);
+  expect([...f.remote.keys()]).toEqual(['cli.tgz']);
+  expect(f.calls.some(args=>args[0]==='attestation')).toBe(false);
+});
 it('recovers half-uploaded seven-file release and lost upload/body/publication responses using exact IDs', async () => {
   const f = await fixture(); f.put('app.exe', Buffer.from('app')); f.state.loseLabel = f.state.loseUpload = f.state.loseBody = f.state.losePublish = true;
   expect((await f.adapter.publish(f.target)).mode).toBe('verified');

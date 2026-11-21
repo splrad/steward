@@ -12,6 +12,7 @@ import { githubUnits, decodeReleaseRecord, decodeStateFile, stateRecordOwner, as
   inspectNativeCycle, recoverNativeCycle, archiveFile, nativeReadFile, nativeEvidenceTransport,
   dispatchNativeRun, prepareBuildDispatch, defaultBuildWorkflow, dispatchWorkflow, verifyDispatchWorkflow, inspectPublications, invokePublication, inspectCycleHistory, verifyFrozenReceipts, completionFile, decodeCompletionArchive,
   pipelinePreparePublication, readCycleDelivery, prepareNormalizedDelivery, NativeGitHubRelease, nativeGhCommand, nativeReleaseDownload, NativeEvidenceReader, nativeRunFact,
+  publicationManifestDigest,sameWorkflowDelivery,
   retainedChannelObservations, observeNativeChannels, readChannelSourceRejections, selectChannelDispatch, prepareChannelDispatch, channelTargetsDigest, verifyChannelResult, verifyContinuationReleases, evaluateCompletion } from '../packages/runner/dist/index.js';
 
 import {withReleaseAdoption,recoverReleaseCaches} from './release-adoption.mjs';
@@ -25,6 +26,7 @@ function compatibleCycle(a,b) {
     || JSON.stringify(ordered(a.units.map(x=>[x.id,x.version,x.tag])))!==JSON.stringify(ordered(b.units.map(x=>[x.id,x.version,x.tag])))) return false;
   for (const unit of a.units) {
     const other=b.units.find(value=>value.id===unit.id);
+    if(unit.githubDelivery&&other.githubDelivery&&!sameWorkflowDelivery(unit.githubDelivery,other.githubDelivery))return false;
     for (const key of ['releaseId','notesDigest','manifestDigest']) if(unit[key]!==null && other[key]!==null && unit[key]!==other[key]) return false;
     const assets=value=>JSON.stringify(ordered(value.map(x=>[x.id,x.path,x.size,x.sha256])));
     if(unit.assets.length && other.assets.length && assets(unit.assets)!==assets(other.assets)) return false;
@@ -268,7 +270,8 @@ function cycleProgress(before,after) {
   for(const old of before.units) {
     const current=after.units.find(unit=>unit.id===old.id);
     if(['releaseId','notesDigest','manifestDigest'].some(key=>old[key]!==null && old[key]!==current[key])
-      || old.assets.length && !current.assets.length)fail('frozen cycle fact removed');
+      || old.assets.length && !current.assets.length
+      || old.githubDelivery&&!current.githubDelivery)fail('frozen cycle fact removed');
   }
   for(const old of before.dispatches) {
     const current=after.dispatches.find(item=>item.requestKey===old.requestKey);
@@ -640,9 +643,21 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
     if(!cycle)fail('registered publication cycle required');
     const context={repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle};
     const normalized=await ensureCycleDelivery(request,snapshot,cycle,{token,io,centralIo,now});snapshot=normalized.snapshot;request={...request,directory:normalized.directory};
-    const records=await pipelinePreparePublication(context,root,controllerDirectory,token,undefined,io,undefined,undefined,snapshot.domainRecords);
+    const alreadyPublished=new Set(),reader=new NativeEvidenceReader(io,request.repository),targets=githubUnits(cycle);
+    for(const unit of targets.filter(unit=>unit.releaseId!==null&&unit.githubDelivery)) {
+      const release=await reader.json('releases/'+unit.releaseId);
+      if(release.draft===false) {
+        await verifyContinuationReleases(context,io,new Set([unit.id]));
+        alreadyPublished.add(unit.id);
+      }
+    }
+    if(alreadyPublished.size&&alreadyPublished.size===targets.length)return {status:'OBSERVED',reason:'FORMAL_RELEASES_VERIFIED',publishInvoked:false};
+    const pending=alreadyPublished.size?new Set(targets.filter(unit=>!alreadyPublished.has(unit.id)).map(unit=>unit.id)):undefined;
+    const records=await pipelinePreparePublication(context,root,controllerDirectory,token,undefined,io,undefined,undefined,snapshot.domainRecords,pending);
     if(!Array.isArray(records))return records;
     const adapter=new NativeGitHubRelease(args=>nativeGhCommand(args,token),nativeReleaseDownload(token));
+    const target=(item,releaseId)=>({delivery:item.delivery,publicBody:item.publicBody,manifest:item.manifest,
+      directory:item.directory,releaseId,appBotId:request.appBotId});
     const publicationUnits=records.filter(item=>!item.delivery?.channels.some(channel=>channel.id==='github-release' && !channel.required));
     const freezeRecords=records.filter(item=>!publicationUnits.includes(item));
     if (freezeRecords.length) {
@@ -661,29 +676,35 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
       cycle.freezeOnly=receipts;
     }
     for(const item of publicationUnits) {
-      const unit=cycle.units.find(value=>value.id===item.unitId),names=adapter.names({delivery:item.delivery,manifest:item.manifest,directory:item.directory,releaseId:unit.releaseId,appBotId:request.appBotId});
+      const unit=cycle.units.find(value=>value.id===item.unitId),names=adapter.names(target(item,unit.releaseId));
       const assets=await publicationAssetFacts(unit,item.manifest,names,item.directory);
-      const frozen={assets,notesDigest:sha256(await readFile(join(item.directory,'release-notes.md'))),manifestDigest:sha256(await readFile(join(item.directory,'artifact-manifest.json')))};
-      if(unit.assets.length&&JSON.stringify(ordered(unit.assets))!==JSON.stringify(ordered(assets))||unit.manifestDigest!==null&&unit.manifestDigest!==frozen.manifestDigest)fail('frozen publication changed');
+      const frozen={assets,notesDigest:sha256(item.publicBody??await readFile(join(item.directory,'release-notes.md'))),
+        manifestDigest:await publicationManifestDigest(item.directory,item.manifest),
+        ...(item.githubDelivery?{githubDelivery:item.githubDelivery}:{})};
+      if(unit.assets.length&&JSON.stringify(ordered(unit.assets))!==JSON.stringify(ordered(assets))
+        ||unit.manifestDigest!==null&&unit.manifestDigest!==frozen.manifestDigest
+        ||unit.notesDigest!==null&&unit.notesDigest!==frozen.notesDigest)fail('frozen publication changed');
       Object.assign(unit,frozen);
     }
     const adopted=await adoptReleaseCycle(request,snapshot,cycle,{token,io});request={...request,directory:adopted.directory};
-    if(!publicationUnits.length)return confirmFrozenCycle(request,adopted.snapshot,cycle,{token,io,now});
+    if(!githubUnits(cycle).length)return confirmFrozenCycle(request,adopted.snapshot,cycle,{token,io,now});
     // Already-public reentry verifies bytes and does not create a new business invocation.
     if(githubUnits(cycle).every(unit=>unit.releaseId!==null)) {
-      const releases=await Promise.all(publicationUnits.map(item=>adapter.read({delivery:item.delivery,manifest:item.manifest,directory:item.directory,releaseId:cycle.units.find(unit=>unit.id===item.unitId).releaseId,appBotId:request.appBotId})));
+      const publicationTargets=publicationUnits.map(item=>target(item,cycle.units.find(unit=>unit.id===item.unitId).releaseId));
+      const releases=await Promise.all(publicationTargets.map(item=>adapter.read(item)));
       if(releases.every(release=>!release.draft)) {
-        for(const item of publicationUnits)await adapter.verify({delivery:item.delivery,manifest:item.manifest,directory:item.directory,releaseId:cycle.units.find(unit=>unit.id===item.unitId).releaseId,appBotId:request.appBotId});
+        for(const item of publicationTargets)await adapter.verify(item);
         return {status:'OBSERVED',reason:'FORMAL_RELEASES_VERIFIED',publishInvoked:false};
       }
     }
     return await inspectReleaseEvidence(request,{token,io,centralIo,centralInvocation,now,publisher:async(current,save)=>{
       for(const item of publicationUnits) {
         const unit=current.cycle.units.find(value=>value.id===item.unitId);
-        if(unit.releaseId!==null) {const existing={delivery:item.delivery,manifest:item.manifest,directory:item.directory,releaseId:unit.releaseId,appBotId:request.appBotId};if(!(await adapter.read(existing)).draft){await adapter.verify(existing);continue;}}
-        const target=await adapter.ensureDraft({delivery:item.delivery,manifest:item.manifest,directory:item.directory,releaseId:unit.releaseId,appBotId:request.appBotId});
-        if(unit.releaseId===null) {const next=structuredClone(current.cycle);next.units.find(value=>value.id===unit.id).releaseId=target.releaseId;await save(next);}
-        await adapter.publish(target);
+        const intent=target(item,unit.releaseId);
+        if(unit.releaseId!==null && !(await adapter.read(intent)).draft){await adapter.verify(intent);continue;}
+        const bound=await adapter.ensureDraft(intent);
+        if(unit.releaseId===null) {const next=structuredClone(current.cycle);next.units.find(value=>value.id===unit.id).releaseId=bound.releaseId;await save(next);}
+        await adapter.publish(bound);
       }
     }});
   }finally{await rm(root,{recursive:true,force:true});}

@@ -48,7 +48,11 @@ export function assertRepositoryWrite(value: RepositoryRecord, previous?: Reposi
   if(!value||value.schemaVersion!==3)throw new Error('RELEASE_OBSERVATION: historical repository is read-only');
   if(previous?.schemaVersion===3&&(value.releaseAdoption.sourceSha!==previous.releaseAdoption.sourceSha||value.releaseAdoption.prNumber!==previous.releaseAdoption.prNumber))fail('release adoption changed');
 }
-export interface CycleUnit { id: string; version: string; tag: string; releaseId: number | null; assets: { id: string; path: string; size: number; sha256: string }[]; notesDigest: string | null; manifestDigest: string | null }
+export interface WorkflowDeliveryReceipt { runId: number; attempt: number; artifactId: number; digest: string }
+export function sameWorkflowDelivery(a:WorkflowDeliveryReceipt,b:WorkflowDeliveryReceipt):boolean {
+  return a.runId===b.runId&&a.attempt===b.attempt&&a.artifactId===b.artifactId&&a.digest===b.digest;
+}
+export interface CycleUnit { id: string; version: string; tag: string; releaseId: number | null; assets: { id: string; path: string; size: number; sha256: string }[]; notesDigest: string | null; manifestDigest: string | null; githubDelivery?: WorkflowDeliveryReceipt }
 export function githubUnits(cycle: Pick<CycleRecord,'units'|'freezeOnly'>): CycleRecord['units'] {
   return cycle.units.filter(unit=>!cycle.freezeOnly?.some(receipt=>receipt.unitId===unit.id));
 }
@@ -108,6 +112,10 @@ export function parseReleaseRecord<K extends keyof RecordKinds>(kind: K, value: 
         || !record.units.some(unit=>unit.id===receipt.unitId && unit.releaseId===null && unit.manifestDigest && unit.notesDigest && unit.assets.length))))
       fail('freeze-only receipt');
     if (!unique(record.dispatches.map(item => item.requestKey))) fail('duplicate request');
+    for (const unit of record.units) {
+      if (unit.githubDelivery && (!unit.assets.length || !unit.notesDigest || !unit.manifestDigest
+        || !record.dispatches.some(dispatch=>dispatch.purpose==='build' && dispatch.canonicalRunId===unit.githubDelivery!.runId))) fail('GitHub delivery receipt');
+    }
     for (const request of record.dispatches) {
       if (request.buildWorkflow !== (request.purpose === 'build' ? record.buildWorkflow : undefined)) fail('dispatch workflow');
       if (request.sourceSha !== record.sourceSha || request.canonicalRunId !== null && request.nativeResponseEvidencePath === null

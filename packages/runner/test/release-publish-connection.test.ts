@@ -9,6 +9,7 @@ import * as downloads from '../src/native-artifact-download.js';
 import { productPipelineFixture } from './product-pipeline-fixture.js';
 import { S, C, START, END, digest } from './native-evidence-fixture.js';
 import { permitOfflineScript } from './offline-fixtures.js';
+import type { WorkflowDeliveryReceipt } from '../../core/src/release-observation.js';
 const roots:string[]=[];
 afterEach(async()=>{vi.restoreAllMocks();for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
 it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-run','unbound-run','undispatched','foreign-run','foreign-source','formal-after-expiry','private-formal','partial-draft','corrupt-formal','missing-public-asset'])('prepares publication from exact native objects: %s',async kind=>{
@@ -79,4 +80,71 @@ it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-r
   if(kind==='formal-after-expiry')expect(download).not.toHaveBeenCalled();
   if(kind==='freeze'||kind==='python-freeze'||kind==='partial-draft')expect(download).toHaveBeenCalledOnce();
   if(kind==='python-freeze')expect(manifest.toolLocks).toHaveProperty('source/requirements-build.txt',digest(f.source['requirements-build.txt']!));
+});
+
+it('prepares a single native Node delivery, changes the public set in its workflow, and reuses the original attempt',async()=>{
+  const f=productPipelineFixture(2,false,[]),{context,source}=f;
+  const workflow='.github/workflows/steward-release-publish.yml';
+  const settings={'include-component-in-tag':false,packages:{'.':{'release-type':'node'}}};
+  source['release-please-config.json']=JSON.stringify(settings);
+  source['package.json']='{"name":"fixture-cli","version":"1.0.0"}';
+  source['CHANGELOG.md']='## [1.0.0](https://github.com/example/product/compare/v0.9.0...v1.0.0)\n\n### Features\n\nCLI.\n';
+  source['.release-notes/app.md']=['概述','更新内容','兼容性','升级与迁移','安装说明','已知问题','恢复'].map(label=>'## '+label+'\n\n已审文稿。').join('\n\n');
+  function adoptedWorkflow(files:string[]) {
+    return JSON.stringify({jobs:{package:{name:'delivery/app',steps:[
+      {run:'node build.mjs'},{id:'upload-github-release',name:'Upload GitHub release delivery',
+        uses:'actions/upload-artifact@'+'a'.repeat(40),with:{path:files.join('\n')}},
+    ]}}});
+  }
+  const initial=['fixture-cli.tgz'];
+  source[workflow]=adoptedWorkflow(initial);
+  const sourceConfig=source['.github/delivery.json'];
+  Object.assign(f.runs.get(2),{status:'completed',conclusion:'success'});
+  const chunk=f.input.state.domainRecords[0]!.value as {candidateId:string;content:string;documentDigest:string},
+    candidate={...f.input.state.repository.candidate!,generatedSnapshotPath:'generated/'+chunk.candidateId+'/generated.json'};
+  const merged=JSON.stringify({schemaVersion:1,cycleId:context.cycle.id,sourceSha:S,stateCommit:f.input.state.head,candidate,
+    session:JSON.parse(chunk.content),pull:{number:context.cycle.prNumber,head:candidate.publishedHead,branch:candidate.branch,base:'main',
+      repositoryId:context.repositoryId,mergedAt:START,mergeCommitSha:S},
+    documents:[{path:'generated/'+chunk.candidateId+'/session.json',sha256:chunk.documentDigest},{path:candidate.generatedSnapshotPath,sha256:'a'.repeat(64)}]});
+  const history=[{path:'generated/'+chunk.candidateId+'/cycles/'+context.cycle.id+'.json',commit:f.input.state.head,
+    value:{...chunk,schemaVersion:1,repositoryId:context.repositoryId,index:0,count:1,documentKind:'merged-candidate',content:merged,documentDigest:digest(merged)}}];
+  const artifact={id:810,name:['delivery','github-release',context.repositoryId,'app',S,100,1].join('-'),expired:false,
+    digest:'sha256:'+digest('node archive'),workflow_run:{id:100,head_sha:S},created_at:'2026-10-26T00:00:30.000Z'};
+  const io={request:async(method:string,path:string)=>{
+    expect(method).toBe('GET');
+    if(path.includes('/contents/')) {
+      const file=path.split('/contents/')[1]!.split('?')[0]!,bytes=Buffer.from(source[file]!);
+      return f.response({type:'file',encoding:'base64',size:bytes.length,content:bytes.toString('base64'),
+        sha:createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex')});
+    }
+    if(path.endsWith('/runs/100'))return f.response(f.runs.get(2));
+    if(path.includes('/artifacts?'))return f.response({total_count:1,artifacts:[artifact]});
+    if(path.includes('/attempts/1/jobs?'))return f.response({total_count:1,jobs:[{id:1100,name:'delivery/app',run_id:100,run_attempt:1,
+      head_sha:S,status:'completed',steps:[{name:'Upload GitHub release delivery',status:'completed',conclusion:'success',started_at:START,completed_at:END}]}]});
+    throw Error('Unexpected workflow publication source '+path);
+  }};
+  const output=await mkdtemp(join(tmpdir(),'direct-github-delivery-'));roots.push(output);
+  const prepare=async (child:string,selected:string[])=>{
+    const directory=join(output,child);await mkdir(directory);
+    return pipelinePreparePublication(context,directory,f.input.controllerDirectory,'fixture-token',async()=>{throw Error('unexpected gh command');},
+      io,io,undefined,history,undefined,async input=>{
+        expect(input).toMatchObject({artifactId:artifact.id,digest:artifact.digest});
+        await mkdir(input.directory);for(const name of selected)await writeFile(join(input.directory,name),'built '+name);
+      });
+  };
+  const prepared=await prepare('first',initial);if(!Array.isArray(prepared))throw Error('workflow publication expected');
+  expect(prepared[0]).toMatchObject({githubDelivery:{artifactId:810,runId:100,attempt:1},manifest:{
+    schemaVersion:4,packageVersion:'1.0.0',attested:false,artifacts:[{path:'fixture-cli.tgz'}]}});
+  expect(await readdir(prepared[0]!.directory)).toEqual(initial);
+  expect(prepared[0]).toHaveProperty('publicBody',expect.stringContaining('fixture-cli.tgz'));
+  const retained:WorkflowDeliveryReceipt={artifactId:artifact.id,runId:100,attempt:1,digest:artifact.digest};
+  Object.assign(context.cycle.units[0]!,{githubDelivery:retained});
+  expect(await prepare('retry',initial)).toMatchObject([{githubDelivery:retained,manifest:{artifacts:[{path:'fixture-cli.tgz'}]}}]);
+  artifact.id=811;
+  await expect(prepare('changed-id',initial)).rejects.toThrow('receipt changed');
+  delete context.cycle.units[0]!.githubDelivery;
+  const next=['fixture-cli.tgz','checksums.txt'];
+  source[workflow]=adoptedWorkflow(next);
+  expect(source['.github/delivery.json']).toBe(sourceConfig);
+  expect(await prepare('new-selection',next)).toMatchObject([{manifest:{artifacts:[{path:'checksums.txt'},{path:'fixture-cli.tgz'}]}}]);
 });

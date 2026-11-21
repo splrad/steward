@@ -121,6 +121,7 @@ async function verifyCurrentEvidence(request,snapshot,io,centralIo,now) {
 /** Restore original cache bytes only. No empty state, new cycle or completion fact can be invented here. */
 export async function recoverReleaseCaches(request,snapshot,{token,io=nativeEvidenceTransport(token),centralIo,now=()=>new Date().toISOString()}={}) {
   const missing=!snapshot.repository || snapshot.history.some(record=>record.status!=='DECODED')
+    || request.cycleId && !snapshot.cycles.some(record=>record.value.id===request.cycleId)
     || snapshot.repository.activeCycleId && !snapshot.cycles.some(record=>record.value.id===snapshot.repository.activeCycleId)
     || snapshot.repository.lastCompletedCycleId && !snapshot.cycles.some(record=>record.value.id===snapshot.repository.lastCompletedCycleId);
   if(missing) {

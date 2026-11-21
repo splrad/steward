@@ -8,6 +8,7 @@ import { isBuildWorkflow, workflowPathPattern } from '../../core/src/release-wor
 import { inspectBuildFile, verifyBuildFileStates, type NativeVersionInspector } from './build-manifest.js';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { ProducerReceipt } from './release-run.js';
+import type { WorkflowDeliveryReceipt } from '../../core/src/release-observation.js';
 import schema from '../../../schema/artifact-manifest.schema.json' with { type: 'json' };
 import type { DeliveryUnit } from '../../core/src/delivery-config.js';
 import { deliveryAssetNames } from '../../core/src/delivery-config.js';
@@ -31,6 +32,45 @@ export interface ProductReleaseManifest {
   version: string; packageVersion: string; tag: string; sourceSha: string; controllerSha: string; buildRef: string;
   deliverySha256: string; templateSha256: string; runId: number; attempt: number; toolLocks: Record<string, string>;
   producers: ProducerReceipt[]; artifacts: (FileDigest & { id: string; mediaType: string })[]; evidence: FileDigest[];
+}
+
+/** Computed from one product handoff. No manifest or SBOM file is required in the artifact. */
+export interface WorkflowReleaseManifest {
+  schemaVersion: 4;
+  repositoryId:number;fullName:string;cycleId:string;unitId:string;version:string;packageVersion:string;tag:string;
+  sourceSha:string;buildWorkflow:string;buildRef:string;workflowId:number;runId:number;attempt:number;
+  delivery:WorkflowDeliveryReceipt;attested:boolean;
+  artifacts:(FileDigest&{id:string})[];
+}
+
+export type PublicationManifest=ReleaseManifest|ProductReleaseManifest|WorkflowReleaseManifest;
+
+export function validateWorkflowManifest(manifest:WorkflowReleaseManifest):void {
+  if(!/^[\w.-]+\/[\w.-]+$/.test(manifest.fullName)||manifest.fullName.split('/').some(part=>part==='.'||part==='..')
+    ||!/^[a-f0-9]{40}$/.test(manifest.sourceSha)||!manifest.cycleId.endsWith('-'+manifest.sourceSha)
+    ||manifest.buildRef!=='refs/heads/steward/build/'+manifest.cycleId||!isBuildWorkflow(manifest.buildWorkflow)
+    ||![manifest.repositoryId,manifest.workflowId,manifest.runId,manifest.attempt,manifest.delivery.artifactId].every(id=>Number.isSafeInteger(id)&&id>0)
+    ||manifest.delivery.runId!==manifest.runId||manifest.delivery.attempt!==manifest.attempt
+    ||!/^sha256:[a-f0-9]{64}$/.test(manifest.delivery.digest)||typeof manifest.attested!=='boolean'
+    ||!manifest.artifacts.length||new Set(manifest.artifacts.map(file=>file.path.toLowerCase())).size!==manifest.artifacts.length
+    ||manifest.artifacts.some(file=>!Number.isSafeInteger(file.size)||file.size<=0||!/^[a-f0-9]{64}$/.test(file.sha256)))fail('workflow manifest identity');
+  for(const file of manifest.artifacts)assertDeliveryAssetName(file.path);
+}
+
+export async function publicationManifestDigest(directory:string,manifest:PublicationManifest):Promise<string> {
+  if(manifest.schemaVersion===4)return createHash('sha256').update(JSON.stringify(manifest)).digest('hex');
+  return (await fileDigest(directory,'artifact-manifest.json')).sha256;
+}
+
+export async function verifyPublicationFiles(directory:string,manifest:PublicationManifest) {
+  if(manifest.schemaVersion!==4)return verifySealedArtifacts(directory,manifest);
+  if(!manifest.artifacts.length
+    ||JSON.stringify((await readdir(directory)).sort())!==JSON.stringify(manifest.artifacts.map(file=>file.path).sort()))
+    fail('workflow delivery file set');
+  for(const file of manifest.artifacts) {
+    const actual=await fileDigest(directory,file.path);
+    if(actual.size!==file.size||actual.sha256!==file.sha256)fail('workflow delivery bytes');
+  }
 }
 const productSchema = structuredClone(schema) as any;
 productSchema.properties.schemaVersion = { const: 3 };
