@@ -21,7 +21,7 @@ export interface ContentPayload { stage: ContentStage; unitIds: string[]; units:
 export interface ContentWork { input: ContentInput; payloads: Record<string, ContentPayload>; results: Record<string, { items: ContentItem[] } | { paragraphs: ContentParagraph[] }>; evidence: { manifests: unknown[]; gaps: unknown[] } }
 export interface ContentCacheEntry { inputDigest: string; configDigest: string; attempts: ContentAttempt[]; result: { items: ContentItem[] } | { paragraphs: ContentParagraph[] } | null; split?: boolean }
 export type ContentCache = Record<string, ContentCacheEntry>;
-export function contentWireInput(payload: ContentPayload) { return JSON.stringify({ prompt: CONTENT_PROMPT, outputSchema: CONTENT_OUTPUT_SCHEMA, constraints: 'Return only the schema object, without Markdown fences or extra keys. Use UNVERIFIED when evidence is absent; TEST_CONFIRMED is unavailable unless tested source IDs are explicitly supplied.', ...payload }); }
+export function contentWireInput(payload: ContentPayload) { return JSON.stringify({ prompt: CONTENT_PROMPT, outputSchema: CONTENT_OUTPUT_SCHEMA, constraints: 'Return only the schema object, without Markdown fences or extra keys. Omit optional paragraphs without product facts. For a relevant claim with uncertain verification, set qualification to UNVERIFIED and describe only the specific consequence for the reader; TEST_CONFIRMED is unavailable unless tested source IDs are explicitly supplied.', ...payload }); }
 
 /** Read curated release changes and product context, not a model-coverage copy of every source blob. */
 export async function collectContentInput(options: { directory: string; candidateId: string; configDigest: string; units: (GitReleaseInputOptions & { changelogPath?: string })[];
