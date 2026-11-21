@@ -16,8 +16,8 @@ export function releasePolicyGuard(app, repository, readPolicy=mergedRepositoryP
     // Registration retains the legacy publisher field. Compare its choices using the reviewed workflow.
     const files=new Map([[deliveryPath,delivery],[publishPath,workflow],[versionsPath,versions]]);
     const pending=[];
-    const current=releaseRegistration(inspectRepository(files),pending);
-    if(pending.length||!isDeepStrictEqual(selection.policy.release,current))
+    const {release,nativeReleaseUnits}=releaseRegistration(inspectRepository(files),pending);
+    if(nativeReleaseUnits||pending.length||!isDeepStrictEqual(selection.policy.release,release))
       throw Error('CANDIDATE_REPOSITORY_POLICY_CONFLICT');
     const latest=await readPolicy(app,repository);
     if(latest.adoption!==selection.adoption||latest.policy?.repositoryId!==selection.policy.repositoryId||
