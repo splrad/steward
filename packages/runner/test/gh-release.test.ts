@@ -5,6 +5,7 @@ import { expect, it } from 'vitest';
 import { fileDigest, type ProductReleaseManifest, type WorkflowReleaseManifest } from '../src/release-artifacts.js';
 import { ghReleaseFixture as fixture } from './gh-release-fixture.js';
 import { verifyWorkflowDelivery } from '../src/release-pipeline.js';
+import { renderFrozenReleaseNotes } from '../../core/src/release-template.js';
 
 const writes = (f: Awaited<ReturnType<typeof fixture>>) => f.calls.filter(args => args.includes('--method'));
 it('honors a workflow subset even when the old delivery declares GitHub implicitly',async()=>{
@@ -35,6 +36,24 @@ it('finishes a single-file workflow delivery from the same draft after a label w
   expect(writes(f).filter(args=>args.includes('POST'))).toHaveLength(1);
   expect([...f.remote.keys()]).toEqual(['cli.tgz']);
   expect(f.calls.some(args=>args[0]==='attestation')).toBe(false);
+});
+it('publishes and recovers the exact frozen conditional body and attachment bytes', async () => {
+  const template = await readFile('templates/repository/.github/release-template.md.mustache', 'utf8');
+  const repository = 'fixture/product', sourceSha = 'a'.repeat(40);
+  const body = renderFrozenReleaseNotes(template, { repository, sourceSha, controllerSha: 'b'.repeat(40), unitId: 'app',
+    version: '1.2.3', tag: 'v1.2.3', sourceLinkLabel: '查看源码', sourceUrl: `https://github.com/${repository}/tree/${sourceSha}`,
+    commitUrl: `https://github.com/${repository}/commit/${sourceSha}`, notes: '## 🐛 错误修复\n\n**启动**。修复启动错误。',
+    channels: [], assets: [], contributors: [], repositoryAuthors: [{ id: 7, evidence: 'Offline author evidence' }],
+  });
+  const f = await fixture(sourceSha, body);
+  f.put('app.exe', Buffer.from('app'));
+  f.state.loseBody = f.state.losePublish = true;
+  expect((await f.adapter.publish(f.target)).mode).toBe('verified');
+  expect(f.release.body).toBe(body);
+  expect(f.remote.get('release-notes.md')?.bytes).toEqual(Buffer.from(body));
+  const prior = writes(f).length;
+  await f.adapter.publish(f.target);
+  expect(writes(f)).toHaveLength(prior);
 });
 it('recovers half-uploaded seven-file release and lost upload/body/publication responses using exact IDs', async () => {
   const f = await fixture(); f.put('app.exe', Buffer.from('app')); f.state.loseLabel = f.state.loseUpload = f.state.loseBody = f.state.losePublish = true;

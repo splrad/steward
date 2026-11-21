@@ -128,6 +128,14 @@ it.each(['valid', 'unit', 'template', 'version', 'compare', 'historical-subset']
   } else await expect(pipelineNotes(result.record, kind === 'unit' ? 'missing' : 'app', 'source')).rejects.toThrow();
   expect(JSON.stringify(f.source)).toBe(before);
 });
+it('checks conditional text against the workflow subset and preserves approved body bytes', async () => {
+  const template=await (await import('node:fs/promises')).readFile('templates/repository/.github/release-template.md.mustache','utf8');
+  const repository='example/product',tag='v1.0.0',asset='Fonts.zip';
+  const body=`## 获取与使用\n\n[字体](<https://github.com/${repository}/releases/download/${tag}/${asset}>)。\n`;
+  const native={repository,tag,assets:[{id:'app',name:'Internal.zip',build:'windows-x64'},{id:'fonts',name:asset,build:'windows-x64'}]};
+  expect(projectFrozenReleaseDownloads(template,body,native,new Set([asset]))).toBe(body);
+  expect(()=>projectFrozenReleaseDownloads(template,body,native,new Set(['Internal.zip']))).toThrow('outside GitHub delivery');
+});
 it('keeps two unit asset sets separate and requires every frozen Release ID in publish input', async () => {
   const f = productPipelineFixture(1,true), result = await pipelineIdentity(f.input, f.environment, f.gh, f.io);
   if (result.status !== 'ADMITTED') throw new Error('fixture admission');

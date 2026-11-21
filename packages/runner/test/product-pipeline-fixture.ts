@@ -19,7 +19,7 @@ export function mergedCandidateFixture(input:ProductBuildInput) {
 }
 export function productPipelineFixture(attempts = 1, twoUnits = false, buildLock: string | string[] | null = 'global.json') {
   const f = evidenceFixture(attempts), candidateId = 'd'.repeat(64);
-  const sharedTemplate=readFileSync('templates/repository/.github/release-template.md.mustache','utf8');
+  const sharedTemplate=readFileSync('packages/core/test/fixtures/release-template-compact.mustache','utf8');
   const delivery = { schemaVersion: 2, repositoryAuthors: [{ id: 44151430, evidence: 'User confirmed axiomoth; native ID verified.' }],
     units: [{ id: 'app', path: '.', ...(buildLock === null ? {} : {buildLocks: Array.isArray(buildLock) ? buildLock : [buildLock]}), notesPath: '.release-notes/app.md', assets: [{ id: 'app', name: 'app-${version}.exe', inspection: 'pe', mediaType: 'application/octet-stream' }], channels: [{ id: 'github-release', required: true, location: 'github', metadata: ['sbom.spdx.json','release-notes.md','artifact-manifest.json','SHA256SUMS'] }] }] };
   const workflow = { 'run-name': 'Build ${{ inputs.operation_key }}', on: { workflow_dispatch: { inputs: Object.fromEntries(['cycle_id', 'operation_key', 'source_sha', 'controller_sha'].map(key => [key, { type: 'string', required: true }])) } },

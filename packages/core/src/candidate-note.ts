@@ -1,6 +1,7 @@
 import Mustache from 'mustache';
 import {unified} from 'unified';
 import remarkParse from 'remark-parse';
+import { assertVersionAcquisitionLinks, isConditionalTemplate, parseConditionalNotes, renderConditionalNotes } from './conditional-release-notes.js';
 
 export const headingFields = {
   '概述': 'summary', '更新内容': 'userChanges', '兼容性': 'compatibility', '升级与迁移': 'upgrade',
@@ -38,6 +39,13 @@ export function renderReleaseContributors(contributors: readonly ReleaseContribu
     { hasContributors: contributors.length > 0, contributors });
 }
 
-export function renderCandidateNote(path:string,markdown:string,contributors:Parameters<typeof renderReleaseContributors>[0]):string {
+export interface CandidateNoteFormat { template: string; repository: string; sourceSha: string; tag?: string }
+export function renderCandidateNote(path:string,markdown:string,contributors:Parameters<typeof renderReleaseContributors>[0], format?: CandidateNoteFormat):string {
+  if (format && isConditionalTemplate(format.template)) {
+    const url = `https://github.com/${format.repository}/tree/${format.sourceSha}`;
+    const notes = parseConditionalNotes(markdown);
+    if (format.tag) assertVersionAcquisitionLinks(notes, format.repository, format.tag, format.sourceSha);
+    return `# ${path}\n\n` + renderConditionalNotes(format.template, notes, { label: '查看候选源码', url }, contributors);
+  }
   return `# ${path}\n\n${previewUnitNotes(markdown)}`+renderReleaseContributors(contributors);
 }

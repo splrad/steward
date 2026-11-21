@@ -11,6 +11,17 @@ export interface CandidateSnapshot {
 }
 export interface RepositoryAuthor { id: number; evidence: string }
 export interface ReleaseActor extends GitHubActor { profileUrl: string; avatarUrl: string }
+export const confirmedReleaseContributorsPath = '.github/release-contributors.json';
+export interface ReleaseContributorPolicy { ownerId: number | null; humans: RepositoryAuthor[] }
+export function confirmedReleaseContributors(text: string | null): RepositoryAuthor[] {
+  if (text === null) return [];
+  const value: unknown = JSON.parse(text);
+  if (!Array.isArray(value) || value.length > 1024 || value.some(person => !person || typeof person !== 'object'
+    || Object.keys(person).sort().join(',') !== 'evidence,id' || !Number.isSafeInteger(person.id) || person.id <= 0
+    || typeof person.evidence !== 'string' || !person.evidence.trim() || person.evidence.length > 4096)
+    || new Set(value.map(person => person.id)).size !== value.length) throw new Error('CONTRIBUTOR_CONFIRMATION_INVALID');
+  return value as RepositoryAuthor[];
+}
 import type {ReleaseContributor} from './candidate-note.js';
 export type {ReleaseContributor} from './candidate-note.js';
 export function validateCandidateFiles(files: readonly CandidateFile[]) {
@@ -25,15 +36,19 @@ export function validateCandidateFiles(files: readonly CandidateFile[]) {
   }
 }
 /** Native numeric identities, never name/email heuristics or maintainer inference. */
-export function selectReleaseContributors(actors: readonly (ReleaseActor | null)[], authors: readonly RepositoryAuthor[]) {
+export function selectReleaseContributors(actors: readonly (ReleaseActor | null)[], authors: readonly RepositoryAuthor[],
+  policy?: ReleaseContributorPolicy) {
   if (!authors.length || authors.some(a => !Number.isSafeInteger(a.id) || a.id <= 0 || !a.evidence.trim())
     || new Set(authors.map(a => a.id)).size !== authors.length) throw new Error('AUTHOR_IDENTITY_UNVERIFIED');
   const excluded = new Set(authors.map(a => a.id)), selected = new Map<number, ReleaseContributor>();
+  if (policy?.ownerId != null) excluded.add(policy.ownerId);
+  const confirmed = policy && new Set(policy.humans.map(person => person.id));
   let unresolved = 0;
   for (const actor of actors) {
     if (actor && isBotActor(actor)) continue;
     if (!actor || !isHumanActor(actor)) { unresolved++; continue; }
     if (excluded.has(actor.id)) continue;
+    if (confirmed && !confirmed.has(actor.id)) { unresolved++; continue; }
     const profile = new URL(actor.profileUrl), avatar = new URL(actor.avatarUrl);
     if (profile.protocol !== 'https:' || profile.hostname !== 'github.com' || profile.pathname !== '/' + actor.login
       || profile.search || profile.hash || profile.username || profile.password || profile.port

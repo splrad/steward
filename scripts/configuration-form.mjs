@@ -94,7 +94,7 @@ export function configurationForm(model,head,state={}) {
     field(id+'.target','目标 ID');
     field(id+'.path','发行单元目录（相对于仓库根目录）',defaults.path);
     field(id+'.notes','发行单元说明文件',defaults.notes);
-    if(values[id+'.notes'] && !model.files.has(values[id+'.notes'])) field(id+'.notesBody','新说明的 Markdown 正文（概述和更新内容）');
+    if(values[id+'.notes'] && !model.files.has(values[id+'.notes'])) field(id+'.notesBody','按采用模板填写的新 Markdown 说明');
     if(values[id+'.changelog'] && !model.files.has(posix.join(defaults.path,values[id+'.changelog']))) field(id+'.logBody','新变更日志的起始正文');
     const existingUnit=model.delivery?.units.find(u=>u.id===defaults.raw);
     field(id+'.locks','构建锁文件（每行一个仓根相对路径；无锁时输入 []）',existingUnit?.buildLocks?.join('\n')??'');

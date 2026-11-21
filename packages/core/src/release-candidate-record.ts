@@ -30,7 +30,10 @@ function snapshot(value: any) {
   for (const unit of value.units) { exact(unit, ['id', 'path', 'version', 'tag']); if (Object.values(unit).some(v => typeof v !== 'string' || !v)) throw new Error('CANDIDATE_UNIT_INVALID'); }
 }
 function candidateIdentity(identity: any) {
-  exact(identity, ['authorsDigest', 'sourceDigest', 'actors', 'contributors', 'units']);
+  const hasOwner = identity && Object.hasOwn(identity, 'contributorOwnerId');
+  exact(identity, ['authorsDigest', 'sourceDigest', 'actors', 'contributors', 'units', ...(hasOwner ? ['contributorOwnerId'] : [])]);
+  if (hasOwner && identity.contributorOwnerId !== null
+    && (!Number.isSafeInteger(identity.contributorOwnerId) || identity.contributorOwnerId <= 0)) throw new Error('CANDIDATE_IDENTITY_INVALID');
   if (!/^[a-f0-9]{64}$/.test(identity.authorsDigest) || !/^[a-f0-9]{64}$/.test(identity.sourceDigest)
     || !Array.isArray(identity.actors) || !Array.isArray(identity.units)) throw new Error('CANDIDATE_IDENTITY_INVALID');
   for (const unit of identity.units) { exact(unit, ['id', 'actors', 'contributors']); if (!Array.isArray(unit.actors)) throw new Error('CANDIDATE_IDENTITY_INVALID'); }
@@ -53,7 +56,7 @@ export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[]): 
     }
     if (typeof value.evidencePath !== 'string' || !value.evidencePath.startsWith(`content/${first.candidateId}/`)) throw new Error('CONTENT_EVIDENCE_PATH');
   } else if (first.documentKind === 'content-payload') {
-    exact(value, ['stage', 'unitIds', 'units', 'sources', 'items', 'background']);
+    exact(value, ['stage', 'unitIds', 'units', 'sources', 'items', 'background', ...(value.conditional === true ? ['conditional'] : [])]);
     if (!['DRAFT', 'CONTEXT', 'DIFF', 'COMPOSE'].includes(value.stage) || !Array.isArray(value.sources) || !Array.isArray(value.items) || !Array.isArray(value.background)) throw new Error('CONTENT_PAYLOAD_INVALID');
   } else if (first.documentKind === 'content-evidence') {
     exact(value, ['manifests', 'gaps']);
@@ -98,9 +101,9 @@ export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[]): 
     if (value.preview !== null && typeof value.preview !== 'string') throw new Error('CANDIDATE_PREVIEW_INVALID');
     if (value.adoption) exact(value.adoption, ['humanHead', 'generatedBase', 'differences']);
   } else if (first.documentKind === 'content-result') {
-    exact(value, ['stage', 'sourceIds', 'result']);
+    exact(value, ['stage', 'sourceIds', 'result', ...(value.conditional === true ? ['conditional'] : [])]);
     if (!['DRAFT', 'CONTEXT', 'DIFF', 'COMPOSE'].includes(value.stage) || !Array.isArray(value.sourceIds)) throw new Error('CONTENT_RESULT_INVALID');
-    validateContentResult(value.stage, JSON.stringify(value.result), value.sourceIds);
+    validateContentResult(value.stage, JSON.stringify(value.result), value.sourceIds, [], undefined, value.conditional === true);
   } else if (first.documentKind === 'merged-candidate') {
     exact(value, ['schemaVersion', 'cycleId', 'sourceSha', 'stateCommit', 'candidate', 'session', 'pull', 'documents']);
     exact(value.pull, ['number', 'head', 'branch', 'base', 'repositoryId', 'mergedAt', 'mergeCommitSha']);

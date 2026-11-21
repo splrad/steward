@@ -1,7 +1,13 @@
 import { expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { planContentBatches, resumeContentBatches, assembleUnitNotes, type ContentSource, type ContentRuntime, type ContentWork } from '../src/release-content.js';
-import { CONTENT_OUTPUT_SCHEMA, verifyContentAttemptReceipts, splitContentText, validateContentResult, validateContentInput, type ContentInput } from '../../core/src/release-content.js';
+import { execFileSync } from 'node:child_process';
+import { mkdir, mkdtemp, rm, unlink, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { collectContentInput, planContentBatches, resumeContentBatches, assembleUnitNotes, type ContentSource, type ContentRuntime, type ContentWork } from '../src/release-content.js';
+import { isolatedBuildEnvironment } from '../src/build-environment.js';
+import { registerOfflineFixtureRoot } from './offline-fixtures.js';
+import { CONTENT_OUTPUT_SCHEMA, contentOutputSchema, verifyContentAttemptReceipts, splitContentText, validateContentResult, validateContentInput, type ContentInput } from '../../core/src/release-content.js';
 import { decodeCandidateDocument } from '../../core/src/release-candidate-record.js';
 
 const digest = (v: string) => createHash('sha256').update(v).digest('hex');
@@ -25,6 +31,47 @@ function runtime() {
   };
   return { port, saves, requests, calls: () => calls, advance: (ms: number) => { time += ms; }, edit: () => { editing = true; } };
 }
+
+it('retains reviewed document additions, removals and material edits beyond the first twelve files and chunks', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'release-doc-input-'));
+  registerOfflineFixtureRoot(workspace);
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: workspace, encoding: 'utf8', env: isolatedBuildEnvironment(process.env, workspace) }).trim();
+  try {
+    git('init', '--initial-branch=main');
+    git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid');
+    for (const path of ['units/app/docs', 'units/other/docs']) await mkdir(join(workspace, path), { recursive: true });
+    const files = Array.from({ length: 13 }, (_, index) => `units/app/docs/${String(index + 1).padStart(2, '0')}.md`);
+    const removed = 'units/app/docs/old.md', added = 'units/app/docs/start.adoc', unrelated = 'units/other/docs/manual.md';
+    for (const path of [...files, removed, unrelated]) await writeFile(join(workspace, path), '旧内容。\n');
+    git('add', '--all'); git('commit', '-m', 'docs: publish previous documentation');
+    const baseline = git('rev-parse', 'HEAD');
+    for (const path of files.slice(0, 12)) await writeFile(join(workspace, path), '旧内容。 \n');
+    await writeFile(join(workspace, files[12]!), '校订内容。\n'.repeat(1300) + '操作人员现在须先关闭设备。\n');
+    await unlink(join(workspace, removed)); await writeFile(join(workspace, added), '交付本版启用指南。\n');
+    await writeFile(join(workspace, unrelated), '其他产品的内容。\n');
+    git('add', '--all'); git('commit', '-m', 'docs: revise manual');
+    const unit = { ...input().units[0]!, path: 'units/app' };
+    const collected = await collectContentInput({ directory: workspace, candidateId: input().candidateId, configDigest: input().configDigest,
+      repository: 'example/product', conditional: true, allUnits: [unit, { id: 'other', path: 'units/other' }],
+      units: [{ workspace, unit, boundary: { kind: 'tag', sha: baseline, reference: 'v1.0.0', version: '1.0.0' },
+        identity: { repositoryId: 1, defaultBranch: 'main', targetSha: git('rev-parse', 'HEAD'), controllerSha: input().controllerSha } }],
+    });
+    expect(collected.sources.filter(source => source.documentationText).map(source => source.path)).toEqual(expect.arrayContaining([...files, removed, added]));
+    expect(collected.sources.some(source => source.path === unrelated)).toBe(false);
+    expect(collected.sources.find(source => source.path === removed)?.text).toContain('-旧内容。');
+    expect(collected.sources.find(source => source.path === added)?.text).toContain('+交付本版启用指南。');
+    const material = collected.sources.find(source => source.path === files[12] && source.text.includes('先关闭设备'))!;
+    expect(material.start).toBeGreaterThan(0);
+    const work = await planContentBatches(collected.input, collected.sources, { manifests: collected.manifests, gaps: collected.gaps }, true), r = runtime();
+    r.port.call = async text => {
+      expect(JSON.parse(text).sources.some((source: ContentSource) => source.id === material.id)).toBe(true);
+      return { text: JSON.stringify({paragraphs:[{ sourceIds:[material.id],section:'documentation',
+        textZh:'**操作手册**。操作人员需先关闭设备。',qualification:'SOURCE_CONFIRMED' }]}), model:'offline-fixture', usage:null };
+    };
+    expect(await resumeContentBatches(work, {}, r.port)).toEqual({ status: 'READY', calls: 1 });
+    expect(assembleUnitNotes(work)[0]?.content).toContain('## 📚 文档更新\n\n**操作手册**。操作人员需先关闭设备。');
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});
 
 it('generates one direct draft with seven sections and reuses an input-digest cache', async () => {
   const work = await planContentBatches(input(), [source(1, 'CONTEXT'), source(2)]), cache = {}, r = runtime();
@@ -135,19 +182,23 @@ it('archive compatibility keeps old bounded histories but rejects expanded histo
   await expect(decode([1, 2, 3, 4].map(i => attempt(i, 'REJECTED', 'CONTENT_OUTPUT_SCHEMA')))).rejects.toThrow('CONTENT_CACHE_INVALID');
 });
 
-it('sends the validator schema, retains diagnostics and binds exactly one explicit successor', async () => {
-  const work=await planContentBatches(input(),[source(1)]),cache={},r=runtime(),success=r.port.call;
-  const invalid=JSON.stringify({paragraphs:[{sourceIds:[source(1).id],section:'changes',textZh:'整理内容。',qualification:'confirmed'}]});
-  r.port.call=async request=>{expect(JSON.parse(request).outputSchema).toEqual(CONTENT_OUTPUT_SCHEMA);return {text:invalid,model:'fixture',usage:{inputTokens:2,outputTokens:3}};};
+it.each([false, true])('binds exactly one error recovery to its validator schema, conditional=%s', async conditional => {
+  const work=await planContentBatches(input(),[source(1)],undefined,conditional),cache={},r=runtime();
+  const response=(qualification:string)=>JSON.stringify({paragraphs:[{sourceIds:[source(1).id],section:conditional?'fixed':'changes',
+    textZh:conditional?'**读取修复**。修复读取错误。':'修复读取错误。',qualification}]});
+  const invalid=response('confirmed'), schema=contentOutputSchema(conditional);
+  r.port.call=async request=>{expect(JSON.parse(request).outputSchema).toEqual(schema);return {text:invalid,model:'fixture',usage:{inputTokens:2,outputTokens:3}};};
   expect(await resumeContentBatches(work,cache,r.port)).toEqual({status:'FAILED',calls:1});
   const old=structuredClone(work.input.batches[0]!.attempts[0]!);
   expect(old.diagnostic).toMatchObject({responseText:invalid,responseSha256:digest(invalid),responseBytes:Buffer.byteLength(invalid)});
   expect(old.diagnostic!.validationErrors).toContainEqual(expect.objectContaining({instancePath:'/paragraphs/0/qualification',keyword:'enum'}));
   expect(await resumeContentBatches(work,cache,r.port)).toEqual({status:'FAILED',calls:0});
-  const grant={candidateId:work.input.candidateId,batchId:work.input.batches[0]!.id,previousAttemptSha256:digest(JSON.stringify(old)),authorizationId:digest('decision'),outputContractSha256:digest(JSON.stringify(CONTENT_OUTPUT_SCHEMA))};
+  const grant={candidateId:work.input.candidateId,batchId:work.input.batches[0]!.id,previousAttemptSha256:digest(JSON.stringify(old)),authorizationId:digest('decision'),outputContractSha256:digest(JSON.stringify(schema))};
   r.port.recovery={...grant,previousAttemptSha256:digest('wrong')};
   await expect(resumeContentBatches(work,cache,r.port)).rejects.toThrow('CONTENT_RECOVERY_BINDING');
-  r.port.recovery=grant;r.port.call=success;
+  r.port.recovery={...grant,outputContractSha256:digest(JSON.stringify(contentOutputSchema(!conditional)))};
+  await expect(resumeContentBatches(work,cache,r.port)).rejects.toThrow('CONTENT_RECOVERY_BINDING');
+  r.port.recovery=grant;r.port.call=async()=>({text:response('SOURCE_CONFIRMED'),model:'fixture',usage:null});
   expect(await resumeContentBatches(work,cache,r.port)).toEqual({status:'READY',calls:1});
   expect(work.input.batches[0]!.attempts[0]).toEqual(old);
   expect(work.input.batches[0]!.attempts.map(a=>a.ordinal)).toEqual([1,2]);

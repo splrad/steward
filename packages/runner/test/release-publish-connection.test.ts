@@ -148,8 +148,9 @@ it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-r
   if(kind==='python-freeze')expect(manifest.toolLocks).toHaveProperty('source/requirements-build.txt',digest(f.source['requirements-build.txt']!));
 });
 
-it('prepares a single native Node delivery, changes the public set in its workflow, and reuses the original attempt',async()=>{
+it.each(['legacy','conditional'])('prepares a native Node delivery with the %s notes template and reuses the original attempt',async layout=>{
   const f=productPipelineFixture(2,false,[]),{context,source}=f;
+  const conditional=layout==='conditional';
   permitOfflineScript(resolve('scripts/inspect-python-release.py'));
   f.input.controllerDirectory=process.cwd();
   const workflow='.github/workflows/steward-release-publish.yml';
@@ -158,6 +159,10 @@ it('prepares a single native Node delivery, changes the public set in its workfl
   source['package.json']='{"name":"fixture-cli","version":"1.0.0"}';
   source['CHANGELOG.md']='## [1.0.0](https://github.com/example/product/compare/v0.9.0...v1.0.0)\n\n### Features\n\nCLI.\n';
   source['.release-notes/app.md']=['概述','更新内容','兼容性','升级与迁移','安装说明','已知问题','恢复'].map(label=>'## '+label+'\n\n已审文稿。').join('\n\n');
+  if(conditional) {
+    source['.release-notes/app.md']='## 获取与使用\n\n**安装命令**。从[本版附件](<https://github.com/example/product/releases/download/v1.0.0/fixture-cli.tgz>)获取 CLI。\n\n```sh\nnpm install -g ./fixture-cli.tgz\n```\n';
+    source['.github/release-contributors.json']=JSON.stringify([{id:902,evidence:'Offline confirmation'}]);
+  }
   function adoptedWorkflow(files:string[]) {
     return JSON.stringify({'run-name':'为 GitHub 打包 ${{ inputs.operation_key }}',on:{workflow_dispatch:{
       inputs:Object.fromEntries(['cycle_id','operation_key','source_sha','controller_sha'].map(key=>[key,{type:'string',required:true}]))
@@ -168,7 +173,7 @@ it('prepares a single native Node delivery, changes the public set in its workfl
     ]}}});
   }
   const initial=['fixture-cli.tgz'];
-  const sharedTemplate=source['.github/release-template.md.mustache']!;
+  const sharedTemplate=conditional ? await readFile('templates/repository/.github/release-template.md.mustache','utf8') : source['.github/release-template.md.mustache']!;
   source['.github/release-template.md.mustache']='disallowed product override';
   source[workflow]=adoptedWorkflow(initial);
   source['.github/delivery.json']=JSON.stringify({schemaVersion:3,repositoryAuthors:f.delivery.repositoryAuthors});
@@ -184,6 +189,15 @@ it('prepares a single native Node delivery, changes the public set in its workfl
     units:[{unit:'app',tag:'v1.0.0',version:'1.0.0',packageVersion:'1.0.0'}]});
   Object.assign(f.runs.get(2),{status:'completed',conclusion:'success'});
   const history=[mergedCandidateFixture(f.input)];
+  if(conditional) {
+    const chunk=history[0]!.value;
+    const document=JSON.parse(chunk.content);
+    const actor={id:902,login:'verified-contributor',type:'User',profileUrl:'https://github.com/verified-contributor',avatarUrl:'https://avatars.githubusercontent.com/u/902'};
+    const projection={actors:[actor],contributors:{contributors:[{id:actor.id,login:actor.login,profileUrl:actor.profileUrl,avatarUrl:actor.avatarUrl,alt:actor.login}],unresolved:0}};
+    Object.assign(document.session.identity,projection,{contributorOwnerId:null,units:[{id:'app',...projection}]});
+    chunk.content=JSON.stringify(document);
+    chunk.documentDigest=digest(chunk.content);
+  }
   const artifact={id:810,name:['delivery','github-release',context.repositoryId,'app',S,100,1].join('-'),expired:false,
     digest:'sha256:'+digest('node archive'),workflow_run:{id:100,head_sha:S},created_at:'2026-10-26T00:00:30.000Z'};
   let deliveryConclusion='success',wrongSourcePath=false,notesStatus=200;
@@ -232,10 +246,22 @@ it('prepares a single native Node delivery, changes the public set in its workfl
   expect(unavailableSource).not.toHaveBeenCalled();
   notesStatus=200;
   const prepared=await prepare('first',initial);if(!Array.isArray(prepared))throw Error('workflow publication expected');
+  const target=prepared[0];
+  if(!target||!('publicBody' in target)||typeof target.publicBody!=='string')throw Error('workflow public body expected');
   expect(prepared[0]).toMatchObject({githubDelivery:{artifactId:810,runId:100,attempt:1},manifest:{
     schemaVersion:4,packageVersion:'1.0.0',attested:false,artifacts:[{path:'fixture-cli.tgz'}]}});
   expect(await readdir(prepared[0]!.directory)).toEqual(initial);
   expect(prepared[0]).toHaveProperty('publicBody',expect.stringContaining('fixture-cli.tgz'));
+  if(conditional) {
+    const body=target.publicBody;
+    expect(body).toContain('~~~sh\nnpm install -g ./fixture-cli.tgz\n~~~');
+    expect(body).toContain('alt="verified-contributor" width="48"');
+    expect(body).toContain('## 版本记录');
+    const before=source['.release-notes/app.md']!;
+    source['.release-notes/app.md']=before.replace('/fixture-cli.tgz>)','/internal.tgz>)');
+    await expect(prepare('unselected-notes-link',initial)).rejects.toThrow('acquisition link is outside the release version');
+    source['.release-notes/app.md']=before;
+  }
   const notes=source['.release-notes/app.md']!;
   delete source['.release-notes/app.md'];
   const skipped=vi.fn();
@@ -244,7 +270,7 @@ it('prepares a single native Node delivery, changes the public set in its workfl
   source['.release-notes/app.md']=notes;
   const retained:WorkflowDeliveryReceipt={artifactId:artifact.id,runId:100,attempt:1,digest:artifact.digest};
   Object.assign(context.cycle.units[0]!,{githubDelivery:retained});
-  expect(await prepare('retry',initial)).toMatchObject([{githubDelivery:retained,manifest:{artifacts:[{path:'fixture-cli.tgz',sha256:digest(packageBytes)}]}}]);
+  expect(await prepare('retry',initial)).toMatchObject([{githubDelivery:retained,publicBody:target.publicBody,manifest:{artifacts:[{path:'fixture-cli.tgz',sha256:digest(packageBytes)}]}}]);
   deliveryConclusion='failure';
   await expect(prepare('failed-delivery-job',initial)).rejects.toThrow('successful GitHub delivery artifact missing');
   deliveryConclusion='success';
@@ -286,11 +312,13 @@ it('prepares a single native Node delivery, changes the public set in its workfl
     return JSON.stringify(built);
   };
   const targets=[{name:'linux-x64',runner:'ubuntu-24.04'},{name:'win-x64',runner:'windows-2025'}];
+  if(conditional) source['.release-notes/app.md']='## 获取与使用\n\n**按平台安装**。从[本版附件](<https://github.com/example/product/releases/tag/v1.0.0>)选取对应平台的软件包。\n';
   source[workflow]=aggregate(targets);
   const platformFiles=targets.map(({name})=>'fixture-cli-'+name+'.tgz');
   const two=await prepare('aggregate-two',platformFiles);
   expect(two).toMatchObject([{githubDelivery:{runId:100,artifactId:811,attempt:1},
     manifest:{artifacts:platformFiles.map(path=>({path,sha256:digest(packageBytes)}))}}]);
+  if(conditional) expect(two).toMatchObject([{publicBody:expect.stringContaining('/releases/tag/v1.0.0')}]);
   await expect(prepare('reject-matrix-exclusion',[...platformFiles,'fixture-cli-debug.tgz'])).rejects.toThrow('RN_DELIVERY_SELECTION');
   await expect(prepare('reject-non-package',[...platformFiles,'checksums.txt'])).rejects.toThrow('RN_DELIVERY_SELECTION');
   const third={name:'macos-arm64',runner:'macos-15'};

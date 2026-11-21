@@ -15,6 +15,8 @@ import { setLogger } from 'release-please/build/src/util/logger.js';
 import { releaseProtectionFixture } from './fixtures/release-protection.js';
 import { createHash } from 'node:crypto';
 import { CONTENT_OUTPUT_SCHEMA } from '../../core/src/release-content.js';
+import { pipelineNotes } from '../src/release-pipeline.js';
+import type { BuildPipelineRecord } from '../src/release-pipeline-record.js';
 
 // This scenario includes many durable state commits and five independent wakes, including merged-source handoff.
 // Individual production Git operations retain their existing 30/60/90 second bounds.
@@ -46,15 +48,18 @@ it('projects legacy web-flow cache at merge while preserving original actors and
 const { readReleaseRecords,writeReleaseRecords,releaseCommand } = await import(pathToFileURL(resolve('scripts/release-record.mjs')).href);
 const roots: string[] = [];
 afterEach(async () => { vi.unstubAllGlobals();for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
-it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-recovery', 'pending-recovery', 'legacy-pending-cancel','compact'])('runs the native candidate adapter through protected state, real Git, upstream generation, fake SDK and same-PR editing: %s', async pinCase => {
+it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-recovery', 'pending-recovery', 'legacy-pending-cancel',
+  'compact', 'conditional-organization', 'conditional-personal', 'conditional-compact'])('runs the native candidate adapter through protected state, real Git, upstream generation, fake SDK and same-PR editing: %s', async pinCase => {
   const root = await mkdtemp(join(tmpdir(), 'candidate-native-test-')); roots.push(root); registerOfflineFixtureRoot(root);
   const directory = join(root, 'source'), remote = join(root, 'remote.git'); await mkdir(directory);
   const env = isolatedBuildEnvironment(process.env, root), identity = { name: 'Fixture', email: 'fixture@example.invalid' };
   const git = async (...args: string[]) => (await promisify(execFile)('git', args, { cwd: directory, env, encoding: 'utf8', windowsHide: true })).stdout.trim();
+  const conditional = pinCase.startsWith('conditional-');
+  const personal = pinCase === 'conditional-personal';
   await git('init', '--initial-branch=main'); await git('config', 'user.name', identity.name); await git('config', 'user.email', identity.email);
   await mkdir(join(directory, '.github'));
   await mkdir(join(directory,'.github/workflows'));
-  const compact=pinCase==='compact';
+  const compact=pinCase==='compact'||pinCase==='conditional-compact';
   const explicitWorkflow=pinCase==='new-source'?'.github/workflows/fixture-release.yaml':undefined;
   const buildWorkflow=explicitWorkflow??'.github/workflows/steward-release-publish.yml';
   const notesPath=compact?'.release-notes/root.md':'.release-notes/app.md';
@@ -79,7 +84,26 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
       assets:[{id:'app',name:'app-${version}.zip',mediaType:'application/zip'}],channels:registeredChannels}]};
   for (const [path, text] of Object.entries({ 'README.md': '# 应用\n\n公开使用说明。\n', 'VERSION': '0.0.0\n', 'release-please-config.json': JSON.stringify(config),
     '.release-please-manifest.json': '{".":"0.0.0"}', '.github/delivery.json': JSON.stringify(delivery), 'code.txt': '功能实现\n' })) await writeFile(join(directory, path), text);
-  await git('add', '.'); await git('commit', '--signoff', '-m', 'feat: initial product'); const B = await git('rev-parse', 'HEAD');
+  if (conditional) {
+    await writeFile(join(directory, '.github/release-template.md.mustache'), compact ? 'Product override is ignored in schema v3.\n'
+      : await readFile('templates/repository/.github/release-template.md.mustache'));
+    await writeFile(join(directory, '.github/release-contributors.json'), JSON.stringify([7, 42, 44, 45, 46, 19864447].map(id => ({ id, evidence: 'Offline confirmation fixture' }))));
+  }
+  await git('add', '.'); await git('commit', '--signoff', '-m', 'feat: initial product');
+  const commitAuthors = new Map<string, number>();
+  if (conditional) {
+    commitAuthors.set(await git('rev-parse', 'HEAD'), 42);
+    for (const author of [7, 42, 43, 44, 46, 47, 19864447]) {
+      await writeFile(join(directory, 'code.txt'), `改动 ${author}\n`);
+      await git('add', 'code.txt'); await git('commit', '--signoff', '-m', 'fix: adjust product behavior');
+      commitAuthors.set(await git('rev-parse', 'HEAD'), author);
+    }
+  }
+  const B = await git('rev-parse', 'HEAD');
+  const actor = (id: number) => {
+    const login = ({7:'author',42:'contributor',43:'service',44:'owner',45:'committer-only',46:'robot[bot]',47:'unknown',19864447:'web-flow'} as Record<number,string>)[id]!;
+    return { id, login, type: id === 46 ? 'Bot' : 'User', html_url: 'https://github.com/' + login, avatar_url: `https://avatars.githubusercontent.com/u/${id}` };
+  };
   await git('init', '--bare', remote); await git('push', '--porcelain', remote, 'HEAD:refs/heads/main');
   await git('switch', '--orphan', 'steward/release-state');
   const repository = { schemaVersion: 3, releaseAdoption:{sourceSha:B,prNumber:1}, repositoryId: 1, defaultBranch: 'main', revision: 0, lastObservedDefaultSha: B, lastCompletedCycleId: null,
@@ -101,7 +125,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     requests.push({ method, path, body }); expect(url.origin).toBe('https://api.github.com'); let value: any;
     if (method === 'GET' && (path.includes('/git/ref/heads/') || path.endsWith('/pulls')))
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer fixture-read');
-    if(path==='/repos/fixture/product')value={id:1,full_name:'fixture/product',default_branch:'main',archived:false,disabled:false};
+    if(path==='/repos/fixture/product')value={id:1,full_name:'fixture/product',default_branch:'main',archived:false,disabled:false,owner:{id:personal?44:500,type:personal?'User':'Organization'}};
     else if(compact&&path.includes('/git/trees/')) {
       const lines=(await git('ls-tree','-r','-z',path.split('/').at(-1)!)).split('\0').filter(Boolean);
       value={truncated:false,tree:lines.map(line=>{const [,mode,type,sha,path]=/^(\d+) (\w+) ([a-f0-9]{40})\t(.+)$/.exec(line)!;return {mode,type,sha,path};})};
@@ -111,7 +135,10 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     }
     else if(compact&&path.includes('/contents/')) {
       const file=path.split('/contents/')[1]!,ref=url.searchParams.get('ref');
-      const bytes=path.startsWith('/repos/splrad/steward/')?await readFile(file):Buffer.from(await git('show',ref+':'+file));
+      if(path.startsWith('/repos/splrad/steward/'))expect(ref).toBe(sourceControllerSha);
+      const bytes=path.startsWith('/repos/splrad/steward/')
+        ?await readFile(conditional?file:'packages/core/test/fixtures/release-template-compact.mustache')
+        :Buffer.from(await git('show',ref+':'+file));
       const fileSha=path.startsWith('/repos/splrad/steward/')?createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex')
         :await git('rev-parse',ref+':'+file);
       const contents=path.startsWith('/repos/splrad/steward/')?bytes
@@ -137,7 +164,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     else if (path.endsWith('/pulls') && method === 'POST') {
       const number=9+pulls.length;
       pr = { id:number,number,user:{id:301115370},url:`https://api.github.com/repos/fixture/product/pulls/${number}`,
-        head: { repo: { id: 1 }, ref: body.head, sha: await head(body.head) }, base: { ref: 'main', repo: { id: 1,full_name:'fixture/product' } }, state: 'open', merged_at: null, labels: [], title: body.title, body: body.body };
+        head: { repo: { id: 1 }, ref: body.head, sha: await head(body.head) }, base: { ref: 'main', repo: { id: 1,full_name:'fixture/product' } }, state: 'open', merged:false, merged_at: null, labels: [], title: body.title, body: body.body };
       pulls.push(pr);
       throw new Error('accepted create response lost');
     } else if (path.endsWith('/pulls')) {
@@ -155,8 +182,14 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     }
     else if (/\/git\/blobs\/[a-f0-9]{40}$/.test(path)) value={encoding:'base64',content:(await promisify(execFile)('git',
       ['cat-file','blob',path.split('/').at(-1)!],{cwd:directory,env,encoding:'buffer',windowsHide:true})).stdout.toString('base64')};
-    else if (/\/commits\/[a-f0-9]{40}$/.test(path)) value = { sha: path.split('/').at(-1), author: { id: 42, login: 'contributor' }, committer: { id: 7, login: 'author' } };
-    else if (path.startsWith('/users/')) { const login = path.split('/').at(-1)!; value = { id: login === 'author' ? 7 : 42, login, type: 'User', html_url: `https://github.com/${login}`, avatar_url: `https://avatars.githubusercontent.com/u/${login === 'author' ? 7 : 42}` }; }
+    else if (/\/commits\/[a-f0-9]{40}$/.test(path)) {
+      const sha=path.split('/').at(-1)!;
+      value={sha,author:actor(commitAuthors.get(sha)??42),committer:actor(conditional?45:7)};
+    }
+    else if (path.startsWith('/users/')) {
+      value=[7,42,43,44,45,46,47,19864447].map(actor).find(person=>path==='/users/'+person.login);
+      expect(value).toBeDefined();
+    }
     else if (/\/issues\/[0-9]+\/comments$/.test(path) && method === 'GET') value = comments.filter(comment=>comment.issue===Number(path.split('/').at(-2)));
     else if (/\/issues\/[0-9]+\/comments$/.test(path) && method === 'POST') { value = { id: comments.length+1,issue:Number(path.split('/').at(-2)),user: { id: 301115370 }, body: body.body }; comments.push(value); }
     else if (/\/issues\/comments\/[0-9]+$/.test(path) && method === 'PATCH') { value=comments.find(comment=>comment.id===Number(path.split('/').at(-1)));value.body=body.body; }
@@ -179,7 +212,9 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   };
   const language = { preflight: async () => 'READY', call: async (text: string) => {
     modelCalls++; const input = JSON.parse(text);
-    return { text: JSON.stringify({paragraphs:[{sourceIds:[input.sources[0].id],section:'changes',textZh:'本次提供功能实现及使用资料。',qualification:'SOURCE_CONFIRMED'}]}),model:'offline-fixture',usage:{inputTokens:100,outputTokens:50}};
+    expect(Boolean(input.conditional)).toBe(conditional);
+    return { text: JSON.stringify({paragraphs:[{sourceIds:[input.sources[0].id],section:conditional?'fixed':'changes',
+      textZh:conditional?'**启动修复**。本次修复了已核实的启动错误。':'本次提供功能实现及使用资料。',qualification:'SOURCE_CONFIRMED'}]}),model:'offline-fixture',usage:{inputTokens:100,outputTokens:50}};
   } };
   const request = { directory, writeDirectory: join(root, 'writes'), remote, repository: 'fixture/product', repositoryId: 1, defaultBranch: 'main', appBotId: 301115370, identity };
   await mkdir(request.writeDirectory);
@@ -290,6 +325,13 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   const firstHead = await head('steward/release-candidate'), firstCalls = modelCalls; expect(firstCalls).toBeGreaterThan(0); await refresh();
   const identityCalls = requests.filter(r => /\/commits\/|\/users\//.test(r.path)).length;
   expect(comments[0].body).toContain('github.com&#x2F;contributor'); expect(comments[0].body).not.toContain('github.com&#x2F;author');
+  if (conditional) {
+    expect(comments[0].body).toContain('### 🐛 错误修复');
+    expect(comments[0].body).toContain('width="48"');
+    expect(comments[0].body.split('github.com&#x2F;contributor')).toHaveLength(2);
+    expect(comments[0].body.includes('github.com&#x2F;owner')).toBe(!personal);
+    expect(comments[0].body).not.toMatch(/committer-only|web-flow|&#x2F;robot|&#x2F;service|&#x2F;unknown|文档更新/);
+  }
   pr.title = '人工修改标题'; pr.body = '人工修改正文'; pr.labels = [{ name: 'release:editing' }];
   expect(await nativeReleaseCandidate({ ...request, writeDirectory: join(root, 'edit-writes') }, options)).toMatchObject({ reason: 'EDITING', head: firstHead });
   expect(modelCalls).toBe(firstCalls); expect(await head('steward/release-candidate')).toBe(firstHead); await refresh();
@@ -297,7 +339,9 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   expect(state.repository.candidate.editingAckHead).toBeUndefined(); expect(state.repository.candidate.prNumber).toBe(9);
   await git('fetch', '--no-tags', '--no-recurse-submodules', remote, 'refs/heads/steward/release-candidate');
   await git('switch', '-c', 'reviewed-notes', 'FETCH_HEAD');
-  const reviewedNotes = (await git('show', 'HEAD:'+notesPath)).replace('## 概述', '## 概述\n\n人工审核说明。').replace(/\n/g, '\r\n') + '\r\n';
+  const reviewedNotes = (await git('show', 'HEAD:'+notesPath))
+    .replace(conditional ? '已核实的启动错误' : '## 概述', conditional ? '人工审核确认的启动错误' : '## 概述\n\n人工审核说明。')
+    .replace(/\n/g, '\r\n') + '\r\n';
   await writeFile(join(directory,notesPath),reviewedNotes);
   await git('add','--',notesPath);await git('commit','--signoff','-m','docs: review candidate notes');
   const humanHead = await git('rev-parse', 'HEAD'); await git('push', '--porcelain', remote, 'HEAD:refs/heads/steward/release-candidate');
@@ -312,6 +356,17 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   expect(pr.title).toBe('人工修改标题'); expect(pr.body).toBe('人工修改正文');
   expect(requests.filter(r => r.method === 'POST' && r.path.endsWith('/pulls'))).toHaveLength(1);
   expect(requests.filter(r => r.method === 'PATCH').every(r => r.path.endsWith('/issues/comments/1'))).toBe(true);
+  if (conditional) {
+    const producer={repositoryId:1296724484,runId:42,attempt:1,controllerSha:options.controllerSha,requestKey:'f'.repeat(64)};
+    expect(await nativeReleaseCandidate({...request,writeDirectory:join(root,'manual-writes')},{...options,manualCandidateProducer:producer}))
+      .toMatchObject({status:'READY',reason:'MANUAL_VALIDATED',head:humanHead});
+    await refresh();
+    const updated=await readReleaseRecords({directory,targetRef:'steward/release-state',repositoryId:1});
+    const archived=await decodeCandidateDocument(updated.domainRecords.filter((entry:any)=>entry.value.documentKind==='session').map((entry:any)=>entry.value));
+    expect(archived.manualValidation.projection.preview).toContain('人工审核确认的启动错误');
+    expect(archived.manualValidation.projection.preview).toContain('width="48"');
+    expect(await head('steward/release-candidate')).toBe(humanHead);
+  }
   await refresh();
   await git('fetch', '--no-tags', '--no-recurse-submodules', remote, 'refs/heads/steward/release-candidate');
   await git('merge', '--ff-only', 'FETCH_HEAD'); await git('push', '--porcelain', remote, 'HEAD:refs/heads/main');
@@ -403,6 +458,27 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   expect(archive).toMatchObject({ cycleId: `pr-9-${S}`, sourceSha: S, candidate: expect.objectContaining({prNumber:9,publishedHead:pr.head.sha}),
     pull: { number: 9, head: pr.head.sha, mergeCommitSha: S }, session: { pending: null, conflict: null } });
   expect(archive.documents.some((file: any) => file.path.endsWith('/session.json'))).toBe(true);
+  if (conditional) expect(archive.session.identity).toMatchObject({contributorOwnerId:personal?44:null,
+    contributors:{contributors:(personal?[42]:[42,44]).map(id=>expect.objectContaining({id}))}});
+  if (conditional && !compact) {
+    const { tag, version } = merged.cycles[0].value.units[0];
+    const contributors = archive.session.identity.units[0].contributors.contributors;
+    const templateBytes = await readFile('templates/repository/.github/release-template.md.mustache');
+    const build: BuildPipelineRecord = { schemaVersion: 1, kind: 'build', repositoryId: request.repositoryId,
+      fullName: request.repository, sourceSha: S, controllerSha: sourceControllerSha, delivery: { schemaVersion: 1, units: delivery.units!, repositoryAuthors: delivery.repositoryAuthors },
+      cycleId: merged.cycles[0].value.id, requestKey: 'a'.repeat(64), buildRef: 'refs/heads/steward/build/fixture',
+      runId: 10, runAttempt: 1, toolLocks: {}, deliverySha256: 'b'.repeat(64),
+      templateSha256: createHash('sha256').update(templateBytes).digest('hex'),
+      units: [{ id: 'app', tag, version, packageVersion: version, builds: [],
+        assets: [{ id: 'app', name: `app-${version}.zip`, build: 'fixture' }], contributors }],
+    };
+    const frozen = await pipelineNotes(build, 'app', directory);
+    expect(frozen).toContain('人工审核确认的启动错误');
+    expect(frozen).toContain('## 版本记录');
+    expect(frozen).toContain(`/blob/${S}/CHANGELOG.md`);
+    expect(frozen).toContain('width="48"');
+    expect(frozen).not.toMatch(/committer-only|web-flow|&#x2F;robot|&#x2F;service|&#x2F;unknown/);
+  }
   const tree = (await promisify(execFile)('git', ['ls-tree', '-r', '-z', archive.stateCommit], { cwd: directory, env, encoding: 'utf8', windowsHide: true })).stdout;
   const blobs = new Map(tree.split('\0').filter(Boolean).map(entry => {
     const match = /^100644 blob ([a-f0-9]{40})\t(.+)$/.exec(entry)!;
