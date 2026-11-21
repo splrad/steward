@@ -20,7 +20,7 @@ import { defaultBuildWorkflow, dispatchWorkflow, encodeRepositoryPath, githubDel
 import { parseReleaseDescriptor,artifactNames } from '../../core/src/release-descriptor.js';
 import { parseLegacyRepositoryCatalog } from '../../core/src/legacy-repository-policy.js';
 import { decodeNormalizedDelivery,type NormalizedDeliveryEvidence } from '../../core/src/native-evidence.js';
-import { githubUnits, parseReleaseRecord, sameWorkflowDelivery, type CycleRecord, type RepositoryRecord, type WorkflowDeliveryReceipt } from '../../core/src/release-observation.js';
+import { githubUnits, parseReleaseRecord, sameWorkflowDelivery, type CycleRecord, type RepositoryRecord, type WorkflowChannelReceipt, type WorkflowDeliveryReceipt } from '../../core/src/release-observation.js';
 import { decodeCandidateDocument, type CandidateArchiveChunk } from '../../core/src/release-candidate-record.js';
 import { selectReleaseContributors } from '../../core/src/release-candidate.js';
 import { nativeRunFact, NativeEvidenceReader, EvidenceReadError, type EvidenceContext, type EvidenceTransport, nativeEvidenceTransport } from './native-release-evidence.js';
@@ -117,7 +117,21 @@ export async function readCycleDelivery(context:EvidenceContext,records:{path:st
   if(source.sha!==context.cycle.deliveryConfigSha)fail('original delivery evidence required');
   const raw=JSON.parse(source.bytes.toString('utf8'));
   const settings=raw.schemaVersion===3?JSON.parse((await readNativeSourceFile(reader,sourceSha,'release-please-config.json')).bytes.toString('utf8')):undefined;
-  return {delivery:parseDeliveryConfig(raw,settings),legacy:null};
+  const delivery=parseDeliveryConfig(raw,settings);
+  if(delivery.schemaVersion!==3)return {delivery,legacy:null};
+  const workflow=await readNativeSourceFile(reader,sourceSha,delivery.buildWorkflow!);
+  const handoff=applyWorkflowDelivery(delivery,workflow.bytes);
+  assertFrozenWorkflowChannels(delivery,context.cycle);
+  return {delivery,legacy:null,handoff};
+}
+
+function assertFrozenWorkflowChannels(delivery:DeliveryConfig,cycle:CycleRecord) {
+  for(const unit of cycle.units) {
+    const declared=delivery.units.find(item=>item.id===unit.id);
+    if(!declared||Boolean(unit.githubDisabled)===declared.channels.some(channel=>channel.id==='github-release')
+      || JSON.stringify(cycle.requiredChannels.filter(channel=>channel.unitId===unit.id).map(channel=>channel.channelId).sort())
+         !==JSON.stringify(declared.channels.filter(channel=>channel.id!=='github-release').map(channel=>channel.id).sort()))fail('frozen workflow channels');
+  }
 }
 /** Read the exact original S/C sources before producing a historical projection for protected Git adoption. */
 export async function prepareNormalizedDelivery(context:EvidenceContext,io:EvidenceTransport,controllerIo:EvidenceTransport,observedAt:string) {
@@ -161,6 +175,8 @@ export async function pipelineChannelIdentity(inputs:ProductChannelInputs,state:
   const {delivery}=await readCycleDelivery(context,state.domainRecords,io);
   assertProductDelivery(delivery);
   for(const target of targets)if(!delivery.units.some(unit=>unit.id===target.unitId&&unit.channels.some(channel=>channel.id===target.channelId)))fail('undeclared channel');
+  if(cycle.workflowDelivery&&targets.some(target=>!cycle.units.find(unit=>unit.id===target.unitId)?.channelDeliveries?.some(receipt=>receipt.channelId===target.channelId)))
+    fail('frozen channel delivery required');
   const digest=channelTargetsDigest(context,targets);
   if(inputs.mode==='observe') {
     if(inputs.operation_key!==digest||inputs.request_key!==hash(Buffer.from(JSON.stringify(['observe',digest,inputs.execution_sha])))
@@ -181,9 +197,23 @@ export async function pipelineChannelIdentity(inputs:ProductChannelInputs,state:
 
 export async function pipelineChannelDownload(context:EvidenceContext,target:ChannelTarget,directory:string,gh:GhCommand=nativeGhCommand,
   download:ReleaseDownload=nativeReleaseDownload(process.env.GH_TOKEN),
-  source?:{unit:DeliveryUnit;controllerDirectory:string;history:{path:string;commit:string;value:unknown}[]}) {
+  source?:{unit:DeliveryUnit;controllerDirectory:string;history:{path:string;commit:string;value:unknown}[]},
+  io:EvidenceTransport=nativeEvidenceTransport(process.env.GH_TOKEN),workflowDownload=downloadWorkflowArtifact) {
   channelTargets(context,[target]);
   const unit=context.cycle.units.find(unit=>unit.id===target.unitId)!;
+  const frozen=unit.channelDeliveries?.find(item=>item.channelId===target.channelId);
+  if(context.cycle.workflowDelivery&&(!frozen||!source))fail('frozen channel delivery required');
+  if(frozen&&source) {
+    const token=process.env.GH_TOKEN;
+    if(!token)fail('channel source authentication');
+    const original=await readCycleDelivery(context,source.history,io);
+    assertRegisteredAdapters(context.repositoryId,context.repository,original.delivery);
+    await verifyContinuationReleases(context,io,new Set([target.unitId]));
+    const handoff=original.handoff;
+    if(!handoff?.units.get(unit.id)?.has(frozen.channelId))fail('frozen channel source');
+    const {manifest}=await readWorkflowChannel(context,unit,frozen.channelId,handoff.attested,directory,source.controllerDirectory,token!,io,workflowDownload,gh);
+    return {...manifest,channelFiles:manifest.artifacts.map(asset=>asset.path)};
+  }
   let publicSelection:string[]|undefined;
   const github=source?.unit.channels.find(channel=>channel.id==='github-release');
   if (source && github && (github.artifactIds?.length !== undefined && github.artifactIds.length !== source.unit.assets.length
@@ -254,15 +284,16 @@ export async function pipelineChannelDownload(context:EvidenceContext,target:Cha
   return m;
 }
 /** Only registered product workflows may consume the corresponding channel credential. */
-export function assertRegisteredAdapters(repositoryId: number, repository: string, delivery: Pick<DeliveryConfig,'units'>) {
+export function assertRegisteredAdapters(repositoryId: number, repository: string, delivery: Pick<DeliveryConfig,'units'> & Partial<Pick<DeliveryConfig,'schemaVersion'>>) {
   const registration = registrations.find(item => item.id === repositoryId && item.name === repository);
   for (const unit of delivery.units) for (const channel of unit.channels) {
     if (channel.id === 'github-release' || !channel.required) continue;
     if (!registration?.externalAdapters.some(adapter => adapter.unitId === unit.id
       && adapter.channelId === channel.id && adapter.location === channel.location))
       fail('external adapter is not registered for this repository, unit and destination');
-    if (unit.channels.some(item=>item.id==='github-release' && !item.required)) fail('registered external adapter requires a published Release ID');
-    if (channel.id === 'winget') {
+    if (!unit.channels.some(item=>item.id==='github-release' && item.required)
+      && (delivery.schemaVersion===3 || unit.channels.some(item=>item.id==='github-release'))) fail('registered external adapter requires a published Release ID');
+    if (channel.id === 'winget' && delivery.schemaVersion!==3) {
       const inventory = [...deliveryAssetNames(unit,'1.0.0','1.0.0')].map(([id,path])=>({id,path}));
       const publicFiles = channelFiles(unit,'github-release',inventory);
       const [installer] = channelFiles(unit,'winget',inventory);
@@ -278,10 +309,15 @@ export function assertProductDelivery(delivery:Pick<DeliveryConfig,'units'>) {
 /** The merged source is eligible only when its full Git tree matches the reviewed candidate. */
 export function mergedBuildCycle(input: { prNumber: number; sourceSha: string; controllerSha: string; sourceTree: string; reviewedTree: string;
   deliveryBlobSha: string; delivery: unknown; releasePlease?:Parameters<typeof parseDeliveryConfig>[1];
+  workflow?:Uint8Array;
   units: { id: string; path: string; version: string; tag: string }[]; repository?:string; repositoryId?:number }): CycleRecord {
   if (![input.sourceSha, input.controllerSha, input.sourceTree, input.reviewedTree, input.deliveryBlobSha].every(sha => /^[a-f0-9]{40}$/.test(sha))
     || input.sourceTree !== input.reviewedTree || !input.units.length) fail('merged product tree differs from reviewed source');
   const delivery = parseDeliveryConfig(input.delivery,input.releasePlease);
+  if(delivery.schemaVersion===3) {
+    if(!input.workflow)fail('reviewed delivery workflow required');
+    applyWorkflowDelivery(delivery,input.workflow);
+  }
   assertProductDelivery(delivery);
   if(input.repository && input.repositoryId) assertRegisteredAdapters(input.repositoryId,input.repository,delivery);
   if(new Set(input.units.map(unit=>unit.id)).size!==input.units.length||new Set(input.units.map(unit=>unit.path)).size!==input.units.length)fail('merged duplicate unit mapping');
@@ -289,7 +325,9 @@ export function mergedBuildCycle(input: { prNumber: number; sourceSha: string; c
   return parseReleaseRecord('cycle', { id: `pr-${input.prNumber}-${input.sourceSha}`, prNumber: input.prNumber, sourceSha: input.sourceSha,
     controllerSha: input.controllerSha, deliveryConfigSha: input.deliveryBlobSha,
     ...(delivery.buildWorkflow === undefined ? {} : {buildWorkflow:delivery.buildWorkflow}),
-    units: input.units.map(unit => ({ id: unit.id, version: unit.version, tag: unit.tag, releaseId: null, assets: [], notesDigest: null, manifestDigest: null })),
+    ...(delivery.schemaVersion===3?{workflowDelivery:true}:{}),
+    units: input.units.map(unit => ({ id: unit.id, version: unit.version, tag: unit.tag, releaseId: null, assets: [], notesDigest: null, manifestDigest: null,
+      ...(delivery.schemaVersion===3&&!delivery.units.find(item=>item.id===unit.id)!.channels.some(channel=>channel.id==='github-release')?{githubDisabled:true}:{}) })),
     requiredChannels: delivery.units.filter(unit => input.units.some(value => value.id === unit.id)).flatMap(unit => unit.channels.filter(channel => channel.required && channel.id !== 'github-release').map(channel => ({ unitId: unit.id, channelId: channel.id }))),
     dispatches: [], publications: [], channelFacts: [], executionEvidence: [], completionObservations: [], completedEvidencePath: null, repairOf: null, approvedRepairDecision: null });
 }
@@ -371,8 +409,8 @@ export async function pipelineIdentity(input: ProductBuildInput, environment: No
   const matrix:{unit:string;target:string;assets:string[]}[]=workflow?.jobs?.build?.strategy?.matrix?.include;
   const workflowOwned=delivery.schemaVersion===3;
   if(workflowOwned) {
-    const handoff=workflowGitHubDelivery(workflow);
-    if(!handoff||handoff.sealed)fail('workflow-owned product must deliver its files');
+    applyWorkflowDelivery(delivery,workflowBytes);
+    assertFrozenWorkflowChannels(delivery,cycle);
   } else if (!Array.isArray(matrix) || !matrix.length || matrix.some(row => !row || Object.keys(row).sort().join(',') !== 'assets,target,unit'
     || !/^[a-z][a-z0-9-]*$/.test(row.target) || !Array.isArray(row.assets) || !row.assets.length)) fail('native producer matrix');
   const projection=await nativeDeliveryProjection(delivery,cycle.units,source,input.controllerDirectory);
@@ -650,7 +688,7 @@ function workflowGitHubDelivery(workflow:any) {
     ||typeof selected.with?.name!=='string'||!selected.with.name.startsWith(prefix)
     ||![undefined,false,'false'].includes(selected.with.overwrite))
     fail('GitHub delivery workflow step');
-  for(const step of steps.filter(step=>step!==selected&&isUpload(step))) {
+  for(const step of jobs.flatMap(job=>job.steps??[]).filter(step=>step!==selected&&isUpload(step))) {
     const other=String(step.with?.name??'artifact').match(/^[A-Za-z0-9_.-]+/)?.[0]??'';
     if(prefix.startsWith(other)||other.startsWith(prefix))fail('ambiguous GitHub delivery upload name');
   }
@@ -661,8 +699,56 @@ function workflowGitHubDelivery(workflow:any) {
 
 type DeliveryRun=Pick<PipelineSource,'fullName'|'sourceSha'|'repositoryId'|'runId'|'attempt'>;
 export async function githubDeliveryArtifact(record:DeliveryRun,unitId:string,jobName:string,pages:NativePages,retainedAttempt?:number):Promise<WorkflowDeliveryReceipt> {
+  return workflowDeliveryArtifact(record,unitId,jobName,'github-release',githubDeliveryJobStep,pages,retainedAttempt);
+}
+
+const deliverySteps={
+  'github-release':githubDeliveryJobStep,
+  'ghcr-assets':'Upload GHCR assets delivery',
+  winget:'Upload WinGet delivery',
+} as const;
+type WorkflowChannel=keyof typeof deliverySteps;
+type WorkflowHandoff={units:Map<string,Map<WorkflowChannel,string>>;attested:boolean};
+export function applyWorkflowDelivery(delivery:DeliveryConfig,bytes:Uint8Array):WorkflowHandoff {
+  const document=parseDocument(new TextDecoder('utf-8',{fatal:true}).decode(bytes),{uniqueKeys:true});
+  if(document.errors.length)fail('source workflow');
+  const workflow=document.toJS({maxAliasCount:0}),jobs=Object.values(workflow?.jobs??{}) as any[];
+  if(!jobs.length)fail('workflow delivery jobs');
+  const known=new Map(delivery.units.map(unit=>[unit.id,new Map<WorkflowChannel,string>()]));
+  const submissions=new Set<unknown>();
+  const allSteps=jobs.flatMap(job=>job.steps??[]);
+  if(allSteps.some(step=>step?.name==='business-freeze' && /^actions\/upload-artifact@/.test(step.uses??'')))
+    fail('workflow-owned product must deliver its files');
+  for(const job of jobs)for(const step of job.steps??[]) {
+    const channel=(typeof step?.id==='string' ? step.id.slice('upload-'.length) : '') as WorkflowChannel;
+    if(step?.id!=='upload-'+channel||!Object.hasOwn(deliverySteps,channel))continue;
+    const explicit=/^delivery\/([a-z][a-z0-9-]*)$/.exec(job.name??'')?.[1];
+    const ids=explicit?[explicit]:/^delivery\/\$\{\{\s*matrix\.unit\s*}}$/.test(job.name??'')?[...known.keys()]:[];
+    const location=channel==='github-release'?'github':step.env?.STEWARD_CHANNEL_LOCATION;
+    if(!ids.length||ids.some(id=>!known.has(id)||known.get(id)!.has(channel))
+      ||typeof location!=='string'||!location||/[\r\n\0]/.test(location)
+      ||step.name!==deliverySteps[channel]||!/^actions\/upload-artifact@[a-f0-9]{40}$/.test(step.uses??'')
+      ||typeof step.with?.name!=='string'||!step.with.name.startsWith('delivery-'+channel+'-')
+      ||![undefined,false,'false'].includes(step.with.overwrite))fail('workflow channel delivery step');
+    for(const id of ids)known.get(id)!.set(channel,location);
+    submissions.add(step);
+  }
+  const adoptedChannels=new Set([...known.values()].flatMap(channels=>[...channels.keys()]));
+  for(const step of allSteps.filter(step=>!submissions.has(step)&&/^actions\/upload-artifact@/.test(step?.uses??''))) {
+    const name=String(step.with?.name??'artifact').match(/^[A-Za-z0-9_.-]+/)?.[0]??'';
+    for(const channel of adoptedChannels) {
+      const prefix='delivery-'+channel+'-';
+      if(prefix.startsWith(name)||name.startsWith(prefix))fail('ambiguous workflow delivery upload name');
+    }
+  }
+  for(const unit of delivery.units)unit.channels=[...known.get(unit.id)!].map(([id,location])=>({id,location,required:true}));
+  return {units:known,attested:allSteps.some(step=>/^actions\/attest(?:-build-provenance)?@[a-f0-9]{40}$/.test(step?.uses??''))};
+}
+
+async function workflowDeliveryArtifact(record:DeliveryRun,unitId:string,jobName:string,channel:WorkflowChannel,stepName:string,
+  pages:NativePages,retainedAttempt?:number):Promise<WorkflowDeliveryReceipt> {
   const {repositoryId,fullName,runId,sourceSha}=record,prefix='repos/'+fullName+'/actions/runs/'+runId;
-  const name=['delivery','github-release',repositoryId,unitId,sourceSha,runId,''].join('-');
+  const name=['delivery',channel,repositoryId,unitId,sourceSha,runId,''].join('-');
   const artifacts=await pages(prefix+'/artifacts?per_page=100','artifacts');
   const entries=artifacts.filter(item=>typeof item.name==='string'&&(retainedAttempt===undefined
     ?item.name.startsWith(name):item.name===name+retainedAttempt));
@@ -679,7 +765,7 @@ export async function githubDeliveryArtifact(record:DeliveryRun,unitId:string,jo
     if(matches.length!==1||job.run_id!==runId||job.run_attempt!==attempt||job.head_sha!==sourceSha||job.status!=='completed')
       fail('GitHub delivery artifact provenance: '+unitId);
     if(job.conclusion!=='success')continue;
-    const steps=job.steps?.filter((step:any)=>step.name===githubDeliveryJobStep),step=steps?.[0];
+    const steps=job.steps?.filter((step:any)=>step.name===stepName),step=steps?.[0];
     if(artifact.expired!==false||steps?.length!==1||step?.status!=='completed'||step.conclusion!=='success')
       fail('GitHub delivery artifact provenance: '+unitId);
     const created=Date.parse(artifact.created_at),started=Date.parse(step.started_at),completed=Date.parse(step.completed_at);
@@ -687,6 +773,72 @@ export async function githubDeliveryArtifact(record:DeliveryRun,unitId:string,jo
     return {runId,attempt,artifactId:artifact.id,digest:artifact.digest};
   }
   return fail('successful GitHub delivery artifact missing: '+unitId);
+}
+
+async function readWorkflowChannel(context:EvidenceContext,unit:CycleRecord['units'][number],channelId:WorkflowChannelReceipt['channelId'],
+  attested:boolean,directory:string,controllerDirectory:string,token:string,io:EvidenceTransport,
+  download:typeof downloadWorkflowArtifact,gh:GhCommand) {
+  const {cycle}=context,reader=new NativeEvidenceReader(io,context.repository);
+  const requests=cycle.dispatches.filter(request=>request.purpose==='build'&&request.canonicalRunId!==null);
+  if(requests.length!==1)fail('original channel build required');
+  const request=requests[0]!;
+  const run=verifyExecutionSource(nativeRunFact(await reader.json('actions/runs/'+request.canonicalRunId)),{...context,request});
+  if(run.status!=='completed'||run.conclusion!=='success')fail('original channel build not ready');
+  const selected=unit.channelDeliveries?.find(item=>item.channelId===channelId);
+  const prefix='repos/'+context.repository+'/';
+  const pages:NativePages=async(path,field)=>{
+    if(!path.startsWith(prefix))fail('native page target');
+    return reader.pages(path.slice(prefix.length).replace('?per_page=100',''),field);
+  };
+  const receipt=await workflowDeliveryArtifact({fullName:context.repository,sourceSha:cycle.sourceSha,repositoryId:context.repositoryId,
+    runId:run.id,attempt:run.runAttempt},unit.id,'delivery/'+unit.id,channelId,deliverySteps[channelId],pages,selected?.delivery.attempt);
+  if(selected&&!sameWorkflowDelivery(selected.delivery,receipt))fail('frozen channel receipt changed');
+  await download({fullName:context.repository,artifactId:receipt.artifactId,digest:receipt.digest,directory,
+    policyDirectory:controllerDirectory,home:directory+'-download'},token);
+  const artifacts=await workflowFiles(directory);
+  if(selected&&JSON.stringify(selected.assets)!==JSON.stringify(artifacts))fail('frozen channel bytes changed');
+  const manifest:WorkflowReleaseManifest={schemaVersion:4,repositoryId:context.repositoryId,fullName:context.repository,cycleId:cycle.id,
+    unitId:unit.id,version:unit.version,packageVersion:unit.version,tag:unit.tag,sourceSha:cycle.sourceSha,buildWorkflow:dispatchWorkflow(request),
+    buildRef:'refs/heads/'+request.ref,workflowId:run.workflowId,runId:run.id,attempt:receipt.attempt,delivery:receipt,attested,artifacts};
+  validateWorkflowManifest(manifest);
+  if(channelId==='winget'&&(artifacts.length!==1||!/\.(?:exe|msi|msix|appx|msixbundle|appxbundle)$/i.test(artifacts[0]!.path)
+    ||!unit.assets.some(asset=>asset.path===artifacts[0]!.path&&asset.sha256===artifacts[0]!.sha256&&asset.size===artifacts[0]!.size)))
+    fail('WinGet requires the exact published installer');
+  if(attested) {
+    const adapter=new NativeGitHubRelease(gh);
+    for(const asset of artifacts)await adapter.verifyAttestation({manifest,directory,releaseId:unit.releaseId,appBotId:context.appBotId},join(directory,asset.path));
+  }
+  return {manifest,frozen:{channelId,delivery:receipt,assets:artifacts}};
+}
+
+export async function prepareWorkflowChannelReceipts(context:EvidenceContext,root:string,controllerDirectory:string,token:string,
+  history:{path:string;commit:string;value:unknown}[],io:EvidenceTransport=nativeEvidenceTransport(token),
+  download:typeof downloadWorkflowArtifact=downloadWorkflowArtifact,gh:GhCommand=args=>nativeGhCommand(args,token)) {
+  const {delivery,handoff}=await readCycleDelivery(context,history,io);
+  if(!handoff)return {receipts:[],missing:[]};
+  assertRegisteredAdapters(context.repositoryId,context.repository,delivery);
+  const receipts:{unitId:string;frozen:WorkflowChannelReceipt}[]=[],missing:{unitId:string;channelId:string}[]=[];
+  for(const {unitId,channelId} of context.cycle.requiredChannels) {
+    if(channelId!=='ghcr-assets'&&channelId!=='winget')fail('workflow channel implementation');
+    const unit=context.cycle.units.find(unit=>unit.id===unitId)!;
+    if(unit.channelDeliveries?.some(receipt=>receipt.channelId===channelId))continue;
+    try {
+      await verifyContinuationReleases(context,io,new Set([unitId]));
+      const directory=join(root,unitId+'-'+channelId);
+      const {frozen}=await readWorkflowChannel(context,unit,channelId,handoff.attested,directory,controllerDirectory,token,io,download,gh);
+      receipts.push({unitId,frozen});
+    } catch {missing.push({unitId,channelId});}
+  }
+  return {receipts,missing};
+}
+
+async function workflowFiles(directory:string) {
+  const artifacts=[];
+  for(const name of (await readdir(directory)).sort()) {
+    const file=await fileDigest(directory,name);
+    artifacts.push({id:'file-'+hash(Buffer.from(name)).slice(0,40),...file});
+  }
+  return artifacts;
 }
 
 export async function verifyWorkflowDelivery(selection:string[],staged:string,sealed:string,unit:DeliveryUnit,manifest:ProductReleaseManifest) {
@@ -709,7 +861,7 @@ async function prepareWorkflowPublication(options:{
   context:EvidenceContext;delivery:DeliveryConfig;units:CycleRecord['units'];versions:Map<string,string>;
   reader:NativeEvidenceReader;pages:NativePages;source:(path:string)=>Promise<string>;template:string;
   root:string;controllerDirectory:string;token:string;history:{path:string;commit:string;value:unknown}[];
-  attested:boolean;
+  attested:boolean;unavailable?:(unitId:string)=>void;
 },download:typeof downloadWorkflowArtifact) {
   const {context,delivery,units,versions,reader,pages,source,template,root,controllerDirectory,token,history,attested}=options;
   const {cycle}=context,requests=cycle.dispatches.filter(dispatch=>dispatch.purpose==='build');
@@ -726,39 +878,39 @@ async function prepareWorkflowPublication(options:{
   const settings=JSON.parse(await source('release-please-config.json'));
   const records:PublicationUnit[]=[];
   for(const target of units) {
-    const unit=delivery.units.find(unit=>unit.id===target.id);
-    if(!unit||unit.channels.some(channel=>channel.required&&channel.id!=='github-release')
-      ||unit.channels.some(channel=>channel.id==='github-release'&&!channel.required))fail('workflow GitHub delivery channel');
-    const packageVersion=versions.get(unit.id);
-    const identity=merged.session.identity.units.find((item:any)=>item.id===unit.id);
-    if(!packageVersion||!identity)fail('workflow delivery unit data');
-    const contributors=selectReleaseContributors(identity.actors,delivery.repositoryAuthors);
-    if(JSON.stringify(contributors)!==JSON.stringify(identity.contributors))fail('workflow delivery contributor identity');
-    const nativeReceipt=await githubDeliveryArtifact({fullName:context.repository,repositoryId:context.repositoryId,sourceSha:cycle.sourceSha,
-      runId:run.id,attempt:run.runAttempt},unit.id,'delivery/'+unit.id,pages,target.githubDelivery?.attempt);
-    if(target.githubDelivery&&!sameWorkflowDelivery(nativeReceipt,target.githubDelivery))fail('workflow delivery receipt changed');
-    const directory=join(root,unit.id);
-    await download({fullName:context.repository,artifactId:nativeReceipt.artifactId,digest:nativeReceipt.digest,directory,
-      policyDirectory:controllerDirectory,home:join(root,'download-'+unit.id)},token);
-    const names=(await readdir(directory)).sort(),artifacts=[];
-    for(const name of names) {
-      const file=await fileDigest(directory,name),id='file-'+hash(Buffer.from(name)).slice(0,40);
-      artifacts.push({...file,id});
+    try {
+      const unit=delivery.units.find(unit=>unit.id===target.id);
+      if(!unit?.channels.some(channel=>channel.id==='github-release'))fail('workflow GitHub delivery channel');
+      const packageVersion=versions.get(unit.id);
+      const identity=merged.session.identity.units.find((item:any)=>item.id===unit.id);
+      if(!packageVersion||!identity)fail('workflow delivery unit data');
+      const contributors=selectReleaseContributors(identity.actors,delivery.repositoryAuthors);
+      if(JSON.stringify(contributors)!==JSON.stringify(identity.contributors))fail('workflow delivery contributor identity');
+      const nativeReceipt=await githubDeliveryArtifact({fullName:context.repository,repositoryId:context.repositoryId,sourceSha:cycle.sourceSha,
+        runId:run.id,attempt:run.runAttempt},unit.id,'delivery/'+unit.id,pages,target.githubDelivery?.attempt);
+      if(target.githubDelivery&&!sameWorkflowDelivery(nativeReceipt,target.githubDelivery))fail('workflow delivery receipt changed');
+      const directory=join(root,unit.id);
+      await download({fullName:context.repository,artifactId:nativeReceipt.artifactId,digest:nativeReceipt.digest,directory,
+        policyDirectory:controllerDirectory,home:join(root,'download-'+unit.id)},token);
+      const artifacts=await workflowFiles(directory);
+      const manifest:WorkflowReleaseManifest={schemaVersion:4,repositoryId:context.repositoryId,fullName:context.repository,cycleId:cycle.id,
+        unitId:unit.id,version:target.version,packageVersion,tag:target.tag,sourceSha:cycle.sourceSha,buildWorkflow:dispatchWorkflow(request),
+        buildRef:'refs/heads/'+request.ref,workflowId:run.workflowId,runId:run.id,attempt:nativeReceipt.attempt,delivery:nativeReceipt,attested,artifacts};
+      validateWorkflowManifest(manifest);
+      const config={...settings,...settings.packages[unit.path]},changelog=config['changelog-path']??'CHANGELOG.md';
+      assertDeliveryPath(changelog);
+      const changelogFile=unit.path==='.'?changelog:unit.path+'/'+changelog;
+      const links=committedVersionNotes(await source(changelogFile),target.version,context.repository,cycle.sourceSha,target.tag,
+        template.includes('{{controllerSha}}')?undefined:changelogFile);
+      const publicBody=renderFrozenReleaseNotes(template,{repository:context.repository,unitId:unit.id,version:target.version,tag:target.tag,
+        sourceSha:cycle.sourceSha,controllerSha:cycle.controllerSha,displayName:unit.displayName,notes:await source(unit.notesPath),...links,
+        contributors:contributors.contributors,repositoryAuthors:delivery.repositoryAuthors,channels:[],
+        assets:artifacts.map(file=>({id:file.id,name:file.path,build:'delivery'}))});
+      records.push({unitId:unit.id,directory,manifest,delivery:unit,build:null,archive:null,githubDelivery:nativeReceipt,publicBody});
+    } catch(error) {
+      if(!options.unavailable)throw error;
+      options.unavailable(target.id);
     }
-    const manifest:WorkflowReleaseManifest={schemaVersion:4,repositoryId:context.repositoryId,fullName:context.repository,cycleId:cycle.id,
-      unitId:unit.id,version:target.version,packageVersion,tag:target.tag,sourceSha:cycle.sourceSha,buildWorkflow:dispatchWorkflow(request),
-      buildRef:'refs/heads/'+request.ref,workflowId:run.workflowId,runId:run.id,attempt:nativeReceipt.attempt,delivery:nativeReceipt,attested,artifacts};
-    validateWorkflowManifest(manifest);
-    const config={...settings,...settings.packages[unit.path]},changelog=config['changelog-path']??'CHANGELOG.md';
-    assertDeliveryPath(changelog);
-    const changelogFile=unit.path==='.'?changelog:unit.path+'/'+changelog;
-    const links=committedVersionNotes(await source(changelogFile),target.version,context.repository,cycle.sourceSha,target.tag,
-      template.includes('{{controllerSha}}')?undefined:changelogFile);
-    const publicBody=renderFrozenReleaseNotes(template,{repository:context.repository,unitId:unit.id,version:target.version,tag:target.tag,
-      sourceSha:cycle.sourceSha,controllerSha:cycle.controllerSha,displayName:unit.displayName,notes:await source(unit.notesPath),...links,
-      contributors:contributors.contributors,repositoryAuthors:delivery.repositoryAuthors,channels:[],
-      assets:artifacts.map(file=>({id:file.id,name:file.path,build:'delivery'}))});
-    records.push({unitId:unit.id,directory,manifest,delivery:unit,build:null,archive:null,githubDelivery:nativeReceipt,publicBody});
   }
   return records;
 }
@@ -768,7 +920,7 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
   gh: GhCommand = args => nativeGhCommand(args, token), io: EvidenceTransport = nativeEvidenceTransport(token),
   controllerIo:EvidenceTransport=nativeEvidenceTransport(undefined),download:ReleaseDownload=nativeReleaseDownload(token),
   history:{path:string;commit:string;value:unknown}[]=[],unitIds?:ReadonlySet<string>,
-  workflowDownload=downloadWorkflowArtifact) {
+  workflowDownload=downloadWorkflowArtifact,unavailable?:(unitId:string)=>void) {
   const { cycle } = context, reader = new NativeEvidenceReader(io, context.repository);
   const units=githubUnits(cycle).filter(unit=>!unitIds||unitIds.has(unit.id));
   if(unitIds&&units.length!==unitIds.size)fail('unknown publication unit');
@@ -803,18 +955,18 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
   if (delivery.buildWorkflow !== cycle.buildWorkflow) fail('frozen delivery workflow');
   const workflow = await source(context.repository, cycle.sourceSha, delivery.buildWorkflow ?? defaultBuildWorkflow);
   const document = parseDocument(workflow.bytes.toString('utf8'), { uniqueKeys: true }); if (document.errors.length) fail('source workflow');
-  const definition=document.toJS({maxAliasCount:0}),workflowDelivery=workflowGitHubDelivery(definition);
-  if(delivery.schemaVersion===3&&(!workflowDelivery||workflowDelivery.sealed))fail('workflow-owned product must deliver its files');
+  const definition=document.toJS({maxAliasCount:0}),workflowDelivery=delivery.schemaVersion===3?null:workflowGitHubDelivery(definition);
   const matrix = definition?.jobs?.build?.strategy?.matrix?.include;
   const projection=await nativeDeliveryProjection(delivery,cycle.units,async path=>(await source(context.repository,cycle.sourceSha,path)).bytes,controllerDirectory,true);
   const pages: NativePages = async (path, field) => {
     const prefix = `repos/${context.repository}/`; if (!path.startsWith(prefix)) fail('native page target');
     return reader.pages(path.slice(prefix.length).replace('?per_page=100', ''), field);
   };
-  if(workflowDelivery&&!workflowDelivery.sealed)
+  if(delivery.schemaVersion===3||workflowDelivery&&!workflowDelivery.sealed)
     return prepareWorkflowPublication({context,delivery,units,versions:projection.versions,reader,pages,template:template.bytes.toString('utf8'),
       source:async path=>(await source(context.repository,cycle.sourceSha,path)).bytes.toString('utf8'),
-      root,controllerDirectory,token,history,attested:workflowDelivery.attested},workflowDownload);
+      root,controllerDirectory,token,history,attested:original.handoff?.attested??workflowDelivery?.attested??false,
+      ...(unavailable?{unavailable}:{})},workflowDownload);
   if (!Array.isArray(matrix) || !matrix.length) fail('native producer matrix');
   const toolLocks = { 'controller/mise.lock': hash((await source('splrad/steward', cycle.controllerSha, 'mise.lock')).bytes),...projection.toolLocks };
   const records:PublicationUnit[]=[];

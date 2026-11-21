@@ -496,7 +496,8 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         if (data.identity.authorsDigest !== hash(JSON.stringify(delivery.repositoryAuthors))
           || data.generated.units.some(unit => versions[unit.path] !== unit.version)) fail('MERGED_CANDIDATE_INPUT_DRIFT');
         // The merged source fixes its execution controller, independently of this wake.
-        const document = parseDocument(await fileAt(sourceSha, delivery.buildWorkflow ?? defaultBuildWorkflow), { uniqueKeys: true });
+        const workflowSource=await fileAt(sourceSha, delivery.buildWorkflow ?? defaultBuildWorkflow);
+        const document = parseDocument(workflowSource, { uniqueKeys: true });
         if (document.errors.length) fail('CANDIDATE_CONTROLLER_PIN_INVALID');
         const workflow = document.toJS({ maxAliasCount: 0 }), jobs = workflow?.jobs;
         if (!jobs || typeof jobs !== 'object' || Array.isArray(jobs)) fail('CANDIDATE_CONTROLLER_PIN_REQUIRED');
@@ -517,7 +518,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
           parseSupplementalNotes(await fileAt(sourceSha,unit.notesPath),template);
         const deliveryBlobSha = (await git('rev-parse', `${sourceSha}:.github/delivery.json`)).toString().trim();
         const cycle=mergedBuildCycle({prNumber:pull.number,sourceSha,controllerSha:cycleControllerSha,sourceTree,reviewedTree,
-          deliveryBlobSha,delivery:rawDelivery,releasePlease,units:data.generated.units,repository:request.repository,repositoryId:request.repositoryId});
+          deliveryBlobSha,delivery:rawDelivery,releasePlease,workflow:Buffer.from(workflowSource),units:data.generated.units,repository:request.repository,repositoryId:request.repositoryId});
         const {repository:ignored,...archivedSession}=data;
         const documents=await candidateDocumentsAt(stateCommit,candidate.id);
         const mergedArchive = archive('merged-candidate', candidate.id, `generated/${candidate.id}/cycles/${cycle.id}.json`, {

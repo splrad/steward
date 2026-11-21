@@ -105,7 +105,7 @@ export function parseDeliveryConfig(input: unknown, releasePlease?:{packages?:Re
       if(!item||typeof item!=='object'||Array.isArray(item))throw new Error('DELIVERY_RELEASE_PLEASE_UNITS');
       const id=releasePleaseUnitId(path,item.component);
       const notesPath=(value.notes&&Object.hasOwn(value.notes,path)?value.notes[path]:undefined)??'.release-notes/'+id+'.md';
-      return {id,path,notesPath,assets:[],buildLocks:[],channels:[{id:'github-release',required:true,location:'github'}]};
+      return {id,path,notesPath,assets:[],buildLocks:[],channels:[]};
     });
     delete value.notes;
   }

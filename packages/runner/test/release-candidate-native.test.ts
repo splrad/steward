@@ -64,7 +64,8 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     on:{workflow_dispatch:{inputs:Object.fromEntries(['cycle_id','operation_key','source_sha','controller_sha'].map(key=>[key,{required:true,type:'string'}]))}},
     jobs:{package:{name:'delivery/root',steps:[
       {uses:'actions/checkout@'+'a'.repeat(40),with:{repository:'splrad/steward',path:'controller',ref:sourceControllerSha}},
-      {id:'upload-github-release',name:'Upload GitHub release delivery',uses:'actions/upload-artifact@'+'a'.repeat(40)},
+      {id:'upload-github-release',name:'Upload GitHub release delivery',uses:'actions/upload-artifact@'+'a'.repeat(40),
+        with:{name:'delivery-github-release-fixture',path:'app.zip'}},
     ]}}}));
   const config = { 'separate-pull-requests': false, 'include-component-in-tag': false, packages: { '.': { 'release-type': 'simple', 'version-file': 'VERSION' } } };
   const repositoryAuthors=[{id:7,evidence:'offline explicit authorship record'}];

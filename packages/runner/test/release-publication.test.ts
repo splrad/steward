@@ -45,6 +45,24 @@ it('adopts a private start before the first write, ignores a lost response when 
   f.terminal();expect(await f.currentFacts()).toMatchObject({unknownEvidence:[]});
   expect(f.files[0]!.content).toContain('"businessStartedProven":true');
 });
+it('publishes a ready unit independently of missing and disabled GitHub delivery',async()=>{
+  const f=fixture(),cycle=f.context.cycle;
+  cycle.workflowDelivery=true;
+  cycle.units.push(
+    {id:'missing',tag:'missing-v1.0.0',version:'1.0.0',releaseId:null,notesDigest:null,manifestDigest:null,assets:[]},
+    {id:'disabled',tag:'disabled-v1.0.0',version:'1.0.0',releaseId:null,notesDigest:null,manifestDigest:null,assets:[],githubDisabled:true});
+  const writes:string[]=[];
+  const result=await invokePublication(f.context,f.current,[],f.store,f.productIo,f.centralIo,async()=>{
+    writes.push(cycle.units[0]!.id);f.setExists();
+  },NOW,()=>NOW,new Set([cycle.units[0]!.id]));
+  expect(result.publishInvoked).toBe(true);
+  expect(writes).toEqual(['app']);
+  expect(f.history[0]!.value.targets.map(target=>target.unitId)).toEqual(['app']);
+  expect(f.history.at(-1)!.value.objects).toMatchObject([{unitId:'app',status:'MATCH'}]);
+  expect(f.calls.some(call=>call.includes('/missing-')||call.includes('/disabled-'))).toBe(false);
+  f.terminal();
+  expect(await f.currentFacts()).toMatchObject({outcomes:['EFFECT_CONFIRMED'],unknownEvidence:[]});
+});
 it.each(['UNKNOWN','UNCHANGED','missing-readback'])('does not write business after %s start adoption',async mode=>{
   const f=fixture();let writes=0;f.store.archive=async files=>({status:mode==='missing-readback'?'APPLIED':mode,head:D,records:[],files:mode==='missing-readback'?[]:files});
   const result=await invokePublication(f.context,f.current,[],f.store,f.productIo,f.centralIo,async()=>{writes++;},NOW,()=>NOW);

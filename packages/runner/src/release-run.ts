@@ -244,6 +244,8 @@ export async function nativeOrasRead(args:readonly string[]):Promise<string> {
   } finally {await rm(home,{recursive:true,force:true});}
 }
 export async function readDirectChannelTargets(context:EvidenceContext,targets:ChannelTarget[],io:EvidenceTransport,now:string,oras:OrasRead=nativeOrasRead,history:ChannelRecord[]=[]) {
+  if(!targets.length||targets.every(target=>context.cycle.units.some(unit=>unit.id===target.unitId
+    &&unit.channelDeliveries?.some(receipt=>receipt.channelId===target.channelId))))return {files:[] as ArchiveFile[],reads:[] as ChannelReadItem[]};
   const reader=new NativeEvidenceReader(io,context.repository);let source:any,legacy:ReturnType<typeof verifyNormalizedDelivery>|undefined;
   try {source=await reader.json(`contents/.github/delivery.json?ref=${context.cycle.sourceSha}`);}catch(error) {
     if ((error instanceof EvidenceReadError) && error.status === 404) {
@@ -362,6 +364,7 @@ export function selectChannelDispatch(context:EvidenceContext,reads:ChannelReadI
   const submit:ChannelTarget[]=[],verify:ChannelTarget[]=[];
   for(const channel of context.cycle.requiredChannels) {
     const unit=context.cycle.units.find(unit=>unit.id===channel.unitId)!, matches=reads.filter(read=>read.unitId===channel.unitId&&read.channelId===channel.channelId);
+    if(context.cycle.workflowDelivery&&!unit.channelDeliveries?.some(receipt=>receipt.channelId===channel.channelId))continue;
     if(matches.length!==1)return {kind:'unknown' as const};const read=matches[0]!;
     if(['AUTH_UNKNOWN','TRANSIENT','CONFLICT'].includes(read.readStatus))return {kind:'unknown' as const};
     const target={...channel,version:unit.version,releaseId:unit.releaseId!,manifestDigest:unit.manifestDigest!};channelTargets(context,[target]);
@@ -671,7 +674,8 @@ export async function observeNativeChannels(context:EvidenceContext,history:Chan
   root:string,controllerDirectory:string,token:string,io:EvidenceTransport,now:string,oras:OrasRead=nativeOrasRead, allowProbeDispatch=true) {
   const reader=new NativeEvidenceReader(io,context.repository),repository=await reader.json('');
   if(repository.id!==context.repositoryId||repository.full_name!==context.repository||repository.archived!==false||repository.disabled!==false)fail('channel repository');
-  const allTargets=channelTargets(context,context.cycle.requiredChannels.map(channel=>{
+  const allTargets=channelTargets(context,context.cycle.requiredChannels.filter(channel=>!context.cycle.workflowDelivery
+    ||context.cycle.units.find(unit=>unit.id===channel.unitId)?.channelDeliveries?.some(receipt=>receipt.channelId===channel.channelId)).map(channel=>{
     const unit=context.cycle.units.find(unit=>unit.id===channel.unitId)!;return {...channel,version:unit.version,releaseId:unit.releaseId!,manifestDigest:unit.manifestDigest!};
   }));
   const files:ArchiveFile[]=[],results:{item:ChannelResultItem;evidence:NativeChannelEvidence;path:string}[]=[],runs:NativeRun[]=[];

@@ -698,6 +698,8 @@ export async function recoverNativeCycle(input: EvidenceContext, runId: number, 
   if(attempt.invocations.length && attempt.invocations.every(invocation=>['EFFECT_CONFIRMED','REJECTED_BEFORE_BUSINESS'].includes(invocation.evidence.outcome??''))
     && !results.some(result=>result.reasonCode==='DEPENDENCY_NOT_READY'))
     return {status:'SATISFIED',reason:'EFFECTS_ARCHIVED',observation};
+  if(context.cycle.workflowDelivery&&request.purpose==='build'&&before.conclusion==='success')
+    return {status:'SATISFIED',reason:'NO_NATIVE_RECOVERY_REQUIRED',observation};
   if(expired || before.runAttempt>=51 || Date.parse(observedAt)-Date.parse(chain[0]!.run.createdAt)>30*24*60*60_000)
     return {status:'BLOCKED',reason:'NATIVE_MAINTENANCE_REQUIRED',runId,observation};
   // One automatic native rerun per Run; further failures remain visible for native maintenance.

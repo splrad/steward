@@ -18,8 +18,15 @@ export function completionFile(value:CompletionArchive) {
 }
 export async function verifyFrozenReceipts(context:EvidenceContext,records:ProtectedRecord[],io:EvidenceTransport,alreadyCompleted=false) {
   const {cycle}=context,reader=new NativeEvidenceReader(io,context.repository);
-  if (!cycle.freezeOnly?.length) throw Error('missing freeze receipts');
   const {delivery}=await readCycleDelivery(context,records,io);
+  if(delivery.schemaVersion===3 && !cycle.requiredChannels.length && cycle.units.every(unit=>unit.githubDisabled)) {
+    const request=cycle.dispatches.find(request=>request.purpose==='build'&&request.canonicalRunId!==null);
+    if(!request)throw Error('missing original build');
+    const run=verifyExecutionSource(nativeRunFact(await reader.json('actions/runs/'+request.canonicalRunId)),{...context,request});
+    if(run.conclusion!=='success'||run.status!=='completed')throw Error('build is incomplete');
+    return;
+  }
+  if (!cycle.freezeOnly?.length) throw Error('missing freeze receipts');
   if(cycle.freezeOnly.some(receipt=>!delivery.units.some(declared=>declared.id===receipt.unitId &&
       declared.channels.some(channel=>channel.id==='github-release'&&!channel.required) && !declared.channels.some(channel=>channel.required))))
     throw Error('freeze-only configuration');
@@ -95,7 +102,7 @@ export async function inspectCycleHistory(snapshot:HistorySnapshot,io:EvidenceTr
   const latest=[...previous].sort((a,b)=>a.mergedAt.localeCompare(b.mergedAt)).at(-1)?.id;
   const verifiedFreezes:string[]=[];
   for(const {value:cycle} of snapshot.cycles) {
-    if(!cycle.freezeOnly)continue;
+    if(!cycle.freezeOnly&&!cycle.freezeCompletedAt)continue;
     try {
       const context={repository:snapshot.repository,repositoryId:snapshot.repositoryId,appBotId:snapshot.appBotId,cycle};
       await verifyFrozenReceipts(context,snapshot.domainRecords,io,Boolean(cycle.freezeCompletedAt) ||

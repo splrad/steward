@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, writeFile, readdir, copyFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { pipelineIdentity, pipelinePreparePublication } from '../src/release-pipeline.js';
+import { githubDeliveryArtifact, mergedBuildCycle, pipelineChannelDownload, pipelineIdentity, pipelinePreparePublication, prepareWorkflowChannelReceipts, readCycleDelivery } from '../src/release-pipeline.js';
+import { githubUnits, parseReleaseRecord } from '../../core/src/release-observation.js';
 import { sealProductArtifacts, fileDigest, type ProductReleaseManifest } from '../src/release-artifacts.js';
 import * as downloads from '../src/native-artifact-download.js';
 import { productPipelineFixture } from './product-pipeline-fixture.js';
@@ -12,7 +13,7 @@ import { nativeRequestIdentity } from '../src/native-release-evidence.js';
 import { permitOfflineScript } from './offline-fixtures.js';
 import type { WorkflowDeliveryReceipt } from '../../core/src/release-observation.js';
 const roots:string[]=[];
-afterEach(async()=>{vi.restoreAllMocks();for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
+afterEach(async()=>{vi.restoreAllMocks();vi.unstubAllEnvs();for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
 it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-run','unbound-run','undispatched','foreign-run','foreign-source','formal-after-expiry','private-formal','partial-draft','corrupt-formal','missing-public-asset'])('prepares publication from exact native objects: %s',async kind=>{
   const f=productPipelineFixture(1,false,kind==='python-freeze'?'requirements-build.txt':'global.json');
   if(kind==='python-freeze') {
@@ -106,6 +107,7 @@ it('prepares a single native Node delivery, changes the public set in its workfl
   const bytes=Buffer.from(sourceConfig);
   context.cycle.deliveryConfigSha=createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex');
   context.cycle.buildWorkflow=f.request.buildWorkflow=workflow;
+  context.cycle.workflowDelivery=true;
   Object.assign(f.request,nativeRequestIdentity(context.repositoryId,context.cycle,f.request));
   f.input.operationKey=f.request.inputs.operation_key=f.request.operationKey;
   f.runs.get(2).display_title='为 GitHub 打包 '+f.request.operationKey;
@@ -166,9 +168,106 @@ it('prepares a single native Node delivery, changes the public set in its workfl
   const amended=JSON.parse(source[workflow]!);
   amended.jobs.package.steps.push({uses:'actions/upload-artifact@'+'a'.repeat(40),with:{name:'delivery-github-release-duplicate'}});
   source[workflow]=JSON.stringify(amended);
-  await expect(prepare('ambiguous-upload',next)).rejects.toThrow('ambiguous GitHub delivery upload name');
-  amended.jobs.package.steps.pop();
+  await expect(prepare('ambiguous-upload',next)).rejects.toThrow('ambiguous workflow delivery upload name');
+  amended.jobs.other={steps:[amended.jobs.package.steps.pop()]};
+  source[workflow]=JSON.stringify(amended);
+  await expect(prepare('other-job-upload',next)).rejects.toThrow('ambiguous workflow delivery upload name');
+  delete amended.jobs.other;
   amended.jobs.archive={steps:[{name:'business-freeze',uses:'actions/upload-artifact@'+'a'.repeat(40),with:{name:'final-fixture'}}]};
   source[workflow]=JSON.stringify(amended);
   await expect(prepare('separate-legacy-freeze',next)).rejects.toThrow('workflow-owned product must deliver its files');
+});
+
+it('selects separate GitHub and authorized channel assemblies and restores only the original external bytes',async()=>{
+  const f=productPipelineFixture(1),repository='splrad/LayerScape',repositoryId=1187527897,appBotId=42;
+  const workflow='.github/workflows/steward-release-publish.yml',compact=JSON.stringify({schemaVersion:3,repositoryAuthors:f.delivery.repositoryAuthors});
+  const settings={packages:{'packages/desktop':{component:'layerscape'},'packages/tools':{component:'tools'}}};
+  const step=(id:string,name:string,channel:string,location?:string)=>({id,name,uses:'actions/upload-artifact@'+'a'.repeat(40),
+    with:{name:'delivery-'+channel+'-fixture',path:channel+'/*'},...(location?{env:{STEWARD_CHANNEL_LOCATION:location}}:{})});
+  const definition={jobs:{deliver:{name:'delivery/layerscape',steps:[
+    step('upload-github-release','Upload GitHub release delivery','github-release'),
+    step('upload-ghcr-assets','Upload GHCR assets delivery','ghcr-assets','ghcr.io/splrad/layerscape-assets'),
+    step('upload-winget','Upload WinGet delivery','winget','SPLRAD.LayerScape.Deployer'),
+  ]},internal:{name:'package internal tools',steps:[{run:'build internal tools'}]}}};
+  const gitBlob=(value:string)=>{const bytes=Buffer.from(value);return createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex');};
+  const handoff={prNumber:12,sourceSha:S,controllerSha:C,sourceTree:S,reviewedTree:S,deliveryBlobSha:gitBlob(compact),delivery:JSON.parse(compact),
+    releasePlease:settings,workflow:Buffer.from(JSON.stringify(definition)),repository,repositoryId,units:[
+      {id:'layerscape',path:'packages/desktop',version:'1.0.0',tag:'v1.0.0'},
+      {id:'tools',path:'packages/tools',version:'1.0.0',tag:'tools-v1.0.0'},
+    ]};
+  const cycle=mergedBuildCycle(handoff),context={repository,repositoryId,appBotId,cycle};
+  expect(githubUnits(cycle).map(unit=>unit.id)).toEqual(['layerscape']);
+  expect(cycle.units[1]).toMatchObject({id:'tools',githubDisabled:true,releaseId:null,assets:[]});
+  expect(cycle.requiredChannels.map(({unitId,channelId})=>[unitId,channelId])).toEqual([['layerscape','ghcr-assets'],['layerscape','winget']]);
+  expect(()=>mergedBuildCycle({...handoff,repository:'example/product',repositoryId:1})).toThrow('external adapter is not registered');
+  const disabled=structuredClone(definition);disabled.jobs.deliver.steps.shift();
+  expect(()=>mergedBuildCycle({...handoff,workflow:Buffer.from(JSON.stringify(disabled))})).toThrow('requires a published Release ID');
+  const request={...f.request,buildWorkflow:workflow,inputs:{...f.request.inputs}};
+  Object.assign(request,nativeRequestIdentity(repositoryId,cycle,request));request.inputs.operation_key=request.operationKey;
+  cycle.dispatches.push(request);
+  const unit=cycle.units[0]!;
+  Object.assign(unit,{releaseId:50,manifestDigest:digest('public receipt'),notesDigest:digest('approved notes'),
+    githubDelivery:{runId:100,attempt:1,artifactId:800,digest:'sha256:'+digest('public archive')},
+    assets:[{id:'desktop',path:'desktop.exe',size:8,sha256:digest('public!!')}]});
+  const run={...f.runs.get(1),repository:{id:repositoryId},head_repository:{id:repositoryId},path:workflow,
+    status:'completed',conclusion:'success',run_attempt:1,display_title:'Build '+request.operationKey};
+  const makeArtifact=(id:number,attempt:number)=>({id,name:['delivery','ghcr-assets',repositoryId,unit.id,S,100,attempt].join('-'),
+    expired:false,digest:'sha256:'+digest(String(id)),workflow_run:{id:100,head_sha:S},created_at:'2026-10-26T00:00:30.000Z'});
+  const artifacts=[makeArtifact(810,1)],reads:string[]=[];
+  const io={anonymous:()=>io,request:async(method:string,path:string)=>{
+    expect(method).toBe('GET');reads.push(path);
+    if(path.includes('/contents/')) {
+      const name=path.split('/contents/')[1]!.split('?')[0];
+      const value=name==='.github/delivery.json'?compact:name==='release-please-config.json'?JSON.stringify(settings):JSON.stringify(definition);
+      const bytes=Buffer.from(value);return f.response({type:'file',encoding:'base64',size:bytes.length,content:bytes.toString('base64'),sha:gitBlob(value)});
+    }
+    if(path.endsWith('/runs/100'))return f.response(run);
+    if(path.includes('/artifacts?'))return f.response({total_count:artifacts.length,artifacts});
+    if(path.includes('/attempts/1/jobs?'))return f.response({total_count:1,jobs:[{name:'delivery/layerscape',id:1001,
+      run_id:100,run_attempt:1,head_sha:S,status:'completed',conclusion:'success',
+      steps:[{name:'Upload GHCR assets delivery',status:'completed',conclusion:'success',started_at:START,completed_at:END}]}]});
+    if(path.endsWith('/assets/51'))return f.response('public!!');
+    if(path.includes('/releases/50/assets?'))return f.response([{id:51,name:'desktop.exe',size:8,state:'uploaded'}]);
+    if(path.endsWith('/releases/50'))return f.response({id:50,tag_name:unit.tag,author:{id:appBotId},body:'approved notes',draft:false,immutable:true});
+    if(path.endsWith('/commits/'+unit.tag))return f.response({sha:S});
+    if(path==='/repos/'+repository)return f.response({id:repositoryId,full_name:repository,private:false,archived:false,disabled:false});
+    throw Error('unexpected request '+path);
+  }};
+  const root=await mkdtemp(join(tmpdir(),'channel-workflow-delivery-'));roots.push(root);
+  let bytes='frozen registry archive';
+  const download=async(input:Parameters<typeof downloads.downloadWorkflowArtifact>[0])=>{
+    expect(input).toMatchObject({artifactId:810,digest:artifacts[0]!.digest});
+    await mkdir(input.directory);await writeFile(join(input.directory,'registry.tgz'),bytes);
+  };
+  const prepared=await prepareWorkflowChannelReceipts(context,root,root,'fixture-token',[],io,download);
+  expect(prepared.missing).toEqual([{unitId:'layerscape',channelId:'winget'}]);
+  expect(prepared.receipts).toMatchObject([{unitId:'layerscape',frozen:{channelId:'ghcr-assets',delivery:{artifactId:810,attempt:1,runId:100},
+    assets:[{path:'registry.tgz',sha256:digest(bytes)}]}}]);
+  unit.channelDeliveries=prepared.receipts.map(receipt=>receipt.frozen);
+  expect(parseReleaseRecord('cycle',cycle).units[0]?.channelDeliveries).toEqual(unit.channelDeliveries);
+  const {delivery}=await readCycleDelivery(context,[],io);
+  const source={unit:delivery.units.find(unit=>unit.id==='layerscape')!,controllerDirectory:root,history:[]};
+  const target={unitId:'layerscape',channelId:'ghcr-assets',releaseId:50,manifestDigest:unit.manifestDigest!,version:unit.version};
+  run.run_attempt=2;artifacts.push(makeArtifact(811,2));
+  vi.stubEnv('GH_TOKEN','fixture-token');
+  await expect(pipelineChannelDownload(context,target,join(root,'retry'),undefined,undefined,source,io,download))
+    .resolves.toMatchObject({channelFiles:['registry.tgz'],delivery:{artifactId:810,attempt:1,runId:100}});
+  expect(await readdir(join(root,'retry'))).toEqual(['registry.tgz']);
+  expect(reads.some(path=>path.includes('/attempts/2/jobs?')||path.includes('tools'))).toBe(false);
+  bytes='drifted registry archive';
+  await expect(pipelineChannelDownload(context,target,join(root,'drift'),undefined,undefined,source,io,download)).rejects.toThrow('frozen channel bytes changed');
+});
+
+it('uses the first successful original upload when a failed attempt also left an artifact',async()=>{
+  const input={fullName:'example/product',sourceSha:S,repositoryId:1,runId:100,attempt:2};
+  const make=(attempt:number)=>({id:800+attempt,name:`delivery-github-release-1-app-${S}-100-${attempt}`,expired:false,
+    digest:'sha256:'+digest(String(attempt)),workflow_run:{id:100,head_sha:S},created_at:'2026-10-26T00:00:30.000Z'});
+  const pages=async(path:string,field:'jobs'|'artifacts')=>{
+    if(field==='artifacts')return [make(1),make(2)];
+    const attempt=path.includes('/attempts/1/')?1:2;
+    return [{name:'delivery/app',run_id:100,run_attempt:attempt,head_sha:S,status:'completed',conclusion:attempt===1?'failure':'success',
+      steps:[{name:'Upload GitHub release delivery',status:'completed',conclusion:'success',started_at:START,completed_at:END}]}];
+  };
+  await expect(githubDeliveryArtifact(input,'app','delivery/app',pages)).resolves.toMatchObject({artifactId:802,attempt:2});
+  await expect(githubDeliveryArtifact(input,'app','delivery/app',pages,1)).rejects.toThrow('successful GitHub delivery artifact missing');
 });
