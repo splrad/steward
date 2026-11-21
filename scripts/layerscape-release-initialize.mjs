@@ -59,9 +59,15 @@ export async function closeout192(plan,request,{token,io,centralIo,readRecords=r
   const candidateState=before.repository.candidate;
   const sessionPrefix='generated/'+candidateState.id+'/session';
   const currentPaths=new Set(before.currentPaths);
-  const chunks=before.domainRecords.filter(row=>currentPaths.has(row.path)
-    &&(row.path===sessionPrefix+'.json'||row.path.startsWith(sessionPrefix+'-'))
-    &&row.value.documentKind==='session'&&row.value.candidateId===candidateState.id).map(row=>row.value);
+  const sessionChunk=path=>{
+    const chunk=before.domainRecords.find(row=>row.path===path&&currentPaths.has(path))?.value;
+    if(chunk?.documentKind!=='session'||chunk.candidateId!==candidateState.id)fail('STATE_CHANGED');
+    return chunk;
+  };
+  const first=sessionChunk(sessionPrefix+'.json');
+  if(!Number.isSafeInteger(first.count)||first.count<1||first.count>128)fail('STATE_CHANGED');
+  const chunks=[first];
+  for(let index=1;index<first.count;index++)chunks.push(sessionChunk(sessionPrefix+'-'+index+'.json'));
   const session=await decodeCandidateDocument(chunks);
   const approvedCandidateHead=session.manualValidation?.headSha??candidateState.publishedHead;
   if(session.pending||candidateState.pendingWrite||approvedCandidateHead!==candidateHead)fail('STATE_CHANGED');

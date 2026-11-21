@@ -96,11 +96,13 @@ function closeoutFixture(mode:'apply'|'closed'|'no-archive'|'moved-candidate'|'m
   const sessionText=JSON.stringify({generated:null,pending:null,identity:null,conflict:null,preview:null,adoption:null});
   const session={path:sessionPath,value:{schemaVersion:1,repositoryId:1187527897,candidateId,documentKind:'session',
     documentDigest:digest(sessionText),index:0,count:1,content:sessionText}};
+  const oldChunk={path:'generated/'+candidateId+'/session-1.json',
+    value:{...session.value,index:1,count:2,documentDigest:digest('old session')}};
   const active={activeCycleId:cycleId,lastCompletedCycleId:null,candidate:{prNumber:201,id:candidateId,publishedHead:head}};
   const closed={...active,activeCycleId:null,lastCompletedCycleId:cycleId};
   const before={head:state,history:[],cycles:[{value:cycle}],repository:['closed','no-archive'].includes(mode)?closed:active,
-    currentPaths:[sessionPath],domainRecords:mode==='no-archive'?[session]:
-      [session,{path:completionPath,value:completion},{path:provenance[0]!.path,content:payload}]};
+    currentPaths:[sessionPath,oldChunk.path],domainRecords:mode==='no-archive'?[session,oldChunk]:
+      [session,oldChunk,{path:completionPath,value:completion},{path:provenance[0]!.path,content:payload}]};
   let current=state,currentMain=head,currentController=controller,writes=0;
   const bytes=(value:unknown)=>({status:200,bytes:Buffer.from(JSON.stringify(value))});
   const io={async request(_method:string,path:string){
