@@ -1,6 +1,6 @@
 # 中央维护恢复
 
-发行协调器每次唤醒先执行一次有界维护扫描，然后继续产品工作。扫描限时五分钟、最多 1000 次 API 请求；读取失败在健康结果中保留错误码。维护记录按原 Run 保存于中央仓 `steward/release-state` 的 `maintenance/<runId>.json`，复用发行状态的 Git 快进连接。
+中央 [Maintenance 工作流](../.github/workflows/maintenance-event.yml) 按三个固定入口的原生完成事件处理中央维护。维护记录按原 Run 保存于中央仓 `steward/release-state` 的 `maintenance/<runId>.json`，复用受保护的 Git 快进写入。
 
 中央维护分支仅保存维护记录，不需要产品 `state.json` 或 `releaseAdoption`。首次使用须确认中央仓身份、完整分支保护和原生 ref 缺失，由首条真实维护记录创建分支；无记录时不创建空分支。写入检查完整当前树和必要历史，沿原 Run 保留恢复请求。中央 `steward/automation-health` 同样由首条真实运行摘要创建；已有分支缺少 `health.json`、权限失败或未知状态均不得当作首次初始化。健康摘要保留不完整扫描及错误，同日结果改变仍归档；末尾健康失败不表示此前产品没有写入。
 
@@ -14,7 +14,7 @@ App 安装可见性不等于发行参与资格。协调器按准确默认分支�
 | quality-language-summary.yml | quality-summary |
 | governance-promotion.yml | promote |
 
-私有 `splrad/steward-settings` 使用官方 full-sync，由受审配置变更和原生 schedule 触发；已启用 APPLY 且后续同步成功时可补齐暂时差异，NOP 仅报告差异，不承诺精确恢复时限。settings 不接入中央逐 Run 自动维护，已有历史证据只读保留；失败由已订阅的授权维护者接收原生通知，持续错误或紧急恢复使用原生 Re-run failed jobs，配置修复通过受审提交触发新的 full-sync。
+私有 `splrad/steward-settings` 使用官方 full-sync，由受审配置变更、治理事件和明确的人工触发推进；已启用 APPLY 且后续同步成功时可补齐暂时差异，NOP 仅报告差异，不承诺精确恢复时限。settings 不接入中央逐 Run 自动维护，已有历史证据只读保留；失败由已订阅的授权维护者接收原生通知，持续错误或紧急恢复使用原生 Re-run failed jobs，配置修复通过受审提交触发新的 full-sync。
 
 工作流身份从中央仓原生 API 读取，作业名与当前执行器的固定 YAML 对照。扫描查询默认分支最近 30 天的运行，并回读已有记录中的准确 Run。达到原生过滤查询上限时拆分时间窗口；分页不全、来源变化或无法证明完整作业集合时返回 UNKNOWN。记录仅包含中央 Run、固定作业键、矩阵序号、结论和恢复请求，不保存产品名称或原始步骤文本。
 
@@ -28,6 +28,6 @@ App 安装可见性不等于发行参与资格。协调器按准确默认分支�
 
 旧自托管入口及其目标发现、专属认证和日志校验代码已移除。历史提交及记录保留；需要恢复源码时通过受审 revert 还原同源代码与生成物，旧工作流仍须保持人工停用。重新启用旧写者需单独核定与 Mend 的交接，不能直接重跑旧 Run。共享 App 和凭据继续服务其他消费者。
 
-产品 Pages 在同一协调器中独立观察，使用产品仓自己的治理状态、准确来源和有限恢复预算，见[产品 Pages](pages.md)。中央维护本地验证覆盖 API 故障、原 Run 回读、完整分页、预算以及真实 Git 历史恢复；线上启用按当前实施阶段完成。
+产品 Pages 通过[独立事件入口](../.github/workflows/pages-maintenance-event.yml)处理，使用本仓治理状态、准确来源和有限恢复预算，见[产品 Pages](pages.md)。中央维护本地验证覆盖 API 故障、原 Run 回读、完整分页、预算以及真实 Git 历史恢复；线上启用按当前实施阶段完成。
 
 原生接口：[失败作业重跑](https://docs.github.com/en/rest/actions/workflow-runs#re-run-failed-jobs-from-a-workflow-run)、[全部 attempt 的作业](https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run)。

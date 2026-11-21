@@ -77,8 +77,6 @@ test('registered native entry separates Pages writes from administrator policy r
         if(k==='/git/ref/heads/main')return json({object:{sha:pin}});
         if(k==='/actions/runs/99/attempts/1')return json({id:99,run_attempt:1,path:receiver,event:'workflow_dispatch',head_branch:'main',
           head_sha:pin,repository:{id:central},head_repository:{id:central},actor:botFact,triggering_actor:botFact,workflow_id:7});
-        if(k===`/git/commits/${pin}`)return json({sha:pin,tree:{sha:pin}});
-        if(k===`/git/trees/${pin}`&&url.searchParams.get('recursive')==='1')return json({sha:pin,truncated:false,tree:[{path:receiver}]});
         if(k==='/actions/workflows/pages-maintenance-event.yml')return json({id:7,path:receiver,state:'active'});
       }
       if(p==='/graphql'){

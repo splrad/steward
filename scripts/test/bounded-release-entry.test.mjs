@@ -1,26 +1,25 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {readFile} from 'node:fs/promises';
+import {readFile,readdir} from 'node:fs/promises';
 import YAML from 'yaml';
 import {createHash} from 'node:crypto';
 import {candidateEvidence,validateCandidateEvent,validateNormalCandidateEvent,sha256,product} from '../bounded-candidate-contract.mjs';
 import {processNormalCandidateEvent} from '../release-candidate-event.mjs';
 import {entryGuard,resultOutcome,applyCandidateEvent} from '../bounded-release-entry.mjs';
-const head='a'.repeat(40),treeSha='b'.repeat(40),id=1296724484,root='/repos/splrad/steward';
+const head='a'.repeat(40),id=1296724484,root='/repos/splrad/steward';
 function fixture(mode='observe') {
   const env={GITHUB_REPOSITORY:'splrad/steward',GITHUB_REPOSITORY_ID:String(id),GITHUB_REF:'refs/heads/main',
     STEWARD_CONTROLLER_SHA:head,GITHUB_RUN_ID:'42',GITHUB_RUN_ATTEMPT:'2',BOUNDED_MODE:mode};
-  const file=mode==='normal'?'release-candidate-event.yml':mode==='observe'?'release-observe.yml':'bounded-release-event.yml';
+  const file={normal:'release-candidate-event.yml',observe:'release-observe.yml',event:'bounded-release-event.yml',
+    cycle:'release-cycle-event.yml',pages:'pages-maintenance-event.yml'}[mode];
   const run={id:42,workflow_id:77,run_attempt:2,repository:{id},head_repository:{id},head_sha:head,head_branch:'main',
     path:`.github/workflows/${file}`,event:'workflow_dispatch'};
   const data={ [root]:{id,default_branch:'main'},[`${root}/git/ref/heads/main`]:{object:{sha:head}},
-    [`${root}/git/commits/${head}`]:{sha:head,tree:{sha:treeSha}},
-    [`${root}/git/trees/${treeSha}?recursive=1`]:{sha:treeSha,truncated:false,tree:[{path:run.path}]},
     [`${root}/actions/runs/42/attempts/2`]:run,[`${root}/actions/workflows/${file}`]:{id:77,path:run.path,state:'active'}};
   const get=async path=>{assert.ok(path in data,path);return data[path];};
   return {env,run,data,get};
 }
-for(const mode of ['observe','event','normal'])test(`accepts exact native ${mode} entry`,async()=>{
+for(const mode of ['observe','event','normal','cycle','pages'])test(`accepts exact native ${mode} entry`,async()=>{
   const f=fixture(mode);assert.equal(await entryGuard(f.env,f.get,{enabled:true,deploymentSha:head}),f.run);
 });
 test('disabled adoption config stops before native reads',async()=>{
@@ -32,14 +31,13 @@ for(const mode of ['observe','event','normal'])for(const drift of ['main','run']
   else f.run.head_sha='b'.repeat(40);
   await assert.rejects(entryGuard(f.env,f.get,{enabled:true,deploymentSha:head}),/BOUNDED_RUN_SOURCE/);
 });
-for(const drift of ['source','attempt','fork','path','event','release','new-disabled','workflow-id'])test(`rejects ${drift} drift`,async()=>{
+for(const drift of ['source','attempt','fork','path','event','new-disabled','workflow-id'])test(`rejects ${drift} drift`,async()=>{
   const f=fixture();
   if(drift==='source')f.data[`${root}/git/ref/heads/main`].object.sha='b'.repeat(40);
   if(drift==='attempt')f.run.run_attempt=1;
   if(drift==='fork')f.run.head_repository.id=1;
   if(drift==='path')f.run.path='.github/workflows/release.yml';
   if(drift==='event')f.run.event='pull_request';
-  if(drift==='release')f.data[`${root}/git/trees/${treeSha}?recursive=1`].tree.push({path:'.github/workflows/release.yml'});
   if(drift==='new-disabled')f.data[`${root}/actions/workflows/release-observe.yml`].state='disabled_manually';
   if(drift==='workflow-id')f.run.workflow_id=78;
   await assert.rejects(entryGuard(f.env,f.get,{enabled:true,deploymentSha:head}),/BOUNDED_/);
@@ -72,20 +70,23 @@ for(const name of ['release-observe','bounded-release-event','release-candidate-
   for(const field of ['inputs.policy_sha','github.sha','github.workflow_sha'])assert.equal(evaluate({...context,[field]:'b'.repeat(40)}),false);
   assert.equal(job.steps[0].with.ref,'${{ github.workflow_sha }}');
 });
-for(const drift of ['commit','tree','truncated','duplicate','malformed','access lost'])test(`requires complete source proof: ${drift}`,async()=>{
-  const f=fixture(),treePath=`${root}/git/trees/${treeSha}?recursive=1`;
-  const tree=f.data[treePath];
-  if(drift==='commit')f.data[`${root}/git/commits/${head}`].sha='c'.repeat(40);
-  if(drift==='tree')tree.sha='c'.repeat(40);
-  if(drift==='truncated')tree.truncated=true;
-  if(drift==='duplicate')tree.tree.push(tree.tree[0]);
-  if(drift==='malformed')tree.tree.push(null);
+for(const mode of ['observe','event','normal','cycle','pages'])test(`${mode} rejects main movement during native admission`,async()=>{
+  const f=fixture(mode);
+  let mainReads=0;
   const get=async path=>{
-    if(drift==='access lost'&&path===treePath)throw Error('HTTP 403');
+    if(path.endsWith('/git/ref/heads/main')&&++mainReads===2)return {object:{sha:'b'.repeat(40)}};
     return f.get(path);
   };
-  await assert.rejects(entryGuard(f.env,get,{enabled:true,deploymentSha:head}),
-    drift==='access lost'?/HTTP 403/:/BOUNDED_WRITER_TREE_UNKNOWN/);
+  await assert.rejects(entryGuard(f.env,get,{enabled:true,deploymentSha:head}),/BOUNDED_RUN_SOURCE/);
+  assert.equal(mainReads,2);
+});
+test('the current workflow tree has no legacy all-repository writer',async()=>{
+  const files=await readdir(new URL('../../.github/workflows/',import.meta.url));
+  assert.ok(!files.some(file=>/^release\.ya?ml$/i.test(file)));
+  for(const file of files.filter(file=>/\.ya?ml$/i.test(file))) {
+    const yaml=await readFile(new URL(`../../.github/workflows/${file}`,import.meta.url),'utf8');
+    assert.doesNotMatch(yaml,/STEWARD_EXPECTED_PAUSED_RELEASE|node scripts\/release-coordinator\.mjs/);
+  }
 });
 function candidateFixture(changeSession=()=>{}) {
   const digest='d'.repeat(64),commit='b'.repeat(40),prefix=`/repos/${product.name}`;

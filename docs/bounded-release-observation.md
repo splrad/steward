@@ -6,7 +6,7 @@
 
 ## 候选链
 
-现役 Worker 验签产品 webhook，解析准确原生 issue event 后，持久登记一次派发意图；只派发中央 `bounded-release-event.yml`，输入 `event_json/request_key/policy_sha`。`event_json` 严格为 `{repositoryId:1187527897,prNumber,eventId}`。中央入口核对固定仓库、默认分支、准确 workflow SHA、App bot 原生 Run 和当前入口开关，并从受信 Git tree 确认旧写者源码已退出。
+现役 Worker 验签产品 webhook，解析准确原生 issue event 后，持久登记一次派发意图；只派发中央 `bounded-release-event.yml`，输入 `event_json/request_key/policy_sha`。`event_json` 严格为 `{repositoryId:1187527897,prNumber,eventId}`。中央入口核对固定仓库、默认分支、准确 workflow SHA、App bot 原生 Run 和当前入口开关。
 
 中央从不可变 release-state commit 读取并校验 Git blob、分块文档摘要、候选 PR 和原生 issue event，输出 `bounded-recheck-registration-<request_key>/registration.json`：
 
@@ -28,7 +28,7 @@ Worker 固定派发 `release-observe.yml`，仅接受 `identity_json/request_key
 
 正常结果 `candidate-event-<request_key>/result.json` 严格包含 11 字段：`schemaVersion/requestKey/producer/event/sourceSha/status/reason/outcome/stateBefore/stateAfter/candidateIdentity`。producer 为 `{repositoryId,runId,attempt,controllerSha}`，event 为 `{repositoryId,prNumber,eventId}`；reason 可 null，candidateIdentity 在未具备稳定缓存时可 null。Worker 独立核可信 Run、artifact 和原生事实后处理结果；只有当前生成缓存来源或已验证人工事实来源与当前 main 一致且缓存完整才进入有界观察登记。不能重写旧 epoch 来绕过 `SOURCE_CHANGED`。
 
-新入口核对当前 main 提交及其完整 Git tree，确认旧 `release.yml` 无默认分支来源，并分别核验 `config.enabled`、Worker 开关和自身原生 workflow active 状态。Git tree 无法完整读回、旧文件重现或入口来源不匹配时停止。回退先关闭受影响的新入口与 Worker 写入，再保全原对象恢复记录。
+现役入口核对当前 main、触发 Run、自身原生 workflow 状态及 `config.enabled`。Worker 继续按各入口现有开关受理。回退先关闭受影响的新入口与 Worker 写入，再保全原对象恢复记录。
 
 结果 artifact 为 `candidate-observation-<request_key>/result.json`，字段为 `schemaVersion/requestKey/identity/repositoryId/runId/runAttempt/controllerSha/sourceSha/observedAt/status/reason/outcome/stateBefore/stateAfter`。Worker 必须独立核实结果和业务证据，Run success 本身不代表完成。
 
@@ -46,7 +46,7 @@ index 复用 `probe-<cycleId>-<targetsDigest>-<runId>-<attempt>/report.json`，�
 
 中央与 Worker 最终源码、生产者接口及迁移记录须一致，固定策略 SHA、部署 SHA 和产品采用 SHA 须按正式配置核对。审查通过后按顺序采用中央和产品入口。固定观察遇新 main 时停止，正常事件入口按原候选更新和人工稿保护规则推进。
 
-切换前确认旧工作流 311600220 保持手工停用，完整读取全部原生 Run 并确认均进入终态。停用后已开始的 Run 仍可继续执行，因此有运行未结束、状态无法确认或旧工作流被重新启用时，暂停采用。旧来源排空后再合入删除与新守卫，通过正常 Governance Promotion 晋级控制器，在真实候选、周期和 Pages 事件中验证新来源。历史 Run 保持可读。
+切换前确认旧工作流 311600220 保持手工停用，完整读取全部原生 Run 并确认均进入终态。停用后已开始的 Run 仍可继续执行，因此有运行未结束、状态无法确认或旧工作流被重新启用时，暂停采用。2026-11-21 读回四个旧 Run 全为 completed，最后一次为 [43500446376](https://github.com/splrad/steward/actions/runs/43500446376)。审查候选提交确认旧写者和定时入口缺席，合入后通过正常 Governance Promotion 晋级控制器，在真实候选、周期和 Pages 事件中验证新来源。历史 Run 保持可读。
 
 
 ## 人工完成稿的冻结事实
@@ -78,7 +78,7 @@ G 缓存观察先核对实际候选 head 的完整 tree 等于 G.baseSha 应用 
 
 ## 固定产品发行
 
-`release-cycle-event.yml` 在受保护的中央 main 运行，执行前核原生 App Run、当前 main、已晋级的 `steward/validated-controller` 及受信 Git tree 中的现役入口。Worker 在产品 push 或已登记运行完成后传入 `event_json/request_key/policy_sha`。业务标识由原产品仓、事件种类和源 SHA 或 Run/attempt 派生。相同键复用同一入口。共享 concurrency 组串行处理发布、候选编辑和观察。
+`release-cycle-event.yml` 在受保护的中央 main 运行，执行前核原生 App Run、当前 main、已晋级的 `steward/validated-controller` 及自身原生工作流。Worker 在产品 push 或已登记运行完成后传入 `event_json/request_key/policy_sha`。业务标识由原产品仓、事件种类和源 SHA 或 Run/attempt 派生。相同键复用同一入口。共享 concurrency 组串行处理发布、候选编辑和观察。
 
 产品默认分支推进时，候选交接从已合并的准确 PR、审定树和 Git 祖先核对得到 S。构建在 `steward/build/<cycleId>` 运行，构建完成后由中央发布器使用原冻结资产。中央发布 Run 的完成回执只处理在受保护 Git 中登记的原始发布调用。渠道 submit/verify 完成后分别按原生运行和独立渠道证据更新；成功的 observe 回执不再请求 probe。每个运行的 `release-cycle-<request_key>-<run_attempt>/result.json` 保留生产者、事件、周期及是否调用过发布器。待处理、未知或失败状态按原对象恢复。
 

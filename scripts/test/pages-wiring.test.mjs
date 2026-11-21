@@ -389,9 +389,7 @@ function completionEntry(f) {
   const run={id:99,run_attempt:1,path:file,event:'workflow_dispatch',head_branch:'main',head_sha:pin,workflow_id:7,
     actor,triggering_actor:actor,repository:{id:centralId},head_repository:{id:centralId}};
   const facts={'':{id:centralId,default_branch:'main'},'/git/ref/heads/main':{object:{sha:pin}},
-    '/actions/runs/99/attempts/1':run,'/actions/workflows/pages-maintenance-event.yml':{path:file,state:'active',id:7},
-    [`/git/commits/${pin}`]:{sha:pin,tree:{sha:pin}},
-    [`/git/trees/${pin}?recursive=1`]:{sha:pin,truncated:false,tree:[{path:'.github/workflows/pages-maintenance-event.yml'}]}};
+    '/actions/runs/99/attempts/1':run,'/actions/workflows/pages-maintenance-event.yml':{path:file,state:'active',id:7}};
   const get=async path=>{const key=path.replace('/repos/splrad/steward','');assert.ok(key in facts);return facts[key];};
   const enter=sites=>receiveCompletion(env,sites,get,{enabled:true,deploymentSha:S},async()=>({appBotId:actor.id}),
     ({completion})=>f.service(completion));
