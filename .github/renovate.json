@@ -94,74 +94,6 @@
         "npm"
       ],
       "enabled": false
-    },
-    {
-      "matchBaseBranches": [
-        "maintenance/legacy-runtime-e990eda"
-      ],
-      "enabled": false
-    },
-    {
-      "matchBaseBranches": [
-        "maintenance/legacy-runtime-e990eda"
-      ],
-      "matchManagers": [
-        "nodenv"
-      ],
-      "matchFileNames": [
-        ".node-version"
-      ],
-      "matchPackageNames": [
-        "node"
-      ],
-      "enabled": true,
-      "groupName": "maintenance Node toolchain",
-      "groupSlug": "maintenance-node-toolchain",
-      "separateMajorMinor": false
-    },
-    {
-      "matchBaseBranches": [
-        "maintenance/legacy-runtime-e990eda"
-      ],
-      "matchManagers": [
-        "npm"
-      ],
-      "matchFileNames": [
-        "package.json"
-      ],
-      "matchDepTypes": [
-        "engines"
-      ],
-      "matchPackageNames": [
-        "node"
-      ],
-      "enabled": true,
-      "groupName": "maintenance Node toolchain",
-      "groupSlug": "maintenance-node-toolchain",
-      "separateMajorMinor": false
-    },
-    {
-      "matchBaseBranches": [
-        "maintenance/legacy-runtime-e990eda"
-      ],
-      "matchManagers": [
-        "npm"
-      ],
-      "matchFileNames": [
-        "package.json"
-      ],
-      "matchDepTypes": [
-        "packageManager",
-        "devDependencies"
-      ],
-      "matchPackageNames": [
-        "npm"
-      ],
-      "enabled": true,
-      "groupName": "maintenance npm toolchain",
-      "groupSlug": "maintenance-npm-toolchain",
-      "separateMajorMinor": false,
-      "skipInstalls": false
     }
   ],
   "customManagers": [
@@ -238,8 +170,7 @@
     }
   },
   "baseBranchPatterns": [
-    "$default",
-    "maintenance/legacy-runtime-e990eda"
+    "$default"
   ],
   "npm": {
     "lockFileMaintenance": {

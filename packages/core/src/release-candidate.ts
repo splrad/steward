@@ -1,7 +1,7 @@
 import { sha256Hex } from './fingerprint.js';
 import { assertDeliveryPath } from './delivery-config.js';
 import { isHumanActor, isBotActor, type GitHubActor } from './identity.js';
-import Mustache from 'mustache';
+export {renderReleaseContributors} from './candidate-note.js';
 
 export interface CandidateFile { path: string; mode: '100644' | '100755'; content: string | null }
 export interface CandidateSnapshot {
@@ -11,7 +11,8 @@ export interface CandidateSnapshot {
 }
 export interface RepositoryAuthor { id: number; evidence: string }
 export interface ReleaseActor extends GitHubActor { profileUrl: string; avatarUrl: string }
-export interface ReleaseContributor { id: number; login: string; profileUrl: string; avatarUrl: string; alt: string }
+import type {ReleaseContributor} from './candidate-note.js';
+export type {ReleaseContributor} from './candidate-note.js';
 export function validateCandidateFiles(files: readonly CandidateFile[]) {
   const paths = new Set<string>();
   for (const file of files) {
@@ -55,8 +56,4 @@ export function candidatePhase(candidate: { prNumber: number | null; pendingWrit
 export function candidateCreationBody(id: string, upstreamBody: string) {
   if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('CANDIDATE_IDENTITY_INVALID');
   return `${upstreamBody}\n\n当前文稿的预览见本 PR 的 Steward 状态评论。\n\n<!-- steward:candidate:${id} -->\n`;
-}
-export function renderReleaseContributors(contributors: readonly ReleaseContributor[]): string {
-  return Mustache.render('{{#hasContributors}}\n## 贡献者\n\n{{#contributors}}<a href="{{profileUrl}}"><img src="{{avatarUrl}}" alt="{{alt}}" width="32" height="32" /></a> {{/contributors}}\n{{/hasContributors}}',
-    { hasContributors: contributors.length > 0, contributors });
 }
