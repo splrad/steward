@@ -84,7 +84,7 @@ export class GitHubClient {
   async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const url = this.absoluteUrl(path);
     const headers = new Headers(githubHeaders(this.token, this.policySha));
-    const init: RequestInit = { method, headers };
+    const init: RequestInit = { method, headers, redirect: "error" };
     if (body !== undefined) { headers.set("Content-Type", "application/json"); init.body = JSON.stringify(body); }
     const response = await this.transport.call(globalThis, url, init);
     if (!response.ok) {
@@ -145,7 +145,7 @@ export class GitHubClient {
   ): Promise<readonly T[]> {
     return collectAllPages(path, async url => {
       const absolute = this.absoluteUrl(url);
-      const response = await this.transport.call(globalThis, absolute, { headers: githubHeaders(this.token, this.policySha) });
+      const response = await this.transport.call(globalThis, absolute, { headers: githubHeaders(this.token, this.policySha), redirect: "error" });
       if (!response.ok) throw await GitHubRequestError.from(response,"GET",url);
       const value = await response.json();
       const next = nextLink(response.headers);
@@ -155,7 +155,7 @@ export class GitHubClient {
 
   private async readValidatedPage<T>(resource: IssueFactResource, path: string, select: (value: unknown) => readonly T[], allowNotFound = false): Promise<{ items: readonly T[]; validator: PageValidator }> {
     const absolute = this.absoluteUrl(path);
-    const response = await this.transport.call(globalThis, absolute, { method: "GET", headers: githubHeaders(this.token, this.policySha) });
+    const response = await this.transport.call(globalThis, absolute, { method: "GET", headers: githubHeaders(this.token, this.policySha), redirect: "error" });
     if (response.status === 404 && allowNotFound) return { items: [], validator: { resource, url: absolute, etag: null, next: null, status: 404 } };
     if (!response.ok) throw await GitHubRequestError.from(response,"GET",path);
     const value = await response.json();
@@ -209,7 +209,7 @@ export class GitHubClient {
     for (const validator of normalized) {
       const headers = new Headers(githubHeaders(this.token, this.policySha));
       if (validator.status === 200) headers.set("If-None-Match", validator.etag!);
-      const response = await this.transport.call(globalThis, validator.url, { method: "GET", headers });
+      const response = await this.transport.call(globalThis, validator.url, { method: "GET", headers, redirect: "error" });
       if (validator.status === 404) {
         if (response.status === 404) continue;
         if (response.ok) return { state: "modified", resource: validator.resource, url: validator.url };
