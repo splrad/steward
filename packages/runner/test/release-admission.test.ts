@@ -7,6 +7,7 @@ import { parsePipelineRecord, pipelineSource } from '../src/release-pipeline-rec
 import { productPipelineFixture } from './product-pipeline-fixture.js';
 import { nativeRequestIdentity } from '../src/native-release-evidence.js';
 import { defaultBuildWorkflow } from '../../core/src/release-workflow.js';
+import { projectFrozenReleaseDownloads } from '../../core/src/release-template.js';
 import YAML from 'yaml';
 afterEach(() => vi.restoreAllMocks());
 it.each(['ghcr','unknown'])('rejects an external channel with no fixed implementation: %s',id=>{
@@ -97,7 +98,7 @@ it('rejects a static artifact identity before admitting a sealed legacy GitHub h
   f.source[defaultBuildWorkflow]=YAML.stringify(workflow);
   await expect(pipelineIdentity(f.input,f.environment,f.gh,f.io)).resolves.toMatchObject({status:'ADMITTED'});
 });
-it.each(['valid', 'unit', 'template', 'version', 'compare'])('renders reviewed notes at S without a catalog reader: %s', async kind => {
+it.each(['valid', 'unit', 'template', 'version', 'compare', 'historical-subset'])('renders reviewed notes at S without a catalog reader: %s', async kind => {
   const f = productPipelineFixture(), result = await pipelineIdentity(f.input, f.environment, f.gh, f.io);
   if (result.status !== 'ADMITTED') throw new Error('fixture admission');
   f.source['.release-notes/app.md'] = ['概述', '更新内容', '兼容性', '升级与迁移', '安装说明', '已知问题', '恢复'].map(label => `## ${label}\n\n已审事实。`).join('\n\n');
@@ -110,6 +111,20 @@ it.each(['valid', 'unit', 'template', 'version', 'compare'])('renders reviewed n
     const body = await pipelineNotes(result.record, 'app', 'source');
     expect(body).toContain('已审事实。'); expect(body).toContain('v0.9.0...'+result.record.sourceSha);
     expect(body).not.toContain('Original English evidence retained');
+  } else if(kind==='historical-subset') {
+    const delivery=result.record.delivery.units[0]!,unit=result.record.units[0]!;
+    delivery.assets.push({id:'fonts',name:'Fonts.zip',mediaType:'application/zip'},{id:'internal',name:'Internal.zip',mediaType:'application/zip'});
+    unit.assets.push({id:'fonts',name:'Fonts.zip',build:'windows-x64'},{id:'internal',name:'Internal.zip',build:'windows-x64'});
+    delivery.channels[0]!.artifactIds=['app','fonts'];
+    const body=await pipelineNotes(result.record,'app','source');
+    expect(body).toContain('app-1.0.0.exe');
+    expect(body).toContain('Fonts.zip');
+    expect(body).not.toContain('Internal.zip');
+    const projected=projectFrozenReleaseDownloads(f.source['.github/release-template.md.mustache']!,body,
+      {assets:unit.assets.slice(0,2),repository:result.record.fullName,tag:unit.tag},new Set(['Fonts.zip']));
+    expect(projected).toContain('已审事实。');
+    expect(projected).toContain('Fonts.zip');
+    expect(projected).not.toMatch(/Internal\.zip|app-1\.0\.0\.exe/);
   } else await expect(pipelineNotes(result.record, kind === 'unit' ? 'missing' : 'app', 'source')).rejects.toThrow();
   expect(JSON.stringify(f.source)).toBe(before);
 });
