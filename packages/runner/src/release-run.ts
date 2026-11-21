@@ -411,7 +411,7 @@ export async function verifyContinuationReleases(context:EvidenceContext,io:Evid
           sourceSha: context.cycle.sourceSha, tag: unit.tag, frozenDigest: unit.notesDigest }, release.body, path => reader.json(path))||(await reader.json(`commits/${encodeURIComponent(unit.tag)}`)).sha!==context.cycle.sourceSha
       ||assets.length!==unit.assets.length||new Set(assets.map(asset=>asset.name)).size!==assets.length)fail('formal release identity');
     for(const asset of assets) {
-      if(asset.state!=='uploaded'||!Number.isSafeInteger(asset.id)||asset.id<1)fail('formal release asset');
+      if(unit.githubDelivery&&asset.state!=='uploaded')fail('formal release asset');
       const actual=await reader.downloadDigest(`releases/assets/${asset.id}`);
       if(actual.size!==asset.size||!unit.assets.some(expected=>expected.path===asset.name&&expected.size===actual.size&&expected.sha256===actual.digest))fail('formal release bytes');
     }

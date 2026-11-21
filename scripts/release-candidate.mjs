@@ -96,6 +96,12 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       fail('CANDIDATE_RELEASE_TEMPLATE');
     return new TextDecoder('utf-8',{fatal:true}).decode(bytes);
   };
+  const checkPolicyAt=async(sha,delivery)=>{
+    if(!checkRepositoryPolicy)return;
+    const nativeEntry=delivery.buildWorkflow!==undefined;
+    const priorRegistration=nativeEntry&&(await fileAt(sha,'.github/steward-central-policy',true))!==null;
+    await checkRepositoryPolicy(path=>fileAt(sha,path),{nativeEntry,priorRegistration});
+  };
   const fetchBranch = async branch => {
     const ref = await api('GET', `/repos/${request.repository}/git/ref/heads/${branch}`, undefined, true);
     if (!ref) return null;
@@ -155,9 +161,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       assertProductDelivery(delivery,request.repository);
       const rules = await native(`rules/branches/${encodeURIComponent(request.defaultBranch)}`);
       if (!Array.isArray(rules) || !rules.some(r => r.type === 'non_fast_forward') || !rules.some(r => r.type === 'deletion')) fail('CANDIDATE_SOURCE_PROTECTION_REQUIRED');
-      const nativeEntry=delivery.buildWorkflow!==undefined;
-      const priorRegistration=nativeEntry&&(await fileAt(baseSha,'.github/steward-central-policy',true))!==null;
-      await checkRepositoryPolicy?.(path=>fileAt(baseSha,path),{nativeEntry,priorRegistration});
+      await checkPolicyAt(baseSha,delivery);
       const initial = Object.values(versions).every(version => !version || version === '0.0.0');
       const releases = initial ? await pages('releases') : [], tags = initial ? await pages('tags') : [];
       if(JSON.stringify(Object.keys(settings.packages??{}).sort())!==JSON.stringify(delivery.units.map(unit=>unit.path).sort()))fail('CANDIDATE_UNIT_COVERAGE');
@@ -537,7 +541,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         if(!eligible||history.inventoryComplete!==true||history.pendingHandoff!==cycle.id
           ||history.defaultHead!==defaultSha||history.stateHead!==expectedHead)
           return {status:'WAIT',reason:'MERGED_CANDIDATE_SOURCE_UNVERIFIED',history};
-        await checkRepositoryPolicy?.(path=>fileAt(sourceSha,path));
+        await checkPolicyAt(sourceSha,delivery);
         if(await fetchBranch(request.defaultBranch)!==defaultSha||await fetchBranch('steward/release-state')!==expectedHead)
           return {status:'WAIT',reason:'MERGED_CANDIDATE_SOURCE_MOVED'};
         session.repository.activeCycleId = cycle.id; session.repository.candidate = null; session.repository.revision++; session.repository.lastProgressAt = now();
