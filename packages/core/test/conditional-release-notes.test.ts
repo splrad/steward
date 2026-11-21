@@ -150,4 +150,18 @@ describe('organization conditional release notes', () => {
       expect(project(location('download/'+frozen.tag))).toContain('/download/'+frozen.tag);
     }
   });
+
+  it.each([
+    'https://example:placeholder@github.com/',
+    'https://:placeholder@github.com/',
+    'http://github.com/',
+  ])('requires a public HTTPS URL for bare downloads outside acquisition: %s', authority => {
+    const download = `${repository}/releases/download/${frozen.tag}/file.zip`;
+    const input = notes('本版重点', `**下载**。见 ${authority}${download} 。`);
+    const preview = () => renderCandidateNote('.release-notes/product.md', input, [], {
+      template, repository, sourceSha, tag: frozen.tag,
+    });
+    const render = () => renderFrozenReleaseNotes(template, { ...frozen, notes: input, selectedDownloads: new Set(['file.zip']) });
+    for (const project of [preview, render]) expect(project).toThrow('outside GitHub delivery');
+  });
 });

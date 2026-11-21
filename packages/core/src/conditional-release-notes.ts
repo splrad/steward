@@ -198,7 +198,7 @@ export function assertVersionAcquisitionLinks(notes: ConditionalNotes, repositor
 }
 
 function githubUrls(text: string) {
-  return new Set([...text.matchAll(/https?:\/\/github\.com(?::\d+)?\/[^\s<>()[\]"'`]+/gi)]
+  return new Set([...text.matchAll(/https?:\/\/(?:[^\s<>()[\]"'`/?#\\]*@)?github\.com(?::\d+)?\/[^\s<>()[\]"'`]+/gi)]
     .map(match => match[0]!.replace(/[.,!?;:]+$/, '')));
 }
 
@@ -213,7 +213,7 @@ export function assertSelectedReleaseDownloads(markdown: string, repository: str
     if (!path.startsWith(prefix)) continue;
     const download = decodeURIComponent(url.pathname.slice(prefix.length));
     const tagPrefix = tag + '/';
-    if (url.origin !== 'https://github.com' || !download.startsWith(tagPrefix) || download === tagPrefix
+    if (url.origin !== 'https://github.com' || url.username || url.password || !download.startsWith(tagPrefix) || download === tagPrefix
       || (selected && !selected.has(download.slice(tagPrefix.length))))
       fail('conditional release links to a file outside GitHub delivery');
   }
