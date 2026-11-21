@@ -1,11 +1,12 @@
 import {execFile} from 'node:child_process';
+import {createHash} from 'node:crypto';
 import {promisify} from 'node:util';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {isDeepStrictEqual} from 'node:util';
-import {isolatedBuildEnvironment,NativeEvidenceReader,nativeReleaseApp,nativeEvidenceTransport} from '../packages/runner/dist/index.js';
+import {completionFile,evaluateCompletion,isolatedBuildEnvironment,NativeEvidenceReader,nativeReleaseApp,nativeEvidenceTransport} from '../packages/runner/dist/index.js';
 import {initializeReleaseAdoption} from './release-adoption.mjs';
 import {inspectRepositoryHistory,readNativeCompletion,readReleaseRecords} from './release-record.mjs';
 import {adoptionTransport} from './release-state-initialize.mjs';
@@ -32,7 +33,7 @@ export function validateInitialization(env) {
   return {...plan,closeoutHead:env.EXPECTED_STATE_HEAD,controllerSha:env.GITHUB_SHA};
 }
 
-async function closeout192(plan,request,{token,io,centralIo}) {
+export async function closeout192(plan,request,{token,io,centralIo,readRecords=readReleaseRecords,readCompletion=readNativeCompletion,inspectHistory=inspectRepositoryHistory}) {
   const central=new NativeEvidenceReader(centralIo,'splrad/steward');
   const currentController=()=>central.json('git/ref/heads/steward/validated-controller');
   if((await currentController()).object?.sha!==plan.controllerSha)fail('SOURCE');
@@ -43,37 +44,58 @@ async function closeout192(plan,request,{token,io,centralIo}) {
       ||pr.head.ref!=='steward/release-candidate'||pr.base?.ref!=='main'||!sha(pr.head.sha))fail('STATE_CHANGED');
     return pr.head.sha;
   };
+  const currentState=async()=>{
+    const value=await product.json('git/ref/heads/steward/release-state');
+    if(value.ref!=='refs/heads/steward/release-state'||value.object?.type!=='commit'||!sha(value.object.sha))fail('STATE_CHANGED');
+    return value.object.sha;
+  };
   const candidateHead=await candidate();
-  const before=await readReleaseRecords({...request,targetRef:'steward/release-state',includeHistory:true});
+  const before=await readRecords({...request,targetRef:'steward/release-state',includeHistory:true});
   const [entry]=before.cycles;
   if(before.head!==plan.closeoutHead||before.history.some(row=>row.status!=='DECODED')
     ||before.cycles.length!==1||entry.value.id!==closeoutCycle
     ||entry.value.units.length!==1||entry.value.units[0].releaseId!==450956063
     ||before.repository?.candidate?.prNumber!==201)fail('STATE_CHANGED');
-  if(before.repository.activeCycleId===null&&before.repository.lastCompletedCycleId===closeoutCycle)
-    return {status:'UNCHANGED',archiveHead:before.head,cycleId:closeoutCycle,candidateHead};
-  if(before.repository.activeCycleId!==closeoutCycle)fail('STATE_CHANGED');
+  const validateTarget=async expected=>{
+    if((await currentController()).object?.sha!==plan.controllerSha||await candidate()!==candidateHead
+      ||await currentState()!==expected)fail('STATE_CHANGED');
+  };
   // The history reader takes its evaluation time before it asks for evidence.
-  const completion=await readNativeCompletion(request,entry.value,{io,centralIo});
-  const result=await inspectRepositoryHistory(request,{token,io,centralIo,
+  const completion=await readCompletion(request,entry.value,{io,centralIo});
+  if(evaluateCompletion(completion.source,completion.observation,new Date().toISOString()).result!=='PASS')fail('NOT_APPLIED');
+  if(before.repository.activeCycleId===null&&before.repository.lastCompletedCycleId===closeoutCycle) {
+    const archive=before.domainRecords.find(row=>row.path===entry.value.completedEvidencePath)?.value;
+    if(!archive||!isDeepStrictEqual(archive.source,completion.source)
+      ||evaluateCompletion(archive.source,archive.observation,archive.observation.observedAt).result!=='PASS'
+      ||archive.provenance.some(proof=>!before.domainRecords.some(record=>record.path===proof.path
+        &&typeof record.content==='string'&&createHash('sha256').update(record.content).digest('hex')===proof.digest)))
+      fail('NOT_APPLIED');
+    await validateTarget(before.head);
+    return {status:'UNCHANGED',archiveHead:before.head,cycleId:closeoutCycle,candidateHead};
+  }
+  if(before.repository.activeCycleId!==closeoutCycle)fail('STATE_CHANGED');
+  const result=await inspectHistory(request,{token,io,centralIo,beforeArchivePush:()=>validateTarget(before.head),
     completionReader:cycle=>{
       if(cycle.id!==closeoutCycle)fail('STATE_CHANGED');
       return completion;
     }});
   if(result.result!=='PASS'||result.lastCompletedCycleId!==closeoutCycle||!sha(result.archiveHead))fail('NOT_APPLIED');
+  await validateTarget(result.archiveHead);
   // The native history writer preserves the next candidate and archives fresh completion proof.
   const state=async path=>{
     const blob=await product.json('contents/'+path+'?ref='+result.archiveHead);
     if(blob.path!==path||blob.encoding!=='base64')fail('READ');
     return JSON.parse(Buffer.from(blob.content,'base64').toString('utf8'));
   };
+  const evidencePath=completionFile(completion).path;
   const after=await state('state.json'), cycle=await state('cycles/'+closeoutCycle+'.json');
   if(after.activeCycleId!==null||after.lastCompletedCycleId!==closeoutCycle
     ||!isDeepStrictEqual(after.candidate,before.repository.candidate)
+    ||cycle.completedEvidencePath!==evidencePath||!isDeepStrictEqual(await state(evidencePath),completion)
     ||!isDeepStrictEqual(cycle.channelFacts,entry.value.channelFacts)
-    ||!isDeepStrictEqual(cycle.requiredChannels,entry.value.requiredChannels)
-    ||await candidate()!==candidateHead||(await currentController()).object?.sha!==plan.controllerSha)
+    ||!isDeepStrictEqual(cycle.requiredChannels,entry.value.requiredChannels))
     fail('STATE_CHANGED');
+  await validateTarget(result.archiveHead);
   return {status:'APPLIED',archiveHead:result.archiveHead,cycleId:closeoutCycle,candidateHead};
 }
 

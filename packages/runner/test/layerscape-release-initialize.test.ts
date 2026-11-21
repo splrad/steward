@@ -1,10 +1,11 @@
 import {it as test, vi, afterEach} from 'vitest';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 // @ts-expect-error The CLI module is JavaScript without a declaration file.
-import {validateInitialization,initializeProduct} from '../../../scripts/layerscape-release-initialize.mjs';
+import {validateInitialization,initializeProduct,closeout192} from '../../../scripts/layerscape-release-initialize.mjs';
 
 afterEach(()=>vi.unstubAllEnvs());
 type Options={remoteHead?:string;fetchedHead?:string;stateStatus?:number;private?:boolean;matches?:unknown;matchesStatus?:number;closeoutHead?:string};
@@ -73,6 +74,78 @@ test('closeout stops before Git or state writes when the approved release-state 
   assert.equal(f.writes,0);
   assert.deepEqual(f.calls,[]);
 }));
+
+function closeoutFixture(mode:'apply'|'closed'|'no-archive'|'moved-controller'|'moved-state') {
+  const sourceSha='3755e1426c3d9776927658480fe610b298c27813',cycleId='pr-192-'+sourceSha,applied='d'.repeat(40);
+  const digest=(text:string)=>createHash('sha256').update(text).digest('hex');
+  const observedAt='2026-11-19T06:55:17Z',requiredChannels=['ghcr-assets','winget'].map(channelId=>({
+    unitId:'layerscape',channelId,version:'1.0.0',digest:digest('manifest'),inputDigest:digest(channelId),private:false,
+  }));
+  const unit={id:'layerscape',version:'1.0.0',tag:'v1.0.0',releaseId:450956063,authorId:301115370,
+    manifestDigest:digest('manifest'),notesDigest:digest('notes'),assets:[{path:'payload.zip',size:10,sha256:digest('bytes')}]};
+  const source={repositoryId:1187527897,cycleId,sourceSha,deliveryConfigSha:head,units:[unit],requiredChannels};
+  const {id,...release}=unit,payload='native publication result',evidenceDigest=digest(payload);
+  const provenance=[{path:'evidence/publication/'+evidenceDigest+'.json',digest:evidenceDigest,sourceUrl:'https://api.github.com/repos/splrad/LayerScape',observedAt}];
+  const observation={source,sourceComplete:true,observedAt,releasesComplete:true,channelsComplete:true,
+    releases:[{...release,unitId:id,sourceSha,draft:false,immutable:true,evidenceDigest}],
+    channels:[],consumptions:[],inFlightWaveKeys:[],unknownWriteKeys:[]};
+  const completion={schemaVersion:1,repositoryId:1187527897,cycleId,source,observation,provenance};
+  const completionPath='evidence/completion/'+digest(JSON.stringify(completion)+'\n')+'.json';
+  const cycle={id:cycleId,units:[unit],requiredChannels,channelFacts:[{nativeObjectId:'484181',acceptedAt:null}],completedEvidencePath:completionPath};
+  const active={activeCycleId:cycleId,lastCompletedCycleId:null,candidate:{prNumber:201,publishedHead:head}};
+  const closed={...active,activeCycleId:null,lastCompletedCycleId:cycleId};
+  const before={head:state,history:[],cycles:[{value:cycle}],repository:['closed','no-archive'].includes(mode)?closed:active,
+    domainRecords:mode==='no-archive'?[]:[{path:completionPath,value:completion},{path:provenance[0]!.path,content:payload}]};
+  let current=state,currentController=controller,writes=0;
+  const bytes=(value:unknown)=>({status:200,bytes:Buffer.from(JSON.stringify(value))});
+  const io={async request(_method:string,path:string){
+    if(path.endsWith('/refs/heads/steward/release-state')||path.endsWith('/ref/heads/steward/release-state'))
+      return bytes({ref:'refs/heads/steward/release-state',object:{type:'commit',sha:current}});
+    if(path.endsWith('/pulls/201'))return bytes({number:201,state:'open',
+      head:{ref:'steward/release-candidate',repo:{id:1187527897},sha:head},base:{ref:'main'}});
+    const sources:Record<string,unknown>={'state.json':closed,['cycles/'+cycleId+'.json']:cycle,[completionPath]:completion};
+    for(const [file,value] of Object.entries(sources))if(path.endsWith('/contents/'+file+'?ref='+applied))
+      return bytes({path:file,encoding:'base64',content:Buffer.from(JSON.stringify(value)).toString('base64')});
+    throw new Error('unexpected read '+path);
+  }};
+  const centralIo={async request(){return bytes({object:{sha:currentController}});}};
+  const inspectHistory=async(_request:unknown,hooks:{beforeArchivePush():Promise<void>;completionReader(cycle:unknown):unknown})=>{
+    assert.equal(hooks.completionReader(cycle),completion);
+    if(mode==='moved-controller')currentController=head;
+    await hooks.beforeArchivePush();
+    writes++;
+    current=mode==='moved-state'?head:applied;
+    return {result:'PASS',archiveHead:applied,lastCompletedCycleId:cycleId};
+  };
+  return {run:()=>closeout192({closeoutHead:state,controllerSha:controller},{repository:'splrad/LayerScape'},{
+    io,centralIo,readRecords:async()=>before,readCompletion:async()=>completion,inspectHistory,
+  }),get writes(){return writes;}};
+}
+
+test('closeout archives GitHub completion while retaining candidate and channel facts',async()=>{
+  const f=closeoutFixture('apply');
+  assert.equal((await f.run()).status,'APPLIED');
+  assert.equal(f.writes,1);
+});
+test('a fully evidenced closeout can be read again without a write',async()=>{
+  const f=closeoutFixture('closed');
+  assert.equal((await f.run()).status,'UNCHANGED');
+  assert.equal(f.writes,0);
+});
+test('a completed pointer without its archive is rejected',async()=>{
+  const f=closeoutFixture('no-archive');
+  await assert.rejects(f.run(),/NOT_APPLIED/);
+  assert.equal(f.writes,0);
+});
+test('a controller change detected at the push boundary prevents a write',async()=>{
+  const f=closeoutFixture('moved-controller');
+  await assert.rejects(f.run(),/STATE_CHANGED/);
+  assert.equal(f.writes,0);
+});
+test('a moved state ref after the push prevents an applied result',async()=>{
+  await assert.rejects(closeoutFixture('moved-state').run(),/STATE_CHANGED/);
+});
+
 for(const options of [{remoteHead:state},{fetchedHead:state},{stateStatus:403},{private:true},
   {matches:[{ref:'refs/heads/steward/release-state'}]},{matches:{}},{matchesStatus:403}]) {
   test('changed or unreadable source stops before writes '+JSON.stringify(options),async()=>fixture(options,async f=>{
