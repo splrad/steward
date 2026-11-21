@@ -20,6 +20,8 @@ import {projectMergedRepositoryPolicy} from '../repository-policy-publish.mjs';
 import {workflowPagesOptions} from '../select-pages-source.mjs';
 import {writeReleaseRecords} from '../release-record.mjs';
 import {nativeTemporaryParent} from '../native-scratch.mjs';
+import deliverySchema from '../../schema/delivery.schema.json' with {type:'json'};
+import releaseAssetSchema from '../../schema/release-asset-selection.schema.json' with {type:'json'};
 
 const admin = { id:1447987054, full_name:'splrad/steward-settings', default_branch:'main', private:true };
 const org = { id:302208797, login:'splrad' };
@@ -861,27 +863,42 @@ test('a narrowed approval stays selected during registration refresh and preview
   assert.deepEqual(state.writes,[]);
 });
 
-test('a channel that can read frozen evidence or already reads its own public file allows an independent GitHub selection',async()=>{
+test('immutable controller contracts and actual file availability determine whether a channel can consume the selection',async t=>{
   const {policy}=await propose(product,productFiles);
   const ghcr={id:'ghcr-assets',required:true,location:'ghcr.io/example/product',artifactIds:['deployer'],metadata:[]};
   policy.release.units[0].channels.push(ghcr);
   const selected=structuredClone(policy.release),chosen=selected.units[0].channels[0];
   Object.assign(chosen,{artifactIds:['fonts'],metadata:[]});
   const checkout=`jobs: {channel: {steps: [{with: {repository: splrad/steward, path: controller, ref: "${base}"}}]}}`;
-  const options={read:async()=>checkout,assetCount:()=>3,controller:async ref=>{
-    assert.equal(ref,base);
-    return 'applyFrozenReleaseAssets(delivery,context.repositoryId,context.cycle,selections)';
-  }};
+  const prefix=`https://raw.githubusercontent.com/splrad/steward/${base}/schema/`;
+  const legacyWithoutPartial=structuredClone(deliverySchema);
+  const oldFields=legacyWithoutPartial.properties.units.items.properties.channels.items.properties;
+  delete oldFields.artifactIds;
+  delete oldFields.metadata;
+  let frozenContract=JSON.stringify(releaseAssetSchema), deliveryContract=deliverySchema;
+  t.mock.method(globalThis,'fetch',async url=>{
+    if(url===prefix+'release-asset-selection.schema.json')
+      return frozenContract===null?new Response(null,{status:404}):new Response(frozenContract);
+    assert.equal(url,prefix+'delivery.schema.json');
+    return Response.json(deliveryContract);
+  });
+  const options={read:async()=>checkout,assetCount:()=>3};
   const check=()=>releaseAssetConsumerConflicts(releaseAssetSelections(selected,policy.release),policy.release,null,options);
+  // GHCR can use the build seal regardless of the formatting of a controller file.
   assert.deepEqual(await check(),[]);
-  options.controller=async()=>'publicSelection=channelFiles(source.unit,target.channelId,inventory)';
+  frozenContract=JSON.stringify(releaseAssetSchema,null,2);
+  assert.deepEqual(await check(),[]);
+  frozenContract=null;
   assert.deepEqual(await check(),['RELEASE_CHANNEL_SOURCE']);
   policy.release.units[0].channels[0].metadata=[];
+  assert.deepEqual(await check(),['RELEASE_CHANNEL_SOURCE']);
   chosen.artifactIds.push('deployer');
   assert.deepEqual(await check(),[]);
+  deliveryContract=legacyWithoutPartial;
+  assert.deepEqual(await check(),['RELEASE_CHANNEL_SOURCE']);
 });
 
-test('preview and candidate admission preserve the public installer URL required by WinGet',async()=>{
+test('preview and candidate admission preserve the public installer URL required by WinGet',async t=>{
   const files=new Map(productFiles);
   const delivery=JSON.parse(files.get('.github/delivery.json'));
   delivery.units[0].channels.push({id:'winget',required:true,location:'Fixture.Product',artifactIds:['deployer'],metadata:[]});
@@ -898,8 +915,12 @@ test('preview and candidate admission preserve the public installer URL required
   await assert.rejects(guard(read),/CANDIDATE_REPOSITORY_POLICY_RELEASE_WINGET_INSTALLER/);
   policy.release.units[0].channels[0].artifactIds.push('deployer');
   const checkout=`jobs: {channel: {steps: [{with: {repository: splrad/steward, path: controller, ref: "${base}"}}]}}`;
+  t.mock.method(globalThis,'fetch',async url=>{
+    assert.equal(url,`https://raw.githubusercontent.com/splrad/steward/${base}/schema/release-asset-selection.schema.json`);
+    return Response.json(releaseAssetSchema);
+  });
   assert.deepEqual(await releaseAssetConsumerConflicts(releaseAssetSelections(policy.release,proposal.policy.release),proposal.policy.release,null,
-    {read:async()=>checkout,assetCount:()=>3,controller:async()=>'applyFrozenReleaseAssets(delivery,context.repositoryId,context.cycle,selections)'}),[]);
+    {read:async()=>checkout,assetCount:()=>3}),[]);
 });
 
 test('an edited private draft reports unsupported choices against its current head',async()=>{

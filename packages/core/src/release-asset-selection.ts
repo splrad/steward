@@ -1,6 +1,7 @@
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { decodeBuildJson } from './build-manifest.js';
 import { type DeliveryConfig, releaseMetadataFiles } from './delivery-config.js';
+import schema from '../../../schema/release-asset-selection.schema.json' with { type: 'json' };
 
 export interface ReleaseAssetSelection {
   unitId: string;
@@ -22,27 +23,9 @@ interface ReleaseAssetSource {
   units: readonly {id: string}[];
 }
 
-const id = {type:'string', pattern:'^[a-z0-9][a-z0-9-]*$'};
-const cyclePattern = 'pr-[1-9][0-9]*-[a-f0-9]{40}';
-export const releaseAssetSelectionPath = new RegExp('^evidence/release-assets/(' + cyclePattern + ')\\.json$');
+export const releaseAssetSelectionPath = /^evidence\/release-assets\/(pr-[1-9][0-9]*-[a-f0-9]{40})\.json$/;
 const pathFor = (cycleId: string) => `evidence/release-assets/${cycleId}.json`;
-const validate = new Ajv2020().compile({
-  type:'object', additionalProperties:false, required:['schemaVersion','repositoryId','cycleId','deliveryConfigSha','units'],
-  properties:{
-    schemaVersion:{const:1},
-    repositoryId:{type:'integer',minimum:1,maximum:Number.MAX_SAFE_INTEGER},
-    cycleId:{type:'string',pattern:'^'+cyclePattern+'$'},
-    deliveryConfigSha:{type:'string',pattern:'^[a-f0-9]{40}$'},
-    units:{type:'array',minItems:1,items:{
-      type:'object',additionalProperties:false,required:['unitId','artifactIds','metadata'],
-      properties:{
-        unitId:id,
-        artifactIds:{type:'array',minItems:1,uniqueItems:true,items:id},
-        metadata:{type:'array',uniqueItems:true,items:{enum:releaseMetadataFiles}},
-      },
-    }},
-  },
-});
+const validate = new Ajv2020().compile(schema);
 
 export function decodeFrozenReleaseAssets(bytes: Uint8Array, repositoryId: number, path: string): FrozenReleaseAssets {
   const value = decodeBuildJson(bytes) as FrozenReleaseAssets;

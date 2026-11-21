@@ -1,5 +1,6 @@
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import schema from '../schema/repository-registration.schema.json' with { type: 'json' };
+import releaseAssetSchema from '../schema/release-asset-selection.schema.json' with { type: 'json' };
 import {decodeBuildJson,parseDeliveryConfig} from '../packages/runner/dist/index.js';
 import {channelWorkflowPath,effectiveChannels,inspectRepository,publishPath} from './configuration-view.mjs';
 
@@ -44,15 +45,25 @@ export function releaseAssetSelections(selected, observed) {
   return selections.sort((a,b) => a.unitId.localeCompare(b.unitId));
 }
 
-async function readChannelController(ref) {
-  const response=await fetch(`https://raw.githubusercontent.com/splrad/steward/${ref}/packages/runner/src/release-pipeline.ts`,
+async function readControllerSchema(ref, name) {
+  const response=await fetch(`https://raw.githubusercontent.com/splrad/steward/${ref}/schema/${name}.schema.json`,
     {redirect:'error',signal:AbortSignal.timeout(10_000)});
-  if(response.status===404)return '';
+  if(response.status===404)return null;
   if(!response.ok)throw Error('RELEASE_CHANNEL_CONTROLLER_UNAVAILABLE');
-  return response.text();
+  return response.json();
 }
 
-export async function releaseAssetConsumerConflicts(selections, native, site, {read,assetCount,controller=readChannelController}) {
+async function channelCapabilities(ref) {
+  const frozen=await readControllerSchema(ref,'release-asset-selection');
+  if(frozen?.$id===releaseAssetSchema.$id && frozen.properties?.schemaVersion?.const===releaseAssetSchema.properties.schemaVersion.const)
+    return {frozen:true,partial:true};
+  // The original partial publication path shipped with these delivery fields.
+  const delivery=await readControllerSchema(ref,'delivery');
+  const channel=delivery?.properties?.units?.items?.properties?.channels?.items?.properties;
+  return {frozen:false,partial:channel?.artifactIds?.type==='array'&&channel?.metadata?.type==='array'};
+}
+
+export async function releaseAssetConsumerConflicts(selections, native, site, {read,assetCount}) {
   const conflicts=[];
   if(selections.some(unit=>site?.source==='release' && site.unit===unit.unitId))
     conflicts.push('PAGES_RELEASE_SOURCE');
@@ -73,17 +84,17 @@ export async function releaseAssetConsumerConflicts(selections, native, site, {r
         .filter(step=>step?.with?.repository==='splrad/steward'&&step.with.path==='controller')
         .map(step=>step.with.ref))];
       consumer=refs.length&&refs.every(ref=>typeof ref==='string'&&/^[a-f0-9]{40}$/.test(ref))
-        ?await Promise.all(refs.map(controller)):[];
+        ?await Promise.all(refs.map(channelCapabilities)):[];
     }
-    if(consumer.length&&consumer.every(source=>source.includes('applyFrozenReleaseAssets(delivery,context.repositoryId')))continue;
+    if(consumer.length&&consumer.every(value=>value.frozen))continue;
     const github=channels.find(channel=>channel.id==='github-release');
-    const nativePartial=github.metadata.length!==metadataFiles.length || github.artifactIds.length<assetCount(selection.unitId);
+    const total=assetCount(selection.unitId);
+    const nativePartial=github.metadata.length!==metadataFiles.length || Number.isSafeInteger(total)&&github.artifactIds.length<total;
     const directFiles=downstream.every(channel=>channel.artifactIds.every(id=>selection.artifactIds.includes(id)) &&
       channel.metadata.every(name=>selection.metadata.includes(name)));
     // The older partial-Release reader can still use the channel's own files
     // directly, provided the original source already activated that path.
-    if(!nativePartial || !directFiles || !consumer.length ||
-      !consumer.every(source=>source.includes('publicSelection=channelFiles(source.unit,target.channelId,inventory)')))
+    if(!nativePartial || !directFiles || !consumer.length || !consumer.every(value=>value.partial))
       return [...conflicts,'RELEASE_CHANNEL_SOURCE'];
   }
   return conflicts;
@@ -98,7 +109,7 @@ export async function configurationConflicts(selected,{policy:observed,productCi
     const selections=releaseAssetSelections(selected.release,observed.release);
     if(releaseIncomplete||selections===null)conflicts.push('RELEASE');
     else conflicts.push(...await releaseAssetConsumerConflicts(selections,observed.release,selected.site,
-      {read:readProductFile,assetCount:unit=>releaseDetails?.get(unit)?.assets.size??Infinity}));
+      {read:readProductFile,assetCount:unit=>releaseDetails?.get(unit)?.assets.size}));
   }
   return conflicts;
 }
