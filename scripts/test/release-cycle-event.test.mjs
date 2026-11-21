@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import Handlebars from 'handlebars';
 import YAML from 'yaml';
-import { advanceEvent, validateEvent, publicCycleError } from '../release-cycle-event.mjs';
+import { advanceEvent, validateEvent, publicCycleError, withCycleCleanup } from '../release-cycle-event.mjs';
 import { product, sha256 } from '../bounded-candidate-contract.mjs';
 const source='a'.repeat(40), later='b'.repeat(40);
 const push=sourceSha=>({kind:'push',repositoryId:product.id,sourceSha});
@@ -169,4 +169,40 @@ test('reports fixed readback failures without including arbitrary exception deta
     assert.equal(publicCycleError(new Error(code)),code);
   for(const error of [null,new Error('CANDIDATE_PR_HEAD_DRIFT: repo details'),new Error('network response details')])
     assert.equal(publicCycleError(error),'CYCLE_EVENT_STOPPED');
+});
+
+test('push diagnostics distinguish the failing operation and keep its original failure',async()=>{
+  const state={head:'1'.repeat(40),repository:{candidate:null},cycles:[]};
+  for(const [port,stage,message,diagnostic] of [
+    ['snapshot','LEDGER_READ','CYCLE_PRIVATE_VALUE','CYCLE_EVENT_STOPPED\nstage=LEDGER_READ category=UNCLASSIFIED'],
+    ['get','SOURCE_READ','NATIVE_HTTP_403','CYCLE_EVENT_STOPPED\nstage=SOURCE_READ category=NATIVE_HTTP_403'],
+    ['candidate','CANDIDATE','CANDIDATE_REF_DRIFT','CANDIDATE_REF_DRIFT\nstage=CANDIDATE'],
+    ['candidate','CANDIDATE','NATIVE_HTTP_403: private details','CYCLE_EVENT_STOPPED\nstage=CANDIDATE category=UNCLASSIFIED'],
+  ]) {
+    const calls=[];
+    const ports={snapshot:async()=>state,get:async()=>({object:{sha:source}}),candidate:async()=>({status:'READY'})};
+    ports[port]=async()=>{calls.push(stage);throw Error(message)};
+    await assert.rejects(advanceEvent(push(source),ports),error=>publicCycleError(error)===diagnostic);
+    assert.deepEqual(calls,[stage]);
+  }
+});
+
+
+test('run and publication read failures retain their source stage',async()=>{
+  const snapshot=async()=>({cycles:[]});
+  const unavailable=async()=>{throw Error('NATIVE_HTTP_503')};
+  for(const [kind,repositoryId,port] of [['run',product.id,'get'],['publication',1296724484,'centralGet']]) {
+    await assert.rejects(advanceEvent({kind,repositoryId,runId:52,attempt:1},{snapshot,[port]:unavailable}),
+      error=>publicCycleError(error)==='CYCLE_EVENT_STOPPED\nstage=SOURCE_READ category=NATIVE_HTTP_503');
+  }
+});
+
+test('cleanup runs once and preserves an earlier business failure',async()=>{
+  let calls=0;
+  const cleanup=async()=>{calls++;throw Error('private path')};
+  const original=new Error('BOUNDED_RUN_SOURCE');
+  await assert.rejects(withCycleCleanup(async()=>{throw original},cleanup),error=>error===original);
+  await assert.rejects(withCycleCleanup(async()=>1,cleanup),
+    error=>publicCycleError(error)==='CYCLE_EVENT_STOPPED\nstage=CLEANUP category=UNCLASSIFIED');
+  assert.equal(calls,2);
 });
