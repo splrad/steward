@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "repositoryId": 1296724484,
   "pullRequestNumber": 434,
-  "currentHead": "63f51b05585e3d2814172abac8e974c5deda7a2f",
+  "currentHead": "80af6682e1c853dbabe12723b43147a348f1a233",
   "configVersion": "quality-native-comments-v1",
   "heads": {
     "7f63302bffc98a2dd6583264a4a2c8ac8027a108": {
@@ -345,6 +345,52 @@
       "checkId": 136898757731,
       "externalId": "splrad-quality:1296724484:434:63f51b05585e3d2814172abac8e974c5deda7a2f",
       "observedAt": "2026-11-21T15:53:52.944Z"
+    },
+    "80af6682e1c853dbabe12723b43147a348f1a233": {
+      "sourceSetDigest": "046422c84fd3258dd563401bad9cf832d3d975a888711264c6c41645102e9912",
+      "sources": [
+        {
+          "sourceCommentId": "review-comment:4652902959",
+          "sourceCommit": "861beb54ec560974a23f4f54b0ccb76330e54fb6",
+          "sourceUrl": "https://github.com/splrad/steward/pull/434#discussion_r4652902959",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Whitespace contradicts operator precedence\n\nWhitespace around nested operators contradicts precedence.\n\n---\n\nThe best fix is to make operator grouping explicit and consistent by adding parentheses around each logical operand and normalizing whitespace around operators. This preserves functionality while removing ambiguity for readers and satisfying the static analysis rule.</p>\n<p>In <code>packages/runner/src/release-pipeline.ts</code>, update the object spread condition on line 195:</p>\n<ul>\n<li>From: <code>'publicBody' in record&amp;&amp;record.publicBody!==undefined</code></li>\n<li>To: <code>('publicBody' in record) &amp;&amp; (record.publicBody !== undefined)</code></li>\n</ul>\n<p>No imports, new methods, or new definitions are required.",
+          "updatedAt": "2026-11-21T13:59:09Z"
+        },
+        {
+          "sourceCommentId": "review-comment:4653003179",
+          "sourceCommit": "04532813567ab59eebf1d58b817a6c25d90db011",
+          "sourceUrl": "https://github.com/splrad/steward/pull/434#discussion_r4653003179",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Superfluous trailing arguments\n\nSuperfluous argument passed to <a class=\"Link\" href=\"/splrad/steward/blob/04532813567ab59eebf1d58b817a6c25d90db011/packages/runner/src/release-pipeline.ts#L274-L277\">function assertProductDelivery</a>.\n\n---\n\n<p>To fix this without changing existing functionality, remove the extra trailing argument from the <code>assertProductDelivery</code> call in <code>scripts/release-coordinator.mjs</code>.</p>\n<ul>\n<li>**General fix approach:** when a function is called with more arguments than it accepts, remove the unnecessary trailing argument unless you are also updating the function definition and all call sites.</li>\n<li>**Best fix here:** update line 176 region so <code>assertProductDelivery</code> is called with only <code>delivery</code>.</li>\n<li>**File/region to edit:** <code>scripts/release-coordinator.mjs</code>, inside <code>releaseParticipation</code>, in the <code>try</code> block where <code>delivery</code> is parsed and validated.</li>\n<li>**No imports/dependencies needed.** No method or definition additions are required.</li>\n</ul>",
+          "updatedAt": "2026-11-21T14:10:17Z"
+        },
+        {
+          "sourceCommentId": "review-comment:4653053495",
+          "sourceCommit": "7f63302bffc98a2dd6583264a4a2c8ac8027a108",
+          "sourceUrl": "https://github.com/splrad/steward/pull/434#discussion_r4653053495",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Whitespace contradicts operator precedence\n\nWhitespace around nested operators contradicts precedence.\n\n---\n\nTo fix this, update the conditional on <code>scripts/select-pages-source.mjs</code> line 78 so operator boundaries are visually explicit and align with precedence.<br>\nBest single fix without changing functionality: keep the logic identical, but add spaces around <code>&amp;&amp;</code> and <code>===</code> in the <code>catch</code> guard expression.</p>\n<p>Change region:</p>\n<ul>\n<li><code>scripts/select-pages-source.mjs</code>, in <code>cycleForRelease</code>, the <code>catch(error)</code> line.</li>\n</ul>\n<p>No imports, methods, or new definitions are needed.",
+          "updatedAt": "2026-11-21T14:20:28Z"
+        },
+        {
+          "sourceCommentId": "review-comment:4653289279",
+          "sourceCommit": "b5456c1c91bb004b6168b7e4101aa205a7097e56",
+          "sourceUrl": "https://github.com/splrad/steward/pull/434#discussion_r4653289279",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Whitespace contradicts operator precedence\n\nWhitespace around nested operators contradicts precedence.\n\n---\n\nTo fix this safely, rewrite the condition on line 1002 to make operator grouping explicit and align whitespace with intent. The best minimal fix is to add parentheses around each side of <code>&amp;&amp;</code> and normalize spaces around operators:</p>\n<ul>\n<li>Change:\n<ul>\n<li><code>if(error instanceof EvidenceReadError&amp;&amp;error.status===404)fail(...)</code></li>\n</ul>\n</li>\n<li>To:\n<ul>\n<li><code>if ((error instanceof EvidenceReadError) &amp;&amp; error.status === 404) fail(...)</code></li>\n</ul>\n</li>\n</ul>\n<p>This preserves existing functionality exactly, while removing ambiguity and satisfying the CodeQL rule.<br>\nOnly the region in <code>packages/runner/src/release-pipeline.ts</code> around lines 1001–1003 needs updating. No imports, new methods, or definitions are required.",
+          "updatedAt": "2026-11-21T15:04:13Z"
+        }
+      ],
+      "keys": [
+        "c2c3aad0fffd48ea4e86f14eba98d14249e38b40af15b30f206569e007653826",
+        "6df8e44f377d5d0b14c9cb39a70a2d70e50de9fafbd438b91cbed7f356bc9194",
+        "9be25bc0c535e25abe3d4b213d61d01cf4e072a62f721ca879f59dca0f7f7f26",
+        "6c115a6523fb587aecaa7324744fdf1435db0b58db0b50295f4d7e6a78e87248"
+      ],
+      "checkId": null,
+      "externalId": "splrad-quality:1296724484:434:80af6682e1c853dbabe12723b43147a348f1a233",
+      "observedAt": "2026-11-21T16:05:21.498Z"
     }
   },
   "entries": {
