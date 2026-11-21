@@ -10,7 +10,7 @@ import { Octokit } from '@octokit/rest';
 import { completeNativeRuleParameters } from './native-rule-parameters.mjs';
 import { githubUnits, decodeReleaseRecord, decodeStateFile, stateRecordOwner, assertRepositoryWrite, isolatedBuildEnvironment, decodeBuildJson, assertMaintenanceProgress, assertPagesProgress,
   inspectNativeCycle, recoverNativeCycle, archiveFile, nativeReadFile, nativeEvidenceTransport,
-  dispatchNativeRun, prepareBuildDispatch, verifyDispatchWorkflow, inspectPublications, invokePublication, inspectCycleHistory, verifyFrozenReceipts, completionFile, decodeCompletionArchive,
+  dispatchNativeRun, prepareBuildDispatch, defaultBuildWorkflow, dispatchWorkflow, encodeRepositoryPath, verifyDispatchWorkflow, inspectPublications, invokePublication, inspectCycleHistory, verifyFrozenReceipts, completionFile, decodeCompletionArchive,
   pipelinePreparePublication, readCycleDelivery, prepareNormalizedDelivery, NativeGitHubRelease, nativeGhCommand, nativeReleaseDownload, NativeEvidenceReader, nativeRunFact,
   retainedChannelObservations, observeNativeChannels, readChannelSourceRejections, selectChannelDispatch, prepareChannelDispatch, channelTargetsDigest, verifyChannelResult, verifyContinuationReleases, evaluateCompletion } from '../packages/runner/dist/index.js';
 
@@ -20,7 +20,7 @@ const refs = new Set(['steward/release-state','steward/governance-state','stewar
 const hash = value => typeof value==='string' && /^[a-f0-9]{40}$/.test(value) && value.length===40;
 const ordered = values => [...values].sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));
 function compatibleCycle(a,b) {
-  if (a.sourceSha!==b.sourceSha || a.controllerSha!==b.controllerSha || a.deliveryConfigSha!==b.deliveryConfigSha || a.repairOf!==b.repairOf
+  if (a.sourceSha!==b.sourceSha || a.controllerSha!==b.controllerSha || a.deliveryConfigSha!==b.deliveryConfigSha || a.buildWorkflow!==b.buildWorkflow || a.repairOf!==b.repairOf
     || JSON.stringify(ordered(a.requiredChannels.map(x=>[x.unitId,x.channelId])))!==JSON.stringify(ordered(b.requiredChannels.map(x=>[x.unitId,x.channelId])))
     || JSON.stringify(ordered(a.units.map(x=>[x.id,x.version,x.tag])))!==JSON.stringify(ordered(b.units.map(x=>[x.id,x.version,x.tag])))) return false;
   for (const unit of a.units) {
@@ -210,7 +210,7 @@ const exact = (value,keys) => {
   if(!value || typeof value!=='object' || Array.isArray(value) || Object.keys(value).sort().join(',')!==[...keys].sort().join(','))fail('closed input');
 };
 const writerRefs={release:'steward/release-state',maintenance:'steward/release-state',quality:'steward/governance-state',
-  bootstrap:'steward/governance-state',pages:'steward/governance-state',health:'steward/automation-health'};
+  bootstrap:'steward/governance-state',pages:'steward/governance-state',configuration:'steward/governance-state',health:'steward/automation-health'};
 const busy=new Set();
 
 function validateWrite(request) {
@@ -273,7 +273,7 @@ function cycleProgress(before,after) {
   for(const old of before.dispatches) {
     const current=after.dispatches.find(item=>item.requestKey===old.requestKey);
     if(!current)fail('dispatch fact removed');
-    for(const key of ['requestKey','operationKey','purpose','workflowId','ref','sourceSha','targetKey','inputs','inputDigest','executionSha','sentAt','continuationOfRunId','retryLimitEvidencePath'])
+    for(const key of ['requestKey','operationKey','purpose','workflowId','buildWorkflow','ref','sourceSha','targetKey','inputs','inputDigest','executionSha','sentAt','continuationOfRunId','retryLimitEvidencePath'])
       if(JSON.stringify(old[key])!==JSON.stringify(current[key]))fail('immutable dispatch conflict');
     if(old.canonicalRunId!==null && old.canonicalRunId!==current.canonicalRunId)fail('canonical Run conflict');
     if(old.canonicalRunId!==null && old.nativeResponseEvidencePath!==current.nativeResponseEvidencePath)fail('canonical evidence conflict');
@@ -735,7 +735,7 @@ export async function assertReleaseWriterProtection(repository,branch,io,{token,
 }
 
 /** Fixed Git/native history reader. E05/E06 supply fresh source/channel observations through one trusted I/O boundary. */
-export async function inspectRepositoryHistory(request,{token,io=nativeEvidenceTransport(token),completionReader,now=()=>new Date().toISOString(),handoff,centralIo}={}) {
+export async function inspectRepositoryHistory(request,{token,io=nativeEvidenceTransport(token),completionReader,now=()=>new Date().toISOString(),handoff,centralIo,beforeArchivePush}={}) {
   let snapshot=await readReleaseRecords({directory:request.directory,targetRef:'steward/release-state',repositoryId:request.repositoryId,includeHistory:true});
   const native=async path=>{const response=await io.request('GET',`/repos/${request.repository}${path?'/'+path:''}`);if(response.status!==200)fail('history native read');return JSON.parse(Buffer.from(response.bytes).toString('utf8'));};
   if(snapshot.repository?.schemaVersion!==3)return {result:'UNKNOWN',inventoryComplete:false,reason:'RELEASE_ADOPTION_REQUIRED'};
@@ -807,7 +807,7 @@ export async function inspectRepositoryHistory(request,{token,io=nativeEvidenceT
     return {...history,result:'UNKNOWN',reason:'HISTORY_SOURCE_MOVED'};
   await mkdir(request.writeDirectory,{recursive:true});
   const written=await writeReleaseRecords({directory:join(request.writeDirectory,'history-'+sha256(JSON.stringify(changes))),remote:request.remote,repositoryId:request.repositoryId,
-    defaultBranch:request.defaultBranch,targetRef:'steward/release-state',writer:'release',expectedHead:snapshot.head,allowedPaths:changes.map(file=>file.path),changes,identity:request.identity},{token});
+    defaultBranch:request.defaultBranch,targetRef:'steward/release-state',writer:'release',expectedHead:snapshot.head,allowedPaths:changes.map(file=>file.path),changes,identity:request.identity},{token,beforePush:beforeArchivePush});
   if(!['APPLIED','UNCHANGED'].includes(written.status)||(await native('git/ref/heads/steward/release-state')).object?.sha!==written.head
     ||(await native(`commits/${encodeURIComponent(request.defaultBranch)}`)).sha!==defaultHead)return {...history,result:'UNKNOWN',reason:'HISTORY_ADOPTION_UNCONFIRMED'};
   return {...history,archiveHead:written.head};
@@ -921,17 +921,19 @@ export async function releaseCommand(command,request,{token,io=nativeEvidenceTra
   if(!dispatch) {
     if(command!=='dispatch-build')return wait('CHANNEL_PROBE_REQUIRED');
     if(cycle.units.some(unit=>unit.releaseId!==null||unit.manifestDigest!==null))return wait('FROZEN_BUILD_CANNOT_BE_RECREATED');
-    const workflow=await native('actions/workflows/steward-release-publish.yml');
-    if(workflow.path!=='.github/workflows/steward-release-publish.yml'||workflow.state!=='active')fail('build workflow identity');
+    const buildWorkflow=cycle.buildWorkflow??defaultBuildWorkflow;
+    const workflow=await native('actions/workflows/'+encodeURIComponent(buildWorkflow.split('/').at(-1)));
+    if(workflow.path!==buildWorkflow||workflow.state!=='active')fail('build workflow identity');
     dispatch=prepareBuildDispatch({repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle},workflow.id,now());
     cycle.dispatches.push(dispatch);
   }
   if(dispatch.canonicalRunId!==null)return {status:'BOUND',canonicalRunId:dispatch.canonicalRunId,reason:'CANONICAL_RUN_IMMUTABLE',publishInvoked:false};
   if(dispatch.purpose==='build')await assertReleaseWriterProtection(request.repository,dispatch.ref,io,{token});
   // The workflow must already exist at the current default branch and at the frozen execution source.
+  const workflowPath=dispatchWorkflow(dispatch);
   for(const ref of [request.defaultBranch,dispatch.executionSha]) {
-    const file=await native(`contents/.github/workflows/steward-release-${dispatch.purpose==='build'?'publish':'channels'}.yml?ref=${encodeURIComponent(ref)}`);
-    if(file.type!=='file'||file.encoding!=='base64'||typeof file.content!=='string')fail('dispatch workflow source');
+    const file=await native(`contents/${encodeRepositoryPath(workflowPath)}?ref=${encodeURIComponent(ref)}`);
+    if(file.path!==workflowPath||file.type!=='file'||file.encoding!=='base64'||typeof file.content!=='string')fail('dispatch workflow source');
     const bytes=Buffer.from(file.content,'base64');
     if(bytes.length!==file.size||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==file.sha)fail('dispatch workflow bytes');
     verifyDispatchWorkflow(bytes,dispatch);

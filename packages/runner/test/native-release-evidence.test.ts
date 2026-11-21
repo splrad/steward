@@ -23,6 +23,17 @@ it('permits native created-time ranges in queries while rejecting encoded path t
     await expect(io.request('GET',bad)).rejects.toThrow('API path');
   expect(calls).toHaveLength(1);
 });
+it('only allows a canonical numeric repository endpoint for read requests',async()=>{
+  const calls:string[]=[];
+  const io=nativeEvidenceTransport('fixture-token',async url=>{
+    calls.push(String(url));return new Response('{}');
+  });
+  expect((await io.request('GET','/repositories/1187527897')).status).toBe(200);
+  await expect(io.request('POST','/repositories/1187527897')).rejects.toThrow('API path');
+  for(const bad of ['/repositories/0','/repositories/%31','/repositories/10/contents','/repositories/10?x=1'])
+    await expect(io.request('GET',bad)).rejects.toThrow('API path');
+  expect(calls).toEqual(['https://api.github.com/repositories/1187527897']);
+});
 it('reads original attempt evidence and validates the latest native outcome',async()=>{
   const f=evidenceFixture(2),r=await inspectNativeCycle(f.context,[],f.io,NOW);
   expect(r.currentFacts).toMatchObject({unknownEvidence:[],conflictEvidence:[]});
@@ -254,13 +265,21 @@ it.each(['missing','duplicate'])('rejects %s channel-prepare identity instead of
   const f=channelFixture();if(kind==='missing')f.jobs.get(1)![0].name='other';else f.jobs.get(1)!.push({...f.jobs.get(1)![0],id:1001,steps:[]});
   await expect(recoverNativeCycle(f.context,100,f.store,[],f.io,NOW,f.readHistory)).rejects.toThrow('channel-prepare identity');expect(f.calls.some(call=>call.startsWith('POST'))).toBe(false);
 });
-it('resolves the actual pinned runner checkout through a reusable workflow instead of assuming its workflow commit is the runner commit',async()=>{
+it('resolves the pinned runner checkout through an exact reusable workflow path',async()=>{
   const f=evidenceFixture();
-  const blob=(text:string)=>{const bytes=Buffer.from(text);return f.response({type:'file',encoding:'base64',content:bytes.toString('base64'),size:bytes.length,sha:createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')});};
-  f.overrides.set(`GET /repos/example/product/contents/.github/workflows/steward-release-publish.yml?ref=${S}`,blob(`jobs:\n  build:\n    uses: splrad/steward/.github/workflows/product-release.yml@${D}\n`));
+  const blob=(path:string,text:string)=>{const bytes=Buffer.from(text);return f.response({path,type:'file',encoding:'base64',content:bytes.toString('base64'),size:bytes.length,sha:createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')});};
+  const productPath='.github/workflows/steward-release-publish.yml',reusablePath='.github/workflows/product-release.yml';
+  f.overrides.set(`GET /repos/example/product/contents/${productPath}?ref=${S}`,blob(productPath,`jobs:\n  build:\n    uses: splrad/steward/${reusablePath}@${D}\n`));
   const controller='b'.repeat(40);
-  f.overrides.set(`GET /repos/splrad/steward/contents/.github/workflows/product-release.yml?ref=${D}`,blob(`jobs:\n  build:\n    steps:\n      - uses: actions/checkout@${S}\n        with:\n          repository: splrad/steward\n          ref: ${controller}\n`));
+  const route=`GET /repos/splrad/steward/contents/${reusablePath}?ref=${D}`;
+  const text=`jobs:\n  build:\n    steps:\n      - uses: actions/checkout@${S}\n        with:\n          repository: splrad/steward\n          ref: ${controller}\n`;
+  f.overrides.set(route,blob(reusablePath,text));
   const r=await inspectNativeCycle(f.context,[],f.io,NOW);expect(r.readObservation.disposition).toBe('COMPLETE');expect(r.archives[0]!.executorControllerSha).toBe(controller);expect(r.archives[0]!.sourceBlobs).toHaveLength(2);
+  f.overrides.set(route,blob('.github/workflows/other.yml',text));
+  const rejected=await inspectNativeCycle(f.context,[],f.io,NOW);
+  expect(rejected.readObservation.disposition).not.toBe('COMPLETE');
+  expect(rejected.archives).toEqual([]);
+  expect(rejected.errors[0]?.code).toContain('workflow blob');
 });
 it('streams native object digests under the existing build size bound without retaining the entire object in memory',async()=>{
   const bytes=Buffer.from('native streamed artifact');

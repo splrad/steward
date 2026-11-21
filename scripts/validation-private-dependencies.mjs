@@ -8,7 +8,7 @@ import {tmpdir} from 'node:os';
 import {pathToFileURL,fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import YAML from 'yaml';
-import {validationInput,git} from './validation-input.mjs';
+import {validationFileInputs,git} from './validation-input.mjs';
 import {assert,loadPolicy,checkInventory,highFindings,requireOnline,actionFindings,newActions,newPackageFindings,newTools,assertInputScope,assertGovernanceOnlyScope,assertCopierInputs,configurationCallers,licenseFacts} from './private-dependency-policy.mjs';
 import {assertLifecycleScope,assertLifecycleSnapshot,lifecycleMiseVersions,assertLifecycleMissingActionLock} from './private-lifecycle-policy.mjs';
 import {assertActionInputs,reusableActions,verifyReusableLock} from './private-reusable-actions.mjs';
@@ -123,7 +123,7 @@ export async function main(env=process.env){
   const report={identity:null,scanner:null,snapshots:{},newHigh:[],coverage:[],complete:false};
   try{
     requireOnline(env);const workspace=resolve(env.VALIDATION_WORKSPACE??'target'),policy=await loadPolicy();
-    const value=await validationInput(workspace,env);assert(['private-administrator','private-governance','private-lifecycle'].includes(value.dependencyMode),'NOT_APPLICABLE');
+    const value=await validationFileInputs(workspace,env);assert(['private-administrator','private-governance','private-lifecycle'].includes(value.dependencyMode),'NOT_APPLICABLE');
     const lifecycle=value.dependencyMode==='private-lifecycle';
     const governanceOnly=value.dependencyMode==='private-governance';
     const managedOnly=governanceOnly||lifecycle;

@@ -11,7 +11,6 @@ const format=value=>'`'+String(value).replace(/[`\r\n<>]/g,'')+'`';
 const line=(on,text)=>'- ['+(on?'x':' ')+'] '+text;
 const locked=(text,reason)=>'- 🔒 '+text+' · '+reason;
 const platforms=[['Windows','windows'],['Linux','ubuntu'],['macOS','macos']];
-const packaging=['Windows MSI','CMake/CPack 打包','Node 发行包','Python 发行包','Go 程序或模块','Rust crate','JVM JAR','OCI 容器镜像','Helm chart'];
 const channels=new Map([['github-release','GitHub Release'],['ghcr-assets','GHCR 文件制品'],['winget','WinGet'],['npm','npm'],['nuget','NuGet'],['pypi','PyPI'],['oci','OCI 容器镜像分发'],['helm','Helm chart 分发']]);
 
 export function inspectRepository(files) {
@@ -33,6 +32,12 @@ export function effectiveChannels(delivery,unit) {
   return result;
 }
 
+export const metadataFiles=['sbom.spdx.json','release-notes.md','artifact-manifest.json','SHA256SUMS'];
+export function channelSelection(delivery,unit,c) {
+  return {ids:c.artifactIds??(!c.required && delivery.schemaVersion===2?[]:unit.assets.filter(a=>c.id!=='winget'||/\.(exe|msi|msix|appx|msixbundle|appxbundle)$/i.test(a.name)).map(a=>a.id)),
+    metadata:c.metadata??(delivery.schemaVersion===1 && c.id!=='winget'?metadataFiles:[])};
+}
+
 // This is the exact outer condition written by applySelection. The inner product condition stays opaque.
 export const managedPagesCondition=/^\((true|false) && (?:true|needs\.select\.outputs\.ready == 'true'|vars\.STEWARD_DOCS_SOURCE == '(?:default-branch|release)'(?: && vars\.STEWARD_DOCS_UNIT == '[a-z][a-z0-9-]*')?)\) && \(([\s\S]*)\)$/;
 export function pagesChoices(pages) {
@@ -47,17 +52,19 @@ export function pagesChoices(pages) {
 
 export function renderConfiguration(model,head,extra='') {
   const {delivery,versions,publish,pages,ci,workflows}=model, units=delivery?.units??[];
-  const body=['<!-- steward-repository-configuration -->','### 版本管理',''];
+  const body=['<!-- steward-repository-configuration -->'];
+  if(units.length)body.push('### 版本管理','');
   for(const unit of units) {
     const cfg=versions?.packages?.[unit.path];
     if(cfg) body.push(line(true,'版本建议与同步 · '+format(unit.id)+' · '+format(posix.join(unit.path,cfg['version-file']??versions['version-file']??'VERSION'))+'、'+format(posix.join(unit.path,cfg['changelog-path']??versions['changelog-path']??'CHANGELOG.md'))));
     else body.push(locked(format(unit.id),'缺少对应 Release Please 单元'));
   }
-  if(!units.length) body.push(locked('版本建议与同步','待声明发行单元及版本文件'));
-  body.push(units.length>1?line(true,'多发行单元联动'):locked('多发行单元联动','需要多个发行单元'),'','### 构建与打包','');
+  if(units.length>1)body.push(line(true,'多发行单元联动'));
   const build=publish?.jobs?.build;
   const matrix=build?.strategy?.matrix?.include;
   const targets=(Array.isArray(matrix)?matrix:[]).filter(r=>r && units.some(u=>u.id===r.unit) && typeof r.target==='string' && r.target);
+  const declared=units.flatMap(u=>u.assets.map(a=>({...a,unit:u.id})));
+  if(targets.length||declared.length)body.push('','### 构建与打包','');
   const targetsByPlatform=new Map(platforms.map(([name])=>[name,[]]));
   for(const row of targets) {
     let runner=build['runs-on'];
@@ -76,39 +83,27 @@ export function renderConfiguration(model,head,extra='') {
     else body.push('- 已声明发行目标 '+format(row.unit+'/'+row.target)+' · 构建平台待确认');
   }
   for(const [name,selected] of targetsByPlatform) {
-    body.push(selected.length?line(true,name+' 构建 · '+selected.join('、')):locked(name+' 构建','待确认产品构建目标'));
+    if(selected.length)body.push(line(true,name+' 构建 · '+selected.join('、')));
   }
-  const declared=units.flatMap(u=>u.assets.map(a=>({...a,unit:u.id})));
-  const byInspection={'node-package':'Node 发行包',wheel:'Python 发行包',sdist:'Python 发行包'};
-  for(const item of packaging) {
-    const assets=declared.filter(a=>byInspection[a.inspection]===item || (item==='Windows MSI' && a.mediaType==='application/x-msi'));
-    if(assets.length) body.push(line(true,item+' · '+assets.map(a=>format(a.unit+'/'+a.name)).join('、')));
-    else body.push(locked(item,'待确认打包用途'));
+  for(const asset of declared)body.push(line(true,[format(asset.unit+'/'+asset.name),asset.inspection].filter(Boolean).join(' · ')));
+  if(units.some(unit=>effectiveChannels(delivery,unit).some(channel=>channel.required)))body.push('','### 发布渠道','');
+  for(const unit of units) for(const channel of effectiveChannels(delivery,unit).filter(channel=>channel.required)) {
+    const selected=channelSelection(delivery,unit,channel);
+    const names=unit.assets.filter(asset=>selected.ids.includes(asset.id)).map(a=>format(a.name));
+    body.push(line(channel.required,(channels.get(channel.id)??format(channel.id))+' · '+format(unit.id)+' · '+format(channel.location)+(names.length?' · '+names.join('、'):'')));
+    if(selected.metadata.length)body.push('  - 发布元数据 '+selected.metadata.map(format).join('、'));
   }
-  for(const asset of declared.filter(a=>a.inspection && !byInspection[a.inspection])) body.push(line(true,format(asset.inspection)+' · '+format(asset.unit+'/'+asset.name)));
-  body.push('','### 发布渠道','');
-  const used=new Set();
-  for(const unit of units) for(const channel of effectiveChannels(delivery,unit)) {
-    used.add(channel.id);
-    const names=unit.assets.filter(asset=>!channel.artifactIds || channel.artifactIds.includes(asset.id)).map(a=>format(a.name));
-    body.push(line(channel.required,(channels.get(channel.id)??format(channel.id))+' · '+format(unit.id)+' · '+format(channel.location)+' · '+names.join('、')));
-  }
-  for(const [id,title] of channels) if(!used.has(id)) body.push(locked(title,'待声明渠道与交付对象'));
-  body.push('','### 文档站','');
   const site=pagesChoices(pages);
-  for(const [key,label] of [['build','构建文档站'],['deploy','仓内允许 GitHub Pages 公开部署']]) {
-    if(!pages?.jobs?.[key]) body.push(locked(label,'缺少工作流作业'));
-    else if(site[key]===undefined) body.push('- '+label+' · 已有作业，仓内选择尚未确认');
-    else body.push(line(site[key],label+' · 仓内已'+(site[key]?'选用':'停用')));
+  if(site.build || site.deploy) {
+    body.push('','### 文档站','','- 工作流 '+format(pagesPath));
+    if(site.build)body.push(line(true,site.deploy?'构建并部署':'仅构建'));
+    else body.push('- 已选部署，请确认站点构建入口。');
+    body.push('站点来源 · '+(site.source?format(site.source):'请确认站点来源'));
+    if(site.source==='release')body.push('来源单元 · '+(site.unit?format(site.unit):'请指定发行单元'));
+    if(site.deploy)body.push('公开部署需要启用 Pages，并由运维批准所选来源。');
   }
-  if(pages) {
-    body.push('站点来源 · '+(site.source?format(site.source):'尚未确认'));
-    if(site.source==='release')body.push('来源单元 · '+(site.unit?format(site.unit):'尚未确认'));
-    if(pages.jobs?.deploy)body.push('公开部署还需 Pages 已启用且运维授权与所选来源一致。线上状态尚未核验。');
-  }
-  body.push('','### 原生入口','',...workflows.map(w=>'- '+format(w.path)+' · '+w.jobs.map(format).join('、')+(ci.includes(w.path)?' · 已选 PR 验证':'')));
-  if(!workflows.length) body.push('待配置仓内工作流或受审打包脚本。');
-  body.push('','配置变更见 **Files changed**，合并后生效。','', '当前提交 '+format(head)+'。');
+  if(workflows.length)body.push('','### 原生入口','',...workflows.map(w=>'- '+format(w.path)+(w.jobs.length?' · '+w.jobs.map(format).join('、'):'')+(ci.includes(w.path)?' · 已选 PR 验证':'')));
+  body.push('','当前提交 '+format(head)+'。');
   if(extra) body.push('',extra);
   return body.join('\n');
 }

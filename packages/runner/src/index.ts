@@ -2,6 +2,8 @@
 export { selectReleaseContributors } from '../../core/src/release-candidate.js';
 export { manualCandidateFacts, manualCandidatePreview, manualCandidateBody, validateManualCandidateRecord } from '../../core/src/manual-candidate.js';
 export { parseDeliveryConfig, deliveryAssetNames, assertDeliveryPath } from '../../core/src/delivery-config.js';
+export { defaultBuildWorkflow, dispatchWorkflow, encodeRepositoryPath } from '../../core/src/release-workflow.js';
+export { productReleaseTemplatePath, sharedReleaseTemplatePath } from '../../core/src/release-template.js';
 export { githubUnits } from '../../core/src/release-observation.js';
 export { downloadNativeArtifact } from './native-artifact-download.js';
 export { assertProductDelivery, assertRegisteredAdapters } from './release-pipeline.js';
@@ -10,7 +12,7 @@ export { pipelineIdentity, pipelineNotes, pipelineInspect, pipelineRecoverCycleF
 export { inspectProductArtifacts, sealProductArtifacts, validateProductManifest } from './release-artifacts.js';
 export { renderFrozenReleaseNotes } from '../../core/src/release-template.js';
 export { decodeCompletionArchive } from '../../core/src/release-history.js';
-export { advanceReleaseCandidate, candidateObservationIdentity, candidateProjectionPreview, candidateStatusBody } from './release-candidate.js';
+export { advanceReleaseCandidate, candidateCycleIsSeparate, candidateObservationIdentity, candidateProjectionPreview, renderCandidateNote, candidateCommentFits, candidateStatusBody } from './release-candidate.js';
 export { candidateId } from '../../core/src/release-candidate.js';
 export { generateCandidate, pushPreparedCandidate } from './release-candidate-update.js';
 export { collectContentInput, planContentBatches, resumeContentBatches, assembleUnitNotes, contentWireInput } from './release-content.js';
@@ -23,6 +25,7 @@ export { splitContentText, releaseAffectedUnitIds } from '../../core/src/release
 export { inspectCycleHistory, verifyFrozenReceipts, completionFile } from './release-history.js';
 export { inspectPublications, invokePublication } from './release-publication.js';
 export { decodeReleaseRecord, decodeStateFile, stateRecordOwner, assertRepositoryWrite } from '../../core/src/release-observation.js';
+export { decodeRepositoryPolicyProjection, repositoryPolicyDigest, repositoryPolicyPath, repositoryPolicyBranch } from '../../core/src/repository-policy-projection.js';
 export { inspectNativeCycle, recoverNativeCycle, archiveFile, nativeReadFile, nativeEvidenceTransport } from './native-release-evidence.js';
 export { isolatedBuildEnvironment } from './build-environment.js';
 export { decodeBuildJson } from '../../core/src/build-manifest.js';
@@ -35,7 +38,7 @@ export { parseLegacyRepositoryCatalog } from '../../core/src/legacy-repository-p
 export { selectReleaseProducers, assertReleaseJobResults } from './release-run.js';
 export { dispatchNativeRun, prepareBuildDispatch, dispatchObservationFile, verifyExecutionSource, verifyDispatchWorkflow } from './release-run.js';
 export { retainedChannelObservations, observeNativeChannels, readChannelSourceRejections, selectChannelDispatch, prepareChannelDispatch, channelTargetsDigest, verifyChannelProbe, verifyChannelResult, channelEvidenceFile, verifyContinuationReleases } from './release-run.js';
-export { nativeRunFact, jobFact, NativeEvidenceReader } from './native-release-evidence.js';
+export { nativeRunFact, jobFact, EvidenceReadError, NativeEvidenceReader } from './native-release-evidence.js';
 export { nativeJobOrigins, originalJobExecutions } from '../../core/src/native-job-origins.js';
 export { evaluateCompletion } from '../../core/src/release-observation.js';
 export { NativeGitHubRelease, nativeGhCommand, nativeReleaseDownload } from './gh-release.js';

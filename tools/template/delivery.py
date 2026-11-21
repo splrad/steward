@@ -12,6 +12,7 @@ from urllib.parse import quote, urlencode
 import yaml
 import copier_bridge as copier
 import actions_lock
+import configuration_retirement
 from configuration_link import add_link
 
 API_VERSION = json.loads((Path(__file__).resolve().parents[2] / 'config/github-api.json').read_text(encoding='utf-8'))['version']
@@ -245,15 +246,55 @@ def deliver(request, api, central_api, *, read_token=None, renderer=copier.rende
         template_sha = request['templateSha']
         before_copier = copier.paths_in_tree(work)
         adopted = git('cat-file', '-e', base + ':.copier-answers.yml', allow_failure=True).returncode == 0
+        def template_definition(sha):
+            return yaml.safe_load(copier.git(central, ['show', sha + ':copier.yml'], env))
+
         def repository_inputs(sha):
-            definition = yaml.safe_load(copier.git(central, ['show', sha + ':copier.yml'], env))
+            definition = template_definition(sha)
             return {'product_repository': repository} if 'product_repository' in definition else {}
 
-        if adopted:
+        preserve_configuration = copier.configuration_excluded(template_definition(template_sha))
+        if preserve_configuration and head:
+            verified = {commit}
+            def bot_change(revision):
+                if revision not in verified:
+                    if signoff not in string('show', '-s', '--format=%B', revision).splitlines():
+                        return False
+                    try:
+                        signed(revision)
+                    except ValueError as error:
+                        if str(error) in ('SYNC_SIGNATURE', 'SYNC_SIGNOFF'):
+                            return False
+                        raise
+                    verified.add(revision)
+                return True
+            configuration_retirement.reconcile(git, base, head, commit, template, central, root/'historical-seed',
+                                               repository, repository_inputs(template), bot_change, env)
+
+        pending_answers = (work / '.copier-answers.yml').is_file()
+        upgrade_pending = False
+        if preserve_configuration and not adopted and pending_answers:
+            _, pinned, pinned_data = copier.answers(central, work, env)
+            _, _, pinned_paths = copier.contract(central, pinned, pinned_data, env)
+            upgrade_pending = not pinned_paths.isdisjoint(copier.LEGACY_CONFIGURATION)
+            if upgrade_pending and (work / copier.ADOPTION_REPORT).exists():
+                # A previous first-adoption conflict must be resolved before native update.
+                # Recheck against its original seed without reintroducing retired files.
+                report = work / copier.ADOPTION_REPORT
+                require(expected_report is not None and report.read_bytes() == expected_report, 'ADOPTION_REPORT_EDITED')
+                old_seed = root / 'pending-seed'
+                copier.render(central, old_seed, pinned, 'copy', pinned_data)
+                _, conflicts = copier.classify_adoption_conflicts(copier.adoption_diff(old_seed, work)['conflicts'])
+                remaining = [v['path'] for v in conflicts if v['path'] not in copier.LEGACY_CONFIGURATION]
+                if remaining:
+                    raise copier.TemplateConflict(remaining)
+                git('rm', '--', copier.ADOPTION_REPORT)
+                git('commit', '--signoff', '--no-gpg-sign', '-m', 'Finish the reconciled first adoption')
+        if adopted or upgrade_pending:
             renderer(central, work, template_sha, 'update', repository_inputs(template_sha))
         else:
             # A pending adoption keeps its actual native source while newer template tags appear.
-            if (work / '.copier-answers.yml').exists():
+            if pending_answers:
                 _, template_sha, _ = copier.answers(central, work, env)
             copier.prepare_adoption(central, work, root/'seed', template_sha, expected_report=expected_report,
                                     data=repository_inputs(template_sha))
@@ -267,7 +308,7 @@ def deliver(request, api, central_api, *, read_token=None, renderer=copier.rende
                              else 'SECURITY_POLICY_CHECK_FAILED')
         policy_digest = policy_result.stdout.decode('ascii')
         require(not policy_digest or re.fullmatch(r'[0-9a-f]{64}', policy_digest), 'SECURITY_POLICY_DIGEST')
-        if (work / '.github/repository-configuration.md').is_file() and repository_inputs(template_sha):
+        if not preserve_configuration and (work / '.github/repository-configuration.md').is_file() and repository_inputs(template_sha):
             source = copier.git(central, ['show', template_sha + ':templates/repository/.github/workflows/repository-configuration.yml'], env)
             triggers = yaml.load(source, Loader=yaml.BaseLoader)['on']
             add_link(work, repository, retire='issues' in triggers)
@@ -389,10 +430,15 @@ def main():
                                           os.environ.get('STEWARD_CENTRAL_READ_TOKEN'), root/'actions-lock')
         try:
             result = deliver(request, target, central, read_token=os.environ.get('STEWARD_TEMPLATE_READ_TOKEN'), lock_runner=locker)
+        except configuration_retirement.MigrationConflict:
+            result = {'status': 'PENDING_LEGACY_CONFIGURATION'}
+        except copier.TemplateConflict:
+            result = {'status': 'TEMPLATE_CONFLICT'}
         except ValueError as error:
-            if not re.fullmatch(r'SECURITY_POLICY_[A-Z_]+', str(error)):
+            if re.fullmatch(r'SECURITY_POLICY_[A-Z_]+', str(error)):
+                result = {'status': 'SECURITY_POLICY_FAILED', 'reason': str(error)}
+            else:
                 raise
-            result = {'status': 'SECURITY_POLICY_FAILED', 'reason': str(error)}
         with open(args.output, 'x', encoding='utf-8') as stream: json.dump(result, stream)
         if result['status'] not in ['DELIVERED','UNCHANGED','NO_DIFF','CLOSED']: raise NativeFailure('SYNC_INCOMPLETE')
 

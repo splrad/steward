@@ -1,4 +1,5 @@
 import { channelFiles, type DeliveryUnit } from '../../core/src/delivery-config.js';
+import { defaultBuildWorkflow } from '../../core/src/release-workflow.js';
 import { releaseBodyMatches } from './release-body.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -179,7 +180,7 @@ export class NativeGitHubRelease {
   async verifyAttestation(target: ReleaseIntent, file: string) {
   const m = target.manifest;
   const attestation = await this.json(['attestation', 'verify', file, '--repo', target.manifest.fullName,
-    '--signer-workflow', m.schemaVersion === 3 ? `${m.fullName}/.github/workflows/steward-release-publish.yml` : 'splrad/steward/.github/workflows/product-release.yml',
+    '--signer-workflow', m.schemaVersion === 3 ? `${m.fullName}/${m.buildWorkflow ?? defaultBuildWorkflow}` : 'splrad/steward/.github/workflows/product-release.yml',
     '--signer-digest', m.schemaVersion === 3 ? m.sourceSha : m.policySha,
     '--source-digest', m.sourceSha, '--source-ref', m.schemaVersion === 3 ? m.buildRef : `refs/tags/${m.tag}`, '--deny-self-hosted-runners', '--format', 'json']);
   if (!Array.isArray(attestation) || !attestation.length) reject('missing native attestation result');
@@ -201,7 +202,7 @@ export class NativeGitHubRelease {
     const run = await this.json(['api', `repos/${m.fullName}/actions/runs/${m.runId}`]);
     if (run.id !== m.runId || run.repository?.id !== m.repositoryId || run.head_repository?.id !== m.repositoryId
       || run.head_sha !== m.sourceSha || run.head_branch !== m.buildRef.slice('refs/heads/'.length)
-      || run.event !== 'workflow_dispatch' || run.path !== '.github/workflows/steward-release-publish.yml'
+      || run.event !== 'workflow_dispatch' || run.path !== (m.buildWorkflow ?? defaultBuildWorkflow)
       || run.actor?.id !== target.appBotId || run.status !== 'completed' || run.conclusion !== 'success' || run.run_attempt < m.attempt) reject('completed product Run required');
     for (const name of this.names(target)) await this.verifyAttestation(target, resolve(target.directory, name));
     return run;

@@ -1,16 +1,13 @@
+import {headingFields,optionalNotes,noSourceInformation} from './candidate-note.js';
+export {previewUnitNotes} from './candidate-note.js';
 import Mustache from 'mustache';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import { selectReleaseContributors, type ReleaseContributor, type RepositoryAuthor } from './release-candidate.js';
 import { assertDeliveryAssetName, assertDeliveryPath } from './delivery-config.js';
 
-const headingFields = {
-  '概述': 'summary', '更新内容': 'userChanges', '兼容性': 'compatibility', '升级与迁移': 'upgrade',
-  '安装说明': 'installation', '已知问题': 'knownIssues', '恢复': 'recovery',
-} as const;
 type NotesField = typeof headingFields[keyof typeof headingFields];
-const optionalNotes = ['compatibility', 'upgrade', 'installation', 'knownIssues', 'recovery'] as const;
-const noSourceInformation = '当前发布资料未提供此项变化的确认信息。';
+const usesCompactLayout = (template: string) => template.includes('{{{upgradeNotices}}}');
 const prompts = [
   '说明此版本给使用者带来的主要变化。',
   '根据源码证据生成此版本给使用者带来的主要变化，供原PR审阅。',
@@ -42,7 +39,7 @@ export function parseSupplementalNotes(markdown: string, template = ''): Record<
     if (start === undefined) fail('missing Markdown position');
     const value = markdown.slice(start, end).trim(); filled(value); result[field] = value;
   }
-  if (template.includes('{{{upgradeNotices}}}')) for (const key of optionalNotes) result[key] ??= '';
+  if (usesCompactLayout(template)) for (const key of optionalNotes) result[key] ??= '';
   if (Object.keys(result).length !== Object.keys(headingFields).length) fail('missing heading');
   return result as Record<NotesField, string>;
 }
@@ -88,10 +85,10 @@ export function committedVersionNotes(markdown: string, version: string, reposit
 export function renderCommittedReleaseNotes(template: string, data: ReleaseTemplateData): string {
   const expected = [...plainFields, ...markdownFields, 'channels', 'hasContributors', 'contributors'];
   if (Object.keys(data).length !== expected.length || Object.keys(data).some(key => !expected.includes(key))) fail('input keys');
-  const compact = template.includes('{{{upgradeNotices}}}');
+  const compact = usesCompactLayout(template);
   for (const key of [...plainFields, ...markdownFields]) {
     const value = data[key as keyof ReleaseTemplateData];
-    if (compact && optionalNotes.some(field => field === key) && value === '') continue;
+    if (compact && (key === 'downloads' || optionalNotes.some(field => field === key)) && value === '') continue;
     filled(value);
   }
   if (!/^[^\r\n<>\[\]{}*`]+$/.test(data.productName)) fail('product name must be plain text');
@@ -207,7 +204,7 @@ export function renderFrozenReleaseNotes(template: string, data: FrozenReleaseNo
   if ((!data.assets.length && !data.githubDisabled) || new Set(data.assets.map(asset => asset.id)).size !== data.assets.length
     || new Set(data.assets.map(asset => asset.name.toLowerCase())).size !== data.assets.length) fail('download set');
   const legacy = template.includes('{{controllerSha}}');
-  const downloads = !data.assets.length ? '本次构建未配置 GitHub 下载项。' : [ ...(legacy ? ['| 用途（产物 ID，详见安装说明） | 系统/架构（构建目标） | 文件 |', '| --- | --- | --- |'] : []), ...data.assets.map(asset => {
+  const downloads = !data.assets.length ? (usesCompactLayout(template) ? '' : '本次构建未配置 GitHub 下载项。') : [ ...(legacy ? ['| 用途（产物 ID，详见安装说明） | 系统/架构（构建目标） | 文件 |', '| --- | --- | --- |'] : []), ...data.assets.map(asset => {
     if (asset.description !== undefined && (!asset.description.trim() || /[\p{C}\p{Zl}\p{Zp}]/u.test(asset.description))) fail('asset description');
 
     assertDeliveryAssetName(asset.name);
@@ -221,3 +218,5 @@ export function renderFrozenReleaseNotes(template: string, data: FrozenReleaseNo
     sourceSha: data.sourceSha, controllerSha: data.controllerSha, channels, hasContributors: contributors.length > 0, contributors } as ReleaseTemplateData;
   return renderCommittedReleaseNotes(template, values);
 }
+export const productReleaseTemplatePath = '.github/release-template.md.mustache';
+export const sharedReleaseTemplatePath = 'templates/repository/' + productReleaseTemplatePath;
