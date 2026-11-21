@@ -84,6 +84,19 @@ it('requires the product template for a legacy cycle without an explicit native 
   delete f.source['.github/release-template.md.mustache'];
   await expect(pipelineIdentity(f.input,f.environment,f.gh,f.io)).rejects.toThrow('missing source input: .github/release-template.md.mustache');
 });
+it('rejects a static artifact identity before admitting a sealed legacy GitHub handoff', async () => {
+  const f=productPipelineFixture(), workflow=YAML.parse(f.source[defaultBuildWorkflow]!);
+  const upload='actions/upload-artifact@'+'a'.repeat(40);
+  workflow.jobs.freeze={name:'freeze/app',steps:[
+    {name:'business-freeze',uses:upload,with:{name:'final-fixture'}},
+    {id:'upload-github-release',name:'Upload GitHub release delivery',uses:upload,with:{name:'delivery-github-release-static'}},
+  ]};
+  f.source[defaultBuildWorkflow]=YAML.stringify(workflow);
+  await expect(pipelineIdentity(f.input,f.environment,f.gh,f.io)).rejects.toThrow('GitHub delivery workflow step');
+  workflow.jobs.freeze.steps[1].with.name='delivery-github-release-${{ github.repository_id }}-app-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}';
+  f.source[defaultBuildWorkflow]=YAML.stringify(workflow);
+  await expect(pipelineIdentity(f.input,f.environment,f.gh,f.io)).resolves.toMatchObject({status:'ADMITTED'});
+});
 it.each(['valid', 'unit', 'template', 'version', 'compare'])('renders reviewed notes at S without a catalog reader: %s', async kind => {
   const f = productPipelineFixture(), result = await pipelineIdentity(f.input, f.environment, f.gh, f.io);
   if (result.status !== 'ADMITTED') throw new Error('fixture admission');

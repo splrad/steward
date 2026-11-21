@@ -134,7 +134,9 @@ it('prepares a single native Node delivery, changes the public set in its workfl
       const file=path.split('/contents/')[1]!.split('?')[0]!;
       if(file.endsWith('/release-template.md.mustache'))
         expect(path).toBe('/repos/splrad/steward/contents/templates/repository/.github/release-template.md.mustache?ref='+C);
-      const bytes=Buffer.from(path.startsWith('/repos/splrad/steward/')?sharedTemplate:source[file]!);
+      const value=path.startsWith('/repos/splrad/steward/')?sharedTemplate:source[file];
+      if(value===undefined)return f.response({},404);
+      const bytes=Buffer.from(value);
       return f.response({type:'file',encoding:'base64',size:bytes.length,content:bytes.toString('base64'),
         sha:createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex')});
     }
@@ -145,19 +147,25 @@ it('prepares a single native Node delivery, changes the public set in its workfl
     throw Error('Unexpected workflow publication source '+path);
   }};
   const output=await mkdtemp(join(tmpdir(),'direct-github-delivery-'));roots.push(output);
-  const prepare=async (child:string,selected:string[])=>{
+  const prepare=async (child:string,selected:string[],unavailable?:(id:string)=>void)=>{
     const directory=join(output,child);await mkdir(directory);
     return pipelinePreparePublication(context,directory,f.input.controllerDirectory,'fixture-token',async()=>{throw Error('unexpected gh command');},
       io,io,undefined,history,undefined,async input=>{
         expect(input).toMatchObject({artifactId:artifact.id,digest:artifact.digest});
         await mkdir(input.directory);for(const name of selected)await writeFile(join(input.directory,name),'built '+name);
-      });
+      },unavailable);
   };
   const prepared=await prepare('first',initial);if(!Array.isArray(prepared))throw Error('workflow publication expected');
   expect(prepared[0]).toMatchObject({githubDelivery:{artifactId:810,runId:100,attempt:1},manifest:{
     schemaVersion:4,packageVersion:'1.0.0',attested:false,artifacts:[{path:'fixture-cli.tgz'}]}});
   expect(await readdir(prepared[0]!.directory)).toEqual(initial);
   expect(prepared[0]).toHaveProperty('publicBody',expect.stringContaining('fixture-cli.tgz'));
+  const notes=source['.release-notes/app.md']!;
+  delete source['.release-notes/app.md'];
+  const skipped=vi.fn();
+  await expect(prepare('missing-reviewed-notes',initial,skipped)).rejects.toThrow('frozen product file missing');
+  expect(skipped).not.toHaveBeenCalled();
+  source['.release-notes/app.md']=notes;
   const retained:WorkflowDeliveryReceipt={artifactId:artifact.id,runId:100,attempt:1,digest:artifact.digest};
   Object.assign(context.cycle.units[0]!,{githubDelivery:retained});
   expect(await prepare('retry',initial)).toMatchObject([{githubDelivery:retained,manifest:{artifacts:[{path:'fixture-cli.tgz'}]}}]);

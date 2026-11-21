@@ -411,8 +411,12 @@ export async function pipelineIdentity(input: ProductBuildInput, environment: No
   if(workflowOwned) {
     applyWorkflowDelivery(delivery,workflowBytes);
     assertFrozenWorkflowChannels(delivery,cycle);
-  } else if (!Array.isArray(matrix) || !matrix.length || matrix.some(row => !row || Object.keys(row).sort().join(',') !== 'assets,target,unit'
-    || !/^[a-z][a-z0-9-]*$/.test(row.target) || !Array.isArray(row.assets) || !row.assets.length)) fail('native producer matrix');
+  } else {
+    const handoff=workflowGitHubDelivery(workflow);
+    if(handoff&&!handoff.sealed)fail('legacy workflow delivery requires its complete original freeze');
+    if(!Array.isArray(matrix)||!matrix.length||matrix.some(row=>!row||Object.keys(row).sort().join(',')!=='assets,target,unit'
+      ||!/^[a-z][a-z0-9-]*$/.test(row.target)||!Array.isArray(row.assets)||!row.assets.length))fail('native producer matrix');
+  }
   const projection=await nativeDeliveryProjection(delivery,cycle.units,source,input.controllerDirectory);
   const mergedChunks=input.state.domainRecords.filter(item=>item.value?.documentKind==='merged-candidate'
     && new RegExp(`/cycles/${cycle.id}(?:-[1-9][0-9]*)?\\.json$`).test(item.path)).map(item=>item.value as CandidateArchiveChunk);
@@ -678,14 +682,15 @@ export async function pipelineVerifyPublished(record: PublishPipelineRecord, uni
 }
 
 function workflowGitHubDelivery(workflow:any) {
-  const jobs=Object.values(workflow?.jobs??{}) as {steps?:any[]}[];
+  const jobs=Object.values(workflow?.jobs??{}) as {name?:string;steps?:any[]}[];
   const deliver=jobs.filter(job=>Array.isArray(job.steps)&&job.steps.some(step=>step?.id===githubDeliveryStep));
   if(!deliver.length)return null;
   const steps=deliver[0]!.steps!,uploads=steps.filter(step=>step?.id===githubDeliveryStep);
   const selected=uploads[0],prefix='delivery-github-release-';
+  const explicit=/^(?:freeze|delivery)\/([a-z][a-z0-9-]*)$/.exec(deliver[0]!.name??'')?.[1];
   const isUpload=(step:any)=>typeof step?.uses==='string'&&step.uses.startsWith('actions/upload-artifact@');
   if(deliver.length!==1||uploads.length!==1||selected.name!==githubDeliveryJobStep||!/^actions\/upload-artifact@[a-f0-9]{40}$/.test(selected.uses??'')
-    ||typeof selected.with?.name!=='string'||!selected.with.name.startsWith(prefix)
+    ||!matchesDeliveryName(selected.with?.name,'github-release',explicit)
     ||![undefined,false,'false'].includes(selected.with.overwrite))
     fail('GitHub delivery workflow step');
   for(const step of jobs.flatMap(job=>job.steps??[]).filter(step=>step!==selected&&isUpload(step))) {
@@ -709,6 +714,13 @@ const deliverySteps={
 } as const;
 type WorkflowChannel=keyof typeof deliverySteps;
 type WorkflowHandoff={units:Map<string,Map<WorkflowChannel,string>>;attested:boolean};
+function matchesDeliveryName(name:unknown,channel:WorkflowChannel,unit?:string) {
+  if(typeof name!=='string')return false;
+  const actual=name.replace(/\$\{\{\s*([a-z_.]+)\s*}}/g,'${{$1}}');
+  const prefix='delivery-'+channel+'-${{github.repository_id}}-'+(unit??'${{matrix.unit}}')+'-';
+  const suffix='-${{github.run_id}}-${{github.run_attempt}}';
+  return [prefix+'${{github.sha}}'+suffix,prefix+'${{inputs.source_sha}}'+suffix].includes(actual);
+}
 class WorkflowDeliveryUnavailable extends Error {}
 export function isWorkflowDeliveryUnavailable(error:unknown) {
   if(error instanceof WorkflowDeliveryUnavailable)return true;
@@ -733,13 +745,10 @@ export function applyWorkflowDelivery(delivery:DeliveryConfig,bytes:Uint8Array):
     const explicit=/^delivery\/([a-z][a-z0-9-]*)$/.exec(job.name??'')?.[1];
     const ids=explicit?[explicit]:/^delivery\/\$\{\{\s*matrix\.unit\s*}}$/.test(job.name??'')?[...known.keys()]:[];
     const location=channel==='github-release'?'github':step.env?.STEWARD_CHANNEL_LOCATION;
-    const actual=typeof step.with?.name==='string'?step.with.name.replace(/\$\{\{\s*([a-z_.]+)\s*}}/g,'${{$1}}'):null;
-    const expected='delivery-'+channel+'-${{github.repository_id}}-'+(explicit??'${{matrix.unit}}')+'-';
-    const suffix='-${{github.run_id}}-${{github.run_attempt}}';
     if(!ids.length||ids.some(id=>!known.has(id)||known.get(id)!.has(channel))
       ||typeof location!=='string'||!location||/[\r\n\0]/.test(location)
       ||step.name!==deliverySteps[channel]||!/^actions\/upload-artifact@[a-f0-9]{40}$/.test(step.uses??'')
-      ||![expected+'${{github.sha}}'+suffix,expected+'${{inputs.source_sha}}'+suffix].includes(actual??'')
+      ||!matchesDeliveryName(step.with?.name,channel,explicit)
       ||![undefined,false,'false'].includes(step.with.overwrite))fail('workflow channel delivery step');
     for(const id of ids)known.get(id)!.set(channel,location);
     submissions.add(step);
@@ -987,7 +996,13 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
   if(workflowDelivery&&!workflowDelivery.sealed)fail('legacy workflow delivery requires its complete original freeze');
   if(delivery.schemaVersion===3)
     return prepareWorkflowPublication({context,delivery,units,versions:projection.versions,reader,pages,template:template.bytes.toString('utf8'),
-      source:async path=>(await source(context.repository,cycle.sourceSha,path)).bytes.toString('utf8'),
+      source:async path=>{
+        try {return (await source(context.repository,cycle.sourceSha,path)).bytes.toString('utf8');}
+        catch(error) {
+          if(error instanceof EvidenceReadError&&error.status===404)fail('frozen product file missing: '+path);
+          throw error;
+        }
+      },
       root,controllerDirectory,token,history,attested:original.handoff?.attested??false,
       ...(unavailable?{unavailable}:{})},workflowDownload);
   if (!Array.isArray(matrix) || !matrix.length) fail('native producer matrix');
