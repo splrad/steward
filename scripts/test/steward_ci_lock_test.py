@@ -5,6 +5,7 @@ from contextlib import chdir
 import runpy
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -37,6 +38,31 @@ class LockContractTest(unittest.TestCase):
         new["tools"]["tool"][0]["version"] = "1.0.1"
         new["tools"]["tool"][0]["platforms.windows-x64"].update(url="new", checksum="new")
         self.assertEqual(len(list(candidate["checked_records"](base, new))), 1)
+
+    def test_mise_versions_marker_keeps_public_github_assets_eligible(self):
+        key = "aqua:oras-project/oras"
+
+        def lock(version, asset, marker=""):
+            document = f'lockfile_version = 3\n[[tools."{key}"]]\nversion = "{version}"\nbackend = "{key}"\n'
+            for os_name, extension in (("linux", "tar.gz"), ("windows", "zip")):
+                document += (
+                    f'[tools."{key}"."platforms.{os_name}-x64"]\n'
+                    f'url = "https://github.com/oras-project/oras/releases/download/v{version}/oras_{version}_{os_name}_amd64.{extension}"\n'
+                    f'url_api = "https://api.github.com/repos/oras-project/oras/releases/assets/{asset}"\n'
+                    f'checksum = "sha256:{"a" * 64}"\n{marker}'
+                )
+            return document.encode()
+
+        base = lock("1.3.5", 10)
+        marked = lock("1.4.0", 20, 'checksum_source = "mise-versions"\n')
+        unexpected = lock("1.4.0", 20, 'checksum_source = "unknown"\n')
+        tool_changes = candidate["rules"].tool_changes
+        self.assertEqual(set(tool_changes(base, marked)), {key})
+        self.assertEqual(tool_changes(base, unexpected), {})
+        check = candidate["checked_records"]
+        self.assertEqual(len(list(check(tomllib.loads(base.decode()), tomllib.loads(marked.decode())))), 1)
+        with self.assertRaisesRegex(ValueError, "field set"):
+            list(check(tomllib.loads(base.decode()), tomllib.loads(unexpected.decode())))
 
     def test_docs_and_push_parent(self):
         with tempfile.TemporaryDirectory() as directory, chdir(directory):

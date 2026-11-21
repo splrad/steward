@@ -58,6 +58,8 @@ def checked_records(original, candidate):
                 if field == "version":
                     continue
                 if field in rules.PLATFORMS or (field == "aube" and key == "npm"):
+                    if field in rules.PLATFORMS:
+                        value = rules.with_checksum_source(value, item[field])
                     allowed = {"url", "url_api", "checksum"} if field in rules.PLATFORMS else {"path", "digest"}
                     require(item[field].keys() == value.keys(), f"Unexpected {key} {field} field set")
                     require(all(item[field][k] == v for k, v in value.items() if k not in allowed),

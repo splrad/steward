@@ -30,6 +30,14 @@ def blob(ref, path):
     return git("show", f"{ref}:{path}")
 
 
+def with_checksum_source(previous, candidate):
+    # Mise may add this marker for a public GitHub release checksum.
+    if (previous.get("url", "").startswith("https://github.com/")
+            and "checksum_source" not in previous and candidate.get("checksum_source") == "mise-versions"):
+        return {**previous, "checksum_source": "mise-versions"}
+    return previous
+
+
 def tool_changes(before, after):
     old = tomllib.loads(before.decode())
     new = tomllib.loads(after.decode())
@@ -53,7 +61,7 @@ def tool_changes(before, after):
             previous = base[platform]
             updated = item[platform]
             # Keep supplier, tag scheme, platform filename, provenance and backend.
-            asset = {**previous, "url": previous["url"].replace(base["version"], version),
+            asset = {**with_checksum_source(previous, updated), "url": previous["url"].replace(base["version"], version),
                      "checksum": updated["checksum"], "url_api": updated["url_api"]}
             api = previous["url_api"].rsplit("/", 1)[0]
             if not re.fullmatch(re.escape(api) + r"/[1-9]\d*", asset["url_api"]):
