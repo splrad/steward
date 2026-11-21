@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 export { selectReleaseContributors } from '../../core/src/release-candidate.js';
 export { manualCandidateFacts, manualCandidatePreview, manualCandidateBody, validateManualCandidateRecord } from '../../core/src/manual-candidate.js';
-export { parseDeliveryConfig, deliveryAssetNames, assertDeliveryPath } from '../../core/src/delivery-config.js';
+export { channelFiles, parseDeliveryConfig, deliveryAssetNames, assertDeliveryPath } from '../../core/src/delivery-config.js';
+export { freezeReleaseAssets, releaseAssetSelectionPath } from '../../core/src/release-asset-selection.js';
 export { githubUnits } from '../../core/src/release-observation.js';
 export { downloadNativeArtifact } from './native-artifact-download.js';
 export { assertProductDelivery, assertRegisteredAdapters } from './release-pipeline.js';

@@ -4,6 +4,7 @@ import { decodePagesMaintenance } from './pages-maintenance.js';
 import { decodeCompletionArchive } from './release-history.js';
 import { decodeQualityCache } from './quality-language-summary.js';
 import { decodeCandidateArchive } from './release-candidate-record.js';
+import { decodeFrozenReleaseAssets, releaseAssetSelectionPath } from './release-asset-selection.js';
 import { decodeRepositoryPolicyProjection, repositoryPolicyPath } from './repository-policy-projection.js';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import addFormatsModule from 'ajv-formats';
@@ -158,6 +159,7 @@ export function stateRecordOwner(targetRef: string, path: string): 'release' | '
       || /^evidence\/reads\/[a-f0-9]{64}\.json$/.test(path)
       || /^evidence\/(?:dispatch|retry-limit|publication|completion|channel|channel-read|normalized-delivery|source-rejection)\/[a-f0-9]{64}\.json$/.test(path)
       || /^evidence\/native\/[1-9][0-9]*-[1-9][0-9]*\/[a-f0-9]{64}\.json$/.test(path)) return 'release';
+    if (releaseAssetSelectionPath.test(path)) return 'release';
     if (/^maintenance\/[A-Za-z0-9_-]+\.json$/.test(path)) return 'maintenance';
   }
   if (targetRef==='steward/governance-state') {
@@ -180,6 +182,7 @@ export function decodeStateFile(targetRef: string, path: string, bytes: Uint8Arr
     || text.includes('\r') && !(owner==='quality' && path.endsWith('.md'))) return fail('state UTF-8 LF');
   if (path.endsWith('.md')) return text;
   if (owner==='release') {
+    if (releaseAssetSelectionPath.test(path)) return decodeFrozenReleaseAssets(bytes,repositoryId,path);
     if(path.startsWith('generated/') || path.startsWith('content/')) return decodeCandidateArchive(bytes,repositoryId);
     if(path.startsWith('evidence/completion/')) {
       const record=decodeCompletionArchive(bytes);

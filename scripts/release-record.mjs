@@ -8,7 +8,7 @@ import { join, resolve, dirname, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Octokit } from '@octokit/rest';
 import { completeNativeRuleParameters } from './native-rule-parameters.mjs';
-import { githubUnits, decodeReleaseRecord, decodeStateFile, stateRecordOwner, assertRepositoryWrite, isolatedBuildEnvironment, decodeBuildJson, assertMaintenanceProgress, assertPagesProgress,
+import { channelFiles, githubUnits, decodeReleaseRecord, decodeStateFile, stateRecordOwner, assertRepositoryWrite, isolatedBuildEnvironment, decodeBuildJson, assertMaintenanceProgress, assertPagesProgress, releaseAssetSelectionPath,
   inspectNativeCycle, recoverNativeCycle, archiveFile, nativeReadFile, nativeEvidenceTransport,
   dispatchNativeRun, prepareBuildDispatch, verifyDispatchWorkflow, inspectPublications, invokePublication, inspectCycleHistory, verifyFrozenReceipts, completionFile, decodeCompletionArchive,
   pipelinePreparePublication, readCycleDelivery, prepareNormalizedDelivery, NativeGitHubRelease, nativeGhCommand, nativeReleaseDownload, NativeEvidenceReader, nativeRunFact,
@@ -74,7 +74,7 @@ export async function readReleaseRecords({ directory, targetRef, repositoryId, i
         const [,mode,type,oid,path]=match;
         if(maintenanceOnly&&stateRecordOwner(targetRef,path)!=='maintenance')throw new Error('RELEASE_RECORD: central maintenance history');
         if(targetRef!=='steward/release-state'||path==='state.json'||/^(cycles|generated|content|maintenance)\//.test(path)
-          ||/^evidence\/(native|reads|dispatch|retry-limit|publication|completion|channel|channel-read|normalized-delivery|source-rejection)\//.test(path)) {
+          ||/^evidence\/(native|reads|dispatch|retry-limit|publication|completion|channel|channel-read|normalized-delivery|source-rejection)\//.test(path) || releaseAssetSelectionPath.test(path)) {
           if(mode!=='100644'||type!=='blob') {
             const kind=targetRef!=='steward/release-state'||path==='state.json'||path.startsWith('cycles/')?'':
               path.startsWith('maintenance/')?'maintenance ':/^(generated|content)\//.test(path)?'candidate ':'archive ';
@@ -125,6 +125,15 @@ export async function readReleaseRecords({ directory, targetRef, repositoryId, i
           const value=decodeStateFile(targetRef,path,bytes,repositoryId);
           if(path.startsWith('maintenance/pages/')&&domainRecords.has(path))assertPagesProgress(value,domainRecords.get(path).value);
           if(!domainRecords.has(path))domainRecords.set(path,{commit,path,blobSha:oid,value,content:bytes.toString('utf8')});
+          history.push({commit,path,blobSha:oid,status:'DECODED'});continue;
+        }
+        if(releaseAssetSelectionPath.test(path)) {
+          const prior=domainRecords.get(path);
+          if(prior && prior.blobSha!==oid)throw new Error('RELEASE_RECORD: frozen release asset selection changed');
+          if(!prior) {
+            const bytes=await readBlob(oid),value=decodeStateFile(targetRef,path,bytes,repositoryId);
+            domainRecords.set(path,{commit,path,blobSha:oid,value,content:bytes.toString('utf8')});
+          }
           history.push({commit,path,blobSha:oid,status:'DECODED'});continue;
         }
         if(path.startsWith('evidence/native/')||path.startsWith('evidence/reads/')||path.startsWith('evidence/dispatch/')||path.startsWith('evidence/retry-limit/')||path.startsWith('evidence/publication/')||path.startsWith('evidence/completion/')||path.startsWith('evidence/channel/')||path.startsWith('evidence/channel-read/')||path.startsWith('evidence/normalized-delivery/')||path.startsWith('evidence/source-rejection/')) {
@@ -189,6 +198,17 @@ export async function readReleaseRecords({ directory, targetRef, repositoryId, i
         }
       }
     }
+    for(const proof of domainRecords.values()) {
+      if(!releaseAssetSelectionPath.test(proof.path))continue;
+      const {cycleId,deliveryConfigSha,units}=proof.value;
+      const cycle=cycles.get(cycleId)?.value;
+      if(!cycle || cycle.deliveryConfigSha!==deliveryConfigSha ||
+        units.some(selection=>!cycle.units.some(unit=>unit.id===selection.unitId)) || !currentPaths.includes(proof.path))
+        throw new Error('RELEASE_RECORD: frozen release asset selection source');
+      const original=cycleHistory.findLast(record=>record.value.id===cycleId);
+      if(!entriesByCommit.get(original.commit).some(entry=>entry.endsWith('\t'+proof.path)))
+        throw new Error('RELEASE_RECORD: release asset selection was not frozen at handoff');
+    }
     const current=(await git('rev-parse','--verify',`${ref}^{commit}`)).toString().trim();
     if(current!==head)throw new Error('RELEASE_RECORD: ref moved');
     // Missing registered records are the bounded recovery trigger; healthy wakes read one tree.
@@ -236,6 +256,13 @@ function validateWrite(request) {
     if(bytes.toString('utf8')!==change.content || sha256(bytes)!==change.sha256)fail('write bytes');
     if(/^evidence\/(native|reads|dispatch|retry-limit|publication|completion|channel|channel-read|normalized-delivery|source-rejection)\//.test(change.path) && !change.path.endsWith('/'+change.sha256+'.json'))fail('archive content address');
     const decoded=decodeStateFile(request.targetRef,change.path,bytes,request.repositoryId);
+    if(releaseAssetSelectionPath.test(change.path)) {
+      const handoff=request.changes.find(file=>file.path===`cycles/${decoded.cycleId}.json`);
+      if(change.previousSha256!==null || handoff?.previousSha256!==null)fail('immutable release asset selection');
+      const cycle=decodeReleaseRecord('cycle',Buffer.from(handoff.content));
+      if(cycle.id!==decoded.cycleId || cycle.deliveryConfigSha!==decoded.deliveryConfigSha ||
+        decoded.units.some(selection=>!cycle.units.some(unit=>unit.id===selection.unitId)))fail('release asset selection handoff');
+    }
     if(request.targetRef==='steward/release-state'&&change.path==='state.json')assertRepositoryWrite(decoded);
     // Candidate source documents are explicit, digest-bound fragments. Their
     // aggregate may exceed 32 MiB; each fragment retains the 512 KiB decoder bound.
@@ -460,6 +487,9 @@ export async function writeReleaseRecords(input,{token,beforePush}={}) {
       if(matches(current))return result('UNCHANGED',head,'BYTES_ALREADY_MATCH');
       for(const file of request.changes) {
         const actual=current.get(file.path), prior=expected.get(file.path);
+        const selection=releaseAssetSelectionPath.exec(file.path);
+        if(selection && !actual && current.has(`cycles/${selection[1]}.json`))
+          return result('CONFLICT',head,'OWN_PATH_CHANGED');
         if((actual?.sha256??null)!==file.previousSha256 && actual?.sha256!==file.sha256)return result('CONFLICT',head,'OWN_PATH_CHANGED');
         if(file.path.startsWith('cycles/') && actual?.value)cycleProgress(actual.value,decodeReleaseRecord('cycle',Buffer.from(file.content)));
         if(file.path.startsWith('cycles/') && prior?.value)cycleProgress(prior.value,decodeReleaseRecord('cycle',Buffer.from(file.content)));
@@ -640,9 +670,25 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
     if(!cycle)fail('registered publication cycle required');
     const context={repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle};
     const normalized=await ensureCycleDelivery(request,snapshot,cycle,{token,io,centralIo,now});snapshot=normalized.snapshot;request={...request,directory:normalized.directory};
+    const selection=snapshot.domainRecords.find(record=>releaseAssetSelectionPath.exec(record.path)?.[1]===cycle.id);
+    if(selection && githubUnits(cycle).every(unit=>unit.releaseId!==null)) {
+      const reader=new NativeEvidenceReader(io,request.repository);
+      const releases=await Promise.all(githubUnits(cycle).map(unit=>reader.json(`releases/${unit.releaseId}`)));
+      if(releases.every(release=>release.draft===false)) {
+        for(const {unitId} of selection.value.units) {
+          const unit=cycle.units.find(item=>item.id===unitId), delivery=normalized.delivery.units.find(item=>item.id===unitId);
+          if(JSON.stringify(channelFiles(delivery,'github-release',unit.assets))!==JSON.stringify(unit.assets.map(asset=>asset.path).sort()))
+            fail('frozen release asset selection changed');
+        }
+        await verifyContinuationReleases(context,io);
+        return {status:'OBSERVED',reason:'FORMAL_RELEASES_VERIFIED',publishInvoked:false};
+      }
+    }
     const records=await pipelinePreparePublication(context,root,controllerDirectory,token,undefined,io,undefined,undefined,snapshot.domainRecords);
     if(!Array.isArray(records))return records;
     const adapter=new NativeGitHubRelease(args=>nativeGhCommand(args,token),nativeReleaseDownload(token));
+    const target=(item,releaseId)=>({delivery:item.delivery,publicBody:item.publicBody,manifest:item.manifest,
+      directory:item.directory,releaseId,appBotId:request.appBotId});
     const publicationUnits=records.filter(item=>!item.delivery?.channels.some(channel=>channel.id==='github-release' && !channel.required));
     const freezeRecords=records.filter(item=>!publicationUnits.includes(item));
     if (freezeRecords.length) {
@@ -661,29 +707,32 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
       cycle.freezeOnly=receipts;
     }
     for(const item of publicationUnits) {
-      const unit=cycle.units.find(value=>value.id===item.unitId),names=adapter.names({delivery:item.delivery,manifest:item.manifest,directory:item.directory,releaseId:unit.releaseId,appBotId:request.appBotId});
+      const unit=cycle.units.find(value=>value.id===item.unitId),names=adapter.names(target(item,unit.releaseId));
       const assets=await publicationAssetFacts(unit,item.manifest,names,item.directory);
-      const frozen={assets,notesDigest:sha256(await readFile(join(item.directory,'release-notes.md'))),manifestDigest:sha256(await readFile(join(item.directory,'artifact-manifest.json')))};
-      if(unit.assets.length&&JSON.stringify(ordered(unit.assets))!==JSON.stringify(ordered(assets))||unit.manifestDigest!==null&&unit.manifestDigest!==frozen.manifestDigest)fail('frozen publication changed');
+      const frozen={assets,notesDigest:sha256(item.publicBody??await readFile(join(item.directory,'release-notes.md'))),manifestDigest:sha256(await readFile(join(item.directory,'artifact-manifest.json')))};
+      if(unit.assets.length&&JSON.stringify(ordered(unit.assets))!==JSON.stringify(ordered(assets))||
+        unit.manifestDigest!==null&&unit.manifestDigest!==frozen.manifestDigest||unit.notesDigest!==null&&unit.notesDigest!==frozen.notesDigest)fail('frozen publication changed');
       Object.assign(unit,frozen);
     }
     const adopted=await adoptReleaseCycle(request,snapshot,cycle,{token,io});request={...request,directory:adopted.directory};
     if(!publicationUnits.length)return confirmFrozenCycle(request,adopted.snapshot,cycle,{token,io,now});
     // Already-public reentry verifies bytes and does not create a new business invocation.
     if(githubUnits(cycle).every(unit=>unit.releaseId!==null)) {
-      const releases=await Promise.all(publicationUnits.map(item=>adapter.read({delivery:item.delivery,manifest:item.manifest,directory:item.directory,releaseId:cycle.units.find(unit=>unit.id===item.unitId).releaseId,appBotId:request.appBotId})));
+      const targets=publicationUnits.map(item=>target(item,cycle.units.find(unit=>unit.id===item.unitId).releaseId));
+      const releases=await Promise.all(targets.map(item=>adapter.read(item)));
       if(releases.every(release=>!release.draft)) {
-        for(const item of publicationUnits)await adapter.verify({delivery:item.delivery,manifest:item.manifest,directory:item.directory,releaseId:cycle.units.find(unit=>unit.id===item.unitId).releaseId,appBotId:request.appBotId});
+        for(const item of targets)await adapter.verify(item);
         return {status:'OBSERVED',reason:'FORMAL_RELEASES_VERIFIED',publishInvoked:false};
       }
     }
     return await inspectReleaseEvidence(request,{token,io,centralIo,centralInvocation,now,publisher:async(current,save)=>{
       for(const item of publicationUnits) {
         const unit=current.cycle.units.find(value=>value.id===item.unitId);
-        if(unit.releaseId!==null) {const existing={delivery:item.delivery,manifest:item.manifest,directory:item.directory,releaseId:unit.releaseId,appBotId:request.appBotId};if(!(await adapter.read(existing)).draft){await adapter.verify(existing);continue;}}
-        const target=await adapter.ensureDraft({delivery:item.delivery,manifest:item.manifest,directory:item.directory,releaseId:unit.releaseId,appBotId:request.appBotId});
-        if(unit.releaseId===null) {const next=structuredClone(current.cycle);next.units.find(value=>value.id===unit.id).releaseId=target.releaseId;await save(next);}
-        await adapter.publish(target);
+        const intent=target(item,unit.releaseId);
+        if(unit.releaseId!==null && !(await adapter.read(intent)).draft){await adapter.verify(intent);continue;}
+        const bound=await adapter.ensureDraft(intent);
+        if(unit.releaseId===null) {const next=structuredClone(current.cycle);next.units.find(value=>value.id===unit.id).releaseId=bound.releaseId;await save(next);}
+        await adapter.publish(bound);
       }
     }});
   }finally{await rm(root,{recursive:true,force:true});}

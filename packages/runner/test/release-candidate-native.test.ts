@@ -315,7 +315,8 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     expect(modelCalls).toBe(firstCalls);
   }
   const handed=await releaseCommand('candidate',{...request,cycleId:null,runId:null,writeDirectory:join(root,'merge-writes')},
-    {token:options.token,candidateReadToken:options.readToken,controllerSha:options.controllerSha,now:options.now,io});
+    {token:options.token,candidateReadToken:options.readToken,controllerSha:options.controllerSha,now:options.now,io,
+      candidateRuntime:{checkRepositoryPolicy:async () => pinCase==='old-source'?[{unitId:'app',artifactIds:['app'],metadata:[]}]:undefined}});
   expect(handed).toMatchObject({ status: 'CYCLE_READY', sourceSha: S, cycleId: `pr-9-${S}` });
   expect(modelCalls).toBe(firstCalls); await refresh();
   const merged = await readReleaseRecords({ directory, targetRef: 'steward/release-state', repositoryId: 1 });
@@ -323,6 +324,16 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   expect(merged.cycles[0].value.controllerSha).toBe(sourceControllerSha);
   expect(merged.repository.releaseAdoption).toEqual(repository.releaseAdoption);
   expect(merged.cycles[0].value.units[0]).toMatchObject({ releaseId: null, manifestDigest: null });
+  if(pinCase==='old-source') {
+    const frozen=merged.domainRecords.find((record:any)=>record.path===`evidence/release-assets/pr-9-${S}.json`);
+    expect(frozen).toMatchObject({commit:handed.stateHead,value:{schemaVersion:1,repositoryId:1,cycleId:`pr-9-${S}`,
+      deliveryConfigSha:merged.cycles[0].value.deliveryConfigSha,units:[{unitId:'app',artifactIds:['app'],metadata:[]}]}});
+    const content=JSON.stringify({...frozen.value,units:[{unitId:'app',artifactIds:['app'],metadata:['SHA256SUMS']}]})+'\n';
+    await expect(writeReleaseRecords({directory:join(root,'change-frozen-selection'),remote,repositoryId:1,
+      defaultBranch:'main',targetRef:'steward/release-state',writer:'release',expectedHead:merged.head,identity,allowedPaths:[frozen.path],
+      changes:[{path:frozen.path,content,sha256:createHash('sha256').update(content).digest('hex'),
+        previousSha256:createHash('sha256').update(frozen.content).digest('hex')}]},{token:options.token})).rejects.toThrow('immutable release asset selection');
+  }
   const chunks = merged.domainRecords.filter((record: any) => record.value.documentKind === 'merged-candidate').map((record: any) => record.value);
   const archive = await decodeCandidateDocument(chunks);
   expect(archive).toMatchObject({ cycleId: `pr-9-${S}`, sourceSha: S, candidate: expect.objectContaining({prNumber:9,publishedHead:pr.head.sha}),

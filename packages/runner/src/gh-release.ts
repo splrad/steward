@@ -34,7 +34,7 @@ export async function nativeGhCommand(args: readonly string[], token: string | u
 }
 export interface ReleaseObject { id: number; tag_name: string; draft: boolean; immutable: boolean; body: string; html_url: string; upload_url: string; target_commitish: string }
 interface Asset { id: number; name: string; size: number; digest: string | null; state: string; label?: string; uploader?: { id: number } }
-export interface ReleaseTarget { delivery?: DeliveryUnit; manifest: ReleaseManifest | ProductReleaseManifest; releaseId: number; directory: string; appBotId: number }
+export interface ReleaseTarget { delivery?: DeliveryUnit; publicBody?: string; manifest: ReleaseManifest | ProductReleaseManifest; releaseId: number; directory: string; appBotId: number }
 export type ReleaseIntent = Omit<ReleaseTarget, 'releaseId'> & { releaseId: number | null };
 export type ReleaseDownload = (repository: string, assetId: number, destination: string, anonymous: boolean) => Promise<void>;
 export async function releaseReadIsAnonymous(gh:GhCommand,repository:string,repositoryId:number):Promise<boolean> {
@@ -127,7 +127,7 @@ export class NativeGitHubRelease {
     for (const release of releases) {
       const actual = await this.read({ ...target, releaseId: release.id });
       if (actual.draft && (actual.target_commitish !== m.sourceSha
-        || actual.body !== marker && actual.body !== await readFile(join(target.directory, 'release-notes.md'), 'utf8'))) reject('draft contains unproven data');
+        || actual.body !== marker && actual.body !== await this.notes(target))) reject('draft contains unproven data');
     }
     if (releases.length > 1) {
       for (const release of releases) if (!release.draft || release.body !== marker || release.target_commitish !== m.sourceSha
@@ -176,6 +176,9 @@ export class NativeGitHubRelease {
     if (target.delivery) return channelFiles(target.delivery, 'github-release', target.manifest.artifacts);
     return [...target.manifest.artifacts.map(asset => asset.path), 'sbom.spdx.json', 'release-notes.md', 'artifact-manifest.json', 'SHA256SUMS'].sort();
   }
+  private notes(target: ReleaseIntent) {
+    return target.publicBody ?? readFile(join(target.directory,'release-notes.md'),'utf8');
+  }
   async verifyAttestation(target: ReleaseIntent, file: string) {
   const m = target.manifest;
   const attestation = await this.json(['attestation', 'verify', file, '--repo', target.manifest.fullName,
@@ -212,7 +215,7 @@ export class NativeGitHubRelease {
     if (release.draft || release.immutable !== true) reject('release not immutable and published');
     const m = target.manifest;
     if (!await releaseBodyMatches({ repository: m.fullName, repositoryId: m.repositoryId, releaseId: release.id, sourceSha: m.sourceSha,
-      tag: release.tag_name, frozenDigest: (await fileDigest(target.directory, 'release-notes.md')).sha256 }, release.body,
+      tag: release.tag_name, frozenDigest: createHash('sha256').update(await this.notes(target)).digest('hex') }, release.body,
       path => this.json(['api', `repos/${m.fullName}${path ? '/' + path : ''}`]))) reject('published body drift');
     const assets = await this.assets(target);
     if (JSON.stringify(assets.map(asset => asset.name).sort()) !== JSON.stringify(this.names(target))) reject('published asset set');
@@ -292,7 +295,7 @@ export class NativeGitHubRelease {
       if (asset.label !== asset.name) reject('unexpected public asset label');
       await this.compareAsset(target, asset);
     }
-    const notes = await readFile(join(target.directory, 'release-notes.md'), 'utf8');
+    const notes = await this.notes(target);
     if ((await this.read(target)).body !== notes) {
       await guard();
       let editError: unknown;

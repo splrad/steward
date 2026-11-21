@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import type { ProductReleaseManifest } from '../src/release-artifacts.js';
 import { ghReleaseFixture as fixture } from './gh-release-fixture.js';
+import { applyFrozenReleaseAssets, freezeReleaseAssets } from '../../core/src/release-asset-selection.js';
 
 const writes = (f: Awaited<ReturnType<typeof fixture>>) => f.calls.filter(args => args.includes('--method'));
 it('recovers half-uploaded seven-file release and lost upload/body/publication responses using exact IDs', async () => {
@@ -112,6 +113,33 @@ it('publishes only the selected GitHub files from a fully sealed multi-channel b
   expect((await f.adapter.publish(f.target)).mode).toBe('verified');
   expect([...f.remote.keys()]).toEqual(['dll.zip']);
   expect(f.target.manifest.artifacts).toHaveLength(3);
+});
+
+it('publishes and verifies the centrally frozen installer and fonts from a complete seal', async () => {
+  const f=await fixture(), manifest=f.target.manifest;
+  const cycle={id:`pr-1-${manifest.sourceSha}`,deliveryConfigSha:'a'.repeat(40),units:[{id:manifest.unitId}]};
+  const [record]=freezeReleaseAssets(manifest.repositoryId,cycle,[{unitId:manifest.unitId,artifactIds:['app','fonts'],metadata:[]}]);
+  const delivery={
+    schemaVersion:1 as const,repositoryAuthors:[{id:1,evidence:'fixture'}],units:[{
+      id:manifest.unitId,path:'.',notesPath:'notes.md',channels:[],
+      assets:manifest.artifacts.map(asset=>({id:asset.id,name:asset.path,mediaType:asset.mediaType})),
+    }],
+  };
+  f.target.delivery=applyFrozenReleaseAssets(delivery,manifest.repositoryId,cycle,
+    [{path:record!.path,value:JSON.parse(record!.content)}]).units[0]!;
+  const sealedNotes=await readFile(join(f.target.directory,'release-notes.md'),'utf8');
+  f.target.publicBody='Reviewed release body with only public downloads';
+  f.state.losePublish=true;
+  expect((await f.adapter.publish(f.target)).mode).toBe('verified');
+  expect([...f.remote.keys()].sort()).toEqual(['app.exe','fonts.zip']);
+  expect(f.release.body).toBe(f.target.publicBody);
+  expect(await readFile(join(f.target.directory,'release-notes.md'),'utf8')).toBe(sealedNotes);
+  expect(delivery.units[0]!.channels).toEqual([]);
+  f.calls.length=0;
+  await f.adapter.verify(f.target);
+  expect(writes(f)).toHaveLength(0);
+  f.put('dll.zip',Buffer.from('unexpected'));
+  await expect(f.adapter.verify(f.target)).rejects.toThrow();
 });
 
 it('leaves an unowned blank draft label untouched', async () => {

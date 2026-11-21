@@ -11,7 +11,7 @@ import { Version } from 'release-please/build/src/version.js';
 import { parseDocument } from 'yaml';
 import { advanceReleaseCandidate, pushPreparedCandidate, collectContentInput, planContentBatches,
   resumeContentBatches, assembleUnitNotes, copilotReleaseClient, decodeCandidateDocument, splitContentText, selectReleaseContributors, releaseAffectedUnitIds, isolatedBuildEnvironment,
-  candidateObservationIdentity, parseDeliveryConfig, parseSupplementalNotes, assertDeliveryPath, assertProductDelivery, mergedBuildCycle, assertRepositoryWrite, completeMergedPull } from '../packages/runner/dist/index.js';
+  candidateObservationIdentity, parseDeliveryConfig, parseSupplementalNotes, assertDeliveryPath, assertProductDelivery, mergedBuildCycle, assertRepositoryWrite, completeMergedPull, freezeReleaseAssets } from '../packages/runner/dist/index.js';
 import { readReleaseRecords, writeReleaseRecords, assertReleaseWriterProtection } from './release-record.mjs';
 import { restoreContentRecovery } from './release-content-recovery.mjs';
 
@@ -504,12 +504,13 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         if(!eligible||history.inventoryComplete!==true||history.pendingHandoff!==cycle.id
           ||history.defaultHead!==defaultSha||history.stateHead!==expectedHead)
           return {status:'WAIT',reason:'MERGED_CANDIDATE_SOURCE_UNVERIFIED',history};
-        await checkRepositoryPolicy?.(path=>fileAt(sourceSha,path));
+        const selections=await checkRepositoryPolicy?.(path=>fileAt(sourceSha,path));
         if(await fetchBranch(request.defaultBranch)!==defaultSha||await fetchBranch('steward/release-state')!==expectedHead)
           return {status:'WAIT',reason:'MERGED_CANDIDATE_SOURCE_MOVED'};
         session.repository.activeCycleId = cycle.id; session.repository.candidate = null; session.repository.revision++; session.repository.lastProgressAt = now();
         const head = await persist([{ path: `cycles/${cycle.id}.json`, content: JSON.stringify(cycle, null, 2) + '\n' },
-          { path: 'state.json', content: JSON.stringify(session.repository, null, 2) + '\n' }, ...mergedArchive]);
+          { path: 'state.json', content: JSON.stringify(session.repository, null, 2) + '\n' }, ...mergedArchive,
+          ...freezeReleaseAssets(request.repositoryId,cycle,selections??[])]);
         return { status: 'CYCLE_READY', cycleId: cycle.id, sourceSha, stateHead: head };
       }
     }

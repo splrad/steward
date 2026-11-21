@@ -21,7 +21,7 @@ export async function projectMergedRepositoryPolicy(app, repository, source, obs
   if(!selected&&!ports.revokeMissing&&!await ports.hasResidualProjection?.())return;
   if(selected?.adoption==='central') {
     const proposal=await observe();
-    const [conflict]=configurationConflicts(selected,proposal);
+    const [conflict]=await configurationConflicts(selected,proposal);
     check(!conflict,conflict);
     if(selected.site) {
       check(await readSource(selected.site.workflow),'PAGES');
