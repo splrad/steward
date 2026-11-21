@@ -7,7 +7,7 @@ import { NativeGitHubRelease, type GhCommand, type ReleaseTarget, type ReleaseDo
 import { sealProductArtifacts, type ProductReleaseManifest } from '../src/release-artifacts.js';
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
-export async function ghReleaseFixture(sourceShaOverride?:string) {
+export async function ghReleaseFixture(sourceShaOverride?:string, notesBody?:string) {
   const directory = await mkdtemp(join(tmpdir(), 'gh-release-')); roots.push(directory);
   const digest = (s: string) => createHash('sha256').update(s).digest('hex');
   const sourceSha = sourceShaOverride ?? 'a'.repeat(40), cycleId = 'pr-2-' + sourceSha;
@@ -18,8 +18,8 @@ export async function ghReleaseFixture(sourceShaOverride?:string) {
     artifacts: ['app.exe','dll.zip','fonts.zip'].map((path, i) => ({ id: ['app','dll','fonts'][i]!, path, mediaType: 'application/octet-stream', size: 3, sha256: digest('app') })), evidence: [] };
   for (const asset of manifest.artifacts) await writeFile(join(directory, asset.path), 'app');
   await writeFile(join(directory, 'sbom.spdx.json'), JSON.stringify({ spdxVersion: 'SPDX-2.3', SPDXID: 'SPDXRef-DOCUMENT', packages: [] }));
-  await writeFile(join(directory, 'release-notes.md'), `1.2.3\n${sourceSha}\n${manifest.controllerSha}\n`);
-  const target: ReleaseTarget & {manifest:ProductReleaseManifest} = { directory, releaseId: 20, appBotId: 42, manifest: await sealProductArtifacts(directory, manifest) };
+  await writeFile(join(directory, 'release-notes.md'), notesBody ?? `1.2.3\n${sourceSha}\n${manifest.controllerSha}\n`);
+  const target: ReleaseTarget & {manifest:ProductReleaseManifest} = { directory, releaseId: 20, appBotId: 42, manifest: await sealProductArtifacts(directory, manifest, notesBody) };
   const remote = new Map<string, { bytes: Buffer; id: number; state: string; label: string; uploader: { id: number } }>(); const calls: string[][] = [];
   const release = { id: 20, author: { id: 42 }, tag_name: 'v1.2.3', target_commitish: sourceSha, draft: true, immutable: false, body: 'draft',
     html_url: 'https://github.com/fixture/product/releases/tag/v1.2.3', upload_url: 'https://uploads.github.com/repos/fixture/product/releases/20/assets{?name,label}' };

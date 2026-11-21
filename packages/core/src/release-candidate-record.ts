@@ -3,6 +3,8 @@ import { decodeBuildJson } from './build-manifest.js';
 import { sha256Hex } from './fingerprint.js';
 import { validateCandidateFiles } from './release-candidate.js';
 import { verifyContentAttemptReceipts, retryableContentRejection, validateContentInput, validateContentResult } from './release-content.js';
+import { isConditionalTemplate } from './conditional-release-notes.js';
+import { assertDeliveryPath } from './delivery-config.js';
 
 export interface CandidateArchiveChunk {
   schemaVersion: 1; repositoryId: number; candidateId: string;
@@ -30,10 +32,16 @@ function snapshot(value: any) {
   for (const unit of value.units) { exact(unit, ['id', 'path', 'version', 'tag']); if (Object.values(unit).some(v => typeof v !== 'string' || !v)) throw new Error('CANDIDATE_UNIT_INVALID'); }
 }
 function candidateIdentity(identity: any) {
-  exact(identity, ['authorsDigest', 'sourceDigest', 'actors', 'contributors', 'units']);
+  exact(identity, ['authorsDigest', 'sourceDigest', 'actors', 'contributors', 'units',
+    ...(typeof identity?.noteTemplate === 'string' && isConditionalTemplate(identity.noteTemplate) ? ['noteTemplate'] : [])]);
   if (!/^[a-f0-9]{64}$/.test(identity.authorsDigest) || !/^[a-f0-9]{64}$/.test(identity.sourceDigest)
     || !Array.isArray(identity.actors) || !Array.isArray(identity.units)) throw new Error('CANDIDATE_IDENTITY_INVALID');
-  for (const unit of identity.units) { exact(unit, ['id', 'actors', 'contributors']); if (!Array.isArray(unit.actors)) throw new Error('CANDIDATE_IDENTITY_INVALID'); }
+  for (const unit of identity.units) {
+    const hasNotesPath = typeof unit?.notesPath === 'string';
+    exact(unit, ['id', 'actors', 'contributors', ...(hasNotesPath ? ['notesPath'] : [])]);
+    if (!Array.isArray(unit.actors)) throw new Error('CANDIDATE_IDENTITY_INVALID');
+    if (hasNotesPath) assertDeliveryPath(unit.notesPath);
+  }
 }
 export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[]): Promise<any> {
   if (!chunks.length) throw new Error('CANDIDATE_ARCHIVE_MISSING');
@@ -45,15 +53,15 @@ export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[]): 
   const value = JSON.parse(text);
   if (first.documentKind === 'generated') snapshot(value);
   else if (first.documentKind === 'content') {
-    exact(value, ['input', 'payloadPaths', 'evidencePath']); validateContentInput(value.input);
+    exact(value, ['input', 'payloadPaths', 'evidencePath', ...(value.conditional === true ? ['conditional'] : [])]); validateContentInput(value.input);
     if (value.input.repositoryId !== first.repositoryId || value.input.candidateId !== first.candidateId) throw new Error('CONTENT_ARCHIVE_IDENTITY');
     for (const batch of value.input.batches) {
-      await verifyContentAttemptReceipts(batch.attempts);
+      await verifyContentAttemptReceipts(batch.attempts, value.conditional === true);
       if (typeof value.payloadPaths[batch.id] !== 'string' || !value.payloadPaths[batch.id].startsWith(`content/${first.candidateId}/`)) throw new Error('CONTENT_PAYLOAD_PATH');
     }
     if (typeof value.evidencePath !== 'string' || !value.evidencePath.startsWith(`content/${first.candidateId}/`)) throw new Error('CONTENT_EVIDENCE_PATH');
   } else if (first.documentKind === 'content-payload') {
-    exact(value, ['stage', 'unitIds', 'units', 'sources', 'items', 'background']);
+    exact(value, ['stage', 'unitIds', 'units', 'sources', 'items', 'background', ...(value.conditional === true ? ['conditional'] : [])]);
     if (!['DRAFT', 'CONTEXT', 'DIFF', 'COMPOSE'].includes(value.stage) || !Array.isArray(value.sources) || !Array.isArray(value.items) || !Array.isArray(value.background)) throw new Error('CONTENT_PAYLOAD_INVALID');
   } else if (first.documentKind === 'content-evidence') {
     exact(value, ['manifests', 'gaps']);
@@ -67,12 +75,13 @@ export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[]): 
     }
   } else if (first.documentKind === 'cache-entry') {
       const entry = value;
-      exact(entry, ['inputDigest', 'configDigest', 'attempts', 'result', ...('split' in entry ? ['split'] : [])]);
+      exact(entry, ['inputDigest', 'configDigest', 'attempts', 'result', ...('split' in entry ? ['split'] : []),
+        ...(entry.conditional === true ? ['conditional'] : [])]);
       if (!/^[a-f0-9]{64}$/.test(entry.inputDigest) || !/^[a-f0-9]{64}$/.test(entry.configDigest)
         || !Array.isArray(entry.attempts)
         || entry.attempts.length > 3 && entry.attempts.slice(0, -1).some((attempt: any) => !attempt || !retryableContentRejection(attempt))
         || 'split' in entry && typeof entry.split !== 'boolean') throw new Error('CONTENT_CACHE_INVALID');
-    await verifyContentAttemptReceipts(entry.attempts);
+    await verifyContentAttemptReceipts(entry.attempts, entry.conditional === true);
   } else if (first.documentKind === 'session') {
     exact(value, ['generated', 'pending', 'identity', 'conflict', 'preview', 'adoption', ...('manualValidation' in value ? ['manualValidation'] : [])]);
     if(value.manualValidation!==undefined&&value.manualValidation!==null) {
@@ -98,9 +107,9 @@ export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[]): 
     if (value.preview !== null && typeof value.preview !== 'string') throw new Error('CANDIDATE_PREVIEW_INVALID');
     if (value.adoption) exact(value.adoption, ['humanHead', 'generatedBase', 'differences']);
   } else if (first.documentKind === 'content-result') {
-    exact(value, ['stage', 'sourceIds', 'result']);
+    exact(value, ['stage', 'sourceIds', 'result', ...(value.conditional === true ? ['conditional'] : [])]);
     if (!['DRAFT', 'CONTEXT', 'DIFF', 'COMPOSE'].includes(value.stage) || !Array.isArray(value.sourceIds)) throw new Error('CONTENT_RESULT_INVALID');
-    validateContentResult(value.stage, JSON.stringify(value.result), value.sourceIds);
+    validateContentResult(value.stage, JSON.stringify(value.result), value.sourceIds, [], undefined, value.conditional === true);
   } else if (first.documentKind === 'merged-candidate') {
     exact(value, ['schemaVersion', 'cycleId', 'sourceSha', 'stateCommit', 'candidate', 'session', 'pull', 'documents']);
     exact(value.pull, ['number', 'head', 'branch', 'base', 'repositoryId', 'mergedAt', 'mergeCommitSha']);
