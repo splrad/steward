@@ -1,10 +1,10 @@
-import {lstat,mkdtemp,readFile,realpath,rm} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {dirname,join} from 'node:path';
+import {mkdtemp,readFile,rm} from 'node:fs/promises';
+import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {NativeEvidenceReader,nativeEvidenceTransport,nativeReleaseApp} from '../packages/runner/dist/index.js';
 import {entryGuard} from './bounded-release-entry.mjs';
 import {serviceRepositoryPages} from './release-coordinator.mjs';
+import {nativeTemporaryParent} from './native-scratch.mjs';
 
 const config=async file=>JSON.parse(await readFile(new URL('../config/'+file,import.meta.url),'utf8'));
 const required=(value,reason)=>{if(!value)throw Error(reason);};
@@ -25,22 +25,9 @@ export async function receiveCompletion(env,sites,getCentral,guardConfig,openApp
   required(run.actor?.id===app.appBotId&&run.triggering_actor?.id===app.appBotId,'PAGES_EVENT_ACTOR');
   return consume({app,site,completion,coordinator:{runId:run.id,runAttempt:run.run_attempt,controllerSha:run.head_sha}});
 }
-async function pagesTempParent() {
-  const parent=tmpdir();
-  if(process.platform!=='win32')return parent;
-  const canonical=await realpath(parent);
-  if(canonical!==parent) {
-    // Windows TEMP can use the 8.3 spelling of an ordinary directory. Only
-    // adopt its long name after ruling out a junction or symlink in the path.
-    for(let path=parent;path!==dirname(path);path=dirname(path)) {
-      if((await lstat(path)).isSymbolicLink())throw Error('PAGES_TEMP_PARENT_LINK');
-    }
-  }
-  return canonical;
-}
 export async function main(env) {
   const reader=new NativeEvidenceReader(nativeEvidenceTransport(env.STEWARD_CENTRAL_TOKEN),'splrad/steward');
-  const root=await mkdtemp(join(await pagesTempParent(),'steward-pages-event-'));
+  const root=await mkdtemp(join(await nativeTemporaryParent('PAGES_TEMP_PARENT_LINK'),'steward-pages-event-'));
   try {
     const status=await receiveCompletion(env,(await config('pages-completion.json')).publicSites,
       path=>reader.json(path.replace(/^\/repos\/splrad\/steward\/?/,'')),await config('bounded-recheck.json'),

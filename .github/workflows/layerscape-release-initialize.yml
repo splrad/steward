@@ -10,13 +10,24 @@ on:
         description: Exact observed LayerScape main SHA
         required: true
         type: string
+      operation:
+        description: LayerScape release state operation
+        type: choice
+        options:
+          - initialize
+          - closeout-192
+        default: initialize
+      expected_state_head:
+        description: Exact LayerScape release-state SHA for closeout-192
+        type: string
       authorize:
-        description: Initialize after legacy writer handover is verified
+        description: Apply the reviewed operation to the exact release state
         required: true
         type: boolean
         default: false
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: steward-release-coordinator
   cancel-in-progress: false
@@ -55,6 +66,9 @@ jobs:
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
           APPROVED_CONTROLLER_SHA: ${{ inputs.approved_controller_sha }}
           EXPECTED_PRODUCT_HEAD: ${{ inputs.expected_product_head }}
+          RELEASE_OPERATION: ${{ inputs.operation }}
+          EXPECTED_STATE_HEAD: ${{ inputs.expected_state_head }}
+          GITHUB_TOKEN: ${{ github.token }}
           AUTHORIZE_INITIALIZATION: ${{ inputs.authorize }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: node scripts/layerscape-release-initialize.mjs

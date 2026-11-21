@@ -4,11 +4,13 @@ import { decodePagesMaintenance } from './pages-maintenance.js';
 import { decodeCompletionArchive } from './release-history.js';
 import { decodeQualityCache } from './quality-language-summary.js';
 import { decodeCandidateArchive } from './release-candidate-record.js';
+import { decodeRepositoryPolicyProjection, repositoryPolicyPath } from './repository-policy-projection.js';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import addFormatsModule from 'ajv-formats';
 import schema from '../../../schema/release-state.schema.json' with { type: 'json' };
 import historicalRepositorySchema from '../../../schema/repository-state-v2.schema.json' with { type: 'json' };
 import { assertDeliveryPath } from './delivery-config.js';
+import { isBuildWorkflow } from './release-workflow.js';
 import { decodeBuildJson } from './build-manifest.js';
 import { sha256Hex } from './fingerprint.js';
 import { decodeNativeArchive, decodeNativeReadObservation, decodeNativeDispatchObservation, decodeNativeRetryLimit, decodeNativePublication, decodeNativeChannel, decodeNativeChannelRead, decodeNormalizedDelivery, decodeNativeSourceRejection } from './native-evidence.js';
@@ -52,8 +54,10 @@ export function githubUnits(cycle: Pick<CycleRecord,'units'|'freezeOnly'>): Cycl
 }
 export interface CycleRecord {
   id: string; prNumber: number; sourceSha: string; controllerSha: string; deliveryConfigSha: string; units: CycleUnit[];
+  buildWorkflow?: string;
   requiredChannels: { unitId: string; channelId: string }[];
   dispatches: { requestKey: string; operationKey: string; purpose: 'build' | 'channel-submit' | 'channel-verify'; workflowId: number;
+    buildWorkflow?: string;
     ref: string; sourceSha: string; targetKey: string; inputs: Record<string, string>; inputDigest: string; executionSha: string;
     sentAt: string; searchWindows: { start: string; end: string; observedAt: string; complete: boolean }[]; canonicalRunId: number | null;
     nativeResponseEvidencePath: string | null; continuationOfRunId: number | null; retryLimitEvidencePath: string | null }[];
@@ -92,6 +96,7 @@ export function parseReleaseRecord<K extends keyof RecordKinds>(kind: K, value: 
   }
   if (kind === 'cycle') {
     const record = value as CycleRecord;
+    if (record.buildWorkflow !== undefined && !isBuildWorkflow(record.buildWorkflow)) fail('cycle workflow');
     if (record.id !== `pr-${record.prNumber}-${record.sourceSha}` || !record.units.length || !unique(record.units.map(unit => unit.id))) fail('cycle identity');
     const pair = (value: { unitId: string; channelId: string }) => JSON.stringify([value.unitId, value.channelId]);
     if (!unique(record.requiredChannels.map(pair)) || record.requiredChannels.some(item => !record.units.some(unit => unit.id === item.unitId))) fail('required channels');
@@ -104,6 +109,7 @@ export function parseReleaseRecord<K extends keyof RecordKinds>(kind: K, value: 
       fail('freeze-only receipt');
     if (!unique(record.dispatches.map(item => item.requestKey))) fail('duplicate request');
     for (const request of record.dispatches) {
+      if (request.buildWorkflow !== (request.purpose === 'build' ? record.buildWorkflow : undefined)) fail('dispatch workflow');
       if (request.sourceSha !== record.sourceSha || request.canonicalRunId !== null && request.nativeResponseEvidencePath === null
         || (request.continuationOfRunId === null) !== (request.retryLimitEvidencePath === null)) fail('dispatch evidence');
       const inputs=request.inputs;
@@ -146,7 +152,7 @@ export function decodeReleaseRecord<K extends keyof RecordKinds>(kind: K, bytes:
 }
 
 /** Fixed path ownership is a caller boundary, not a replacement for native App permissions. */
-export function stateRecordOwner(targetRef: string, path: string): 'release' | 'quality' | 'settings' | 'bootstrap' | 'pages' | 'health' | 'maintenance' {
+export function stateRecordOwner(targetRef: string, path: string): 'release' | 'quality' | 'settings' | 'bootstrap' | 'pages' | 'health' | 'maintenance' | 'configuration' {
   assertDeliveryPath(path);
   if(path.split('/').some(part=>/^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(part))) return fail('state device path');
   if (targetRef==='steward/release-state') {
@@ -160,6 +166,7 @@ export function stateRecordOwner(targetRef: string, path: string): 'release' | '
     if (/^maintenance\/[A-Za-z0-9_-]+\.json$/.test(path)) return 'maintenance';
   }
   if (targetRef==='steward/governance-state') {
+    if (path===repositoryPolicyPath) return 'configuration';
     if (/^quality\/[1-9][0-9]*(?:\/[a-f0-9]{40}\.md|\.json)$/.test(path)) return 'quality';
     if (/^settings\/[1-9][0-9]*-[1-9][0-9]*\.(?:md|json)$/.test(path)) return 'settings';
     if (/^bootstrap\/[1-9][0-9]*-[1-9][0-9]*\.json$/.test(path)) return 'bootstrap';
@@ -238,6 +245,7 @@ export function decodeStateFile(targetRef: string, path: string, bytes: Uint8Arr
   if(owner==='settings') return decodeSettingsReport(decodeBuildJson(bytes),repositoryId,path);
   if(owner==='maintenance') return decodeMaintenanceRecord(bytes,repositoryId,path);
   if(owner==='pages') return decodePagesMaintenance(bytes,repositoryId,path);
+  if(owner==='configuration') return decodeRepositoryPolicyProjection(bytes,repositoryId);
   if(owner==='quality') {
     // Source Markdown, identifiers and translations are content. Validate the
     // complete JSON envelope first, then keep strict checks on its metadata.

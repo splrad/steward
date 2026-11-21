@@ -72,6 +72,7 @@ const shaBinding=(r:any)=>r.rules.find((v:any)=>v.type==='workflows').parameters
 function rulesFixture(mode='success'){
   let current=rule(),writes=0,reads=0;const records:any[]=[];
   return {records,get current(){return current;},get writes(){return writes;},record:async(r:any)=>{records.push(r);},request:async(method:string,_path:string,body:any)=>{
+    expect(_path).toBe('/orgs/splrad/rulesets/18883080');
     if(method==='GET'){
       if(mode==='pre-change'&&++reads===2)current.conditions.repository_name.exclude.push('human' as never);
       return {status:200,value:structuredClone(current)};
@@ -85,11 +86,10 @@ function rulesFixture(mode='success'){
     return {status:200};
   }};
 }
-it.each(['success','lost','unchanged','third','pre-change'])('promotes only registered workflow SHA with native reconciliation: %s',async mode=>{
+it.each(['success','lost','unchanged','third'])('promotes only registered workflow SHA with native reconciliation: %s',async mode=>{
   const f=rulesFixture(mode),assertCurrent=vi.fn();const result=await (await module()).promoteRequiredWorkflow(f,M,assertCurrent,f.record);
-  expect(result).toEqual({status:'ADOPTED',sha:M});expect(f.writes).toBe(['unchanged','third'].includes(mode)?2:1);
+  expect(result).toMatchObject({status:'ADOPTED',sha:M,targets:[{rulesetId:18883080,status:'ADOPTED',sha:M}]});expect(f.writes).toBe(['unchanged','third'].includes(mode)?2:1);
   expect(f.current.rules[1]).toEqual(rule().rules[1]);expect(f.current.rules[2]!.parameters!.workflows![1]).toEqual(rule().rules[2]!.parameters!.workflows![1]);
-  if(mode==='pre-change')expect(f.current.conditions.repository_name.exclude).toEqual(['human']);
   expect(f.records.some(r=>r.kind==='rules-after')).toBe(true);
 });
 it('unmergeable concurrent rule change records before/after and stops; moved main cannot write',async()=>{
@@ -98,7 +98,7 @@ it('unmergeable concurrent rule change records before/after and stops; moved mai
   const other=rulesFixture();await expect(promoteRequiredWorkflow(other,M,async()=>{throw Error('MAIN_MOVED');},other.record)).rejects.toThrow('MAIN_MOVED');expect(other.writes).toBe(0);
 });
 it('already adopted source is a read-only NOP',async()=>{
-  const f=rulesFixture();shaBinding(f.current).sha=M;expect(await (await module()).promoteRequiredWorkflow(f,M,async()=>{},f.record)).toEqual({status:'ALREADY_ADOPTED',sha:M});expect(f.writes).toBe(0);
+  const f=rulesFixture();shaBinding(f.current).sha=M;expect(await (await module()).promoteRequiredWorkflow(f,M,async()=>{},f.record)).toMatchObject({status:'ALREADY_ADOPTED',sha:M});expect(f.writes).toBe(0);
 });
 it.each(['success','lost','conflict','changed','first security adoption'])('template tags are create-only, exact commit bound and recover lost responses: %s',async mode=>{
   const refs:any={'refs/tags/v1.0.0':P},plan={status:'CREATE',commit:M,tag:'v1.0.1',tags:{...refs}};
@@ -205,79 +205,42 @@ it('does not include arbitrary exception content in failure evidence',async()=>{
   expect(records).toEqual([{kind:'failure',code:'PROMOTION_UNAVAILABLE'}]);
 });
 
-const maintenanceId=9001; // Isolated API fixture; production binds the separately read-back rule ID.
-function maintenanceRule(){return {...rule(),id:maintenanceId,name:'maintenance',bypass_actors:[],
-  conditions:{repository_id:{repository_ids:[1296724484]},ref_name:{include:['refs/heads/maintenance/legacy-runtime-e990eda'],exclude:[]}},
-  rules:[{type:'workflows',parameters:{do_not_enforce_on_create:true,workflows:[{repository_id:1296724484,path:'.github/workflows/maintenance-validation.yml',sha:P}]}}]};}
-function multipleRules(){
-  const rules=new Map<number,any>([[18883080,rule()],[maintenanceId,maintenanceRule()]]),writes:number[]=[],records:any[]=[];
-  const fixture={rules,writes,records,failMaintenance:false,lostResponse:false,afterWrite:(_id:number)=>{},
-    record:async(value:any)=>{records.push(value);},request:async(method:string,url:string,body?:any)=>{
-      const id=Number(url.split('/').at(-1));expect(rules.has(id)).toBe(true);
-      if(method==='GET')return {status:200,value:structuredClone(rules.get(id))};
-      expect(method).toBe('PUT');expect(Object.keys(body)).toEqual(['rules']);writes.push(id);
-      if(id===maintenanceId&&fixture.failMaintenance)return {status:503};
-      rules.get(id).rules=structuredClone(body.rules);fixture.afterWrite(id);
-      if(fixture.lostResponse)throw Error('lost response');return {status:200};
-    }};
-  return fixture;
-}
-it('promotes both required sources, preserves all other fields, and re-enters without writes',async()=>{
-  const {promoteRequiredWorkflows}=await module(),f=multipleRules(),before=structuredClone(f.rules),guard=vi.fn(async()=>{});
-  const result=await promoteRequiredWorkflows(f,M,guard,f.record,maintenanceId);
-  expect(result).toMatchObject({status:'ADOPTED',sha:M,targets:[{rulesetId:18883080,status:'ADOPTED'},{rulesetId:maintenanceId,status:'ADOPTED'}]});
-  for(const [id,value] of f.rules){const expected=before.get(id);shaBinding(expected).sha=M;expect(value).toEqual(expected);}
-  expect(f.writes).toEqual([18883080,maintenanceId]);expect(guard.mock.calls.length).toBeGreaterThan(4);
-  expect(f.records.filter(r=>r.kind==='workflow-target-final')).toHaveLength(2);
-  expect(await promoteRequiredWorkflows(f,M,guard,f.record,maintenanceId)).toMatchObject({status:'ALREADY_ADOPTED'});
-  expect(f.writes).toEqual([18883080,maintenanceId]);
+it('stops before writing when the default-branch protection changes',async()=>{
+  const f=rulesFixture('pre-change');
+  await expect((await module()).promoteRequiredWorkflow(f,M,async()=>{},f.record)).rejects.toThrow('TARGET_PROTECTION_CHANGED');
+  expect(f.writes).toBe(0);
 });
-it.each(['disabled','repository','ref','bypass','path','source','extra-workflow','mutable-ref','id'])('rejects invalid maintenance target before any core write: %s',async kind=>{
-  const f=multipleRules(),r=f.rules.get(maintenanceId);
-  if(kind==='disabled')r.enforcement='disabled';if(kind==='repository')r.conditions.repository_id.repository_ids.push(42);
-  if(kind==='ref')r.conditions.ref_name.include=['~ALL'];if(kind==='bypass')r.bypass_actors=[{actor_id:1,actor_type:'Team',bypass_mode:'always'}];
-  if(kind==='path')shaBinding(r).path='other.yml';if(kind==='source')shaBinding(r).repository_id=42;
-  if(kind==='extra-workflow')r.rules[0].parameters.workflows.push({...shaBinding(r)});
-  if(kind==='mutable-ref')shaBinding(r).ref='main';if(kind==='id')r.id=42;
-  await expect((await module()).promoteRequiredWorkflows(f,M,async()=>{},f.record,maintenanceId)).rejects.toThrow('PROMOTION_');expect(f.writes).toEqual([]);
-});
-it('records partial success and retries only the unadopted target on re-entry',async()=>{
-  const {promoteRequiredWorkflows}=await module(),f=multipleRules();f.failMaintenance=true;
-  await expect(promoteRequiredWorkflows(f,M,async()=>{},f.record,maintenanceId)).rejects.toThrow('RECONCILIATION_LIMIT');
-  expect(shaBinding(f.rules.get(18883080)).sha).toBe(M);expect(shaBinding(f.rules.get(maintenanceId)).sha).toBe(P);
-  expect(f.records).toContainEqual({kind:'workflow-target-result',rulesetId:18883080,status:'ADOPTED',sha:M});
-  expect(f.records.filter(r=>r.kind==='workflow-target-final')).toHaveLength(0);
-  f.failMaintenance=false;expect(await promoteRequiredWorkflows(f,M,async()=>{},f.record,maintenanceId)).toMatchObject({status:'ADOPTED'});
-  expect(f.writes.filter(id=>id===18883080)).toHaveLength(1);expect(shaBinding(f.rules.get(maintenanceId)).sha).toBe(M);
-});
-it('reconciles lost responses on both targets from complete native readback',async()=>{
-  const f=multipleRules();f.lostResponse=true;
-  expect(await (await module()).promoteRequiredWorkflows(f,M,async()=>{},f.record,maintenanceId)).toMatchObject({status:'ADOPTED'});
-  expect(f.writes).toEqual([18883080,maintenanceId]);
-});
-it.each(['core-field','maintenance-scope','source-guard'])('stops after first write if protection drifts before second target: %s',async kind=>{
-  const f=multipleRules();let sourceSafe=true;
-  f.afterWrite=id=>{if(id===18883080){
-    if(kind==='core-field')f.rules.get(id).name='concurrent edit';
-    if(kind==='maintenance-scope')f.rules.get(maintenanceId).conditions.ref_name.exclude=['maintenance/legacy-runtime-e990eda'];
-    if(kind==='source-guard')sourceSafe=false;
+it.each(['before tag write','after tag write'])('checks the adopted default-branch protection during publication: %s',async when=>{
+  const {promoteRequiredWorkflow,publishPromotedSources}=await module();
+  const f=rulesFixture();
+  const {verifyCurrent}=await promoteRequiredWorkflow(f,M,async()=>{},f.record);
+  const plan={status:'CREATE',commit:M,tag:'v1.0.1',tags:{}};
+  const tagRef={ref:'refs/tags/v1.0.1',object:{type:'commit',sha:M}};
+  const writes:string[]=[];
+  const io={async request(method:string,path:string){
+    if(path.endsWith('/git/matching-refs/tags/'))return {status:200,value:writes.length?[tagRef]:[]};
+    if(path.endsWith('/git/ref/tags/v1.0.1')){
+      if(when==='before tag write')f.current.name='concurrent edit';
+      return writes.length?{status:200,value:tagRef}:{status:404};
+    }
+    expect(method).toBe('POST');
+    writes.push(path);
+    shaBinding(f.current).sha=T;
+    return {status:201,value:tagRef};
   }};
-  await expect((await module()).promoteRequiredWorkflows(f,M,async()=>{if(!sourceSafe)throw Error('SOURCE_GUARD');},f.record,maintenanceId)).rejects.toThrow();
-  expect(f.writes).toEqual([18883080]);expect(shaBinding(f.rules.get(maintenanceId)).sha).toBe(P);
+  await expect(publishPromotedSources(io,plan,M,123,verifyCurrent,f.record))
+    .rejects.toThrow(when==='before tag write'?'TARGET_PROTECTION_CHANGED':'TARGET_READBACK');
+  expect(writes).toEqual(when==='before tag write'?[]:['/repos/splrad/steward/git/refs']);
+  expect(f.records.some(record=>['controller-source-result','template-wake'].includes(record.kind))).toBe(false);
 });
-it('does not report success when the first target moves after the second write',async()=>{
-  const f=multipleRules();f.afterWrite=id=>{if(id===maintenanceId)shaBinding(f.rules.get(18883080)).sha=T;};
-  await expect((await module()).promoteRequiredWorkflows(f,M,async()=>{},f.record,maintenanceId)).rejects.toThrow('TARGET_READBACK');
-});
-it('checks the source guard even when both target SHAs are already adopted',async()=>{
-  const f=multipleRules();for(const r of f.rules.values())shaBinding(r).sha=M;
-  await expect((await module()).promoteRequiredWorkflows(f,M,async()=>{throw Error('SOURCE_GUARD');},f.record,maintenanceId)).rejects.toThrow('SOURCE_GUARD');expect(f.writes).toEqual([]);
-});
-
-it.each(['sha','protection'])('rejects cross-target drift during final evidence recording: %s',async kind=>{
-  const f=multipleRules();
-  const record=async(value:any)=>{await f.record(value);if(value.kind==='workflow-target-final'&&value.rulesetId===18883080){
-    if(kind==='sha')shaBinding(f.rules.get(18883080)).sha=T;else f.rules.get(18883080).name='concurrent final edit';
-  }};
-  await expect((await module()).promoteRequiredWorkflows(f,M,async()=>{},record,maintenanceId)).rejects.toThrow(kind==='sha'?'TARGET_READBACK':'TARGET_PROTECTION_CHANGED');
+it.each(['sha','protection'])('rejects default-branch drift during final evidence recording: %s',async kind=>{
+  const f=rulesFixture();
+  const record=async(value:any)=>{
+    await f.record(value);
+    if(value.kind!=='workflow-target-final')return;
+    if(kind==='sha')shaBinding(f.current).sha=T;
+    else f.current.name='concurrent final edit';
+  };
+  await expect((await module()).promoteRequiredWorkflow(f,M,async()=>{},record))
+    .rejects.toThrow(kind==='sha'?'TARGET_READBACK':'TARGET_PROTECTION_CHANGED');
 });

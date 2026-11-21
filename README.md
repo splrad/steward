@@ -2,8 +2,6 @@
 
 SPLRAD Steward 是 [`splrad`](https://github.com/splrad) 组织的共享仓库自动化中枢。拉取请求处理、仓库接入、Copilot 说明同步和发布规则集中保存在这里，受管仓库无需复制整套工作流，也不需要保存 Steward 的中央凭据。
 
-本项目按 SPLRAD 当前的仓库和维护方式设计，不是通用的 GitHub 自动化产品，也没有提供开箱即用的 Marketplace 安装包。
-
 ## 项目亮点
 
 - 检查拉取请求：原生入口校验标题、维护路径标签并运行适用验证；Copilot 审查由平台提供，Steward 只读核验当前 head 的审查证据。普通 PR 的标题、正文和议题关联由作者维护。

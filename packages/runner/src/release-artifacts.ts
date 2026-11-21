@@ -4,6 +4,7 @@ import { lstat, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { artifactNames, type ReleaseUnit } from '../../core/src/release-descriptor.js';
 import { assertDeliveryAssetName } from '../../core/src/delivery-config.js';
+import { isBuildWorkflow, workflowPathPattern } from '../../core/src/release-workflow.js';
 import { inspectBuildFile, verifyBuildFileStates, type NativeVersionInspector } from './build-manifest.js';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { ProducerReceipt } from './release-run.js';
@@ -26,6 +27,7 @@ export interface ReleaseManifest extends ReleaseIdentity {
 }
 export interface ProductReleaseManifest {
   schemaVersion: 3; repositoryId: number; fullName: string; cycleId: string; requestKey: string; unitId: string;
+  buildWorkflow?: string;
   version: string; packageVersion: string; tag: string; sourceSha: string; controllerSha: string; buildRef: string;
   deliverySha256: string; templateSha256: string; runId: number; attempt: number; toolLocks: Record<string, string>;
   producers: ProducerReceipt[]; artifacts: (FileDigest & { id: string; mediaType: string })[]; evidence: FileDigest[];
@@ -39,6 +41,7 @@ for (const [before, after] of [['policySha', 'controllerSha'], ['descriptorSha25
 Object.assign(productSchema.properties, { cycleId: { type: 'string', pattern: '^pr-[1-9][0-9]*-[a-f0-9]{40}$' },
   requestKey: { type: 'string', pattern: '^[a-f0-9]{64}$' }, buildRef: { type: 'string', pattern: '^refs/heads/steward/build/pr-[1-9][0-9]*-[a-f0-9]{40}$' } });
 productSchema.required.push('cycleId', 'requestKey', 'buildRef');
+productSchema.properties.buildWorkflow = {type:'string',pattern:workflowPathPattern};
 for (const key of ['kind', 'platform', 'architecture']) {
   delete productSchema.properties.artifacts.items.properties[key];
   productSchema.properties.artifacts.items.required = productSchema.properties.artifacts.items.required.filter((value: string) => value !== key);
@@ -47,6 +50,7 @@ const validateProduct = new Ajv2020({ strict: true }).compile(productSchema);
 export function validateProductManifest(input: unknown): asserts input is ProductReleaseManifest {
   if (!validateProduct(input)) throw new Error('RELEASE_ARTIFACTS: product manifest schema');
   const manifest = input as unknown as ProductReleaseManifest;
+  if (manifest.buildWorkflow !== undefined && !isBuildWorkflow(manifest.buildWorkflow)) throw new Error('RELEASE_ARTIFACTS: product workflow');
   if (manifest.buildRef !== 'refs/heads/steward/build/' + manifest.cycleId || !manifest.cycleId.endsWith('-' + manifest.sourceSha))
     throw new Error('RELEASE_ARTIFACTS: product source');
 }

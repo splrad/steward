@@ -29,7 +29,12 @@ function runtime() {
 it('generates one direct draft with seven sections and reuses an input-digest cache', async () => {
   const work = await planContentBatches(input(), [source(1, 'CONTEXT'), source(2)]), cache = {}, r = runtime();
   expect(await resumeContentBatches(work, cache, r.port)).toEqual({status:'READY', calls:1});
-  expect(r.requests.map(s => JSON.parse(s).stage)).toEqual(['DRAFT']);
+  expect(r.requests).toHaveLength(1);
+  const request = JSON.parse(r.requests[0]!);
+  expect(request.stage).toBe('DRAFT');
+  expect(request.prompt).toContain('来源明确给出的宿主或运行时支持范围');
+  expect(request.prompt).toContain('units 中的 version 和 tag 标识本次发行，不作为宿主兼容依据');
+  expect(request.constraints).toContain('Omit optional paragraphs without product facts.');
   expect(work.input.batches[0]).not.toHaveProperty('parentId');
   expect(work.input.batches[0]).not.toHaveProperty('childIds');
   expect(r.saves.some(w => w.input.batches[0]?.attempts[0]?.status === 'SENT')).toBe(true);

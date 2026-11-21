@@ -84,7 +84,7 @@ it.each(['valid','wrong-producer','wrong-digest','expired','previously-completed
   cycle.freezeOnly=[{unitId:'app',runId:100,attempt:2,producerAttempt:1,artifactId:1001,archiveDigest}];
   if(kind==='previously-completed')f.snapshot.repositoryHistory[0]!.value.lastCompletedCycleId=cycle.id;
   const io={request:async(method:'GET'|'POST',path:string)=>{
-    if(path.includes('/contents/.github/delivery.json'))return native.response({type:'file',encoding:'base64',size:data.length,sha:cycle.deliveryConfigSha,content:data.toString('base64')});
+    if(path.includes('/contents/.github/delivery.json'))return native.response({type:'file',path:'.github/delivery.json',encoding:'base64',size:data.length,sha:cycle.deliveryConfigSha,content:data.toString('base64')});
     if(path.endsWith('/actions/runs/100/attempts/2'))return native.response({...native.runs.get(2),conclusion:'success'});
     if(path.endsWith('/actions/artifacts/1001'))return kind==='previously-completed'?native.response({},404):native.response({
       id:1001,name:'final-1-app-'+S+'-100-'+(kind==='wrong-producer'?'2':'1'),digest:kind==='wrong-digest'?digest('different'):archiveDigest,

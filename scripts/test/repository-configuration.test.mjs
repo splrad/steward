@@ -271,8 +271,8 @@ for(const mode of ['reviewed scripts','native container, service and dynamic mat
 test('rejects edits that change the head, labels or locked controls',()=>{
   const model=inspectRepository(new Map()),head='a'.repeat(40),form=configurationForm(model,head);
   assert.throws(()=>parseForm(form.body,form.body.replace(head,'b'.repeat(40)),form.items),/marked/);
-  assert.match(form.body,/🔒 Windows 构建/);
-  assert.throws(()=>parseForm(form.body,form.body.replace('🔒 Windows 构建','[x] Windows 构建'),form.items),/marked/);
+  assert.doesNotMatch(form.body,/### (版本管理|构建与打包|发布渠道|文档站|原生入口)/);
+  assert.throws(()=>parseForm(form.body,form.body.replace('### 调整配置','### 替换标题'),form.items),/marked/);
 });
 
 test('reports only declared product platforms and keeps operational Pages conditions out of selections',async()=>{
@@ -287,8 +287,7 @@ test('reports only declared product platforms and keeps operational Pages condit
   const summary=renderConfiguration(model,head),form=configurationForm(model,head);
   assert.match(summary,/\[x\] Windows 构建 .*cli\/x64/);
   assert.doesNotMatch(summary,/Linux 构建待选择|macOS 构建待选择|\[x\].*GitHub Pages|\$\{\{/);
-  assert.match(summary,/公开部署 · 已有作业，仓内选择尚未确认/);
-  assert.match(summary,/站点来源 · 尚未确认/);
+  assert.doesNotMatch(summary,/### 文档站|站点来源|Linux 构建|macOS 构建/);
   const fields=Object.fromEntries(form.items.filter(i=>i.id.startsWith('site.')).map(i=>[i.id,i.value]));
   assert.deepEqual(fields,{'site.build':false,'site.deploy':false,'site.source':'','site.unit':''});
   assert.equal(planFromForm(model,{values:fields},'configure').site,undefined);
@@ -296,7 +295,7 @@ test('reports only declared product platforms and keeps operational Pages condit
   const saved=await applySelection(model,'configure',{site:choice},{});
   files.set(pagesPath,saved.get(pagesPath));
   const adopted=inspectRepository(files),confirmed=renderConfiguration(adopted,head);
-  assert.match(confirmed,/\[x\] 构建文档站/);assert.match(confirmed,/\[ \] 仓内允许 GitHub Pages 公开部署/);
+  assert.match(confirmed,/\[x\] 仅构建/);assert.doesNotMatch(confirmed,/公开部署/);
   assert.match(confirmed,/站点来源 · `release`/);assert.match(confirmed,/来源单元 · `cli`/);
   const draft=configurationForm(adopted,head,{values:{'site.deploy':true}});
   assert.equal(draft.items.find(i=>i.id==='site.deploy').value,true);

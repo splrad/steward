@@ -59,6 +59,17 @@ export function eligible(event, body) {
     Number.isSafeInteger(body.repository?.id) && body.repository.id > 0;
 }
 
+function registrationRepositoryIds(event, body) {
+  const action = normalizedAction(event, body);
+  if (event === 'repository' || event === 'create') return [body.repository.id];
+  const repositories = event === 'installation_repositories' && action === 'added' ? body.repositories_added
+    : event === 'installation' && action === 'created' ? body.repositories : undefined;
+  if (!Array.isArray(repositories)) return [];
+  const ids = repositories.map(repository => repository?.id);
+  if (!ids.every(id => Number.isSafeInteger(id) && id > 0)) return [];
+  return [...new Set(ids)].sort((left, right) => left - right);
+}
+
 async function boundedBody(request) {
   const reader = request.body?.getReader();
   if (!reader) throw new Error('body');
@@ -163,7 +174,9 @@ export async function handle(request, env, dispatchFn = dispatch) {
   }
   if (!eligible(event, body)) return answer(200, 'ignored');
   const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('');
-  const result = await dispatchFn(env, {delivery, event, action: normalizedAction(event, body), body_sha256: digest});
+  const repositoryIds = registrationRepositoryIds(event, body);
+  const result = await dispatchFn(env, {delivery, event, action: normalizedAction(event, body), body_sha256: digest,
+    ...(repositoryIds.length ? {repository_ids: repositoryIds} : {})});
   // Never log payloads, repository names, labels, keys, tokens, URLs, or upstream bodies.
   return answer(result.accepted ? 202 : 502, result.code);
 }

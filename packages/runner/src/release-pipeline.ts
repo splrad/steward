@@ -16,6 +16,7 @@ import { Octokit } from '@octokit/rest';
 import { assertPipelineSource, type PipelineSource, type PublishPipelineRecord } from './release-pipeline-record.js';
 import { parsePipelineRecord, pipelineSource, type BuildPipelineRecord } from './release-pipeline-record.js';
 import { channelFiles, parseDeliveryConfig, deliveryAssetNames, assertDeliveryPath, type DeliveryUnit, type DeliveryConfig } from '../../core/src/delivery-config.js';
+import { defaultBuildWorkflow, dispatchWorkflow, encodeRepositoryPath } from '../../core/src/release-workflow.js';
 import { parseReleaseDescriptor,artifactNames } from '../../core/src/release-descriptor.js';
 import { parseLegacyRepositoryCatalog } from '../../core/src/legacy-repository-policy.js';
 import { decodeNormalizedDelivery,type NormalizedDeliveryEvidence } from '../../core/src/native-evidence.js';
@@ -27,7 +28,7 @@ import { verifyExecutionSource, verifyDispatchWorkflow, channelTargets, channelT
 import { parseDocument } from 'yaml';
 import { Version } from 'release-please/build/src/version.js';
 import { TagName } from 'release-please/build/src/util/tag-name.js';
-import { renderFrozenReleaseNotes } from '../../core/src/release-template.js';
+import { productReleaseTemplatePath, sharedReleaseTemplatePath, renderFrozenReleaseNotes } from '../../core/src/release-template.js';
 import { inspectProductArtifacts, validateProductManifest, type ProductReleaseManifest } from './release-artifacts.js';
 
 export interface ProductBuildInput {
@@ -92,12 +93,18 @@ export function verifyNormalizedDelivery(context:EvidenceContext,record:{path:st
     ||JSON.stringify(value.normalizedDelivery)!==JSON.stringify(legacyDeliveryFacts(context,value)))fail('normalized delivery provenance');
   return value;
 }
+async function readNativeSourceFile(reader:NativeEvidenceReader,sha:string,path:string) {
+  const value=await reader.json(`contents/${encodeRepositoryPath(path)}?ref=${sha}`);
+  if(value.path!==path||value.type!=='file'||value.encoding!=='base64'||typeof value.content!=='string')fail('source file identity');
+  const bytes=Buffer.from(value.content,'base64');
+  if(bytes.length!==value.size||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==value.sha)fail('source blob digest');
+  return {bytes,sha:value.sha};
+}
 export async function readCycleDelivery(context:EvidenceContext,records:{path:string;commit:string;value:unknown}[],io:EvidenceTransport) {
   try {
-    const source=await new NativeEvidenceReader(io,context.repository).json(`contents/.github/delivery.json?ref=${context.cycle.sourceSha}`),bytes=Buffer.from(source.content??'','base64');
-    if(source.type!=='file'||source.encoding!=='base64'||source.size!==bytes.length||source.sha!==context.cycle.deliveryConfigSha
-      ||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==source.sha)fail('original delivery evidence required');
-    return {delivery:parseDeliveryConfig(JSON.parse(bytes.toString('utf8'))),legacy:null};
+    const source=await readNativeSourceFile(new NativeEvidenceReader(io,context.repository),context.cycle.sourceSha,'.github/delivery.json');
+    if(source.sha!==context.cycle.deliveryConfigSha)fail('original delivery evidence required');
+    return {delivery:parseDeliveryConfig(JSON.parse(source.bytes.toString('utf8'))),legacy:null};
   }catch(error) {
     if (!((error instanceof EvidenceReadError) && error.status === 404)) throw error;
     const proofs=records.filter(r=>r.path.startsWith('evidence/normalized-delivery/')&&(r.value as {cycleId?:string})?.cycleId===context.cycle.id).map(r=>verifyNormalizedDelivery(context,r));
@@ -215,7 +222,7 @@ export async function pipelineChannelDownload(context:EvidenceContext,target:Cha
       const file=join(directory,name);
       await gh(['release','verify-asset',unit.tag,file,'--repo',context.repository,'--format','json']);
       const proofs=JSON.parse(await gh(['attestation','verify',file,'--repo',context.repository,
-        '--signer-workflow',context.repository+'/.github/workflows/steward-release-publish.yml',
+        '--signer-workflow',context.repository+'/'+(context.cycle.buildWorkflow??defaultBuildWorkflow),
         '--signer-digest',context.cycle.sourceSha,'--source-digest',context.cycle.sourceSha,
         '--source-ref','refs/heads/steward/build/'+context.cycle.id,'--deny-self-hosted-runners','--format','json']));
       if (!Array.isArray(proofs) || !proofs.some(proof=>{
@@ -271,6 +278,7 @@ export function mergedBuildCycle(input: { prNumber: number; sourceSha: string; c
   for (const unit of input.units) if (!delivery.units.some(value => value.id === unit.id && value.path === unit.path)) fail('merged unit source');
   return parseReleaseRecord('cycle', { id: `pr-${input.prNumber}-${input.sourceSha}`, prNumber: input.prNumber, sourceSha: input.sourceSha,
     controllerSha: input.controllerSha, deliveryConfigSha: input.deliveryBlobSha,
+    ...(delivery.buildWorkflow === undefined ? {} : {buildWorkflow:delivery.buildWorkflow}),
     units: input.units.map(unit => ({ id: unit.id, version: unit.version, tag: unit.tag, releaseId: null, assets: [], notesDigest: null, manifestDigest: null })),
     requiredChannels: delivery.units.filter(unit => input.units.some(value => value.id === unit.id)).flatMap(unit => unit.channels.filter(channel => channel.required && channel.id !== 'github-release').map(channel => ({ unitId: unit.id, channelId: channel.id }))),
     dispatches: [], publications: [], channelFacts: [], executionEvidence: [], completionObservations: [], completedEvidencePath: null, repairOf: null, approvedRepairDecision: null });
@@ -344,7 +352,8 @@ export async function pipelineIdentity(input: ProductBuildInput, environment: No
   const deliveryBytes = await source('.github/delivery.json'), delivery = parseDeliveryConfig(JSON.parse(deliveryBytes.toString('utf8')));
   assertProductDelivery(delivery);
   if (createHash('sha1').update(`blob ${deliveryBytes.length}\0`).update(deliveryBytes).digest('hex') !== cycle.deliveryConfigSha) fail('delivery source blob');
-  const workflowBytes = await source('.github/workflows/steward-release-publish.yml'); verifyDispatchWorkflow(workflowBytes, request);
+  if (delivery.buildWorkflow !== request.buildWorkflow) fail('delivery workflow identity');
+  const workflowBytes = await source(dispatchWorkflow(request)); verifyDispatchWorkflow(workflowBytes, request);
   const document = parseDocument(workflowBytes.toString('utf8'), { uniqueKeys: true });
   if (document.errors.length) fail('product YAML');
   const workflow = document.toJS({ maxAliasCount: 0 }), matrix = workflow?.jobs?.build?.strategy?.matrix?.include;
@@ -367,8 +376,10 @@ export async function pipelineIdentity(input: ProductBuildInput, environment: No
   if(!session.identity || !session.generated || session.pending || session.identity.authorsDigest!==hash(Buffer.from(JSON.stringify(delivery.repositoryAuthors))))
     fail('frozen candidate identities');
   if (JSON.stringify(cycle.units.map(unit => unit.id).sort()) !== JSON.stringify(session.generated.units.map((unit: { id: string }) => unit.id).sort())) fail('candidate release unit set');
-  const template = await source('.github/release-template.md.mustache');
-  if (!template.equals(await file(input.controllerDirectory, cycle.controllerSha, 'templates/repository/.github/release-template.md.mustache'))) fail('adopted notes template');
+  const sharedTemplate=await file(input.controllerDirectory,cycle.controllerSha,sharedReleaseTemplatePath);
+  const template=delivery.buildWorkflow===undefined?await source(productReleaseTemplatePath):
+    await localGitSnapshot.file(input.sourceDirectory,cycle.sourceSha,productReleaseTemplatePath)??sharedTemplate;
+  if(!template.equals(sharedTemplate))fail('adopted notes template');
   const units: BuildPipelineRecord['units'] = [];
   for (const target of cycle.units) {
     const unit = delivery.units.find(unit => unit.id === target.id), frozen = session.generated.units.find((unit: any) => unit.id === target.id);
@@ -394,7 +405,7 @@ export async function pipelineIdentity(input: ProductBuildInput, environment: No
   return { status: 'ADMITTED' as const, record };
 }
 
-export async function pipelineNotes(record: BuildPipelineRecord, unitId: string, sourceDirectory: string) {
+export async function pipelineNotes(record: BuildPipelineRecord, unitId: string, sourceDirectory: string, controllerDirectory?:string) {
   const unit = record.units.find(unit => unit.id === unitId), delivery = record.delivery.units.find(unit => unit.id === unitId);
   if (!unit || !delivery) fail('notes unit');
   const read = async (path: string) => { const bytes = await localGitSnapshot.file(sourceDirectory, record.sourceSha, path); if (!bytes) fail('missing notes source'); return bytes.toString('utf8'); };
@@ -402,7 +413,11 @@ export async function pipelineNotes(record: BuildPipelineRecord, unitId: string,
   const changelogPath = options['changelog-path'] ?? 'CHANGELOG.md'; assertDeliveryPath(changelogPath);
   const changelogFile = delivery.path === '.' ? changelogPath : `${delivery.path}/${changelogPath}`;
   const changelog = await read(changelogFile);
-  const template = await read('.github/release-template.md.mustache'); if (hash(Buffer.from(template)) !== record.templateSha256) fail('notes template source');
+  let templateBytes=await localGitSnapshot.file(sourceDirectory,record.sourceSha,productReleaseTemplatePath);
+  if(!templateBytes&&record.delivery.buildWorkflow!==undefined&&controllerDirectory)
+    templateBytes=await localGitSnapshot.file(controllerDirectory,record.controllerSha,sharedReleaseTemplatePath);
+  if(!templateBytes||hash(templateBytes)!==record.templateSha256)fail('notes template source');
+  const template=templateBytes.toString('utf8');
   const publicNames=new Set(channelFiles(delivery,'github-release',unit.assets.map(asset=>({id:asset.id,path:asset.name}))));
   const { sourceLinkLabel, sourceUrl, commitUrl } = committedVersionNotes(changelog, unit.version, record.fullName, record.sourceSha, unit.tag,
     template.includes('{{controllerSha}}') ? undefined : changelogFile);
@@ -418,6 +433,7 @@ export async function pipelineInspect(record: BuildPipelineRecord, unitId: strin
     || selection.producers.some(producer => !source.unit.builds.some(build => build.id === producer.buildId) || (producer.runId??record.runId)===record.runId && producer.attempt > record.runAttempt)) fail('producer set');
   await mkdir(home, { recursive: false });
   return inspectProductArtifacts(unit, directory, { repositoryId: record.repositoryId, fullName: record.fullName, unitId, cycleId: record.cycleId,
+    ...(record.delivery.buildWorkflow === undefined ? {} : {buildWorkflow:record.delivery.buildWorkflow}),
     requestKey: record.requestKey, version: source.unit.version, packageVersion: source.unit.packageVersion, tag: source.unit.tag,
     sourceSha: record.sourceSha, controllerSha: record.controllerSha, buildRef: record.buildRef, deliverySha256: record.deliverySha256,
     templateSha256: record.templateSha256, runId: record.runId, attempt: record.runAttempt, toolLocks: record.toolLocks, producers: selection.producers },
@@ -547,6 +563,7 @@ export async function pipelineFrozenManifest(record: BuildPipelineRecord, unitId
   if (manifest.repositoryId !== record.repositoryId || manifest.fullName !== record.fullName || manifest.unitId !== unitId
     || manifest.cycleId !== record.cycleId || manifest.requestKey !== record.requestKey || manifest.sourceSha !== record.sourceSha
     || manifest.controllerSha !== record.controllerSha || manifest.buildRef !== record.buildRef || manifest.runId !== record.runId
+    || manifest.buildWorkflow !== record.delivery.buildWorkflow
     || manifest.attempt > record.runAttempt || manifest.tag !== unit.tag || manifest.version !== unit.version || manifest.packageVersion !== unit.packageVersion
     || manifest.deliverySha256 !== record.deliverySha256 || manifest.templateSha256 !== record.templateSha256
     || JSON.stringify(manifest.toolLocks) !== JSON.stringify(record.toolLocks)) fail('final manifest identity');
@@ -620,19 +637,18 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
     }
     return records;
   }
-  const source = async (repository: string, sha: string, path: string) => {
-    const value = await new NativeEvidenceReader(repository === context.repository ? io : controllerIo, repository).json(`contents/${path}?ref=${sha}`);
-    if (value.type !== 'file' || value.encoding !== 'base64') fail('source file identity');
-    const bytes = Buffer.from(value.content, 'base64');
-    if (bytes.length !== value.size || createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex') !== value.sha) fail('source blob digest');
-    return { bytes, sha: value.sha };
-  };
+  const source = (repository: string, sha: string, path: string) =>
+    readNativeSourceFile(new NativeEvidenceReader(repository === context.repository ? io : controllerIo, repository),sha,path);
   const deliverySource = await source(context.repository, cycle.sourceSha, '.github/delivery.json');
   if (deliverySource.sha !== cycle.deliveryConfigSha) fail('frozen delivery source');
   const delivery = parseDeliveryConfig(JSON.parse(deliverySource.bytes.toString('utf8')));
   assertProductDelivery(delivery);
-  const template = await source(context.repository, cycle.sourceSha, '.github/release-template.md.mustache');
-  const workflow = await source(context.repository, cycle.sourceSha, '.github/workflows/steward-release-publish.yml');
+  const template=await source(context.repository,cycle.sourceSha,productReleaseTemplatePath).catch(error=>{
+    if(delivery.buildWorkflow===undefined||!(error instanceof EvidenceReadError)||error.status!==404)throw error;
+    return source('splrad/steward',cycle.controllerSha,sharedReleaseTemplatePath);
+  });
+  if (delivery.buildWorkflow !== cycle.buildWorkflow) fail('frozen delivery workflow');
+  const workflow = await source(context.repository, cycle.sourceSha, delivery.buildWorkflow ?? defaultBuildWorkflow);
   const document = parseDocument(workflow.bytes.toString('utf8'), { uniqueKeys: true }); if (document.errors.length) fail('source workflow');
   const matrix = document.toJS({ maxAliasCount: 0 })?.jobs?.build?.strategy?.matrix?.include;
   if (!Array.isArray(matrix) || !matrix.length) fail('native producer matrix');

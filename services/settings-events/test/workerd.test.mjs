@@ -25,14 +25,20 @@ test('deployed bundle dispatches in workerd and never follows API redirects', as
           return Response.json({token: 'fake-test-token', permissions: {contents: 'write', metadata: 'read'}}, {status: 201});
         }
         if (url.pathname === '/installation/repositories') return Response.json({total_count: 1, repositories: [{id: 1447987054, full_name: 'splrad/steward-settings', private: true, default_branch: 'main'}]});
-        if (url.pathname.endsWith('/dispatches') || url.pathname === '/installation/token') return new Response(null, {status: 204});
+        if (url.pathname.endsWith('/dispatches')) {
+          const payload = await request.json();
+          assert.deepEqual(payload.client_payload.repository_ids, [123]);
+          assert.equal(payload.client_payload.event, 'repository');
+          return new Response(null, {status: 204});
+        }
+        if (url.pathname === '/installation/token') return new Response(null, {status: 204});
         throw new Error('Unexpected outbound request');
       },
     }));
     try {
       const body = JSON.stringify({action: 'edited', installation: {id: 179184801}, organization: {id: 302208797, login: 'splrad'}, repository: {id: 123, owner: {id: 302208797, login: 'splrad'}}, sender: {type: 'User', login: 'test-user'}});
       const response = await mf.dispatchFetch('http://localhost/github/webhook', {method: 'POST', body, headers: {
-        'content-type': 'application/json', 'x-github-event': 'label',
+        'content-type': 'application/json', 'x-github-event': 'repository',
         'x-github-delivery': '12345678-1234-4321-8123-123456789012',
         'x-hub-signature-256': 'sha256=' + createHmac('sha256', secret).update(body).digest('hex'),
       }});
@@ -45,7 +51,7 @@ test('deployed bundle dispatches in workerd and never follows API redirects', as
         // request-context promises. Each still makes all four API calls.
         for(let i=0;i<2;i++) {
           const warm=await mf.dispatchFetch('http://localhost/github/webhook',{method:'POST',body,headers:{
-            'content-type':'application/json','x-github-event':'label',
+            'content-type':'application/json','x-github-event':'repository',
             'x-github-delivery':'12345678-1234-4321-8123-123456789012',
             'x-hub-signature-256':'sha256='+createHmac('sha256',secret).update(body).digest('hex'),
           }});
