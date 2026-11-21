@@ -6,15 +6,17 @@ import {createHash} from 'node:crypto';
 import {candidateEvidence,validateCandidateEvent,validateNormalCandidateEvent,sha256,product} from '../bounded-candidate-contract.mjs';
 import {processNormalCandidateEvent} from '../release-candidate-event.mjs';
 import {entryGuard,resultOutcome,applyCandidateEvent} from '../bounded-release-entry.mjs';
-const head='a'.repeat(40),id=1296724484,root='/repos/splrad/steward';
+const head='a'.repeat(40),treeSha='b'.repeat(40),id=1296724484,root='/repos/splrad/steward';
 function fixture(mode='observe') {
   const env={GITHUB_REPOSITORY:'splrad/steward',GITHUB_REPOSITORY_ID:String(id),GITHUB_REF:'refs/heads/main',
-    STEWARD_CONTROLLER_SHA:head,STEWARD_EXPECTED_PAUSED_RELEASE:'311600220',GITHUB_RUN_ID:'42',GITHUB_RUN_ATTEMPT:'2',BOUNDED_MODE:mode};
+    STEWARD_CONTROLLER_SHA:head,GITHUB_RUN_ID:'42',GITHUB_RUN_ATTEMPT:'2',BOUNDED_MODE:mode};
   const file=mode==='normal'?'release-candidate-event.yml':mode==='observe'?'release-observe.yml':'bounded-release-event.yml';
   const run={id:42,workflow_id:77,run_attempt:2,repository:{id},head_repository:{id},head_sha:head,head_branch:'main',
     path:`.github/workflows/${file}`,event:'workflow_dispatch'};
   const data={ [root]:{id,default_branch:'main'},[`${root}/git/ref/heads/main`]:{object:{sha:head}},
-    [`${root}/actions/runs/42/attempts/2`]:run,[`${root}/actions/workflows/311600220`]:{id:311600220,path:'.github/workflows/release.yml',state:'disabled_manually'},[`${root}/actions/workflows/${file}`]:{id:77,path:run.path,state:'active'}};
+    [`${root}/git/commits/${head}`]:{sha:head,tree:{sha:treeSha}},
+    [`${root}/git/trees/${treeSha}?recursive=1`]:{sha:treeSha,truncated:false,tree:[{path:run.path}]},
+    [`${root}/actions/runs/42/attempts/2`]:run,[`${root}/actions/workflows/${file}`]:{id:77,path:run.path,state:'active'}};
   const get=async path=>{assert.ok(path in data,path);return data[path];};
   return {env,run,data,get};
 }
@@ -30,15 +32,14 @@ for(const mode of ['observe','event','normal'])for(const drift of ['main','run']
   else f.run.head_sha='b'.repeat(40);
   await assert.rejects(entryGuard(f.env,f.get,{enabled:true,deploymentSha:head}),/BOUNDED_RUN_SOURCE/);
 });
-for(const drift of ['pause','source','attempt','fork','path','event','release','new-disabled','workflow-id'])test(`rejects ${drift} drift`,async()=>{
+for(const drift of ['source','attempt','fork','path','event','release','new-disabled','workflow-id'])test(`rejects ${drift} drift`,async()=>{
   const f=fixture();
-  if(drift==='pause')f.env.STEWARD_EXPECTED_PAUSED_RELEASE='' ;
   if(drift==='source')f.data[`${root}/git/ref/heads/main`].object.sha='b'.repeat(40);
   if(drift==='attempt')f.run.run_attempt=1;
   if(drift==='fork')f.run.head_repository.id=1;
   if(drift==='path')f.run.path='.github/workflows/release.yml';
   if(drift==='event')f.run.event='pull_request';
-  if(drift==='release')f.data[`${root}/actions/workflows/311600220`].state='active';
+  if(drift==='release')f.data[`${root}/git/trees/${treeSha}?recursive=1`].tree.push({path:'.github/workflows/release.yml'});
   if(drift==='new-disabled')f.data[`${root}/actions/workflows/release-observe.yml`].state='disabled_manually';
   if(drift==='workflow-id')f.run.workflow_id=78;
   await assert.rejects(entryGuard(f.env,f.get,{enabled:true,deploymentSha:head}),/BOUNDED_/);
@@ -65,11 +66,26 @@ for(const name of ['release-observe','bounded-release-event','release-candidate-
   const jobs=Object.values(value.jobs);assert.equal(jobs.length,1);const job=jobs[0];
   assert.ok(job.if.includes('inputs.policy_sha == github.sha'));assert.ok(job.if.includes('github.workflow_sha == github.sha'));
   const evaluate=context=>job.if.split(' && ').every(term=>{const [left,right]=term.split(' == ');return context[left]=== (right.startsWith("'")?right.slice(1,-1):context[right]);});
-  const context={'github.repository_id':'1296724484','github.ref':'refs/heads/main','vars.STEWARD_EXPECTED_PAUSED_RELEASE':'311600220',
+  const context={'github.repository_id':'1296724484','github.ref':'refs/heads/main',
     'github.event_name':'workflow_dispatch','inputs.policy_sha':head,'github.sha':head,'github.workflow_sha':head};
   assert.equal(evaluate(context),true);
   for(const field of ['inputs.policy_sha','github.sha','github.workflow_sha'])assert.equal(evaluate({...context,[field]:'b'.repeat(40)}),false);
   assert.equal(job.steps[0].with.ref,'${{ github.workflow_sha }}');
+});
+for(const drift of ['commit','tree','truncated','duplicate','malformed','access lost'])test(`requires complete source proof: ${drift}`,async()=>{
+  const f=fixture(),treePath=`${root}/git/trees/${treeSha}?recursive=1`;
+  const tree=f.data[treePath];
+  if(drift==='commit')f.data[`${root}/git/commits/${head}`].sha='c'.repeat(40);
+  if(drift==='tree')tree.sha='c'.repeat(40);
+  if(drift==='truncated')tree.truncated=true;
+  if(drift==='duplicate')tree.tree.push(tree.tree[0]);
+  if(drift==='malformed')tree.tree.push(null);
+  const get=async path=>{
+    if(drift==='access lost'&&path===treePath)throw Error('HTTP 403');
+    return f.get(path);
+  };
+  await assert.rejects(entryGuard(f.env,get,{enabled:true,deploymentSha:head}),
+    drift==='access lost'?/HTTP 403/:/BOUNDED_WRITER_TREE_UNKNOWN/);
 });
 function candidateFixture(changeSession=()=>{}) {
   const digest='d'.repeat(64),commit='b'.repeat(40),prefix=`/repos/${product.name}`;

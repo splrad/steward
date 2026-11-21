@@ -1,17 +1,14 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { mkdtemp } from 'node:fs/promises';
+import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { nativeReleaseApp, nativeEvidenceTransport, isolatedBuildEnvironment, githubUnits,evaluateCompletion,parseDeliveryConfig,assertProductDelivery } from '../packages/runner/dist/index.js';
-import { readReleaseRecords, writeReleaseRecords, releaseCommand, assertReleaseWriterProtection } from './release-record.mjs';
+import { nativeEvidenceTransport, isolatedBuildEnvironment, githubUnits,evaluateCompletion,parseDeliveryConfig,assertProductDelivery } from '../packages/runner/dist/index.js';
+import { readReleaseRecords, writeReleaseRecords, assertReleaseWriterProtection } from './release-record.mjs';
 import {servicePages,pagesGitStore} from './pages-maintenance.mjs';
 import {assertQualityProtection,qualityNativeIO} from './quality-language-summary.mjs';
 import {validateReleaseConfiguration} from './release-adoption.mjs';
 import {mergedRepositoryPolicy} from './repository-policy-read.mjs';
-import {releasePolicyGuard} from './release-repository-policy.mjs';
 
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const identity={name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'};
@@ -289,60 +286,3 @@ export async function serviceRepositoryPages({app,root,repository,coordinator,co
       readPolicy:()=>mergedRepositoryPolicy(app,repository)});
   });
 }
-
-export async function main() {
-  // Trusted central default-branch execution only. Workflow inputs cannot choose a target or credential scope.
-  if(process.env.GITHUB_REPOSITORY!=='splrad/steward'||process.env.GITHUB_REPOSITORY_ID!=='1296724484'||process.env.GITHUB_REF!==`refs/heads/${process.env.STEWARD_DEFAULT_BRANCH}`
-    || !['schedule','workflow_dispatch'].includes(process.env.GITHUB_EVENT_NAME??'')||!/^[a-f0-9]{40}$/.test(process.env.STEWARD_CONTROLLER_SHA??''))throw new Error('RELEASE_CENTRAL_IDENTITY');
-  const root=await mkdtemp(join(tmpdir(),'steward-release-wake-'));
-  try {
-    const app=await nativeReleaseApp(process.env.STEWARD_APP_PRIVATE_KEY??''),controllerSha=process.env.STEWARD_CONTROLLER_SHA;
-    const summary=await coordinateReleaseWake({
-      discover:()=>app.discover(),
-      pages:repository=>serviceRepositoryPages({app,root,repository,coordinator:{runId:Number(process.env.GITHUB_RUN_ID),
-        runAttempt:Number(process.env.GITHUB_RUN_ATTEMPT),controllerSha}}),
-      observe:repository=>app.forRepository(repository.id,async token=>{
-        const participation=await releaseParticipation(repository,nativeEvidenceTransport(token));
-        if(participation.status==='NOT_APPLICABLE')return participation;
-        const state=await fetchState(root,repository,token);
-        // Per-operation read receipts retain backoff; an old channel wait must not suppress candidate preparation.
-        return {lastServedAt:state.lastServedAt,nextCheckAt:null};
-      }),
-      service:repository=>app.forRepository(repository.id,async token=>{
-        if((await releaseParticipation(repository,nativeEvidenceTransport(token))).status!=='APPLICABLE')throw new Error('RELEASE_PARTICIPATION_CHANGED');
-        const writeDirectory=await mkdtemp(join(root,'writes-'));let state;
-        const request={directory:'',writeDirectory,remote:`https://github.com/${repository.full_name}.git`,repository:repository.full_name,repositoryId:repository.id,
-          defaultBranch:repository.default_branch,appBotId:app.appBotId,cycleId:null,runId:null,identity};
-        const refresh=async()=>{state=await fetchState(root,repository,token);request.directory=state.directory;return state.snapshot;};
-        const centralTransport=nativeEvidenceTransport(process.env.STEWARD_CENTRAL_TOKEN);
-        const centralIo={request:(method,path,...args)=>{if(method!=='GET'||!path.startsWith('/repos/splrad/steward/'))throw new Error('RELEASE_CENTRAL_READ_ONLY');return centralTransport.request(method,path,...args);}};
-        const result=await serviceReleaseWake(request,refresh,async(command,input)=>command==='candidate'
-          ? app.forCandidateRepository(repository.id,(candidateToken,candidateReadToken)=>releaseCommand(command,{...input,directory:request.directory},
-            {token:candidateToken,io:state.io,centralIo,candidateReadToken,copilotToken:process.env.STEWARD_COPILOT_TOKEN,controllerSha,controllerDirectory:process.cwd(),
-              candidateRuntime:{checkRepositoryPolicy:releasePolicyGuard(app,repository)}}))
-          : releaseCommand(command,{...input,directory:request.directory},{token,io:state.io,centralIo,controllerDirectory:process.cwd(),
-            centralInvocation:{runId:Number(process.env.GITHUB_RUN_ID),runAttempt:Number(process.env.GITHUB_RUN_ATTEMPT),controllerSha,defaultBranch:process.env.STEWARD_DEFAULT_BRANCH}}));
-        await refresh();
-        const old=await state.readBytes('state.json'),current=state.snapshot.repository;
-        const base=await state.io.request('GET',`/repos/${repository.full_name}/commits/${encodeURIComponent(repository.default_branch)}`);
-        if(base.status!==200)throw new Error('RELEASE_DEFAULT_BRANCH_UNAVAILABLE');
-        const source=JSON.parse(Buffer.from(base.bytes).toString('utf8')).sha;if(!/^[a-f0-9]{40}$/.test(source))throw new Error('RELEASE_DEFAULT_BRANCH_IDENTITY');
-        const nextCheckAt=[current.nextCheckAt,result.nextCheckAt].filter(Boolean).sort().at(-1)??null;
-        const content=JSON.stringify({...current,revision:current.revision+1,lastObservedDefaultSha:source,nextCheckAt,lastErrorCode:result.status==='UNKNOWN'?'native-evidence-required':current.lastErrorCode},null,2)+'\n';
-        const written=await writeReleaseRecords({directory:join(writeDirectory,'service'),remote:request.remote,repositoryId:repository.id,defaultBranch:repository.default_branch,
-          targetRef:'steward/release-state',writer:'release',expectedHead:state.snapshot.head,allowedPaths:['state.json'],changes:[{path:'state.json',content,sha256:hash(content),previousSha256:hash(old)}],identity},{token});
-        if(!['APPLIED','UNCHANGED'].includes(written.status))throw new Error('RELEASE_SERVICE_RECORD_UNCONFIRMED');
-        return result;
-      }),
-      health:summary=>app.forRepository(1296724484,async token=>{
-        const repository={id:1296724484,full_name:'splrad/steward',default_branch:process.env.STEWARD_DEFAULT_BRANCH};
-        const parent=await mkdtemp(join(root,'health-'));
-        return recordCentralHealth({refresh:()=>fetchState(root,repository,token,'steward/automation-health',{centralFirstUse:true}),summary,repository,controllerSha,
-          runId:Number(process.env.GITHUB_RUN_ID),runAttempt:Number(process.env.GITHUB_RUN_ATTEMPT),directory:join(parent,'write'),token});
-      })});
-    // Public output contains only counts and fixed codes. Private repository data remains in per-repository temporary contexts.
-    process.stdout.write(JSON.stringify(summary)+'\n');
-    if(summary.scanCompletedAt===null||summary.counts.failed||summary.counts.unknown)process.exitCode=75;
-  }finally {await rm(root,{recursive:true,force:true});}
-}
-if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href)main().catch(()=>{process.stderr.write('RELEASE_COORDINATOR_UNAVAILABLE\n');process.exitCode=75;});

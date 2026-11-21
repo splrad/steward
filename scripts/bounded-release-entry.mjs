@@ -13,7 +13,7 @@ const fail=reason=>{throw Error(reason);};
 export async function entryGuard(env,get,config) {
   if(config.enabled!==true||!sha(config.deploymentSha))fail('BOUNDED_NOT_CONNECTED');
   if(env.GITHUB_REPOSITORY!==central||env.GITHUB_REPOSITORY_ID!==String(centralId)||env.GITHUB_REF!=='refs/heads/main'
-    ||!sha(env.STEWARD_CONTROLLER_SHA)||env.STEWARD_EXPECTED_PAUSED_RELEASE!=='311600220')fail('BOUNDED_PAUSED_OR_SOURCE');
+    ||!sha(env.STEWARD_CONTROLLER_SHA))fail('BOUNDED_ENTRY_SOURCE');
   const workflow={cycle:'.github/workflows/release-cycle-event.yml',pages:'.github/workflows/pages-maintenance-event.yml',observe:'.github/workflows/release-observe.yml',event:'.github/workflows/bounded-release-event.yml',normal:'.github/workflows/release-candidate-event.yml'}[env.BOUNDED_MODE];
   if(!workflow)fail('BOUNDED_MODE');
   const repo=await get(`/repos/${central}`),head=await get(`/repos/${central}/git/ref/heads/main`);
@@ -22,10 +22,17 @@ export async function entryGuard(env,get,config) {
     ||run.id!==Number(env.GITHUB_RUN_ID)||run.run_attempt!==Number(env.GITHUB_RUN_ATTEMPT)||run.repository?.id!==centralId||run.head_repository?.id!==centralId
     ||run.path!==workflow||run.head_sha!==env.STEWARD_CONTROLLER_SHA||run.head_branch!=='main'
     ||run.event!==('workflow_dispatch'))fail('BOUNDED_RUN_SOURCE');
-  const release=await get(`/repos/${central}/actions/workflows/311600220`);
-  if(release.id!==311600220||release.path!=='.github/workflows/release.yml'||release.state!=='disabled_manually')fail('BOUNDED_LEGACY_WRITER_ACTIVE');
+  const commit=await get(`/repos/${central}/git/commits/${head.object.sha}`);
+  if(commit?.sha!==env.STEWARD_CONTROLLER_SHA||!sha(commit.tree?.sha))fail('BOUNDED_WRITER_TREE_UNKNOWN');
+  const tree=await get(`/repos/${central}/git/trees/${commit.tree.sha}?recursive=1`);
+  if(tree?.sha!==commit.tree.sha||tree.truncated!==false||!Array.isArray(tree.tree)
+    ||tree.tree.some(entry=>typeof entry?.path!=='string'||!entry.path))fail('BOUNDED_WRITER_TREE_UNKNOWN');
+  const paths=new Set(tree.tree.map(entry=>entry.path));
+  if(paths.size!==tree.tree.length||!paths.has(workflow))fail('BOUNDED_WRITER_TREE_UNKNOWN');
+  if([...paths].some(path=>/^\.github\/workflows\/release\.ya?ml$/i.test(path)))fail('BOUNDED_LEGACY_WRITER_ACTIVE');
   const own=await get(`/repos/${central}/actions/workflows/${workflow.split('/').at(-1)}`);
   if(!Number.isSafeInteger(own.id)||own.id<1||own.path!==workflow||own.state!=='active'||run.workflow_id!==own.id)fail('BOUNDED_ENTRY_DISABLED');
+  if((await get(`/repos/${central}/git/ref/heads/main`))?.object?.sha!==head.object.sha)fail('BOUNDED_RUN_SOURCE');
   return run;
 }
 export function resultOutcome(result) {

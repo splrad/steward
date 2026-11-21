@@ -385,12 +385,13 @@ function completionEntry(f) {
   const env={PAGES_REPOSITORY_ID:String(f.repo.id),PAGES_WORKFLOW_ID:String(f.workflow.id),PAGES_RUN_ID:'12',PAGES_ATTEMPT:'1',
     GITHUB_REPOSITORY_ID:String(centralId),GITHUB_REPOSITORY:'splrad/steward',GITHUB_REF:'refs/heads/main',GITHUB_RUN_ID:'99',
     GITHUB_EVENT_NAME:'workflow_dispatch',GITHUB_RUN_ATTEMPT:'1',PAGES_POLICY_SHA:pin,STEWARD_CONTROLLER_SHA:pin,
-    BOUNDED_MODE:'pages',STEWARD_EXPECTED_PAUSED_RELEASE:'311600220'};
+    BOUNDED_MODE:'pages'};
   const run={id:99,run_attempt:1,path:file,event:'workflow_dispatch',head_branch:'main',head_sha:pin,workflow_id:7,
     actor,triggering_actor:actor,repository:{id:centralId},head_repository:{id:centralId}};
   const facts={'':{id:centralId,default_branch:'main'},'/git/ref/heads/main':{object:{sha:pin}},
     '/actions/runs/99/attempts/1':run,'/actions/workflows/pages-maintenance-event.yml':{path:file,state:'active',id:7},
-    '/actions/workflows/311600220':{id:311600220,path:'.github/workflows/release.yml',state:'disabled_manually'}};
+    [`/git/commits/${pin}`]:{sha:pin,tree:{sha:pin}},
+    [`/git/trees/${pin}?recursive=1`]:{sha:pin,truncated:false,tree:[{path:'.github/workflows/pages-maintenance-event.yml'}]}};
   const get=async path=>{const key=path.replace('/repos/splrad/steward','');assert.ok(key in facts);return facts[key];};
   const enter=sites=>receiveCompletion(env,sites,get,{enabled:true,deploymentSha:S},async()=>({appBotId:actor.id}),
     ({completion})=>f.service(completion));

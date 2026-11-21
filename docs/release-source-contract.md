@@ -1,6 +1,6 @@
 # 发布来源、GitHub Release 与历史记录
 
-本文说明当前源码中的发布连接。入口是 [release workflow](../.github/workflows/release.yml)、[协调器](../scripts/release-coordinator.mjs)和[记录读写入口](../scripts/release-record.mjs)。实现存在、仓库已启用和实际发布验收分别判断。
+本文说明当前源码中的发布连接。入口是 [候选事件](../.github/workflows/release-candidate-event.yml)、[发行周期事件](../.github/workflows/release-cycle-event.yml)和[记录读写入口](../scripts/release-record.mjs)。实现存在、仓库已启用和实际发布验收分别判断。
 
 ## 候选与准确构建来源
 
@@ -41,7 +41,7 @@ GitHub Release的外层展示标题与正文标题、单位notes标题分别处�
 
 ## 有限恢复与历史记录
 
-协调器按候选、构建、中央发布、渠道派发/观察及原生证据恢复的固定顺序工作，保存准确Run、attempt和对象身份。恢复复用平台支持的原Run失败job重跑和仍有效制品；成功job及其来源证据可按实际结果复用。未知写入先核实远端状态，缺失或冲突证据明确报告；不承诺平台窗口外无限自动重建。
+候选和周期事件按候选、构建、中央发布、渠道派发或观察、原生证据恢复的顺序推进，保存准确Run、attempt和对象身份。恢复复用平台支持的原Run失败job重跑和仍有效制品；成功job及其来源证据可按实际结果复用。未知写入先核实远端状态，缺失或冲突证据明确报告；不承诺平台窗口外无限自动重建。
 
 普通候选按当前登记及原生事实处理，不要求扫描全仓历史或清空旧恢复缓存。旧失败保留失败，修正后沿普通候选路径产生新版本；主发行验证不以旧 `lastCompleted` 非空或active记录清空为条件。
 

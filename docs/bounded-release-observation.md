@@ -28,7 +28,7 @@ Worker 固定派发 `release-observe.yml`，仅接受 `identity_json/request_key
 
 正常结果 `candidate-event-<request_key>/result.json` 严格包含 11 字段：`schemaVersion/requestKey/producer/event/sourceSha/status/reason/outcome/stateBefore/stateAfter/candidateIdentity`。producer 为 `{repositoryId,runId,attempt,controllerSha}`，event 为 `{repositoryId,prNumber,eventId}`；reason 可 null，candidateIdentity 在未具备稳定缓存时可 null。Worker 独立核可信 Run、artifact 和原生事实后处理结果；只有当前生成缓存来源或已验证人工事实来源与当前 main 一致且缓存完整才进入有界观察登记。不能重写旧 epoch 来绕过 `SOURCE_CHANGED`。
 
-旧 `release.yml`（311600220）保持 `disabled_manually`，`STEWARD_EXPECTED_PAUSED_RELEASE` 继续为 `311600220`，供有界事件入口核对已登记的暂停状态。新入口独立受 `config.enabled`、Worker 开关和自身原生 workflow active 状态约束；缺任一项即停止。新入口不要求或允许为了接管而重启旧全仓写者。回退先关闭新入口/Worker，再保全原对象恢复记录，旧暂停标记保持。
+新入口核对当前 main 提交及其完整 Git tree，确认旧 `release.yml` 无默认分支来源，并分别核验 `config.enabled`、Worker 开关和自身原生 workflow active 状态。Git tree 无法完整读回、旧文件重现或入口来源不匹配时停止。回退先关闭受影响的新入口与 Worker 写入，再保全原对象恢复记录。
 
 结果 artifact 为 `candidate-observation-<request_key>/result.json`，字段为 `schemaVersion/requestKey/identity/repositoryId/runId/runAttempt/controllerSha/sourceSha/observedAt/status/reason/outcome/stateBefore/stateAfter`。Worker 必须独立核实结果和业务证据，Run success 本身不代表完成。
 
