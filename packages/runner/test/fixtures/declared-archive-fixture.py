@@ -30,9 +30,21 @@ with zipfile.ZipFile(root / "vendor.zip", "w") as archive:
     archive.write(Path(__file__).with_name("native-release") / "fixture.dll", "vendor/fixture.dll")
     archive.writestr("VERSION", "2.0.0\n")
 
-with zipfile.ZipFile(root / "application.msix", "w") as archive:
-    archive.writestr("AppxManifest.xml", '<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10">'
-                                       '<Identity Name="SPLRAD.Fixture" Publisher="CN=Example" Version="1.2.3.0" /></Package>')
+for name, namespace in (
+    ("application.msix", "manifest/foundation/windows10"),
+    ("legacy.appx", "2010/manifest"),
+    ("wrong-schema.msix", "2013/bundle"),
+):
+    with zipfile.ZipFile(root / name, "w") as archive:
+        archive.writestr("AppxManifest.xml", f'<Package xmlns="http://schemas.microsoft.com/appx/{namespace}">'
+                                           '<Identity Name="SPLRAD.Fixture" Publisher="CN=Example" Version="1.2.3.0" /></Package>')
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("AppxBlockMap.xml", "<BlockMap/>")
+
+with zipfile.ZipFile(root / "wrong-schema.appxbundle", "w") as archive:
+    archive.writestr("AppxMetadata/AppxBundleManifest.xml",
+                     '<Bundle xmlns="http://schemas.microsoft.com/appx/2016/bundle" SchemaVersion="1.0">'
+                     '<Identity Name="SPLRAD.Fixture" Publisher="CN=Example" Version="1.2.3.0" /></Bundle>')
     archive.writestr("[Content_Types].xml", "<Types/>")
     archive.writestr("AppxBlockMap.xml", "<BlockMap/>")
 

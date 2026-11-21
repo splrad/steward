@@ -532,10 +532,15 @@ def windows_package_version(data, version, bundle):
     text = delivery_text(data, MAX_METADATA)
     require(not re.search(r"<!\s*(?:DOCTYPE|ENTITY)\b", text, re.I))
     document = ElementTree.fromstring(text)
-    root = "Bundle" if bundle else "Package"
-    require(document.tag.startswith("{http://schemas.microsoft.com/appx/") and document.tag.split("}")[-1] == root)
-    namespace = document.tag[:-len(root)]
-    identities = document.findall(namespace + "Identity")
+    namespace, _, root = document.tag.rpartition("}")
+    if bundle:
+        require(root == "Bundle" and namespace == "{http://schemas.microsoft.com/appx/2013/bundle")
+    else:
+        require(root == "Package" and namespace in (
+            "{http://schemas.microsoft.com/appx/2010/manifest",
+            "{http://schemas.microsoft.com/appx/manifest/foundation/windows10",
+        ))
+    identities = document.findall(namespace + "}Identity")
     require(len(identities) == 1 and identities[0].get("Name") and identities[0].get("Publisher"))
     embedded = identities[0].get("Version", "")
     require(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+", embedded))

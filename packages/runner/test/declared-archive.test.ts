@@ -89,16 +89,19 @@ it('reads a valid ZIP Unicode path and rejects a traversal in the effective memb
 });
 
 it('reads the embedded version of a format-supported Windows installer', async () => {
-  const check=(version:string)=>inspectWorkflowAsset(join(root,'application.msix'),'simple',version,process.cwd(),root);
-  await expect(check('1.2.3')).resolves.toBeUndefined();
-  await expect(check('1.2.4')).rejects.toThrow('RN_DELIVERY_VERSION');
-  await expect(inspectWorkflowAsset(join(root,'bad-font.zip'),'simple','1.2.3',process.cwd(),root)).rejects.toThrow('RN_DELIVERY_FORMAT');
+  const check=(file:string,version='1.2.3')=>inspectWorkflowAsset(join(root,file),'simple',version,process.cwd(),root);
+  await expect(check('application.msix')).resolves.toBeUndefined();
+  await expect(check('application.msix','1.2.4')).rejects.toThrow('RN_DELIVERY_VERSION');
+  await expect(check('legacy.appx')).resolves.toBeUndefined();
+  await expect(check('wrong-schema.msix')).rejects.toThrow('RN_DELIVERY_FORMAT');
+  await expect(check('bad-font.zip')).rejects.toThrow('RN_DELIVERY_FORMAT');
 });
 
 it('reads an MSIX bundle version with a proven single-disk ZIP64 footer', async () => {
   const check=(file:string,version='1.2.3')=>inspectWorkflowAsset(join(root,file),'simple',version,process.cwd(),root);
   await expect(check('application.msixbundle')).resolves.toBeUndefined();
   await expect(check('application.msixbundle','1.2.4')).rejects.toThrow('RN_DELIVERY_VERSION');
+  await expect(check('wrong-schema.appxbundle')).rejects.toThrow('RN_DELIVERY_FORMAT');
   await expect(check('split.appxbundle')).rejects.toThrow('RN_DELIVERY_FORMAT');
   await expect(check('missing-zip64.appxbundle')).rejects.toThrow('RN_DELIVERY_FORMAT');
 });

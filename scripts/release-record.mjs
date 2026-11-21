@@ -643,7 +643,8 @@ export async function publicationAssetFacts(unit,manifest,names,directory) {
   return assets;
 }
 async function confirmFrozenCycle(request,snapshot,cycle,{token,io,now}) {
-  if(!cycle.freezeCompletedAt) {
+  // Older workflow freezes can recover their exact attempt from protected native evidence.
+  if(!cycle.freezeCompletedAt || cycle.workflowDelivery&&cycle.freezeBuildAttempt===undefined) {
     const context={repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle};
     let attempt;
     try {attempt=await verifyFrozenReceipts(context,snapshot.domainRecords,io);}
@@ -651,7 +652,7 @@ async function confirmFrozenCycle(request,snapshot,cycle,{token,io,now}) {
       if(error?.message==='BUILD_RUN_NOT_READY')return {status:'WAIT',reason:'BUILD_RUN_NOT_READY',publishInvoked:false};
       return {status:'UNKNOWN',reason:'FROZEN_BUILD_SOURCE_UNAVAILABLE',publishInvoked:false};
     }
-    const confirmed={...cycle,freezeCompletedAt:now(),...(attempt===undefined?{}:{freezeBuildAttempt:attempt})};
+    const confirmed={...cycle,freezeCompletedAt:cycle.freezeCompletedAt??now(),...(attempt===undefined?{}:{freezeBuildAttempt:attempt})};
     snapshot=(await adoptReleaseCycle(request,snapshot,confirmed,{token,io})).snapshot;
   }
   return {status:'FROZEN',reason:'NO_PUBLICATION_CHANNELS',archiveHead:snapshot.head,publishInvoked:false};

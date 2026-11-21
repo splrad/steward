@@ -2,22 +2,23 @@ import {afterEach,expect,it,vi} from 'vitest';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
-import {join,resolve} from 'node:path';
+import {dirname,join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {pathToFileURL} from 'node:url';
 import {createHash} from 'node:crypto';
 import {mergedCandidateFixture,productPipelineFixture} from './product-pipeline-fixture.js';
 import {evidenceFixture,C,NOW,START,END,digest,zipResult} from './native-evidence-fixture.js';
-import {nativeRequestIdentity,recoverNativeCycle} from '../src/native-release-evidence.js';
+import {archiveFile,nativeRequestIdentity,nativeRunFact,recoverNativeCycle} from '../src/native-release-evidence.js';
 import {isolatedBuildEnvironment} from '../src/build-environment.js';
 import {permitOfflineScript,registerOfflineFixtureRoot} from './offline-fixtures.js';
 import {releaseProtectionFixture} from './fixtures/release-protection.js';
 const {serviceReleaseWake}=await import(pathToFileURL(resolve('scripts/release-coordinator.mjs')).href);
-const {publishNativeCycle,readReleaseRecords}=await import(pathToFileURL(resolve('scripts/release-record.mjs')).href);
+const {observeReleaseChannels,publishNativeCycle,readReleaseRecords}=await import(pathToFileURL(resolve('scripts/release-record.mjs')).href);
 const roots:string[]=[];
 afterEach(async()=>{vi.restoreAllMocks();vi.unstubAllGlobals();vi.unstubAllEnvs();for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
 it.each(['failure','in_progress','second-failure','formal-asset-404','wrong-delivery-format','wrong-delivery-version',
-  'excluded-delivery-file','excluded-extensionless-file','freeze-original-attempt','freeze-attempt-incomplete','external-only-waits'] as const)('handles %s in the bounded native publication entry',async kind=>{
+  'excluded-delivery-file','excluded-extensionless-file','freeze-original-attempt','freeze-attempt-incomplete',
+  'freeze-recover-original','freeze-unproven-original','external-only-waits'] as const)('handles %s in the bounded native publication entry',async kind=>{
   const f=productPipelineFixture(),native=evidenceFixture(kind==='second-failure'?2:1),cycle=f.context.cycle;
   const excluded=kind==='excluded-delivery-file'||kind==='excluded-extensionless-file';
   const rejectDelivery=kind==='wrong-delivery-format'||kind==='wrong-delivery-version'||excluded;
@@ -26,7 +27,8 @@ it.each(['failure','in_progress','second-failure','formal-asset-404','wrong-deli
   const artifact={id:800,name:`delivery-github-release-1-app-${cycle.sourceSha}-100-1`,digest:'sha256:'+digest(archive),
     expired:false,size_in_bytes:archive.length,workflow_run:{id:100,head_sha:cycle.sourceSha},created_at:'2026-10-26T00:00:30.000Z'};
   const externalOnly=kind==='external-only-waits';
-  const freeze=kind==='freeze-original-attempt'||kind==='freeze-attempt-incomplete'||externalOnly;
+  const historicalFreeze=kind==='freeze-recover-original'||kind==='freeze-unproven-original';
+  const freeze=kind==='freeze-original-attempt'||kind==='freeze-attempt-incomplete'||historicalFreeze||externalOnly;
   if(kind==='formal-asset-404'||rejectDelivery||freeze) {
     const workflow='.github/workflows/steward-release-publish.yml';
     const compact=JSON.stringify({schemaVersion:3,repositoryAuthors:f.delivery.repositoryAuthors});
@@ -60,6 +62,7 @@ it.each(['failure','in_progress','second-failure','formal-asset-404','wrong-deli
   }
   Object.assign(f.runs.get(1),{status:kind==='in_progress'?'in_progress':'completed',
     conclusion:kind==='in_progress'?null:rejectDelivery||freeze?'success':'failure',display_title:'Build '+f.request.operationKey});
+  if(historicalFreeze)cycle.freezeCompletedAt=END;
   if(kind==='in_progress')Object.assign(native.runs.get(1),{status:'in_progress',conclusion:null});
   native.setAccepted();
   const root=await mkdtemp(join(tmpdir(),'wake-publication-'));roots.push(root);registerOfflineFixtureRoot(root);
@@ -69,6 +72,16 @@ it.each(['failure','in_progress','second-failure','formal-asset-404','wrong-deli
   const state={...f.input.state.repository,schemaVersion:3,releaseAdoption:{sourceSha:cycle.sourceSha,prNumber:1},candidate:null};
   await writeFile(join(root,'state.json'),JSON.stringify(state)+'\n');await mkdir(join(root,'cycles'));
   await writeFile(join(root,`cycles/${cycle.id}.json`),JSON.stringify(cycle)+'\n');
+  if(kind==='freeze-recover-original') {
+    const workflow=f.source[cycle.buildWorkflow!]!;
+    const fact=archiveFile({schemaVersion:1,repositoryId:1,repository:f.context.repository,cycleId:cycle.id,sourceSha:cycle.sourceSha,
+      requestKey:f.request.requestKey,inputDigest:f.request.inputDigest,executorControllerSha:C,
+      workflowBlobSha:createHash('sha1').update('blob '+Buffer.byteLength(workflow)+'\0'+workflow).digest('hex'),
+      sourceBlobs:[],observedAt:END,run:nativeRunFact(f.runs.get(1)),jobs:[],producers:[],logs:[],objects:[],missingNativeKeys:[]});
+    const path=join(root,fact.path);
+    await mkdir(dirname(path),{recursive:true});
+    await writeFile(path,fact.content);
+  }
   if(rejectDelivery||freeze) {
     const candidate=mergedCandidateFixture(f.input);
     await mkdir(join(root,'generated',candidate.value.candidateId,'cycles'),{recursive:true});
@@ -105,7 +118,7 @@ it.each(['failure','in_progress','second-failure','formal-asset-404','wrong-deli
       const protection=releaseProtectionFixture(path);
       if(protection)return f.response(protection);
       if(path.endsWith('/runs/100/attempts/1'))return f.response({...f.runs.get(1),
-        conclusion:kind==='freeze-original-attempt'?'success':'failure'});
+        conclusion:kind==='freeze-original-attempt'||kind==='freeze-recover-original'?'success':'failure'});
     }
     if(path.endsWith('/runs/100'))return f.response(f.runs.get(1));
     throw Error('unregistered publication read '+path);
@@ -123,17 +136,28 @@ it.each(['failure','in_progress','second-failure','formal-asset-404','wrong-deli
   const publicationPorts={token:'fixture',io,centralIo:io,centralInvocation:{runId:900,runAttempt:1,controllerSha:C,defaultBranch:'main'},controllerDirectory:process.cwd(),now:()=>NOW};
   const registration={directory:root,repository:'example/product',repositoryId:1,appBotId:42,defaultBranch:'main'};
   if(freeze) {
-    const result=await publishNativeCycle({...registration,cycleId:cycle.id,remote:root,writeDirectory:join(root,'writes'),
-      identity:{name:'Publication Fixture',email:'publication@example.invalid'}},publicationPorts);
+    const input={...registration,cycleId:cycle.id,remote:root,writeDirectory:join(root,'writes'),
+      identity:{name:'Publication Fixture',email:'publication@example.invalid'}};
+    const result=await (historicalFreeze?observeReleaseChannels:publishNativeCycle)(input,publicationPorts);
     const finalHead=await git('rev-parse','refs/heads/steward/release-state');
-    expect(calls.filter(path=>path.includes('/actions/runs/'))).toEqual(externalOnly?[]:['/repos/example/product/actions/runs/100',
-      '/repos/example/product/actions/runs/100/attempts/1']);
+    const attempt='/repos/example/product/actions/runs/100/attempts/1';
+    expect(calls.filter(path=>path.includes('/actions/runs/'))).toEqual(kind==='freeze-recover-original'?[attempt]:
+      externalOnly||kind==='freeze-unproven-original'?[]:['/repos/example/product/actions/runs/100',attempt]);
     expect(calls.some(path=>path.includes('/releases')||path.includes('/git/refs/tags')||path.includes('/artifacts'))).toBe(false);
-    if(kind==='freeze-original-attempt') {
+    if(kind==='freeze-original-attempt'||kind==='freeze-recover-original') {
       expect(result).toMatchObject({status:'FROZEN',reason:'NO_PUBLICATION_CHANNELS',archiveHead:finalHead,publishInvoked:false});
       expect(finalHead).not.toBe(head);
       const saved=await readReleaseRecords({directory:root,targetRef:'steward/release-state',repositoryId:1});
-      expect(saved.cycles[0]!.value).toMatchObject({id:cycle.id,freezeBuildAttempt:1,freezeCompletedAt:NOW});
+      expect(saved.cycles[0]!.value).toMatchObject({id:cycle.id,freezeBuildAttempt:1,freezeCompletedAt:historicalFreeze?END:NOW});
+      if(historicalFreeze) {
+        const previousCalls=calls.length;
+        await expect(observeReleaseChannels(input,publicationPorts)).resolves.toEqual(result);
+        expect(calls.slice(previousCalls).some(path=>path.includes('/actions/runs/'))).toBe(false);
+        expect(await git('rev-parse','refs/heads/steward/release-state')).toBe(finalHead);
+      }
+    } else if(kind==='freeze-unproven-original') {
+      expect(result).toMatchObject({status:'UNKNOWN',reason:'FROZEN_BUILD_SOURCE_UNAVAILABLE',publishInvoked:false});
+      expect(finalHead).toBe(head);
     } else {
       expect(result).toMatchObject({status:'WAIT',reason:externalOnly?'FORMAL_RELEASE_REQUIRED':'BUILD_RUN_NOT_READY',publishInvoked:false});
       expect(finalHead).toBe(head);
