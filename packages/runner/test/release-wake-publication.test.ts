@@ -54,7 +54,7 @@ it.each(['failure','in_progress','second-failure','formal-asset-404'] as const)(
     if(path.includes('/contents/')){
       const name=path.split('/contents/')[1]!.split('?')[0]!,text=path.startsWith('/repos/splrad/steward/')?'locked tools':f.source[name];
       if(text===undefined)throw Error('unregistered source '+name);
-      const bytes=Buffer.from(text);return f.response({type:'file',encoding:'base64',content:bytes.toString('base64'),size:bytes.length,sha:createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')});
+      const bytes=Buffer.from(text);return f.response({type:'file',path:name,encoding:'base64',content:bytes.toString('base64'),size:bytes.length,sha:createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')});
     }
     if(kind==='formal-asset-404') {
       if(path==='/repos/example/product')return f.response({id:1,full_name:'example/product',private:false,archived:false,disabled:false});

@@ -95,7 +95,7 @@ export function verifyNormalizedDelivery(context:EvidenceContext,record:{path:st
 }
 async function readNativeSourceFile(reader:NativeEvidenceReader,sha:string,path:string) {
   const value=await reader.json(`contents/${encodeRepositoryPath(path)}?ref=${sha}`);
-  if(value.type!=='file'||value.encoding!=='base64'||typeof value.content!=='string')fail('source file identity');
+  if(value.path!==path||value.type!=='file'||value.encoding!=='base64'||typeof value.content!=='string')fail('source file identity');
   const bytes=Buffer.from(value.content,'base64');
   if(bytes.length!==value.size||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==value.sha)fail('source blob digest');
   return {bytes,sha:value.sha};
@@ -927,40 +927,42 @@ async function prepareWorkflowPublication(options:{
   const settings=JSON.parse(await source('release-please-config.json'));
   const records:PublicationUnit[]=[];
   for(const target of units) {
+    const unit=delivery.units.find(unit=>unit.id===target.id);
+    if(!unit?.channels.some(channel=>channel.id==='github-release'))fail('workflow GitHub delivery channel');
+    const packageVersion=versions.get(unit.id);
+    const identity=merged.session.identity.units.find((item:any)=>item.id===unit.id);
+    if(!packageVersion||!identity)fail('workflow delivery unit data');
+    const contributors=selectReleaseContributors(identity.actors,delivery.repositoryAuthors);
+    if(JSON.stringify(contributors)!==JSON.stringify(identity.contributors))fail('workflow delivery contributor identity');
+    const directory=join(root,unit.id);
+    let nativeReceipt:WorkflowDeliveryReceipt;
     try {
-      const unit=delivery.units.find(unit=>unit.id===target.id);
-      if(!unit?.channels.some(channel=>channel.id==='github-release'))fail('workflow GitHub delivery channel');
-      const packageVersion=versions.get(unit.id);
-      const identity=merged.session.identity.units.find((item:any)=>item.id===unit.id);
-      if(!packageVersion||!identity)fail('workflow delivery unit data');
-      const contributors=selectReleaseContributors(identity.actors,delivery.repositoryAuthors);
-      if(JSON.stringify(contributors)!==JSON.stringify(identity.contributors))fail('workflow delivery contributor identity');
-      const nativeReceipt=await githubDeliveryArtifact({fullName:context.repository,repositoryId:context.repositoryId,sourceSha:cycle.sourceSha,
+      nativeReceipt=await githubDeliveryArtifact({fullName:context.repository,repositoryId:context.repositoryId,sourceSha:cycle.sourceSha,
         runId:run.id,attempt:run.runAttempt},unit.id,'delivery/'+unit.id,pages,target.githubDelivery?.attempt);
       if(target.githubDelivery&&!sameWorkflowDelivery(nativeReceipt,target.githubDelivery))fail('workflow delivery receipt changed');
-      const directory=join(root,unit.id);
       await download({fullName:context.repository,artifactId:nativeReceipt.artifactId,digest:nativeReceipt.digest,directory,
         policyDirectory:controllerDirectory,home:join(root,'download-'+unit.id)},token);
-      const artifacts=await workflowFiles(directory);
-      const attested=handoff.attestations.get(unit.id)?.has('github-release')===true;
-      const manifest:WorkflowReleaseManifest={schemaVersion:4,repositoryId:context.repositoryId,fullName:context.repository,cycleId:cycle.id,
-        unitId:unit.id,version:target.version,packageVersion,tag:target.tag,sourceSha:cycle.sourceSha,buildWorkflow:dispatchWorkflow(request),
-        buildRef:'refs/heads/'+request.ref,workflowId:run.workflowId,runId:run.id,attempt:nativeReceipt.attempt,delivery:nativeReceipt,attested,artifacts};
-      validateWorkflowManifest(manifest);
-      const config={...settings,...settings.packages[unit.path]},changelog=config['changelog-path']??'CHANGELOG.md';
-      assertDeliveryPath(changelog);
-      const changelogFile=unit.path==='.'?changelog:unit.path+'/'+changelog;
-      const links=committedVersionNotes(await source(changelogFile),target.version,context.repository,cycle.sourceSha,target.tag,
-        template.includes('{{controllerSha}}')?undefined:changelogFile);
-      const publicBody=renderFrozenReleaseNotes(template,{repository:context.repository,unitId:unit.id,version:target.version,tag:target.tag,
-        sourceSha:cycle.sourceSha,controllerSha:cycle.controllerSha,displayName:unit.displayName,notes:await source(unit.notesPath),...links,
-        contributors:contributors.contributors,repositoryAuthors:delivery.repositoryAuthors,channels:[],
-        assets:artifacts.map(file=>({id:file.id,name:file.path,build:'delivery'}))});
-      records.push({unitId:unit.id,directory,manifest,delivery:unit,build:null,archive:null,githubDelivery:nativeReceipt,publicBody});
     } catch(error) {
       if(!options.unavailable||!isWorkflowDeliveryUnavailable(error))throw error;
       options.unavailable(target.id);
+      continue;
     }
+    const artifacts=await workflowFiles(directory);
+    const attested=handoff.attestations.get(unit.id)?.has('github-release')===true;
+    const manifest:WorkflowReleaseManifest={schemaVersion:4,repositoryId:context.repositoryId,fullName:context.repository,cycleId:cycle.id,
+      unitId:unit.id,version:target.version,packageVersion,tag:target.tag,sourceSha:cycle.sourceSha,buildWorkflow:dispatchWorkflow(request),
+      buildRef:'refs/heads/'+request.ref,workflowId:run.workflowId,runId:run.id,attempt:nativeReceipt.attempt,delivery:nativeReceipt,attested,artifacts};
+    validateWorkflowManifest(manifest);
+    const config={...settings,...settings.packages[unit.path]},changelog=config['changelog-path']??'CHANGELOG.md';
+    assertDeliveryPath(changelog);
+    const changelogFile=unit.path==='.'?changelog:unit.path+'/'+changelog;
+    const links=committedVersionNotes(await source(changelogFile),target.version,context.repository,cycle.sourceSha,target.tag,
+      template.includes('{{controllerSha}}')?undefined:changelogFile);
+    const publicBody=renderFrozenReleaseNotes(template,{repository:context.repository,unitId:unit.id,version:target.version,tag:target.tag,
+      sourceSha:cycle.sourceSha,controllerSha:cycle.controllerSha,displayName:unit.displayName,notes:await source(unit.notesPath),...links,
+      contributors:contributors.contributors,repositoryAuthors:delivery.repositoryAuthors,channels:[],
+      assets:artifacts.map(file=>({id:file.id,name:file.path,build:'delivery'}))});
+    records.push({unitId:unit.id,directory,manifest,delivery:unit,build:null,archive:null,githubDelivery:nativeReceipt,publicBody});
   }
   return records;
 }

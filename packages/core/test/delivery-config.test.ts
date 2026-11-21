@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { assertDeliveryPath, assertDeliveryArtifactMapping, assertDeliveryAssetName, parseDeliveryConfig } from '../src/delivery-config.js';
+import { isBuildWorkflow } from '../src/release-workflow.js';
 
 it.each(['dist/widget.zip', '部件.zip', 'widget file.zip', '.hidden', 'con.zip', 'widget.', 'widget-*.zip', '*.tgz', 'a'.repeat(201)])('rejects materialized asset name %s', name => {
   expect(() => assertDeliveryAssetName(name)).toThrow('DELIVERY_ASSET_NAME');
@@ -9,6 +10,12 @@ it.each(['widget-1.2.3.zip', 'widget-1.2.3-rc.1+build.tgz', 'SHA256SUMS'])('acce
 });
 const mapping = () => ({ builds: [{ id: 'windows', expectedArtifacts: ['app', 'fonts'] }, { id: 'linux', expectedArtifacts: ['linux'] }],
   artifacts: [{ id: 'app', build: 'windows' }, { id: 'fonts', build: 'windows' }, { id: 'linux', build: 'linux' }] });
+it('accepts a direct localized workflow path and rejects nested or traversal paths', () => {
+  expect(isBuildWorkflow('.github/workflows/发布 构建.yml')).toBe(true);
+  for(const path of ['.github/workflows/../outside.yml','.github/workflows/./publish.yml',
+    '.github/workflows//publish.yml','.github/workflows/sub/publish.yml'])
+    expect(isBuildWorkflow(path)).toBe(false);
+});
 it('validates multiple producers and their complete asset sets without mutation', () => {
   const input = mapping(), before = structuredClone(input);
   input.builds[0]!.expectedArtifacts.reverse(); before.builds[0]!.expectedArtifacts.reverse();

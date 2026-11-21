@@ -74,7 +74,7 @@ it.each(['search','native-response'])('archives a moved source through %s only w
     if(path.includes('/workflows/10/runs?')){expect(mode).toBe('search');expect(path).not.toContain('head_sha');return f.response({total_count:1,workflow_runs:[native]});}
     if(path.includes('/jobs?'))return f.response({total_count:1,jobs:[job]});
     if(path.endsWith('/logs'))return f.response(`${END} STEWARD_SOURCE_REJECTED {"status":"REJECTED","reason":"SOURCE_REF_MOVED"}\n`);
-    if(path.includes('/contents/'))return f.response({type:'file',encoding:'base64',content:bytes.toString('base64'),size:bytes.length,sha:createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')});
+    if(path.includes('/contents/'))return f.response({type:'file',path:path.split('/contents/')[1]!.split('?')[0],encoding:'base64',content:bytes.toString('base64'),size:bytes.length,sha:createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')});
     return f.response(native);
   }};
   const value:any={schemaVersion:1,repositoryId:f.context.repositoryId,cycleId:f.context.cycle.id,requestKey:f.request.requestKey,observedAt:NOW,

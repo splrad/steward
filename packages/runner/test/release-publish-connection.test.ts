@@ -71,11 +71,11 @@ it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-r
   Object.assign(f.runs.get(1),{status:kind==='incomplete-run'?'in_progress':'completed',conclusion:kind==='incomplete-run'?null:kind==='failed-run'?'failure':'success'});
   if(kind==='foreign-run')f.runs.get(1).head_sha='e'.repeat(40);
   const artifact={id:702,name:`final-1-app-${S}-100-1`,expired:false,digest:'sha256:'+digest('archive'),workflow_run:{id:100,head_sha:S},created_at:'2026-10-26T00:00:30.000Z'};
-  const sourceBlob=(value:string)=>{const bytes=Buffer.from(value);return {type:'file',encoding:'base64',size:bytes.length,content:bytes.toString('base64'),sha:createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')};};
+  const sourceBlob=(value:string,path:string)=>{const bytes=Buffer.from(value);return {type:'file',path,encoding:'base64',size:bytes.length,content:bytes.toString('base64'),sha:createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')};};
   const calls:string[]=[],io={request:async(method:string,path:string)=>{
     expect(method).toBe('GET');calls.push(path);
-    if(path.startsWith('/repos/splrad/steward/')){expect(path).toBe(`/repos/splrad/steward/contents/mise.lock?ref=${C}`);return f.response(sourceBlob('locked tools'));}
-    if(path.includes('/contents/')){const file=path.split('/contents/')[1]!.split('?')[0]!;expect(path.endsWith(`?ref=${S}`)).toBe(true);return f.response(sourceBlob(f.source[file]!));}
+    if(path.startsWith('/repos/splrad/steward/')){expect(path).toBe(`/repos/splrad/steward/contents/mise.lock?ref=${C}`);return f.response(sourceBlob('locked tools','mise.lock'));}
+    if(path.includes('/contents/')){const file=path.split('/contents/')[1]!.split('?')[0]!;expect(path.endsWith(`?ref=${S}`)).toBe(true);return f.response(sourceBlob(f.source[file]!,file));}
     if(path.endsWith('/releases/20'))return f.response({id:20,tag_name:'v1.0.0',author:{id:42},draft:kind==='partial-draft'});
     if(path.includes('/releases/20/assets'))return f.response((kind==='partial-draft'||kind==='missing-public-asset'?names.slice(0,1):names).map((name,i)=>({id:300+i,name,state:'uploaded'})));
     if(path.includes('/artifacts?'))return f.response({total_count:1,artifacts:[artifact]});
@@ -145,17 +145,18 @@ it('prepares a single native Node delivery, changes the public set in its workfl
     value:{...chunk,schemaVersion:1,repositoryId:context.repositoryId,index:0,count:1,documentKind:'merged-candidate',content:merged,documentDigest:digest(merged)}}];
   const artifact={id:810,name:['delivery','github-release',context.repositoryId,'app',S,100,1].join('-'),expired:false,
     digest:'sha256:'+digest('node archive'),workflow_run:{id:100,head_sha:S},created_at:'2026-10-26T00:00:30.000Z'};
-  let deliveryConclusion='success';
+  let deliveryConclusion='success',wrongSourcePath=false,notesStatus=200;
   const io={request:async(method:string,path:string)=>{
     expect(method).toBe('GET');
     if(path.includes('/contents/')) {
       const file=path.split('/contents/')[1]!.split('?')[0]!;
+      if(file==='.release-notes/app.md'&&notesStatus!==200)return f.response({},notesStatus);
       if(file.endsWith('/release-template.md.mustache'))
         expect(path).toBe('/repos/splrad/steward/contents/templates/repository/.github/release-template.md.mustache?ref='+C);
       const value=path.startsWith('/repos/splrad/steward/')?sharedTemplate:source[file];
       if(value===undefined)return f.response({},404);
       const bytes=Buffer.from(value);
-      return f.response({type:'file',encoding:'base64',size:bytes.length,content:bytes.toString('base64'),
+      return f.response({type:'file',path:wrongSourcePath&&file===workflow?'.github/workflows/other.yml':file,encoding:'base64',size:bytes.length,content:bytes.toString('base64'),
         sha:createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex')});
     }
     if(path.endsWith('/runs/100'))return f.response(f.runs.get(2));
@@ -173,6 +174,14 @@ it('prepares a single native Node delivery, changes the public set in its workfl
         await mkdir(input.directory);for(const name of selected)await writeFile(join(input.directory,name),'built '+name);
       },unavailable);
   };
+  wrongSourcePath=true;
+  await expect(prepare('wrong-source-path',initial)).rejects.toThrow('source file identity');
+  wrongSourcePath=false;
+  notesStatus=503;
+  const unavailableSource=vi.fn();
+  await expect(prepare('unavailable-notes',initial,unavailableSource)).rejects.toMatchObject({status:503});
+  expect(unavailableSource).not.toHaveBeenCalled();
+  notesStatus=200;
   const prepared=await prepare('first',initial);if(!Array.isArray(prepared))throw Error('workflow publication expected');
   expect(prepared[0]).toMatchObject({githubDelivery:{artifactId:810,runId:100,attempt:1},manifest:{
     schemaVersion:4,packageVersion:'1.0.0',attested:false,artifacts:[{path:'fixture-cli.tgz'}]}});
@@ -256,7 +265,7 @@ it('selects separate GitHub and authorized channel assemblies and restores only 
     if(path.includes('/contents/')) {
       const name=path.split('/contents/')[1]!.split('?')[0];
       const value=name==='.github/delivery.json'?compact:name==='release-please-config.json'?JSON.stringify(settings):JSON.stringify(definition);
-      const bytes=Buffer.from(value);return f.response({type:'file',encoding:'base64',size:bytes.length,content:bytes.toString('base64'),sha:gitBlob(value)});
+      const bytes=Buffer.from(value);return f.response({type:'file',path:name,encoding:'base64',size:bytes.length,content:bytes.toString('base64'),sha:gitBlob(value)});
     }
     if(path.endsWith('/runs/100'))return f.response(run);
     if(path.includes('/artifacts?'))return f.response({total_count:artifacts.length,artifacts});
