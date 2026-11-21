@@ -100,15 +100,6 @@ jobs:
           path: target
           fetch-depth: 0
           persist-credentials: false
-      - name: Verify changed candidate lock assets on this platform
-        shell: bash
-        env:
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          if [[ -f policy/scripts/steward-ci-candidate.py ]]; then
-            python policy/scripts/steward-ci-candidate.py full-lock "$BASE" "$HEAD"
-          fi
       - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d
         env:
           MISE_SAFE: '1'
@@ -130,6 +121,15 @@ jobs:
         run: mise bin-paths | tac >> "$GITHUB_PATH"
       - run: npm ci --ignore-scripts --no-audit --no-fund
         working-directory: policy
+      - name: Verify changed candidate lock assets on this platform
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [[ -f policy/scripts/steward-ci-candidate.py ]]; then
+            python policy/scripts/steward-ci-candidate.py full-lock "$BASE" "$HEAD"
+          fi
       - name: Node tests and configuration
         env:
           STEWARD_TEST_TOOLCHAIN_ROOT: ${{ github.workspace }}/policy

@@ -123,13 +123,14 @@ def verify_other_locks(base, head):
             require(item["aube"]["path"] == lock_path, "Unexpected npm lock path")
             lock = lock_blob("target", head, lock_path + "/aube-lock.yaml")
             require(item["aube"]["digest"] == "sha256:" + hashlib.sha256(lock).hexdigest(), "npm lock digest differs")
-            package = json.loads(lock_blob("target", head, lock_path + "/package.json"))
-            require(package["dependencies"] == {"npm": version}, "Unexpected npm dependency")
+            manifest = lock_blob("target", head, lock_path + "/package.json")
             meta = json.loads(read_url("https://registry.npmjs.org/npm/" + version))
+            subprocess.run(["node", "policy/scripts/npm-tool-lock.mjs"], check=True, input=json.dumps({
+                "manifest": manifest.decode(), "lock": lock.decode(), "version": version, "supplier": meta,
+            }).encode())
             url = f"https://registry.npmjs.org/npm/-/npm-{version}.tgz"
-            require(meta["dist"]["tarball"] == url, "Unexpected npm tarball")
             sri = "sha512-" + base64.b64encode(hashlib.sha512(read_url(url)).digest()).decode()
-            require(meta["dist"]["integrity"] == sri and lock.count(sri.encode()) == 1,
+            require(meta["dist"]["integrity"] == sri,
                     "npm tarball integrity differs from registry or candidate dependency lock")
             print(f"Verified npm {version} {sri}")
             continue
