@@ -1,7 +1,7 @@
 import { renderUnitContent } from '../src/release-content.js';
 import { readFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
-import { renderFrozenReleaseNotes, previewUnitNotes, nestReleaseMarkdown, type FrozenReleaseNotes } from '../src/release-template.js';
+import { projectFrozenReleaseDownloads, renderFrozenReleaseNotes, previewUnitNotes, nestReleaseMarkdown, type FrozenReleaseNotes } from '../src/release-template.js';
 import { renderReleaseContributors } from '../src/release-candidate.js';
 const template = readFileSync('templates/repository/.github/release-template.md.mustache', 'utf8');
 const data: FrozenReleaseNotes = {
@@ -65,6 +65,18 @@ it('omits the download list when GitHub delivery is disabled', () => {
   const body = renderFrozenReleaseNotes(template, { ...data, assets: [], githubDisabled: true });
   expect(body).not.toMatch(/未配置|releases\/download/);
   expect(body).toContain(data.sourceUrl);
+});
+it('filters only the generated download block and keeps reviewed prose intact', () => {
+  const assets = [...data.assets, {id:'deployer',name:'app.exe',build:'windows-x64',description:'安装 *组件*'},
+    {id:'fonts',name:'Fonts.zip',build:'windows-x64'}];
+  const native={...data,assets,notes:data.notes.replace('保留事实 0。','DLL 插件变更说明保留。')};
+  const body=renderFrozenReleaseNotes(template,native);
+  const subset=assets.slice(1), names=new Set(subset.map(asset=>asset.name));
+  const actual=projectFrozenReleaseDownloads(template,body,native,names);
+  expect(actual).toBe(renderFrozenReleaseNotes(template,{...native,assets:subset}));
+  expect(actual).toContain('DLL 插件变更说明保留。');
+  expect(actual).not.toContain('/releases/download/v9.2.2/AFR-DLL_v9.2.2.zip');
+  expect(()=>projectFrozenReleaseDownloads(template,body+body,native,names)).toThrow('frozen download block');
 });
 it('fills the required download field in a seven-section template without an executor line', () => {
   const separateNotices = template.replace('{{{upgradeNotices}}}', [

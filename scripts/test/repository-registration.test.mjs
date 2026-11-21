@@ -8,7 +8,7 @@ import test from 'node:test';
 import {zip} from '../../packages/runner/test/fixtures/artifact-envelope.ts';
 import { registrationEntry, registrationIds, pushRegistrationIds, selectRegistrationTargets, registrationProposal, reconcileRegistration, renderRegistrationPull } from '../repository-registration.mjs';
 import { requestFile } from '../repository-registration-request.mjs';
-import { checkedRegistration,parseRegistration } from '../repository-registration-policy.mjs';
+import { checkedRegistration,configurationConflicts,parseRegistration,releaseAssetConsumerConflicts,releaseAssetSelections } from '../repository-registration-policy.mjs';
 import { assertInputScope, assertGovernanceOnlyScope } from '../private-dependency-policy.mjs';
 import { requiresProductCI, selectedProductWorkflows } from '../validation-input.mjs';
 import {readRepositoryPolicy} from '../repository-policy-read.mjs';
@@ -20,6 +20,8 @@ import {projectMergedRepositoryPolicy} from '../repository-policy-publish.mjs';
 import {workflowPagesOptions} from '../select-pages-source.mjs';
 import {writeReleaseRecords} from '../release-record.mjs';
 import {nativeTemporaryParent} from '../native-scratch.mjs';
+import deliverySchema from '../../schema/delivery.schema.json' with {type:'json'};
+import releaseAssetSchema from '../../schema/release-asset-selection.schema.json' with {type:'json'};
 
 const admin = { id:1447987054, full_name:'splrad/steward-settings', default_branch:'main', private:true };
 const org = { id:302208797, login:'splrad' };
@@ -559,13 +561,19 @@ test('new release candidates consume the approved release selections and preserv
   customized.set(publish,productFiles.get(publish).replace('windows-x64','custom-runner-target'));
   await guard(async path=>customized.get(path));
   const modified=structuredClone(policy);
-  modified.release.units[0].channels[0].artifactIds.pop();
+  Object.assign(modified.release.units[0].channels[0],{artifactIds:['deployer','fonts'],metadata:[]});
   selection=modified;
-  await assert.rejects(guard(async path=>productFiles.get(path)),/CANDIDATE_REPOSITORY_POLICY_CONFLICT/);
+  assert.deepEqual(await guard(async path=>productFiles.get(path)),
+    [{unitId:'layerscape',artifactIds:['deployer','fonts'],metadata:[]}]);
+  await assert.rejects(guard(async path=>{
+    selection={...modified,site:{workflow:pages,mode:'build-and-deploy',source:'release',unit:'layerscape'}};
+    return productFiles.get(path);
+  }),/CANDIDATE_REPOSITORY_POLICY_MOVED/);
+  selection=modified;
   const declaredDelivery=JSON.parse(productFiles.get('.github/delivery.json'));
-  declaredDelivery.units[0].channels[0].artifactIds=modified.release.units[0].channels[0].artifactIds;
+  declaredDelivery.units[0].channels[0].artifactIds=['deployer'];
   customized.set('.github/delivery.json',JSON.stringify(declaredDelivery));
-  await guard(async path=>customized.get(path));
+  await assert.rejects(guard(async path=>customized.get(path)),/CANDIDATE_REPOSITORY_POLICY_CONFLICT/);
   selection={...policy,release:null};
   await assert.rejects(guard(async()=>assert.fail('Disabled release should not load product inputs')),/CANDIDATE_REPOSITORY_POLICY_DISABLED/);
   adoption='legacy';
@@ -835,6 +843,86 @@ test('an empty registered CI selection receives the actual available workflows i
   assert.deepEqual(JSON.parse(state.trees.get(candidate).get(registrationPath(product))),{...current,productCi:[ci]});
 });
 
+test('a narrowed approval stays selected during registration refresh and preview',async()=>{
+  const proposal=await propose(product,productFiles),path=registrationPath(product),approved=structuredClone(proposal.policy);
+  const github=approved.release.units[0].channels[0];
+  Object.assign(github,{artifactIds:['deployer','fonts'],metadata:[]});
+  assert.deepEqual(await configurationConflicts(approved,proposal),[]);
+  assert.deepEqual(await configurationConflicts({...approved,site:{workflow:pages,source:'default-branch',mode:'build-and-deploy'}},proposal),[]);
+  assert.deepEqual(await configurationConflicts({...approved,site:{workflow:pages,source:'release',unit:'layerscape',mode:'build-and-deploy'}},proposal),['PAGES_RELEASE_SOURCE']);
+  const downstream={...proposal,policy:structuredClone(proposal.policy)};
+  const winget={id:'winget',required:true,location:'Fixture.Product',artifactIds:['deployer'],metadata:[]};
+  downstream.policy.release.units[0].channels.push(winget);
+  const narrowedWithDownstream=structuredClone(approved);
+  narrowedWithDownstream.release.units[0].channels.push(winget);
+  assert.deepEqual(await configurationConflicts(narrowedWithDownstream,downstream),['RELEASE_CHANNEL_SOURCE']);
+  const {api,state}=fake();
+  state.trees.get(base).set(path,JSON.stringify(approved));
+  const result=await reconcileRegistration(api,admin,product,source,async()=>proposal,async()=>source);
+  assert.deepEqual(result,{result:'unchanged',differences:[],pending:[]});
+  assert.deepEqual(state.writes,[]);
+});
+
+test('immutable controller contracts and actual file availability determine whether a channel can consume the selection',async t=>{
+  const {policy}=await propose(product,productFiles);
+  const ghcr={id:'ghcr-assets',required:true,location:'ghcr.io/example/product',artifactIds:['deployer'],metadata:[]};
+  policy.release.units[0].channels.push(ghcr);
+  const selected=structuredClone(policy.release),chosen=selected.units[0].channels[0];
+  Object.assign(chosen,{artifactIds:['fonts'],metadata:[]});
+  const checkout=`jobs: {channel: {steps: [{with: {repository: splrad/steward, path: controller, ref: "${base}"}}]}}`;
+  const prefix=`https://raw.githubusercontent.com/splrad/steward/${base}/schema/`;
+  const legacyWithoutPartial=structuredClone(deliverySchema);
+  const oldFields=legacyWithoutPartial.properties.units.items.properties.channels.items.properties;
+  delete oldFields.artifactIds;
+  delete oldFields.metadata;
+  let frozenContract=JSON.stringify(releaseAssetSchema), deliveryContract=deliverySchema;
+  t.mock.method(globalThis,'fetch',async url=>{
+    if(url===prefix+'release-asset-selection.schema.json')
+      return frozenContract===null?new Response(null,{status:404}):new Response(frozenContract);
+    assert.equal(url,prefix+'delivery.schema.json');
+    return Response.json(deliveryContract);
+  });
+  const options={read:async()=>checkout,assetCount:()=>3};
+  const check=()=>releaseAssetConsumerConflicts(releaseAssetSelections(selected,policy.release),policy.release,null,options);
+  // GHCR can use the build seal regardless of the formatting of a controller file.
+  assert.deepEqual(await check(),[]);
+  frozenContract=JSON.stringify(releaseAssetSchema,null,2);
+  assert.deepEqual(await check(),[]);
+  frozenContract=null;
+  assert.deepEqual(await check(),['RELEASE_CHANNEL_SOURCE']);
+  policy.release.units[0].channels[0].metadata=[];
+  assert.deepEqual(await check(),['RELEASE_CHANNEL_SOURCE']);
+  chosen.artifactIds.push('deployer');
+  assert.deepEqual(await check(),[]);
+  deliveryContract=legacyWithoutPartial;
+  assert.deepEqual(await check(),['RELEASE_CHANNEL_SOURCE']);
+});
+
+test('preview and candidate admission preserve the public installer URL required by WinGet',async t=>{
+  const files=new Map(productFiles);
+  const delivery=JSON.parse(files.get('.github/delivery.json'));
+  delivery.units[0].channels.push({id:'winget',required:true,location:'Fixture.Product',artifactIds:['deployer'],metadata:[]});
+  files.set('.github/delivery.json',JSON.stringify(delivery));
+  const proposal=await propose(product,files);
+  const policy=structuredClone(proposal.policy);
+  Object.assign(policy.release.units[0].channels[0],{artifactIds:['fonts'],metadata:[]});
+  const read=(path)=>{
+    assert.notEqual(path,'.github/workflows/steward-release-channels.yml','Reject before checking controller capability');
+    return files.get(path);
+  };
+  assert.deepEqual(await configurationConflicts(policy,{...proposal,readProductFile:read}),['RELEASE_WINGET_INSTALLER']);
+  const guard=releasePolicyGuard({},product,async()=>({adoption:'central',policy,commit:base}));
+  await assert.rejects(guard(read),/CANDIDATE_REPOSITORY_POLICY_RELEASE_WINGET_INSTALLER/);
+  policy.release.units[0].channels[0].artifactIds.push('deployer');
+  const checkout=`jobs: {channel: {steps: [{with: {repository: splrad/steward, path: controller, ref: "${base}"}}]}}`;
+  t.mock.method(globalThis,'fetch',async url=>{
+    assert.equal(url,`https://raw.githubusercontent.com/splrad/steward/${base}/schema/release-asset-selection.schema.json`);
+    return Response.json(releaseAssetSchema);
+  });
+  assert.deepEqual(await releaseAssetConsumerConflicts(releaseAssetSelections(policy.release,proposal.policy.release),proposal.policy.release,null,
+    {read:async()=>checkout,assetCount:()=>3}),[]);
+});
+
 test('an edited private draft reports unsupported choices against its current head',async()=>{
   const proposal=await propose(product,productFiles),path=registrationPath(product);
   const {api,state}=fake();
@@ -842,7 +930,7 @@ test('an edited private draft reports unsupported choices against its current he
   assert.equal((await reconcile()).result,'created');
   const pull=state.open[0],edited='d'.repeat(40),corrected='e'.repeat(40);
   const selection=structuredClone(proposal.policy);
-  selection.release.units[0].channels[0].artifactIds.pop();
+  selection.release.units[0].channels[0].artifactIds.push('unknown-asset');
   pull.head.sha=edited;
   state.trees.set(edited,new Map([[path,JSON.stringify(selection)]]));
   const get=api.rest.pulls.get;
@@ -851,7 +939,7 @@ test('an edited private draft reports unsupported choices against its current he
   assert.deepEqual(state.comments,[]);
   api.rest.pulls.get=get;
   assert.equal((await reconcile()).result,'reused');
-  assert.match(state.comments[0].body,/产品默认分支的已审声明/);
+  assert.match(state.comments[0].body,/GitHub Release 可在产品声明内选择发布文件/);
   assert.match(state.comments[0].body,new RegExp(edited));
   pull.head.sha=corrected;
   state.trees.set(corrected,new Map([[path,JSON.stringify(proposal.policy)]]));

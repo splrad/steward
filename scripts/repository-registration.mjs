@@ -13,7 +13,7 @@ import { ciPath, deliveryPath, inspectRepository, jsonFile, pagesChoices, pagesP
   publishPath, versionsPath } from './configuration-view.mjs';
 import { productWorkflows, requiresProductCI, selectableProductCI } from './validation-input.mjs';
 import { dependencyMode, loadPolicy } from './private-dependency-policy.mjs';
-import { checkedRegistration,configurationConflicts,parseRegistration,releaseRegistration } from './repository-registration-policy.mjs';
+import { checkedRegistration,configurationConflicts,parseRegistration,releaseAssetSelections,releaseRegistration } from './repository-registration-policy.mjs';
 import { projectMergedRepositoryPolicy } from './repository-policy-publish.mjs';
 import { readRepositoryProjection } from './repository-policy-projection.mjs';
 import { adminId, centralId, isGovernanceBot, loadPrivateRequest, makePrivateRequest, readWake, registrationGitHubOptions,
@@ -170,7 +170,7 @@ export async function registrationProposal(repo, read, productPaths) {
     targets: rows.filter(row => row?.unit === unit.id && typeof row.target === 'string' && row.target).map(row => row.target)
   }]));
   return { policy: checkedRegistration({ schemaVersion: 1, repositoryId: repo.id, repository: repo.full_name,
-    productCi, release, site }, repo.id), pending, releaseDetails, productCiApplicable, releaseIncomplete };
+    productCi, release, site }, repo.id), pending, releaseDetails, productCiApplicable, releaseIncomplete, readProductFile:read };
 }
 
 export function renderRegistrationPull(repo, source, proposal, current=null, policy=current ? {...current,repository:repo.full_name} : proposal.policy) {
@@ -251,18 +251,16 @@ async function matchingPull(api, admin, id, path, state='open') {
 function proposedRegistration(current, observed) {
   const productCi=current.productCi.length
     ?current.productCi.filter(path=>observed.productCi.includes(path)):observed.productCi;
-  const releaseIntent=release=>release&&release.units.map(unit=>({id:unit.id,channels:unit.channels.map(
-    ({id,location,required})=>({id,location,required}))}));
-  const sameReleaseIntent=isDeepStrictEqual(releaseIntent(current.release),releaseIntent(observed.release));
   const buildOnly=current.site?.mode==='build-only'&&observed.site?.mode==='build-only';
   return {...current,repository:observed.repository,
     productCi:productCi.length?productCi:current.productCi,
-    release:sameReleaseIntent?observed.release:current.release,
     site:buildOnly?observed.site:current.site};
 }
 
 function reviewFields(current, observed, suggested) {
-  return fields.filter(field=>!isDeepStrictEqual(current[field],observed[field])).map(field=>
+  return fields.filter(field=>field==='release'
+    ?releaseAssetSelections(current.release,observed.release)===null
+    :!isDeepStrictEqual(current[field],observed[field])).map(field=>
     ({field,current:current[field],observed:observed[field],suggested:suggested[field]}));
 }
 
@@ -280,7 +278,10 @@ const reviewPrefix=id=>`<!-- steward-registration-review ${id} `;
 const reviewMarker=(id,observations,pending,reviewedHead)=>reviewPrefix(id)+digest(JSON.stringify({observations,pending,reviewedHead}))+' -->';
 const conflictDescriptions={
   PRODUCT_CI:'产品 CI 选择必须引用默认分支可运行的入口。已有产品 CI 声明时至少选择一个入口。',
-  RELEASE:'当前发行入口按产品默认分支的已审声明冻结正式发行。请先在产品仓调整计划发布的渠道或产物，再使本配置引用相同选择。'
+  RELEASE:'请核对发行单元、渠道及可选文件。GitHub Release 可在产品声明内选择发布文件。',
+  RELEASE_CHANNEL_SOURCE:'当前固定的渠道执行器无法从构建封存读取这组文件。采用前请更新渠道执行器，或保留该执行器实际需要读取的文件。',
+  RELEASE_WINGET_INSTALLER:'已启用的 WinGet 渠道需要公开安装文件下载地址。请在此单元的 GitHub Release 中保留 WinGet 选定的安装文件。',
+  PAGES_RELEASE_SOURCE:'当前 Pages 以此单元的 Release 为来源，仍通过公开的 artifact-manifest.json 核对完整附件。默认分支来源独立。'
 };
 
 async function publishRegistrationReview(api, admin, {id,path,base,source,observations,pending,pull,verifySource,reviewedHead}) {
@@ -325,10 +326,10 @@ export async function reconcileRegistration(api, admin, repo, source, observe, v
   const current = merged === null ? null : parseRegistration(merged, id);
   if(!current&&registryPush)return {result:'removed'};
   const proposal=await observe();
-  const differences = fields.filter(key => !current || !isDeepStrictEqual(current[key], proposal.policy[key]));
   const renamed=current&&current.repository!==repo.full_name;
   const policy=current?(renamed?{...current,repository:repo.full_name}:proposedRegistration(current,proposal.policy)):proposal.policy;
   const observations=current?reviewFields(current,proposal.policy,policy):[];
+  const differences=current?observations.map(({field})=>field):fields;
   const needsReview=observations.length>0||proposal.pending.length>0;
   const open = await matchingPull(api, admin, id, path);
   const notify=(pull,pending=proposal.pending,reviewedHead)=>publishRegistrationReview(api,admin,
@@ -343,7 +344,7 @@ export async function reconcileRegistration(api, admin, repo, source, observe, v
         let selection;
         try { selection=parseRegistration(bytes,id); }
         catch { pending.push('当前草稿的登记 JSON 未通过结构校验，请核对格式和仓库 ID。'); }
-        if(selection)for(const conflict of configurationConflicts(selection,proposal))
+        if(selection)for(const conflict of await configurationConflicts(selection,proposal))
           pending.push(conflictDescriptions[conflict]);
       }
     }

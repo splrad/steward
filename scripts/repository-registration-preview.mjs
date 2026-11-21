@@ -73,7 +73,10 @@ async function publicProposal({repository,reader,getRepository}) {
 
 const messages={
   PRODUCT_CI:'当前配置需要从产品默认分支选择至少一个可运行的 CI 入口。仅适用组织公共检查的仓库可以留空。',
-  RELEASE:'当前发行入口按产品已审声明冻结渠道和文件。请核对发行单元、渠道、产物和元数据，先让产品声明体现计划发布的范围。'
+  RELEASE:'请核对发行单元、渠道及可选文件。GitHub Release 可在产品声明内选择发布文件。',
+  RELEASE_CHANNEL_SOURCE:'当前固定的渠道执行器无法从构建封存读取这组文件。采用前请更新渠道执行器，或保留该执行器实际需要读取的文件。',
+  RELEASE_WINGET_INSTALLER:'已启用的 WinGet 渠道需要公开安装文件下载地址。请在此单元的 GitHub Release 中保留 WinGet 选定的安装文件。',
+  PAGES_RELEASE_SOURCE:'当前 Pages 以此单元的 Release 为来源，仍通过公开的 artifact-manifest.json 核对完整附件。默认分支来源独立。'
 };
 
 function neverAdopted(workspace,base,path,id) {
@@ -123,7 +126,7 @@ export async function validateRegistrationPreview(workspace,{input,files},env) {
       summary.push('- '+path+'：目标仓身份相符。');
       continue;
     }
-    const conflicts=configurationConflicts(selection,observed.proposal);
+    const conflicts=await configurationConflicts(selection,observed.proposal);
     if(conflicts.length) {
       for(const field of conflicts)report(path,messages[field],true);
     } else summary.push(`- \`${path}\`：与产品默认分支 \`${observed.source}\` 的声明相符。`);
