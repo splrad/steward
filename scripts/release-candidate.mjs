@@ -23,12 +23,11 @@ const fail = code => { throw new Error(code); };
 
 // Older sessions counted GitHub's web-flow service committer as a contributor.
 // The merged archive keeps the original actor evidence and source-document hashes.
-export function mergedContributorIdentity(identity, authors, policy) {
-  if (identity.contributorOwnerId !== policy?.ownerId) fail('MERGED_CANDIDATE_CONTRIBUTOR_POLICY');
+export function mergedContributorIdentity(identity, authors, confirmedHumans) {
   const project = record => {
-    const current = selectReleaseContributors(record.actors, authors, policy);
+    const current = selectReleaseContributors(record.actors, authors, confirmedHumans);
     if (isDeepStrictEqual(record.contributors, current)) return record;
-    if (policy) fail('MERGED_CANDIDATE_CONTRIBUTOR_DRIFT');
+    if (confirmedHumans) fail('MERGED_CANDIDATE_CONTRIBUTOR_DRIFT');
     const cached = record.contributors;
     const service = cached.contributors.filter(person => person.id === 19864447);
     if (service.length !== 1 || !record.actors.some(actor => actor?.id === 19864447)
@@ -90,7 +89,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
   };
   const templateAt=async(sha,pin,delivery)=>{
     if(delivery.schemaVersion!==3) {
-      const local=await fileAt(sha,productReleaseTemplatePath,delivery.buildWorkflow!==undefined);
+      const local=await fileAt(sha,productReleaseTemplatePath,true);
       if(local!==null)return local;
     }
     const reader=new NativeEvidenceReader(nativeEvidenceTransport(undefined,fetcher),'splrad/steward');
@@ -111,8 +110,9 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
   const pinnedTemplate = new Map();
   const sourceTemplateAt = async (sha, delivery) => {
     if (!pinnedTemplate.has(sha)) {
-      const local = delivery.schemaVersion === 3 ? null : await fileAt(sha, productReleaseTemplatePath, delivery.buildWorkflow !== undefined);
+      const local = delivery.schemaVersion === 3 ? null : await fileAt(sha, productReleaseTemplatePath, true);
       if (local !== null) pinnedTemplate.set(sha, local);
+      else if (!delivery.buildWorkflow) pinnedTemplate.set(sha, await templateAt(sha, controllerSha, delivery));
       else {
         const workflow = parseDocument(await fileAt(sha, delivery.buildWorkflow), { uniqueKeys: true });
         if (workflow.errors.length) fail('CANDIDATE_CONTROLLER_PIN_INVALID');
@@ -126,14 +126,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     }
     return pinnedTemplate.get(sha);
   };
-  const contributorPolicyAt = async sha => {
-    const repository = await native('');
-    if (repository.id !== request.repositoryId || repository.full_name?.toLowerCase() !== request.repository.toLowerCase()
-      || !['User', 'Organization'].includes(repository.owner?.type)
-      || !Number.isSafeInteger(repository.owner.id) || repository.owner.id < 1) fail('CANDIDATE_NATIVE_OWNER_IDENTITY');
-    return { ownerId: repository.owner.type === 'User' ? repository.owner.id : null,
-      humans: confirmedReleaseContributors(await fileAt(sha, confirmedReleaseContributorsPath, true)) };
-  };
+  const confirmedHumansAt = async sha => confirmedReleaseContributors(await fileAt(sha, confirmedReleaseContributorsPath, true));
   const fetchBranch = async branch => {
     const ref = await api('GET', `/repos/${request.repository}/git/ref/heads/${branch}`, undefined, true);
     if (!ref) return null;
@@ -156,7 +149,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     const persisted = new Map([...loaded].filter(([path]) => state.currentPaths.includes(path)));
     for (const path of state.currentPaths.filter(path => path.startsWith('cycles/')))
       persisted.set(path, await fileAt(state.head, path));
-    let expectedHead = state.head, writes = 0, lastFacts = null, lastProtections = null, delivery = null, conditional = false, contributorPolicy;
+    let expectedHead = state.head, writes = 0, lastFacts = null, lastProtections = null, delivery = null, conditional = false, confirmedHumans;
     const loadDocument = async path => {
       const text = loaded.get(path); if (text === undefined) return null;
       const first = JSON.parse(text), chunks = [first];
@@ -193,7 +186,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       assertProductDelivery(delivery);
       const template = await sourceTemplateAt(baseSha, delivery);
       conditional = isConditionalTemplate(template);
-      contributorPolicy = conditional ? await contributorPolicyAt(baseSha) : undefined;
+      confirmedHumans = conditional ? await confirmedHumansAt(baseSha) : undefined;
       const rules = await native(`rules/branches/${encodeURIComponent(request.defaultBranch)}`);
       if (!Array.isArray(rules) || !rules.some(r => r.type === 'non_fast_forward') || !rules.some(r => r.type === 'deletion')) fail('CANDIDATE_SOURCE_PROTECTION_REQUIRED');
       await checkPolicyAt(baseSha,delivery);
@@ -252,7 +245,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       lastFacts = facts;
       lastProtections = { branch: rules, tags: protectedTags };
       return { baseSha, authors: delivery.repositoryAuthors, authorsDigest: hash(JSON.stringify(delivery.repositoryAuthors)),
-        ...(conditional ? { contributorPolicy, noteFormat: { template, repository: request.repository, sourceSha: baseSha } } : {}) };
+        ...(conditional ? { confirmedHumans, noteFormat: { template, repository: request.repository, sourceSha: baseSha } } : {}) };
     };
     const prs = async branch => {
       const values = await pages(`pulls?state=all&base=${encodeURIComponent(request.defaultBranch)}&head=${encodeURIComponent(request.repository.split('/')[0] + ':' + branch)}`);
@@ -314,6 +307,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
           cache[entry.key] = value;
         }
         if (stored?.input.schemaVersion === 2) {
+          if ((stored.conditional === true) !== conditional) fail('CONTENT_ARCHIVE_CONTRACT');
           work = { input: stored.input, payloads: {}, results: {}, evidence: await loadDocument(stored.evidencePath) };
           if (hash(JSON.stringify(work.evidence.manifests)) !== work.input.sourceManifestDigest) fail('CONTENT_SOURCE_MANIFEST_DIGEST');
           for (const batch of work.input.batches) {
@@ -366,14 +360,14 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
             const entryPath = `content/${candidate.id}/cache/${key}.json`; entries.push({ key, path: entryPath, digest: hash(JSON.stringify(entry)) });
             results.push(...archive('cache-entry', candidate.id, entryPath, entry));
           }
-          return persist([...archive('content', candidate.id, path, { input: work.input, payloadPaths, evidencePath }),
+          return persist([...archive('content', candidate.id, path, { input: work.input, payloadPaths, evidencePath,
+            ...(conditional ? { conditional: true } : {}) }),
             ...archive('content-evidence', candidate.id, evidencePath, work.evidence), ...archive('cache', candidate.id, cachePath, { entries }), ...results]);
         };
         const result = await resumeContentBatches(work, cache, { now, repository: request.repository, recovery: contentRecovery, editing: async () => (await prs(candidate.branch)).some(p => p.number === candidate.prNumber && p.editing), ...sdk, save });
         if (result.status !== 'READY') return { status: result.status === 'EDITING' ? 'EDITING' : result.status === 'FAILED' ? 'FAILED' : 'WAIT' };
         const unitActors = Object.fromEntries(snapshot.units.map(unit => [unit.id, []]));
-        if (session.identity?.sourceDigest === snapshot.sourceDigest && session.identity.authorsDigest === hash(JSON.stringify(delivery.repositoryAuthors))
-          && session.identity.contributorOwnerId === contributorPolicy?.ownerId)
+        if (session.identity?.sourceDigest === snapshot.sourceDigest && session.identity.authorsDigest === hash(JSON.stringify(delivery.repositoryAuthors)))
           return { status: 'READY', files: assembleUnitNotes(work), actors: session.identity.actors,
             unitActors: Object.fromEntries(session.identity.units.map(unit => [unit.id, unit.actors])) };
         const commits = new Map();
@@ -390,7 +384,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
           for (const actor of conditional ? [commit.author] : [commit.author, commit.committer]) {
             if (!actor) { actors.push(null); for (const id of units) unitActors[id].push(null); continue; }
             if (!users.has(actor.id)) {
-              const user = conditional && !contributorPolicy.humans.some(person => person.id === actor.id)
+              const user = confirmedHumans && !confirmedHumans.some(person => person.id === actor.id)
                 ? actor : await api('GET', `/users/${encodeURIComponent(actor.login)}`);
               if (user.id !== actor.id) fail('CANDIDATE_CONTRIBUTOR_IDENTITY');
               users.set(actor.id, { id: user.id, login: user.login, type: user.type, profileUrl: user.html_url, avatarUrl: user.avatar_url });
@@ -431,7 +425,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       updateComment: (id, body) => api('PATCH', `/repos/${request.repository}/issues/comments/${id}`, { body }),
     };
     const manualBlobs=new Map(),manualFetched=new Set();
-    const manualIO={activeCycle,readTemplate:sourceTemplateAt,contributorPolicy:contributorPolicyAt,
+    const manualIO={activeCycle,readTemplate:sourceTemplateAt,confirmedHumans:confirmedHumansAt,
       product:{id:request.repositoryId,name:request.repository,defaultBranch:request.defaultBranch},
       pull:()=>native(`pulls/${session.repository.candidate.prNumber}`),
       changedPaths:async(base,head)=>{
@@ -561,7 +555,9 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         if (checkouts.some(step => !/^actions\/checkout@[a-f0-9]{40}$/.test(step.uses ?? '')
           || step.with.repository !== 'splrad/steward' || step.with.ref !== cycleControllerSha)) fail('CANDIDATE_CONTROLLER_PIN_CONFLICT');
         const template=await templateAt(sourceSha,cycleControllerSha,delivery);
-        const policy = isConditionalTemplate(template) ? await contributorPolicyAt(sourceSha) : undefined;
+        const conditional = isConditionalTemplate(template);
+        if(data.identity.noteTemplate!==(conditional?template:undefined))fail('MERGED_CANDIDATE_TEMPLATE_DRIFT');
+        const confirmedHumans = conditional ? await confirmedHumansAt(sourceSha) : undefined;
         for (const unit of delivery.units.filter(unit => data.generated.units.some(generated => generated.id === unit.id)))
           parseSupplementalNotes(await fileAt(sourceSha,unit.notesPath),template);
         const deliveryBlobSha = (await git('rev-parse', `${sourceSha}:.github/delivery.json`)).toString().trim();
@@ -571,7 +567,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         const documents=await candidateDocumentsAt(stateCommit,candidate.id);
         const mergedArchive = archive('merged-candidate', candidate.id, `generated/${candidate.id}/cycles/${cycle.id}.json`, {
           schemaVersion: 1, cycleId: cycle.id, sourceSha, stateCommit, candidate,
-          session: {...archivedSession, identity:mergedContributorIdentity(archivedSession.identity,delivery.repositoryAuthors,policy)}, pull: { number: pull.number, head: pull.head.sha, branch: pull.head.ref,
+          session: {...archivedSession, identity:mergedContributorIdentity(archivedSession.identity,delivery.repositoryAuthors,confirmedHumans)}, pull: { number: pull.number, head: pull.head.sha, branch: pull.head.ref,
             base: pull.base.ref, repositoryId: request.repositoryId, mergedAt: pull.merged_at, mergeCommitSha: sourceSha }, documents,
         });
         // Validate the assembled snapshot before the atomic cycle handoff.

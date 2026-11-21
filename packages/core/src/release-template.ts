@@ -197,6 +197,8 @@ export function nestReleaseMarkdown(markdown: string, minimumDepth = 4): string 
 export interface FrozenReleaseNotes {
   repository: string; unitId: string; displayName?: string | undefined; version: string; tag: string; sourceSha: string; controllerSha: string;
   notes: string; sourceLinkLabel: string; sourceUrl: string; commitUrl: string; contributors: ReleaseContributor[]; repositoryAuthors: RepositoryAuthor[];
+  confirmedHumans?: RepositoryAuthor[];
+  selectedDownloads?: ReadonlySet<string>;
   githubDisabled?: boolean;
   assets: { id: string; name: string; build: string; description?: string | undefined }[];
   channels: { id: string; location: string }[];
@@ -236,14 +238,19 @@ export function renderFrozenReleaseNotes(template: string, data: FrozenReleaseNo
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(data.repository) || data.repository.split('/').some(part => part === '.' || part === '..')
     || ![data.sourceSha, data.controllerSha].every(sha => /^[a-f0-9]{40}$/.test(sha)) || !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$/.test(data.version)) fail('frozen identity');
   if (!/^[a-z][a-z0-9-]*$/.test(data.unitId) || !data.tag || /[\s\0]/.test(data.tag)) fail('unit or tag');
-  const contributors = selectReleaseContributors(data.contributors.map(person => ({ ...person, type: 'User' })), data.repositoryAuthors).contributors;
+  const conditional = isConditionalTemplate(template);
+  const contributors = selectReleaseContributors(data.contributors.map(person => ({ ...person, type: 'User' })),
+    data.repositoryAuthors, conditional ? data.confirmedHumans ?? [] : undefined).contributors;
   if (JSON.stringify(contributors) !== JSON.stringify(data.contributors)) fail('frozen contributors');
   if (data.commitUrl !== `https://github.com/${data.repository}/commit/${data.sourceSha}`) fail('commit URL');
-  if (isConditionalTemplate(template)) {
+  if (conditional) {
     validateSourceLink(data);
     const notes = parseConditionalNotes(data.notes);
-    assertVersionAcquisitionLinks(notes, data.repository, data.tag, data.sourceSha, data.assets.map(asset => asset.name));
-    return renderConditionalNotes(template, notes, { label: data.sourceLinkLabel, url: data.sourceUrl }, contributors);
+    const selected = data.selectedDownloads ?? new Set(data.assets.map(asset => asset.name));
+    assertVersionAcquisitionLinks(notes, data.repository, data.tag, data.sourceSha, [...selected]);
+    const body = renderConditionalNotes(template, notes, { label: data.sourceLinkLabel, url: data.sourceUrl }, contributors);
+    assertSelectedReleaseDownloads(body, data.repository, data.tag, selected);
+    return body;
   }
   const sections = parseLegacyNotes(data.notes, template);
   const channels = data.channels.map(channel => {

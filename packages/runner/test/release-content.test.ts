@@ -203,8 +203,18 @@ it.each([false, true])('binds exactly one error recovery to its validator schema
   expect(work.input.batches[0]!.attempts[0]).toEqual(old);
   expect(work.input.batches[0]!.attempts.map(a=>a.ordinal)).toEqual([1,2]);
   expect(()=>validateContentInput(work.input)).not.toThrow();
-  const content=JSON.stringify({input:work.input,payloadPaths:{[work.input.batches[0]!.id]:`content/${work.input.candidateId}/payload.json`},evidencePath:`content/${work.input.candidateId}/evidence.json`});
-  await expect(decodeCandidateDocument([{schemaVersion:1,repositoryId:1,candidateId:work.input.candidateId,documentKind:'content',documentDigest:digest(content),index:0,count:1,content}])).resolves.toBeDefined();
+  const archive={input:work.input,payloadPaths:{[work.input.batches[0]!.id]:`content/${work.input.candidateId}/payload.json`},evidencePath:`content/${work.input.candidateId}/evidence.json`};
+  const mode=conditional?{conditional:true}:{};
+  const decode=(documentKind:'content'|'cache-entry',value:object)=>{
+    const content=JSON.stringify(value);
+    return decodeCandidateDocument([{schemaVersion:1,repositoryId:1,candidateId:work.input.candidateId,documentKind,documentDigest:digest(content),index:0,count:1,content}]);
+  };
+  await expect(decode('content',{...archive,...mode})).resolves.toBeDefined();
+  const [entry]=Object.values(cache);
+  await expect(decode('cache-entry',entry as object)).resolves.toMatchObject(mode);
+  await expect(decode('content',{...archive,...(!conditional?{conditional:true}:{})})).rejects.toThrow('CONTENT_RECOVERY_HISTORY');
+  const wrongEntry={...entry as object,conditional:undefined};
+  await expect(decode('cache-entry',{...wrongEntry,...(!conditional?{conditional:true}:{})})).rejects.toThrow('CONTENT_RECOVERY_HISTORY');
   expect(await resumeContentBatches(work,cache,r.port)).toEqual({status:'READY',calls:0});
 });
 it('does not extend explicit recovery to unknown output or a second failure',async()=>{

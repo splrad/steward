@@ -180,7 +180,7 @@ for(const mode of ['reviewed scripts','native container, service and dynamic mat
     for(const [k,v] of Object.entries({unit,target:'hosted',path,notes:'.release-notes/'+unit+'.md',version:'VERSION',changelog:'CHANGELOG.md',locks:'[]'})) first[id+'.'+k]=v;
   }
   await edit({...first,'s1.entry':'pack.py','s1.runner':'ubuntu-24.04','s1.shell':'bash','s1.directory':'maps/data',
-    's1.prepare':'','s1.command':'python pack.py','s1.output':'out','author.id':'12','author.evidence':'Confirmed fixture maintainer','signing':true,'operation.configure':true});
+    's1.prepare':'','s1.command':'python pack.py','s1.output':'out','signing':true,'operation.configure':true});
   const preparedHead=ref;
   assert.match(git('diff','--name-only',base,ref),/\.github\/actions\/configuration\/maps\/hosted\/run.mjs/);
   if(complex)productRun(preparedHead,pr.head.ref);
@@ -204,6 +204,7 @@ for(const mode of ['reviewed scripts','native container, service and dynamic mat
   assert.equal(pr.number,9);assert.notEqual(ref,preparedHead);
   assert.equal(git('show',ref+':.github/workflows/steward-release-channels.yml'),channelFixture.trim());
   const selected=parseDeliveryConfig(JSON.parse(git('show',ref+':.github/delivery.json')));
+  assert.deepEqual(selected.repositoryAuthors,[]);
   assert.deepEqual(selected.units.map(u=>u.assets.map(a=>a.id)),[['cli'],['stations']]);
   assert.equal(selected.units[0].channels.find(c=>c.id==='github-release').required,true);
   const workflow=YAML.parse(git('show',ref+':.github/workflows/steward-release-publish.yml'));
@@ -315,11 +316,10 @@ test('reports only declared product platforms and keeps operational Pages condit
   assert.match(native,/\[x\] macOS 构建/);assert.doesNotMatch(native,/\[x\] Linux 构建/);
 });
 
-test('CI-only and Pages-only settings keep release author fields out of the form',()=>{
+test('repository configuration can select a release entry without author fields',()=>{
   const model=inspectRepository(new Map());
-  for(const values of [{'ci.example':true},{'site.build':true},{'site.deploy':true}]) {
+  for(const values of [{'ci.example':true},{'site.build':true},{'site.deploy':true},{'s1.use':true}]) {
     const form=configurationForm(model,'a'.repeat(40),{values});
     assert.ok(!form.items.some(item=>item.id.startsWith('author.')));
   }
-  assert.ok(configurationForm(model,'a'.repeat(40),{values:{'s1.use':true}}).items.some(item=>item.id==='author.id'));
 });

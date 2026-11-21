@@ -165,10 +165,6 @@ export function configurationForm(model,head,state={}) {
     field('site.unit','正式 Release 来源单元',site.unit);
   }
   const hasReleaseEntry=entries.some(entry=>values[entry.id+'.use']);
-  if(!model.delivery && hasReleaseEntry) {
-    field('author.id','已核实仓库作者的 GitHub 数字 ID');
-    field('author.evidence','作者身份核验依据');
-  }
   if(hasReleaseEntry) field('signing','已确认所选单元签名不适用',false,'check');
   for(const [id,label] of [['configure','准备入口并写入本 PR'],['trial','使用已核验的运行或执行只构建试跑'],['select','将正式文件和各渠道选择写入本 PR'],['approve','批准本 PR 的当前提交']])
     field('operation.'+id,label,false,'check');
@@ -243,7 +239,6 @@ export function planFromForm(model,state,operation) {
   for(const c of channels.values()) units.get(c.unit).channels.push({id:c.id,location:c.location,required:false});
   const settings={targets,channelWorkflow:v['channel.workflow'],units:[...units.values()],signing:v.signing?'not-applicable':null};
   if(operation==='configure' && versions.size) settings.versions=[...versions.values()];
-  if(!model.delivery && entries.length) settings.repositoryAuthors=[{id:Number(v['author.id']),evidence:v['author.evidence']}];
   const edits=[];
   for(const unit of model.delivery?.units??[]) for(const c of effectiveChannels(model.delivery,unit)) {
     const field='channel.'+unit.id+'.'+c.id, enabled=v[field];

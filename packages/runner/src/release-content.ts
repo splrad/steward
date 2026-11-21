@@ -21,7 +21,7 @@ export interface ContentSource {
 }
 export interface ContentPayload { stage: ContentStage; unitIds: string[]; units: ContentInput['units']; sources: ContentSource[]; items: ContentItem[]; background: ContentItem[]; conditional?: true }
 export interface ContentWork { input: ContentInput; payloads: Record<string, ContentPayload>; results: Record<string, { items: ContentItem[] } | { paragraphs: ContentParagraph[] }>; evidence: { manifests: unknown[]; gaps: unknown[] } }
-export interface ContentCacheEntry { inputDigest: string; configDigest: string; attempts: ContentAttempt[]; result: { items: ContentItem[] } | { paragraphs: ContentParagraph[] } | null; split?: boolean }
+export interface ContentCacheEntry { inputDigest: string; configDigest: string; attempts: ContentAttempt[]; result: { items: ContentItem[] } | { paragraphs: ContentParagraph[] } | null; split?: boolean; conditional?: true }
 export type ContentCache = Record<string, ContentCacheEntry>;
 export function contentWireInput(payload: ContentPayload) { return JSON.stringify({ prompt: payload.conditional ? CONDITIONAL_CONTENT_PROMPT : CONTENT_PROMPT,
   outputSchema: contentOutputSchema(payload.conditional), constraints: 'Return only the schema object, without Markdown fences or extra keys. Omit optional paragraphs without product facts. For a relevant claim with uncertain verification, set qualification to UNVERIFIED and describe only the specific consequence for the reader; TEST_CONFIRMED is unavailable unless tested source IDs are explicitly supplied.', ...payload }); }
@@ -125,9 +125,11 @@ export async function resumeContentBatches(work: ContentWork, cache: ContentCach
     if (batch.status === 'READY') continue;
     if (await runtime.editing()) return { status: 'EDITING', calls };
     const key = hash([batch.inputDigest, work.input.configDigest]);
-    const entry = cache[key] ??= { inputDigest: batch.inputDigest, configDigest: work.input.configDigest, attempts: [], result: null };
     const payload = work.payloads[batch.id]!;
     const conditional = payload.conditional === true;
+    const entry = cache[key] ??= { inputDigest: batch.inputDigest, configDigest: work.input.configDigest, attempts: [], result: null,
+      ...(conditional ? { conditional: true } : {}) };
+    if ((entry.conditional === true) !== conditional) throw Error('CONTENT_CACHE_CONTRACT');
     const validate = (text: string) => {
       let result: { paragraphs: ContentParagraph[] };
       try { result = validateContentResult('DRAFT', text, batch.sourceIds, [], undefined, conditional) as typeof result; }

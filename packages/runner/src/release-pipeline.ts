@@ -23,7 +23,7 @@ import { decodeNormalizedDelivery,type NormalizedDeliveryEvidence } from '../../
 import { githubUnits, parseReleaseRecord, sameWorkflowDelivery, type CycleRecord, type RepositoryRecord, type WorkflowChannelReceipt, type WorkflowDeliveryReceipt } from '../../core/src/release-observation.js';
 import { decodeCandidateDocument, type CandidateArchiveChunk } from '../../core/src/release-candidate-record.js';
 import { confirmedReleaseContributors, confirmedReleaseContributorsPath, selectReleaseContributors } from '../../core/src/release-candidate.js';
-import { assertSelectedReleaseDownloads, isConditionalTemplate } from '../../core/src/conditional-release-notes.js';
+import { isConditionalTemplate } from '../../core/src/conditional-release-notes.js';
 import { nativeRunFact, NativeEvidenceReader, EvidenceReadError, type EvidenceContext, type EvidenceTransport, nativeEvidenceTransport } from './native-release-evidence.js';
 import { verifyExecutionSource, verifyDispatchWorkflow, channelTargets, channelTargetsDigest, verifyContinuationReleases, type ChannelTarget } from './release-run.js';
 import { parseDocument } from 'yaml';
@@ -451,10 +451,9 @@ export async function pipelineIdentity(input: ProductBuildInput, environment: No
     await localGitSnapshot.file(input.sourceDirectory,cycle.sourceSha,productReleaseTemplatePath)??sharedTemplate;
   if(!template.equals(sharedTemplate))fail('adopted notes template');
   const conditional = isConditionalTemplate(template.toString('utf8'));
-  if (conditional !== Object.hasOwn(session.identity, 'contributorOwnerId')) fail('frozen contributor policy');
+  if (session.identity.noteTemplate !== (conditional ? template.toString('utf8') : undefined)) fail('frozen candidate template');
   const confirmations = conditional ? await localGitSnapshot.file(input.sourceDirectory, cycle.sourceSha, confirmedReleaseContributorsPath) : null;
-  const policy = conditional ? { ownerId: session.identity.contributorOwnerId,
-    humans: confirmedReleaseContributors(confirmations?.toString('utf8') ?? null) } : undefined;
+  const confirmedHumans = conditional ? confirmedReleaseContributors(confirmations?.toString('utf8') ?? null) : undefined;
   const units: BuildPipelineRecord['units'] = [];
   for (const target of cycle.units) {
     const unit = delivery.units.find(unit => unit.id === target.id), frozen = session.generated.units.find((unit: any) => unit.id === target.id);
@@ -467,7 +466,7 @@ export async function pipelineIdentity(input: ProductBuildInput, environment: No
       return { id, name, build: producers[0]!.id };
     });
     const identity = session.identity.units.find((item: any) => item.id === unit.id); if (!identity) fail('unit identity snapshot');
-    const selected = selectReleaseContributors(identity.actors, delivery.repositoryAuthors, policy);
+    const selected = selectReleaseContributors(identity.actors, delivery.repositoryAuthors, confirmedHumans);
     if (JSON.stringify(selected) !== JSON.stringify(identity.contributors)) fail('frozen identity mismatch');
     units.push({ id: unit.id, version: target.version, packageVersion, tag: target.tag, builds, assets, contributors: selected.contributors });
   }
@@ -475,7 +474,8 @@ export async function pipelineIdentity(input: ProductBuildInput, environment: No
   const toolLocks:Record<string,string>={'controller/mise.lock':hash(await file(input.controllerDirectory,cycle.controllerSha,'mise.lock')),...projection.toolLocks};
   if (!await stateRef()) return { status: 'UNKNOWN' as const, reason: 'STATE_SOURCE_MOVED' };
   const record = parsePipelineRecord({ schemaVersion: 1, kind: 'build', repositoryId, fullName, cycleId: cycle.id, requestKey: request.requestKey,
-    sourceSha: cycle.sourceSha, controllerSha: cycle.controllerSha, buildRef: environment.GITHUB_REF, runId, runAttempt, toolLocks, delivery,
+    sourceSha: cycle.sourceSha, controllerSha: cycle.controllerSha, buildRef: environment.GITHUB_REF, runId, runAttempt, toolLocks,
+    delivery: conditional ? { ...delivery, repositoryAuthors: [] } : delivery,
     deliverySha256: hash(deliveryBytes), templateSha256: hash(template), units }) as BuildPipelineRecord;
   return { status: 'ADMITTED' as const, record };
 }
@@ -506,12 +506,15 @@ async function renderPipelineNotes(record: BuildPipelineRecord, unitId: string, 
   const changelogFile = delivery.path === '.' ? changelogPath : `${delivery.path}/${changelogPath}`;
   const changelog = await read(changelogFile);
   const publicNames=new Set(channelFiles(delivery,'github-release',unit.assets.map(asset=>({id:asset.id,path:asset.name}))));
+  const confirmationBytes = isConditionalTemplate(template)
+    ? await localGitSnapshot.file(sourceDirectory, record.sourceSha, confirmedReleaseContributorsPath) : null;
   const { sourceLinkLabel, sourceUrl, commitUrl } = committedVersionNotes(changelog, unit.version, record.fullName, record.sourceSha, unit.tag,
     template.includes('{{controllerSha}}') ? undefined : changelogFile);
   return renderFrozenReleaseNotes(template, { repository: record.fullName, unitId, version: unit.version, tag: unit.tag, sourceSha: record.sourceSha,
     githubDisabled:delivery.channels.some(channel=>channel.id==='github-release' && !channel.required),
     displayName: delivery.displayName, controllerSha: record.controllerSha, notes: await read(delivery.notesPath), sourceLinkLabel, sourceUrl, commitUrl, contributors: unit.contributors,
-    repositoryAuthors: record.delivery.repositoryAuthors, assets: unit.assets.filter(asset=>publicNames.has(asset.name)).map(asset => ({ ...asset, description: delivery.assets.find(item => item.id === asset.id)?.description })), channels: delivery.channels.filter(channel=>channel.required && channel.id!=='github-release') });
+    repositoryAuthors: record.delivery.repositoryAuthors, confirmedHumans: confirmedReleaseContributors(confirmationBytes?.toString('utf8') ?? null),
+    selectedDownloads: publicNames, assets: unit.assets.filter(asset=>publicNames.has(asset.name)).map(asset => ({ ...asset, description: delivery.assets.find(item => item.id === asset.id)?.description })), channels: delivery.channels.filter(channel=>channel.required && channel.id!=='github-release') });
 }
 export async function pipelineInspect(record: BuildPipelineRecord, unitId: string, selection: Awaited<ReturnType<typeof pipelineProducers>>,
   directory: string, controllerDirectory: string, home: string) {
@@ -1006,9 +1009,8 @@ async function prepareWorkflowPublication(options:{
   if(merged.cycleId!==cycle.id||merged.sourceSha!==cycle.sourceSha||merged.pull.number!==cycle.prNumber
     ||merged.session.identity?.authorsDigest!==hash(Buffer.from(JSON.stringify(delivery.repositoryAuthors))))fail('workflow delivery reviewed source');
   const conditional = isConditionalTemplate(template);
-  if (conditional !== Object.hasOwn(merged.session.identity, 'contributorOwnerId')) fail('frozen contributor policy');
-  const policy = conditional ? { ownerId: merged.session.identity.contributorOwnerId,
-    humans: confirmedReleaseContributors(options.confirmations ?? null) } : undefined;
+  if (merged.session.identity.noteTemplate !== (conditional ? template : undefined)) fail('frozen candidate template');
+  const confirmedHumans = conditional ? confirmedReleaseContributors(options.confirmations ?? null) : undefined;
   const records:PublicationUnit[]=[];
   for(const target of units) {
     const unit=delivery.units.find(unit=>unit.id===target.id);
@@ -1016,7 +1018,7 @@ async function prepareWorkflowPublication(options:{
     const packageVersion=versions.get(unit.id);
     const identity=merged.session.identity.units.find((item:any)=>item.id===unit.id);
     if(!packageVersion||!identity)fail('workflow delivery unit data');
-    const contributors=selectReleaseContributors(identity.actors,delivery.repositoryAuthors,policy);
+    const contributors=selectReleaseContributors(identity.actors,delivery.repositoryAuthors,confirmedHumans);
     if(JSON.stringify(contributors)!==JSON.stringify(identity.contributors))fail('workflow delivery contributor identity');
     const directory=join(root,unit.id);
     let nativeReceipt:WorkflowDeliveryReceipt;
@@ -1053,9 +1055,9 @@ async function prepareWorkflowPublication(options:{
       template.includes('{{controllerSha}}')?undefined:changelogFile);
     const publicBody=renderFrozenReleaseNotes(template,{repository:context.repository,unitId:unit.id,version:target.version,tag:target.tag,
       sourceSha:cycle.sourceSha,controllerSha:cycle.controllerSha,displayName:unit.displayName,notes:await source(unit.notesPath),...links,
-      contributors:contributors.contributors,repositoryAuthors:delivery.repositoryAuthors,channels:[],
+      contributors:contributors.contributors,repositoryAuthors:delivery.repositoryAuthors,
+      ...(confirmedHumans ? {confirmedHumans} : {}),channels:[],
       assets:artifacts.map(file=>({id:file.id,name:file.path,build:'delivery'}))});
-    if (conditional) assertSelectedReleaseDownloads(publicBody, context.repository, target.tag, new Set(artifacts.map(file => file.path)));
     records.push({unitId:unit.id,directory,manifest,delivery:unit,build:null,archive:null,githubDelivery:nativeReceipt,publicBody});
   }
   return records;

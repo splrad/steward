@@ -133,7 +133,7 @@ export async function applySelection(model,operation,plan,context) {
   if(operation==='select') {
     const declaredChannels=(unit,facts)=>(facts?.channels??[]).filter(c=>
       !(plan.channels??[]).some(edit=>edit.unit===unit && edit.id===c.id && edit.sources));
-    delivery=explicitDelivery(delivery??{schemaVersion:2,repositoryAuthors:plan.repositoryAuthors,units:[]});
+    delivery=explicitDelivery(delivery??{schemaVersion:2,units:[]});
     const allAssets=new Map();
     for(let i=0;i<targets.length;i++) {
       const target=targets[i], recipe=prepared[i].recipe;

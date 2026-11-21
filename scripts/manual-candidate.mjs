@@ -41,10 +41,11 @@ export async function validateManualCandidate(session,producer,io) {
   if(!matchesFrozenUnits(session))fail('MANUAL_UNIT_COVERAGE');
   const template=io.readTemplate?await io.readTemplate(before.headSha,delivery):await io.read(before.headSha,'.github/release-template.md.mustache');
   const conditional=isConditionalTemplate(template);
+  if(session.identity.noteTemplate!==(conditional?template:undefined))fail('MANUAL_NOTE_TEMPLATE');
   if(conditional) {
-    const policy=await io.contributorPolicy(before.sourceSha);
-    if(session.identity.contributorOwnerId!==policy.ownerId || session.identity.authorsDigest!==hash(delivery.repositoryAuthors)
-      || session.identity.units.some(unit=>JSON.stringify(selectReleaseContributors(unit.actors,delivery.repositoryAuthors,policy))!==JSON.stringify(unit.contributors)))
+    const confirmedHumans=await io.confirmedHumans(before.sourceSha);
+    if(session.identity.authorsDigest!==hash(delivery.repositoryAuthors)
+      || session.identity.units.some(unit=>JSON.stringify(selectReleaseContributors(unit.actors,delivery.repositoryAuthors,confirmedHumans))!==JSON.stringify(unit.contributors)))
       fail('MANUAL_CONTRIBUTOR_POLICY');
   }
   const units=[],notes=new Set(),noteContents=[];

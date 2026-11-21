@@ -8,10 +8,12 @@ import {BoundedRecheck} from '../src/bounded-recheck.js';
 import {FixedRecheckEffects} from '../src/bounded-recheck-effects.js';
 import {describe,it,expect} from 'vitest';
 import {createHash} from 'node:crypto';
+import {readFileSync} from 'node:fs';
 import {candidateFacts,verifiedProducer} from '../src/bounded-candidate-evidence.js';
 import {applyVerifiedCandidateEvent,CandidateEventCoordinator} from '../src/bounded-release-event.js';
 import {digest,TARGET,CENTRAL,type GitReader} from '../src/bounded-recheck-github.js';
 const sha=(c:string)=>c.repeat(40),key=(c:string)=>c.repeat(64),t0=Date.now()-60000;
+const conditionalNoteTemplate=readFileSync(new URL('../../../templates/repository/.github/release-template.md.mustache',import.meta.url),'utf8');
 async function fixture(){
  const generated={baseSha:sha('a'),units:[{id:'layerscape',path:'.',version:'1.0.0'}],files:[{path:'.release-notes/layerscape.md',mode:'100644',content:'Notes\n'}]},document:any={generated,pending:null,identity:{id:'existing',units:[{id:'layerscape',contributors:{contributors:[]}}]},conflict:null,preview:'# .release-notes/layerscape.md\n\nNotes\n'},session=JSON.stringify(document);
  const state={schemaVersion:3,repositoryId:TARGET.id,activeCycleId:null as string|null,candidate:{id:key('b'),pendingWrite:null,baseSha:sha('a'),publishedHead:sha('c'),generatedSnapshotPath:`generated/${key('b')}/${key('a')}.json`,statusCommentId:7,prNumber:192,branch:'steward/candidate'}};
@@ -186,6 +188,21 @@ it('does not silently replace existing object policy pins or reset its original 
 function refreshFixture(f:Awaited<ReturnType<typeof fixture>>){const text=JSON.stringify(f.document),chunk=f.files[`generated/${key('b')}/session.json`];chunk.content=text;chunk.documentDigest=digest(text).slice(7);const generated=JSON.stringify(f.document.generated),g=f.files[f.state.candidate.generatedSnapshotPath];g.content=generated;g.documentDigest=digest(generated).slice(7);}
 describe('generated candidate projection completion',()=>{
  it('recomputes exact note and escaped contributor preview with canonical newlines',()=>{const session={generated:{files:[{path:'.release-notes/alias.md',content:'Notes\r\n'}]},identity:{units:[{id:'layerscape',contributors:{contributors:[{profileUrl:'https://github.com/x',avatarUrl:'https://avatars.githubusercontent.com/u/1?v=4',alt:'x&y'}]}}]}};expect(generatedProjectionPreview(session)).toBe('# .release-notes/alias.md\n\nNotes\n## 贡献者\n\n<a href="https:&#x2F;&#x2F;github.com&#x2F;x"><img src="https:&#x2F;&#x2F;avatars.githubusercontent.com&#x2F;u&#x2F;1?v&#x3D;4" alt="x&amp;y" width="32" height="32" /></a> \n');});
+ it('uses the archived template for conditional candidate verification',async()=>{
+   const f=await fixture(),session=f.document;
+   session.identity.noteTemplate=conditionalNoteTemplate;
+   session.generated.units[0].tag='v1.0.0';
+   session.generated.files[0].content='## 🐛 错误修复\n\n**启动**。已修复错误。\n';
+   session.identity.units[0].contributors.contributors=[{id:42,login:'x',profileUrl:'https://github.com/x',avatarUrl:'https://avatars.githubusercontent.com/u/42',alt:'x'}];
+   const preview=generatedProjectionPreview(session);
+   expect(preview).toContain('width="48" height="48"');
+   expect(preview).toContain(`[查看候选源码](<https://github.com/${TARGET.name}/tree/${session.generated.baseSha}>)`);
+   session.preview=preview;refreshFixture(f);
+   const facts=await candidateFacts(f.g);
+   const body=generatedStatusBody(facts,preview,facts.evidence.stateCommit);
+   await expect(verifyGeneratedProjection(f.g,facts,{commentId:7,bodyDigest:digest(body).slice(7),
+     previewDigest:digest(preview).slice(7)})).resolves.toMatchObject({number:192});
+ });
  it.each(['short','long','wrong-repo','unrelated-commit','changed-blob','symlink','duplicate','forged-body','missing-proof','protected'] as const)('requires independent immutable projection evidence: %s',async scenario=>{
   const f=await fixture();const long=['long','wrong-repo','unrelated-commit','changed-blob','symlink'].includes(scenario);if(long)f.document.generated.files[0].content='x'.repeat(50*1024);f.document.preview=generatedProjectionPreview(f.document);if(scenario==='protected')f.document.conflict={head:f.pull.head.sha,generated:f.document.generated,paths:['CHANGELOG.md']};refreshFixture(f);
   const facts=await candidateFacts(f.g),linkCommit=sha('3'),body=generatedStatusBody(facts,f.document.preview,linkCommit),comment={id:7,user:{id:301115370},issue_url:`https://api.github.com/repos/${TARGET.name}/issues/192`,body:scenario==='wrong-repo'?body.replace(TARGET.name,'other/repo'):scenario==='forged-body'?body+'x':body};

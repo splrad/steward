@@ -1,6 +1,7 @@
 import Mustache from 'mustache';
 import remarkParse from 'remark-parse';
 import { unified } from 'unified';
+import { isAlias, isScalar, parseAllDocuments, visit } from 'yaml';
 import type { ReleaseContributor } from './candidate-note.js';
 
 export const changeHeadings = {
@@ -158,9 +159,20 @@ export function assertVersionAcquisitionLinks(notes: ConditionalNotes, repositor
     };
     paragraph.children.forEach(verify);
     if (/^ya?ml$/i.test(item.example?.language ?? '')) {
-      for (const match of item.example!.content.matchAll(/^\s*uses:\s*['"]?([^\s'"#]+)@([^\s'"#]+)(?:['"]|\s|$)/gm)) {
-        if (match[1]!.toLowerCase().startsWith(repository.toLowerCase() + '/') && ![tag, sourceSha].includes(match[2]!))
-          fail('workflow example is outside the release version');
+      for (const document of parseAllDocuments(item.example!.content, { uniqueKeys: true })) {
+        if (document.errors.length) fail('invalid YAML acquisition example');
+        visit(document, {
+          Pair(_key, pair) {
+            const key = isAlias(pair.key) ? pair.key.resolve(document) : pair.key;
+            if (!isScalar(key) || key.value !== 'uses') return;
+            const reference = isAlias(pair.value) ? pair.value.resolve(document) : pair.value;
+            if (!isScalar(reference) || typeof reference.value !== 'string') fail('invalid YAML workflow reference');
+            const value = reference.value.trim(), at = value.indexOf('@');
+            const action = (at === -1 ? value : value.slice(0, at)).toLowerCase();
+            if ((action === repository.toLowerCase() || action.startsWith(repository.toLowerCase() + '/'))
+              && (at === -1 || ![tag, sourceSha].includes(value.slice(at + 1)))) fail('workflow example is outside the release version');
+          },
+        });
       }
     }
   }

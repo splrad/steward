@@ -60,10 +60,11 @@ describe('organization conditional release notes', () => {
     const humans = confirmedReleaseContributors('[{"id":42,"evidence":"Offline direct confirmation"}]');
     expect(confirmedReleaseContributors(null)).toEqual([]);
     expect(() => confirmedReleaseContributors('[{"id":42,"evidence":" "}]')).toThrow('CONTRIBUTOR_CONFIRMATION_INVALID');
-    expect(selectReleaseContributors([native], frozen.repositoryAuthors, { ownerId: null, humans: [] }).contributors).toEqual([]);
-    expect(selectReleaseContributors([native], frozen.repositoryAuthors, { ownerId: 42, humans }).contributors).toEqual([]);
-    const contributors = selectReleaseContributors([native, native], frozen.repositoryAuthors, { ownerId: null, humans }).contributors;
-    const result = renderFrozenReleaseNotes(template, { ...frozen, notes: examples[0]!.input, contributors });
+    expect(selectReleaseContributors([native], [], []).contributors).toEqual([]);
+    const contributors = selectReleaseContributors([native, native], [{id: 42, evidence: 'Legacy author record'}], humans).contributors;
+    const input = { ...frozen, notes: examples[0]!.input, contributors };
+    expect(() => renderFrozenReleaseNotes(template, input)).toThrow('frozen contributors');
+    const result = renderFrozenReleaseNotes(template, { ...input, confirmedHumans: humans });
     expect(result.match(/width="48" height="48"/g)).toHaveLength(1);
     expect(result).toMatch(/## 贡献者[\s\S]*github\.com&#x2F;example[\s\S]*alt="example"[\s\S]*## 版本记录/);
   });
@@ -73,4 +74,24 @@ describe('organization conditional release notes', () => {
       const input = notes('获取与使用', `**获取本版**。见[入口](<https://github.com/${repository}/${path}>)。`);
       expect(() => renderFrozenReleaseNotes(template, { ...frozen, notes: input })).toThrow('acquisition link');
     });
+
+  it.each(['SHA256SUMS','sbom.spdx.json'])('accepts selected metadata %s and rejects the same link outside GitHub delivery', name => {
+    const url=`https://github.com/${repository}/releases/download/${frozen.tag}/${name}`;
+    for (const section of ['获取与使用','必须执行的操作','本版重点']) {
+      const input = notes(section,`**获取校验资料**。见[入口](<${url}>)。`);
+      expect(renderFrozenReleaseNotes(template,{...frozen,notes:input,selectedDownloads:new Set([name])})).toContain(url);
+      expect(() => renderFrozenReleaseNotes(template,{...frozen,notes:input,selectedDownloads:new Set()})).toThrow();
+    }
+  });
+
+  it.each(['steps:\n  - uses: example/product/action@main', 'steps: [{uses: "example/product@main"}]',
+    "ref: &floating example/product@main\nsteps:\n  - 'uses': *floating"])('pins YAML reference in both preview and freeze: %s', example => {
+    const input=notes('获取与使用',`**引用本版**。将示例加入工作流。\n\n~~~yaml\n${example}\n~~~`);
+    const preview=(text:string)=>renderCandidateNote('.release-notes/product.md',text,[],{template,repository,sourceSha,tag:frozen.tag});
+    const render=(text:string)=>renderFrozenReleaseNotes(template,{...frozen,notes:text});
+    for (const project of [preview,render]) {
+      expect(() => project(input)).toThrow('workflow example is outside the release version');
+      expect(project(input.replace('@main','@'+frozen.tag))).toContain('@'+frozen.tag);
+    }
+  });
 });

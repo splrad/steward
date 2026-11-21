@@ -12,7 +12,6 @@ export interface CandidateSnapshot {
 export interface RepositoryAuthor { id: number; evidence: string }
 export interface ReleaseActor extends GitHubActor { profileUrl: string; avatarUrl: string }
 export const confirmedReleaseContributorsPath = '.github/release-contributors.json';
-export interface ReleaseContributorPolicy { ownerId: number | null; humans: RepositoryAuthor[] }
 export function confirmedReleaseContributors(text: string | null): RepositoryAuthor[] {
   if (text === null) return [];
   const value: unknown = JSON.parse(text);
@@ -37,12 +36,12 @@ export function validateCandidateFiles(files: readonly CandidateFile[]) {
 }
 /** Native numeric identities, never name/email heuristics or maintainer inference. */
 export function selectReleaseContributors(actors: readonly (ReleaseActor | null)[], authors: readonly RepositoryAuthor[],
-  policy?: ReleaseContributorPolicy) {
-  if (!authors.length || authors.some(a => !Number.isSafeInteger(a.id) || a.id <= 0 || !a.evidence.trim())
-    || new Set(authors.map(a => a.id)).size !== authors.length) throw new Error('AUTHOR_IDENTITY_UNVERIFIED');
-  const excluded = new Set(authors.map(a => a.id)), selected = new Map<number, ReleaseContributor>();
-  if (policy?.ownerId != null) excluded.add(policy.ownerId);
-  const confirmed = policy && new Set(policy.humans.map(person => person.id));
+  confirmedHumans?: readonly Pick<RepositoryAuthor, 'id'>[]) {
+  if (!confirmedHumans && (!authors.length || authors.some(a => !Number.isSafeInteger(a.id) || a.id <= 0 || !a.evidence.trim())
+    || new Set(authors.map(a => a.id)).size !== authors.length)) throw new Error('AUTHOR_IDENTITY_UNVERIFIED');
+  const excluded = new Set(confirmedHumans ? [] : authors.map(a => a.id));
+  const selected = new Map<number, ReleaseContributor>();
+  const confirmed = confirmedHumans && new Set(confirmedHumans.map(person => person.id));
   let unresolved = 0;
   for (const actor of actors) {
     if (actor && isBotActor(actor)) continue;

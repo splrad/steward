@@ -149,7 +149,8 @@ export function parsePipelineRecord(input: unknown): PipelineRecord {
   if (!identity.cycleId.endsWith('-' + identity.sourceSha) || identity.fullName.split('/').some(part => part === '.' || part === '..'))
     throw new Error('RELEASE_RECORD: source identity');
   if (build) {
-    parseDeliveryConfig(build.delivery);
+    const { repositoryAuthors } = parseDeliveryConfig(build.delivery);
+    build.delivery.repositoryAuthors = repositoryAuthors;
     if (build.buildRef !== `refs/heads/steward/build/${build.cycleId}`
       || new Set(build.units.map(unit => unit.id)).size !== build.units.length) throw new Error('RELEASE_RECORD: build identity');
     const jobs = new Set<string>(), assetNames=new Set<string>();
@@ -166,7 +167,8 @@ export function parsePipelineRecord(input: unknown): PipelineRecord {
       for (const producer of unit.builds) {
         if (jobs.has(producer.jobName)) throw new Error('RELEASE_RECORD: duplicate product job'); jobs.add(producer.jobName);
       }
-      const selected = selectReleaseContributors(unit.contributors.map(person => ({ ...person, type: 'User' })), build.delivery.repositoryAuthors);
+      const selected = selectReleaseContributors(unit.contributors.map(person => ({ ...person, type: 'User' })),
+        repositoryAuthors, repositoryAuthors.length ? undefined : unit.contributors);
       if (JSON.stringify(selected.contributors) !== JSON.stringify(unit.contributors)) throw new Error('RELEASE_RECORD: frozen contributor identity');
     }
   }

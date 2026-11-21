@@ -49,3 +49,23 @@ export function renderCandidateNote(path:string,markdown:string,contributors:Par
   }
   return `# ${path}\n\n${previewUnitNotes(markdown)}`+renderReleaseContributors(contributors);
 }
+
+export function renderCandidateProjection(
+  generated: { files: { path: string; content: string | null }[]; baseSha?: string; units?: {id: string; tag: string}[] },
+  identity: { noteTemplate?: string; units: { id: string; contributors: { contributors: ReleaseContributor[] } }[] },
+  repository: string,
+): string {
+  const notes = generated.files.filter(file => file.path.startsWith('.release-notes/') && file.content !== null);
+  if (!notes.length) throw Error('CANDIDATE_PROJECTION_NOTES');
+  return notes.map(file => {
+    const unit = identity.units.find(item => `.release-notes/${item.id}.md` === file.path)
+      ?? (identity.units.length === 1 ? identity.units[0] : undefined);
+    if (!unit || typeof file.content !== 'string' || !Array.isArray(unit.contributors?.contributors))
+      throw Error('CANDIDATE_PROJECTION_UNIT');
+    const tag = generated.units?.find(item => item.id === unit.id)?.tag;
+    if (identity.noteTemplate && (!tag || !generated.baseSha || !isConditionalTemplate(identity.noteTemplate)))
+      throw Error('CANDIDATE_PROJECTION_TEMPLATE');
+    return renderCandidateNote(file.path, file.content, unit.contributors.contributors, identity.noteTemplate
+      ? {template: identity.noteTemplate, repository, sourceSha: generated.baseSha!, tag: tag!} : undefined);
+  }).join('\n').replace(/\r\n?/g, '\n');
+}

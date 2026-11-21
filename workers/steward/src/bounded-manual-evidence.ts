@@ -1,5 +1,6 @@
 import {candidateCommentHeader,previewCommentMatches} from './preview-reference.js';
 import {renderCandidateNote} from '@splrad/steward-core/candidate-note';
+import {releasePleaseUnitId} from '../../../packages/core/src/release-workflow.js';
 import {nativeTree,nativeTreeEntries,verifyManualManagedChanges} from './bounded-tree-evidence.js';
 import {createHash} from 'node:crypto';
 import {assertDeliveryPath} from '../support/core/delivery-config.js';
@@ -64,14 +65,24 @@ async function verifyEditedNotes(g:GitReader,m:any,owner:ManualOwner|undefined,t
  }
  ensure(changes>0,'MANUAL_NOTE_SCOPE');
  const delivery=JSON.parse(bytes.get('.github/delivery.json')!.toString('utf8'));
- ensure([1,2].includes(delivery?.schemaVersion)&&Array.isArray(delivery.units),'MANUAL_NOTE_OWNER');
+ const template=owner.session.identity?.noteTemplate;
+ let units=delivery?.units;
+ if(delivery?.schemaVersion===3){
+   const settings=JSON.parse(bytes.get('release-please-config.json')!.toString('utf8'));
+   units=Object.entries(settings.packages??{}).map(([path,settings])=>{
+     const id=releasePleaseUnitId(path,(settings as {component?:string}).component);
+     return {id,path,notesPath:delivery.notes?.[path]??`.release-notes/${id}.md`};
+   });
+ }
+ ensure([1,2,3].includes(delivery?.schemaVersion)&&Array.isArray(units),'MANUAL_NOTE_OWNER');
  const preview=m.units.map((u:any)=>{
-   const declarations=delivery.units.filter((d:any)=>d?.id===u.id);
+   const declarations=units.filter((d:any)=>d?.id===u.id);
    const declaration=declarations[0];
    const frozen=owner.session.identity?.units?.find((v:any)=>v.id===u.id);
    ensure(declarations.length===1&&declaration.path===u.path&&declaration.notesPath===u.notesPath&&Array.isArray(frozen?.contributors?.contributors),'MANUAL_NOTE_OWNER');
    const raw=bytes.get(u.notesPath);ensure(raw,'MANUAL_NOTE_MISSING');
-   return renderCandidateNote(u.notesPath,new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(raw),frozen.contributors.contributors);
+   return renderCandidateNote(u.notesPath,new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(raw),frozen.contributors.contributors,
+     template?{template,repository:target.name,sourceSha:m.sourceSha,tag:u.tag}:undefined);
  }).join('\n').replace(/\r\n?/g,'\n');
  ensure(preview===m.projection.preview,'MANUAL_PROJECTION');
 }

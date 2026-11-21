@@ -176,8 +176,17 @@ it.each(['legacy','conditional'])('prepares a native Node delivery with the %s n
   const sharedTemplate=conditional ? await readFile('templates/repository/.github/release-template.md.mustache','utf8') : source['.github/release-template.md.mustache']!;
   source['.github/release-template.md.mustache']='disallowed product override';
   source[workflow]=adoptedWorkflow(initial);
-  source['.github/delivery.json']=JSON.stringify({schemaVersion:3,repositoryAuthors:f.delivery.repositoryAuthors});
+  source['.github/delivery.json']=JSON.stringify(conditional?{schemaVersion:3}:{schemaVersion:3,repositoryAuthors:f.delivery.repositoryAuthors});
   const sourceConfig=source['.github/delivery.json'];
+  if(conditional) {
+    const chunk=f.input.state.domainRecords.find(record=>(record.value as {documentKind?:string}).documentKind==='session')!.value as
+      {content:string;documentDigest:string};
+    const session=JSON.parse(chunk.content);
+    session.identity.authorsDigest=digest('[]');
+    session.identity.noteTemplate=sharedTemplate;
+    chunk.content=JSON.stringify(session);
+    chunk.documentDigest=digest(chunk.content);
+  }
   const bytes=Buffer.from(sourceConfig);
   context.cycle.deliveryConfigSha=createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex');
   context.cycle.buildWorkflow=f.request.buildWorkflow=workflow;
@@ -194,7 +203,7 @@ it.each(['legacy','conditional'])('prepares a native Node delivery with the %s n
     const document=JSON.parse(chunk.content);
     const actor={id:902,login:'verified-contributor',type:'User',profileUrl:'https://github.com/verified-contributor',avatarUrl:'https://avatars.githubusercontent.com/u/902'};
     const projection={actors:[actor],contributors:{contributors:[{id:actor.id,login:actor.login,profileUrl:actor.profileUrl,avatarUrl:actor.avatarUrl,alt:actor.login}],unresolved:0}};
-    Object.assign(document.session.identity,projection,{contributorOwnerId:null,units:[{id:'app',...projection}]});
+    Object.assign(document.session.identity,projection,{authorsDigest:digest('[]'),noteTemplate:sharedTemplate,units:[{id:'app',...projection}]});
     chunk.content=JSON.stringify(document);
     chunk.documentDigest=digest(chunk.content);
   }

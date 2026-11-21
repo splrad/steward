@@ -49,13 +49,12 @@ const { readReleaseRecords,writeReleaseRecords,releaseCommand } = await import(p
 const roots: string[] = [];
 afterEach(async () => { vi.unstubAllGlobals();for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-recovery', 'pending-recovery', 'legacy-pending-cancel',
-  'compact', 'conditional-organization', 'conditional-personal', 'conditional-compact'])('runs the native candidate adapter through protected state, real Git, upstream generation, fake SDK and same-PR editing: %s', async pinCase => {
+  'compact', 'conditional-organization', 'conditional-compact'])('runs the native candidate adapter through protected state, real Git, upstream generation, fake SDK and same-PR editing: %s', async pinCase => {
   const root = await mkdtemp(join(tmpdir(), 'candidate-native-test-')); roots.push(root); registerOfflineFixtureRoot(root);
   const directory = join(root, 'source'), remote = join(root, 'remote.git'); await mkdir(directory);
   const env = isolatedBuildEnvironment(process.env, root), identity = { name: 'Fixture', email: 'fixture@example.invalid' };
   const git = async (...args: string[]) => (await promisify(execFile)('git', args, { cwd: directory, env, encoding: 'utf8', windowsHide: true })).stdout.trim();
   const conditional = pinCase.startsWith('conditional-');
-  const personal = pinCase === 'conditional-personal';
   await git('init', '--initial-branch=main'); await git('config', 'user.name', identity.name); await git('config', 'user.email', identity.email);
   await mkdir(join(directory, '.github'));
   await mkdir(join(directory,'.github/workflows'));
@@ -64,6 +63,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   const buildWorkflow=explicitWorkflow??'.github/workflows/steward-release-publish.yml';
   const notesPath=compact?'.release-notes/root.md':'.release-notes/app.md';
   for(const path of (compact?[buildWorkflow]:[buildWorkflow,'.github/workflows/steward-release-channels.yml','.github/release-template.md.mustache']))
+    if(pinCase!=='old-source'||!path.endsWith('release-template.md.mustache'))
     await writeFile(join(directory,path),'# offline adopted source\n');
   const sourceControllerSha = (pinCase === 'new-source' ? 'f' : 'e').repeat(40);
   const publisherMatrix=explicitWorkflow?'    strategy:\n      matrix:\n        include:\n          - {unit: app, target: fixture}\n':'';
@@ -79,7 +79,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   const config = { 'separate-pull-requests': false, 'include-component-in-tag': false, packages: { '.': { 'release-type': 'simple', 'version-file': 'VERSION' } } };
   const repositoryAuthors=[{id:7,evidence:'offline explicit authorship record'}];
   const registeredChannels=explicitWorkflow?[{id:'github-release',required:true,location:'github',artifactIds:['app'],metadata:[]}]:[];
-  const delivery=compact?{schemaVersion:3,repositoryAuthors}:{schemaVersion:explicitWorkflow?2:1,buildWorkflow:explicitWorkflow,
+  const delivery=compact?{schemaVersion:3,...(conditional?{}:{repositoryAuthors})}:{schemaVersion:explicitWorkflow?2:1,buildWorkflow:explicitWorkflow,
     repositoryAuthors,units:[{id:'app',path:'.',notesPath:'.release-notes/app.md',
       assets:[{id:'app',name:'app-${version}.zip',mediaType:'application/zip'}],channels:registeredChannels}]};
   for (const [path, text] of Object.entries({ 'README.md': '# 应用\n\n公开使用说明。\n', 'VERSION': '0.0.0\n', 'release-please-config.json': JSON.stringify(config),
@@ -125,7 +125,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     requests.push({ method, path, body }); expect(url.origin).toBe('https://api.github.com'); let value: any;
     if (method === 'GET' && (path.includes('/git/ref/heads/') || path.endsWith('/pulls')))
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer fixture-read');
-    if(path==='/repos/fixture/product')value={id:1,full_name:'fixture/product',default_branch:'main',archived:false,disabled:false,owner:{id:personal?44:500,type:personal?'User':'Organization'}};
+    if(path==='/repos/fixture/product')value={id:1,full_name:'fixture/product',default_branch:'main',archived:false,disabled:false};
     else if(compact&&path.includes('/git/trees/')) {
       const lines=(await git('ls-tree','-r','-z',path.split('/').at(-1)!)).split('\0').filter(Boolean);
       value={truncated:false,tree:lines.map(line=>{const [,mode,type,sha,path]=/^(\d+) (\w+) ([a-f0-9]{40})\t(.+)$/.exec(line)!;return {mode,type,sha,path};})};
@@ -133,9 +133,9 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     else if(compact&&path.endsWith('/git/matching-refs/heads/steward/release-state')) {
       value=[{ref:'refs/heads/steward/release-state',object:{type:'commit',sha:await head('steward/release-state')}}];
     }
-    else if(compact&&path.includes('/contents/')) {
+    else if((compact||path.startsWith('/repos/splrad/steward/'))&&path.includes('/contents/')) {
       const file=path.split('/contents/')[1]!,ref=url.searchParams.get('ref');
-      if(path.startsWith('/repos/splrad/steward/'))expect(ref).toBe(sourceControllerSha);
+      if(path.startsWith('/repos/splrad/steward/'))expect(pinCase==='old-source'?[sourceControllerSha,'f'.repeat(40)]:[sourceControllerSha]).toContain(ref);
       const bytes=path.startsWith('/repos/splrad/steward/')
         ?await readFile(conditional?file:'packages/core/test/fixtures/release-template-compact.mustache')
         :Buffer.from(await git('show',ref+':'+file));
@@ -324,12 +324,13 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   expect(await nativeReleaseCandidate(request, options)).toMatchObject({ status: 'READY', prNumber: 9 });
   const firstHead = await head('steward/release-candidate'), firstCalls = modelCalls; expect(firstCalls).toBeGreaterThan(0); await refresh();
   const identityCalls = requests.filter(r => /\/commits\/|\/users\//.test(r.path)).length;
-  expect(comments[0].body).toContain('github.com&#x2F;contributor'); expect(comments[0].body).not.toContain('github.com&#x2F;author');
+  expect(comments[0].body).toContain('github.com&#x2F;contributor');
+  expect(comments[0].body.includes('github.com&#x2F;author')).toBe(conditional);
   if (conditional) {
     expect(comments[0].body).toContain('### 🐛 错误修复');
     expect(comments[0].body).toContain('width="48"');
     expect(comments[0].body.split('github.com&#x2F;contributor')).toHaveLength(2);
-    expect(comments[0].body.includes('github.com&#x2F;owner')).toBe(!personal);
+    expect(comments[0].body).toContain('github.com&#x2F;owner');
     expect(comments[0].body).not.toMatch(/committer-only|web-flow|&#x2F;robot|&#x2F;service|&#x2F;unknown|文档更新/);
   }
   pr.title = '人工修改标题'; pr.body = '人工修改正文'; pr.labels = [{ name: 'release:editing' }];
@@ -339,9 +340,13 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   expect(state.repository.candidate.editingAckHead).toBeUndefined(); expect(state.repository.candidate.prNumber).toBe(9);
   await git('fetch', '--no-tags', '--no-recurse-submodules', remote, 'refs/heads/steward/release-candidate');
   await git('switch', '-c', 'reviewed-notes', 'FETCH_HEAD');
-  const reviewedNotes = (await git('show', 'HEAD:'+notesPath))
+  const publishedVersion=JSON.parse(await git('show','HEAD:.release-please-manifest.json'))['.'];
+  const checksumUrl=`https://github.com/${request.repository}/releases/download/v${publishedVersion}/SHA256SUMS`;
+  let reviewedNotes = (await git('show', 'HEAD:'+notesPath))
     .replace(conditional ? '已核实的启动错误' : '## 概述', conditional ? '人工审核确认的启动错误' : '## 概述\n\n人工审核说明。')
-    .replace(/\n/g, '\r\n') + '\r\n';
+    .trimEnd();
+  if(conditional&&!compact)reviewedNotes+=`\n\n## 获取与使用\n\n**校验附件**。下载[校验和](<${checksumUrl}>)。\n`;
+  reviewedNotes=reviewedNotes.replace(/\n/g, '\r\n') + '\r\n';
   await writeFile(join(directory,notesPath),reviewedNotes);
   await git('add','--',notesPath);await git('commit','--signoff','-m','docs: review candidate notes');
   const humanHead = await git('rev-parse', 'HEAD'); await git('push', '--porcelain', remote, 'HEAD:refs/heads/steward/release-candidate');
@@ -458,14 +463,15 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   expect(archive).toMatchObject({ cycleId: `pr-9-${S}`, sourceSha: S, candidate: expect.objectContaining({prNumber:9,publishedHead:pr.head.sha}),
     pull: { number: 9, head: pr.head.sha, mergeCommitSha: S }, session: { pending: null, conflict: null } });
   expect(archive.documents.some((file: any) => file.path.endsWith('/session.json'))).toBe(true);
-  if (conditional) expect(archive.session.identity).toMatchObject({contributorOwnerId:personal?44:null,
-    contributors:{contributors:(personal?[42]:[42,44]).map(id=>expect.objectContaining({id}))}});
+  if (conditional) expect(archive.session.identity).toMatchObject({noteTemplate:expect.stringContaining('{{#hasContributors}}'),
+    contributors:{contributors:[7,42,44].map(id=>expect.objectContaining({id}))}});
   if (conditional && !compact) {
     const { tag, version } = merged.cycles[0].value.units[0];
     const contributors = archive.session.identity.units[0].contributors.contributors;
     const templateBytes = await readFile('templates/repository/.github/release-template.md.mustache');
     const build: BuildPipelineRecord = { schemaVersion: 1, kind: 'build', repositoryId: request.repositoryId,
-      fullName: request.repository, sourceSha: S, controllerSha: sourceControllerSha, delivery: { schemaVersion: 1, units: delivery.units!, repositoryAuthors: delivery.repositoryAuthors },
+      fullName: request.repository, sourceSha: S, controllerSha: sourceControllerSha,
+      delivery: { schemaVersion: 1, units: delivery.units!, repositoryAuthors: [] },
       cycleId: merged.cycles[0].value.id, requestKey: 'a'.repeat(64), buildRef: 'refs/heads/steward/build/fixture',
       runId: 10, runAttempt: 1, toolLocks: {}, deliverySha256: 'b'.repeat(64),
       templateSha256: createHash('sha256').update(templateBytes).digest('hex'),
@@ -477,6 +483,9 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     expect(frozen).toContain('## 版本记录');
     expect(frozen).toContain(`/blob/${S}/CHANGELOG.md`);
     expect(frozen).toContain('width="48"');
+    expect(frozen).toContain(checksumUrl);
+    build.delivery.units[0]!.channels=[{id:'github-release',required:true,location:'github',metadata:[]}];
+    await expect(pipelineNotes(build, 'app', directory)).rejects.toThrow('acquisition link');
     expect(frozen).not.toMatch(/committer-only|web-flow|&#x2F;robot|&#x2F;service|&#x2F;unknown/);
   }
   const tree = (await promisify(execFile)('git', ['ls-tree', '-r', '-z', archive.stateCommit], { cwd: directory, env, encoding: 'utf8', windowsHide: true })).stdout;
