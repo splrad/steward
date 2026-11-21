@@ -12,10 +12,5 @@
   },
   "engines": {
     "node": "^20.19.0 || >=22.12.0"
-  },
-  "overrides": {
-    "@github/copilot-sdk@1.0.26": {
-      "zod": "4.6.6"
-    }
   }
 }
