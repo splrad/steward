@@ -172,10 +172,10 @@ it.each(['legacy','conditional'])('prepares a native Node delivery with the %s n
         uses:'actions/upload-artifact@'+'a'.repeat(40),with:{name:deliveryName('github-release','app'),path:files.join('\n')}},
     ]}}});
   }
-  const initial=['dist/fixture-cli.tgz','dist/fixture-cli-*.sha256'];
+  const initial=['fixture-cli.tgz'];
   const sharedTemplate=conditional ? await readFile('templates/repository/.github/release-template.md.mustache','utf8') : source['.github/release-template.md.mustache']!;
   source['.github/release-template.md.mustache']='disallowed product override';
-  source[workflow]=adoptedWorkflow(initial);
+  source[workflow]=adoptedWorkflow(['dist/fixture-cli.tgz','dist/fixture-cli-*.sha256']);
   source['.github/delivery.json']=JSON.stringify(conditional?{schemaVersion:3}:{schemaVersion:3,repositoryAuthors:f.delivery.repositoryAuthors});
   const sourceConfig=source['.github/delivery.json'];
   if(conditional) {
@@ -330,7 +330,12 @@ it.each(['legacy','conditional'])('prepares a native Node delivery with the %s n
     await expect(prepare('native-directory-root-'+leaf,initial)).resolves.toMatchObject([{manifest:{artifacts:[{path:'fixture-cli.tgz'}]}}]);
   }
   source[workflow]=adoptedWorkflow(['dist/README']);
+  if(conditional) {
+    await expect(prepare('stale-package-link-in-readme-only-release',['README'])).rejects.toThrow('acquisition link is outside the release version');
+    source['.release-notes/app.md']='## 获取与使用\n\n**阅读说明**。下载[本版说明](<https://github.com/example/product/releases/download/v1.0.0/README>)。\n';
+  }
   await expect(prepare('native-single-extensionless-file',['README'])).resolves.toMatchObject([{manifest:{artifacts:[{path:'README'}]}}]);
+  source['.release-notes/app.md']=notes;
   source[workflow]=adoptedWorkflow(['dist/README','dist/fixture-cli.tgz']);
   await expect(prepare('literal-siblings-at-proven-root',['README',...initial])).resolves.toMatchObject([
     {manifest:{artifacts:[{path:'README'},{path:'fixture-cli.tgz'}]}},
