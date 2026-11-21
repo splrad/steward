@@ -38,11 +38,16 @@ async function fixture(t) {
     if(path==='.github/workflows/pages.yml'&&(state.workflowAtSource||ref!==S))return Buffer.from('name: Pages\n');
     throw Error('missing content');
   }
-  const io={async request(method,path){
+  const io={anonymous:()=>io,async request(method,path){
     calls.push([method,path]);assert.equal(method,'GET');
     const endpoint=path.replace('/repos/fixture/product','').split('?')[0];let value;
     if(!endpoint)value=repo;
     else if(endpoint==='/git/ref/heads/trunk')value={ref:'refs/heads/trunk',object:{type:'commit',sha:state.head}};
+    else if(endpoint==='/git/ref/heads/steward/release-state') {
+      if(!state.releaseState)return {status:404,headers:new Headers(),bytes:Buffer.from('{}')};
+      value={ref:'refs/heads/steward/release-state',object:{type:'commit',sha:state.releaseState}};
+    }
+    else if(endpoint==='/commits/v1.2.3')value={sha:S};
     else if(endpoint==='/git/ref/tags/v1.2.3')value={ref:'refs/tags/v1.2.3',object:{type:'commit',sha:state.ref}};
     else if(endpoint==='/releases')value=releases;
     else if(/^\/releases\/\d+$/.test(endpoint))value=releases.find(r=>r.id===Number(endpoint.split('/').at(-1)));
@@ -95,6 +100,24 @@ test('formal Release retains S after main advances; native final-byte verifier i
   assert.equal(result.status,'READY');assert.equal(result.source.sourceSha,S);assert.equal(result.source.releaseId,20);
   assert.ok(f.contentReads.some(([p,s])=>p==='release-please-config.json'&&s===S));
   assert.ok(f.calls.some(c=>c[0]==='gh'&&c[1]==='attestation'));assert.ok(f.calls.some(c=>c[0]==='gh'&&c[2]==='verify-asset'));
+});
+test('formal release Pages can read workflow-picked bytes without a public manifest file',async t=>{
+  const f=await fixture(t),delivery=await f.ports.readContent(f.options.reader,'.github/delivery.json',S);
+  f.assets.splice(1);
+  const stateSha='a'.repeat(40),blob=createHash('sha1').update('blob '+delivery.length+'\0').update(delivery).digest('hex');
+  f.state.releaseState=stateSha;
+  const unit={id:'app',version:'1.2.3',tag:f.release.tag_name,releaseId:f.release.id,
+    githubDelivery:{runId:111,attempt:1,artifactId:114,digest:'sha256:'+hash('archive')},
+    manifestDigest:hash('private manifest'),notesDigest:hash(f.release.body),
+    assets:[{id:'app',path:'app.bin',size:3,sha256:hash('app')}]};
+  const cycle={id:'pr-2-'+S,sourceSha:S,deliveryConfigSha:blob,units:[unit]};
+  const ports={...f.ports,readCycle:async()=>({stateSha,cycle,unit}),
+    verifyRelease:()=>assert.fail('uses the frozen publication facts')};
+  const result=await selectPagesSource(f.options,f.event,ports);
+  assert.equal(result.status,'READY');assert.equal(result.source.manifestDigest,unit.manifestDigest);
+  assert.ok(f.calls.some(([,path])=>path.endsWith('/releases/assets/200')));
+  f.bytes.set(200,Buffer.from('bad'));
+  await assert.rejects(selectPagesSource(f.options,f.event,ports),/formal release bytes/);
 });
 test('wired release mode uses the workflow pin at S even when main and coordinator advanced',async t=>{
   const f=await fixture(t),yaml=await readFile(new URL('../../templates/release/pages.yml',import.meta.url));

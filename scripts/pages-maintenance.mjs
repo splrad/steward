@@ -93,12 +93,13 @@ export async function servicePages({io,repository,store,coordinator,appBotId,tok
   if(completion!==undefined)check(completion&&completion.repositoryId===repository.id&&positive(completion.workflowId)
     &&positive(completion.runId)&&positive(completion.attempt),'COMPLETION_IDENTITY');
   const now=ports.now??Date.now,started=now(),deadline=started+3*60_000;let requests=0;
-  const bounded={request:async(method,path,...args)=>{
+  const scopedTransport=transport=>({request:async(method,path,...args)=>{
     check(now()<deadline&&requests++<800,'READ_BUDGET');
     check(path===`/repos/${repository.full_name}`||path.startsWith(`/repos/${repository.full_name}/`),'API_SCOPE');
     if(method==='POST')check(new RegExp(`^/repos/${repository.full_name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}/actions/(?:workflows/[1-9][0-9]*/dispatches|runs/[1-9][0-9]*/rerun)$`).test(path),'WRITE_SCOPE');
-    return io.request(method,path,...args);
-  }};
+    return transport.request(method,path,...args);
+  },...(transport.anonymous?{anonymous:()=>scopedTransport(transport.anonymous())}:{})});
+  const bounded=scopedTransport(io);
   const reader=new NativeEvidenceReader(bounded,repository.full_name);
   const current=ports.currentSource??(async()=>{
     const registration=await readPolicy?.();

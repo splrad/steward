@@ -158,7 +158,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       const config = await fileAt(baseSha, 'release-please-config.json'), manifest = await fileAt(baseSha, '.release-please-manifest.json');
       const settings=JSON.parse(config),versions=JSON.parse(manifest);
       delivery=parseDeliveryConfig(JSON.parse(await fileAt(baseSha,'.github/delivery.json')),settings);
-      assertProductDelivery(delivery,request.repository);
+      assertProductDelivery(delivery);
       const rules = await native(`rules/branches/${encodeURIComponent(request.defaultBranch)}`);
       if (!Array.isArray(rules) || !rules.some(r => r.type === 'non_fast_forward') || !rules.some(r => r.type === 'deletion')) fail('CANDIDATE_SOURCE_PROTECTION_REQUIRED');
       await checkPolicyAt(baseSha,delivery);

@@ -173,7 +173,7 @@ export async function releaseParticipation(repository,io,{includeUnits=false}={}
     };
     try {
       const contents=await Promise.all(names.map(async(path,i)=>JSON.parse(await readSource(path,files[i][0]))));
-      const delivery=parseDeliveryConfig(contents[0],contents[1]);assertProductDelivery(delivery,repository.full_name);
+      const delivery=parseDeliveryConfig(contents[0],contents[1]);assertProductDelivery(delivery);
       validateReleaseConfiguration(delivery,contents[1],contents[2]);
       if(delivery.buildWorkflow!==undefined) {
         const publisher=tree.tree.find(entry=>entry.path===delivery.buildWorkflow);

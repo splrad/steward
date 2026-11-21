@@ -644,9 +644,18 @@ function workflowGitHubDelivery(workflow:any) {
   const deliver=jobs.filter(job=>Array.isArray(job.steps)&&job.steps.some(step=>step?.id===githubDeliveryStep));
   if(!deliver.length)return null;
   const steps=deliver[0]!.steps!,uploads=steps.filter(step=>step?.id===githubDeliveryStep);
-  if(deliver.length!==1||uploads.length!==1||uploads[0].name!==githubDeliveryJobStep||!/^actions\/upload-artifact@[a-f0-9]{40}$/.test(uploads[0].uses??''))
+  const selected=uploads[0],prefix='delivery-github-release-';
+  const isUpload=(step:any)=>typeof step?.uses==='string'&&step.uses.startsWith('actions/upload-artifact@');
+  if(deliver.length!==1||uploads.length!==1||selected.name!==githubDeliveryJobStep||!/^actions\/upload-artifact@[a-f0-9]{40}$/.test(selected.uses??'')
+    ||typeof selected.with?.name!=='string'||!selected.with.name.startsWith(prefix)
+    ||![undefined,false,'false'].includes(selected.with.overwrite))
     fail('GitHub delivery workflow step');
-  return {sealed:steps.some(step=>step?.name==='business-freeze'&&/^actions\/upload-artifact@[a-f0-9]{40}$/.test(step.uses??'')),
+  for(const step of steps.filter(step=>step!==selected&&isUpload(step))) {
+    const other=String(step.with?.name??'artifact').match(/^[A-Za-z0-9_.-]+/)?.[0]??'';
+    if(prefix.startsWith(other)||other.startsWith(prefix))fail('ambiguous GitHub delivery upload name');
+  }
+  const freezeJob=jobs.find(job=>job.steps?.some(step=>step?.name==='business-freeze'&&isUpload(step)));
+  return {sealed:Boolean(freezeJob),sameJob:freezeJob===deliver[0],
     attested:jobs.some(job=>job.steps?.some(step=>/^actions\/attest(?:-build-provenance)?@[a-f0-9]{40}$/.test(step?.uses??'')))};
 }
 
@@ -657,19 +666,27 @@ export async function githubDeliveryArtifact(record:DeliveryRun,unitId:string,jo
   const artifacts=await pages(prefix+'/artifacts?per_page=100','artifacts');
   const entries=artifacts.filter(item=>typeof item.name==='string'&&(retainedAttempt===undefined
     ?item.name.startsWith(name):item.name===name+retainedAttempt));
-  const artifact=entries[0],attemptText=artifact?.name.slice(name.length);
-  const attempt=Number(attemptText);
-  if(entries.length!==1||!Number.isSafeInteger(attempt)||attempt<1||attempt>record.attempt||String(attempt)!==attemptText
-    ||!Number.isSafeInteger(artifact.id)||artifact.id<1||artifact.expired!==false
-    ||!/^sha256:[a-f0-9]{64}$/.test(artifact.digest)||artifact.workflow_run?.id!==runId||artifact.workflow_run?.head_sha!==sourceSha
-    )fail('GitHub delivery artifact identity: '+unitId);
-  const jobs=await pages(prefix+'/attempts/'+attempt+'/jobs?per_page=100','jobs'),matches=jobs.filter(job=>job.name===jobName);
-  const job=matches[0],steps=job?.steps?.filter((step:any)=>step.name===githubDeliveryJobStep),step=steps?.[0];
-  if(matches.length!==1||job.run_id!==runId||job.run_attempt!==attempt||job.head_sha!==sourceSha||job.status!=='completed'
-    ||steps?.length!==1||step?.status!=='completed'||step.conclusion!=='success')fail('GitHub delivery artifact provenance: '+unitId);
-  const created=Date.parse(artifact.created_at),started=Date.parse(step.started_at),completed=Date.parse(step.completed_at);
-  if(![created,started,completed].every(Number.isFinite)||created<started||created>completed)fail('GitHub delivery artifact chronology');
-  return {runId,attempt,artifactId:artifact.id,digest:artifact.digest};
+  const seen=new Set<number>(),ordered=entries.map(artifact=>{
+    const attemptText=artifact.name.slice(name.length),attempt=Number(attemptText);
+    if(!Number.isSafeInteger(attempt)||attempt<1||attempt>record.attempt||String(attempt)!==attemptText||seen.has(attempt)
+      ||!Number.isSafeInteger(artifact.id)||artifact.id<1||!/^sha256:[a-f0-9]{64}$/.test(artifact.digest)
+      ||artifact.workflow_run?.id!==runId||artifact.workflow_run?.head_sha!==sourceSha)fail('GitHub delivery artifact identity: '+unitId);
+    seen.add(attempt);return {artifact,attempt};
+  }).sort((a,b)=>a.attempt-b.attempt);
+  for(const {artifact,attempt} of ordered) {
+    const jobs=await pages(prefix+'/attempts/'+attempt+'/jobs?per_page=100','jobs'),matches=jobs.filter(job=>job.name===jobName);
+    const job=matches[0];
+    if(matches.length!==1||job.run_id!==runId||job.run_attempt!==attempt||job.head_sha!==sourceSha||job.status!=='completed')
+      fail('GitHub delivery artifact provenance: '+unitId);
+    if(job.conclusion!=='success')continue;
+    const steps=job.steps?.filter((step:any)=>step.name===githubDeliveryJobStep),step=steps?.[0];
+    if(artifact.expired!==false||steps?.length!==1||step?.status!=='completed'||step.conclusion!=='success')
+      fail('GitHub delivery artifact provenance: '+unitId);
+    const created=Date.parse(artifact.created_at),started=Date.parse(step.started_at),completed=Date.parse(step.completed_at);
+    if(![created,started,completed].every(Number.isFinite)||created<started||created>completed)fail('GitHub delivery artifact chronology');
+    return {runId,attempt,artifactId:artifact.id,digest:artifact.digest};
+  }
+  return fail('successful GitHub delivery artifact missing: '+unitId);
 }
 
 export async function verifyWorkflowDelivery(selection:string[],staged:string,sealed:string,unit:DeliveryUnit,manifest:ProductReleaseManifest) {
@@ -861,7 +878,8 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
     let selected=declared,publicBody:string|undefined,githubDelivery:WorkflowDeliveryReceipt|undefined;
     if(useWorkflowDelivery) {
       if(!chosen||!archive)fail('GitHub delivery requires the exact freeze Run');
-      githubDelivery=await githubDeliveryArtifact(chosen,unit.id,chosen.inspectJob,pages,archive.producerAttempt);
+      const jobName=workflowDelivery!.sameJob?chosen.inspectJob:'delivery/'+unit.id;
+      githubDelivery=await githubDeliveryArtifact(chosen,unit.id,jobName,pages,unit.githubDelivery?.attempt);
       if(unit.githubDelivery&&!sameWorkflowDelivery(unit.githubDelivery,githubDelivery))fail('frozen GitHub delivery changed');
       const staging=join(root,'github-release-'+unit.id);
       await downloadNativeArtifact({fullName:context.repository,artifactId:githubDelivery.artifactId,digest:githubDelivery.digest,

@@ -96,7 +96,7 @@ it('prepares a single native Node delivery, changes the public set in its workfl
       inputs:Object.fromEntries(['cycle_id','operation_key','source_sha','controller_sha'].map(key=>[key,{type:'string',required:true}]))
     }},jobs:{package:{name:'delivery/app',steps:[
       {run:'node build.mjs'},{id:'upload-github-release',name:'Upload GitHub release delivery',
-        uses:'actions/upload-artifact@'+'a'.repeat(40),with:{path:files.join('\n')}},
+        uses:'actions/upload-artifact@'+'a'.repeat(40),with:{name:'delivery-github-release-fixture',path:files.join('\n')}},
     ]}}});
   }
   const initial=['fixture-cli.tgz'];
@@ -122,6 +122,7 @@ it('prepares a single native Node delivery, changes the public set in its workfl
     value:{...chunk,schemaVersion:1,repositoryId:context.repositoryId,index:0,count:1,documentKind:'merged-candidate',content:merged,documentDigest:digest(merged)}}];
   const artifact={id:810,name:['delivery','github-release',context.repositoryId,'app',S,100,1].join('-'),expired:false,
     digest:'sha256:'+digest('node archive'),workflow_run:{id:100,head_sha:S},created_at:'2026-10-26T00:00:30.000Z'};
+  let deliveryConclusion='success';
   const io={request:async(method:string,path:string)=>{
     expect(method).toBe('GET');
     if(path.includes('/contents/')) {
@@ -132,7 +133,7 @@ it('prepares a single native Node delivery, changes the public set in its workfl
     if(path.endsWith('/runs/100'))return f.response(f.runs.get(2));
     if(path.includes('/artifacts?'))return f.response({total_count:1,artifacts:[artifact]});
     if(path.includes('/attempts/1/jobs?'))return f.response({total_count:1,jobs:[{id:1100,name:'delivery/app',run_id:100,run_attempt:1,
-      head_sha:S,status:'completed',steps:[{name:'Upload GitHub release delivery',status:'completed',conclusion:'success',started_at:START,completed_at:END}]}]});
+      head_sha:S,status:'completed',conclusion:deliveryConclusion,steps:[{name:'Upload GitHub release delivery',status:'completed',conclusion:'success',started_at:START,completed_at:END}]}]});
     throw Error('Unexpected workflow publication source '+path);
   }};
   const output=await mkdtemp(join(tmpdir(),'direct-github-delivery-'));roots.push(output);
@@ -152,6 +153,9 @@ it('prepares a single native Node delivery, changes the public set in its workfl
   const retained:WorkflowDeliveryReceipt={artifactId:artifact.id,runId:100,attempt:1,digest:artifact.digest};
   Object.assign(context.cycle.units[0]!,{githubDelivery:retained});
   expect(await prepare('retry',initial)).toMatchObject([{githubDelivery:retained,manifest:{artifacts:[{path:'fixture-cli.tgz'}]}}]);
+  deliveryConclusion='failure';
+  await expect(prepare('failed-delivery-job',initial)).rejects.toThrow('successful GitHub delivery artifact missing');
+  deliveryConclusion='success';
   artifact.id=811;
   await expect(prepare('changed-id',initial)).rejects.toThrow('receipt changed');
   delete context.cycle.units[0]!.githubDelivery;
@@ -159,4 +163,12 @@ it('prepares a single native Node delivery, changes the public set in its workfl
   source[workflow]=adoptedWorkflow(next);
   expect(source['.github/delivery.json']).toBe(sourceConfig);
   expect(await prepare('new-selection',next)).toMatchObject([{manifest:{artifacts:[{path:'checksums.txt'},{path:'fixture-cli.tgz'}]}}]);
+  const amended=JSON.parse(source[workflow]!);
+  amended.jobs.package.steps.push({uses:'actions/upload-artifact@'+'a'.repeat(40),with:{name:'delivery-github-release-duplicate'}});
+  source[workflow]=JSON.stringify(amended);
+  await expect(prepare('ambiguous-upload',next)).rejects.toThrow('ambiguous GitHub delivery upload name');
+  amended.jobs.package.steps.pop();
+  amended.jobs.archive={steps:[{name:'business-freeze',uses:'actions/upload-artifact@'+'a'.repeat(40),with:{name:'final-fixture'}}]};
+  source[workflow]=JSON.stringify(amended);
+  await expect(prepare('separate-legacy-freeze',next)).rejects.toThrow('workflow-owned product must deliver its files');
 });
