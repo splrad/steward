@@ -149,12 +149,14 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     const source = async () => {
       const baseSha = await fetchBranch(request.defaultBranch); if (!baseSha) fail('CANDIDATE_DEFAULT_BRANCH_UNAVAILABLE');
       if(expectedSourceSha!==undefined&&baseSha!==expectedSourceSha)fail('CANDIDATE_EVENT_SOURCE_CHANGED');
-      await checkRepositoryPolicy?.(path=>fileAt(baseSha,path));
       const config = await fileAt(baseSha, 'release-please-config.json'), manifest = await fileAt(baseSha, '.release-please-manifest.json');
       delivery = parseDeliveryConfig(JSON.parse(await fileAt(baseSha, '.github/delivery.json')));
       assertProductDelivery(delivery,request.repository);
       const rules = await native(`rules/branches/${encodeURIComponent(request.defaultBranch)}`);
       if (!Array.isArray(rules) || !rules.some(r => r.type === 'non_fast_forward') || !rules.some(r => r.type === 'deletion')) fail('CANDIDATE_SOURCE_PROTECTION_REQUIRED');
+      const nativeEntry=delivery.buildWorkflow!==undefined;
+      const priorRegistration=nativeEntry&&(await fileAt(baseSha,'.github/steward-central-policy',true))!==null;
+      await checkRepositoryPolicy?.(path=>fileAt(baseSha,path),{nativeEntry,priorRegistration});
       const settings = JSON.parse(config), versions = JSON.parse(manifest);
       const initial = Object.values(versions).every(version => !version || version === '0.0.0');
       const releases = initial ? await pages('releases') : [], tags = initial ? await pages('tags') : [];

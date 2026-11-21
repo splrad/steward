@@ -139,6 +139,7 @@ export async function validationInput(workspace,env=process.env) {
   const available=files.includes(declaration)
     ? productWorkflows(JSON.parse(await readFile(await regular(workspace,declaration),'utf8')),files) : [];
   const legacyPolicy=event.repository.full_name.startsWith('splrad/')&&event.repository.private!==false;
+  if(!legacyPolicy&&productApplicable)check(available.length>0,'PRODUCT_CI_NOT_CONFIGURED');
   if(legacyPolicy&&env.GITHUB_ACTIONS==='true')check(env.REPOSITORY_POLICY_TOKEN,'REPOSITORY_POLICY_TOKEN');
   const policyReader=env.REPOSITORY_POLICY_TOKEN&&legacyPolicy
     ? new NativeEvidenceReader(nativeEvidenceTransport(env.REPOSITORY_POLICY_TOKEN),event.repository.full_name) : null;
