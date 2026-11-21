@@ -570,6 +570,10 @@ export async function dispatchNativeRun(input:EvidenceContext, requestKey:string
     } else if(observations.some(value=>value.kind!=='READ_FAILURE'))fail('dispatch preparation missing');
     const deferred=Math.max(0,...observations.map(value=>Date.parse(value.nextCheckAt??'')||0));
     if(Date.parse(observedAt)<deferred)return result('WAIT','NATIVE_RETRY_AFTER',new Date(deferred).toISOString());
+    if(cycle.workflowDelivery&&request.purpose!=='build') {
+      const units=new Set(channelTargets(context,JSON.parse(request.inputs.targets_json!)).map(target=>target.unitId));
+      await verifyContinuationReleases(context,io,units);
+    }
     const preparedValue=observation('PREPARED');
     // UNCHANGED means another caller may already own this exact attempt. It cannot grant a second send.
     if(await save(preparedValue)!=='APPLIED')return result('UNKNOWN','DISPATCH_INTENT_NOT_NEW');
