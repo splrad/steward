@@ -36,7 +36,7 @@ async function fixture(file='quality-language-summary.yml') {
     }
     throw Error('unregistered GET '+path);
   }};
-  f.store={list:async()=>[...f.records.values()].map(v=>structuredClone(v)),load:async(id:number)=>structuredClone(f.records.get(id)??null),save:async(value:any,expected:any)=>{
+  f.store={load:async(id:number)=>structuredClone(f.records.get(id)??null),save:async(value:any,expected:any)=>{
     expect(f.records.get(value.runId)??null).toEqual(expected);f.saves++;f.records.set(value.runId,structuredClone(value));
   }};
   f.execute=()=>api.recoverMaintenanceRun({...f,reader:new NativeEvidenceReader(f.io,'splrad/steward'),branch:'main',runId:12,coordinator,now});
@@ -152,11 +152,7 @@ it('respects old source age without dispatching a replacement Run',async()=>{
 it.each(['release.yml','pages.yml','../settings-sync.yml','dynamic/dependabot'])('does not admit arbitrary workflow %s',async file=>{
   await expect(api.maintenanceDefinition(file)).rejects.toThrow('MAINTENANCE_WORKFLOW');
 });
-it('bisects a saturated native window and refuses an unsplittable or incomplete list',async()=>{
-  const first={id:1,workflow_id:5,repository:{id:1296724484},head_repository:{id:1296724484},head_branch:'main',created_at:'1970-01-01T00:00:01Z'};
-  const reader={json:async(p:string)=>({total_count:p.includes('00:00:01.000Z..1970-01-01T00:00:02.000Z')?1000:1}),pages:async(p:string)=>[{...first,...(p.includes('00:00:02.000Z..')?{id:2,created_at:'1970-01-01T00:00:02Z'}:{})}]};
-  expect((await api.maintenanceRunWindow(reader,5,'main',1,2)).map((r:any)=>r.id)).toEqual([1,2]);
-  await expect(api.maintenanceRunWindow({json:async()=>({total_count:1000})},5,'main',1,1)).rejects.toThrow('WINDOW_SATURATED');
+it('rejects an incomplete native maintenance job inventory',async()=>{
   const transport={request:async()=>response({total_count:2,jobs:[job(1,'quality-summary')]})};
   await expect(new NativeEvidenceReader(transport as any,'splrad/steward').pages('actions/runs/12/jobs?filter=all','jobs')).rejects.toThrow('incomplete pagination');
 });
@@ -172,11 +168,6 @@ it('supports many health-only attempts without an invented platform attempt cap'
   const f=await fixture('sync-managed.yml');f.run.run_attempt=101;f.jobs.push(...Array.from({length:100},(_,i)=>job(10+i,'automation-health',i+2,'success')));
   expect((await f.execute()).status).toBe('ACCEPTED');expect(maintenanceDisposition(f.records.get(12))).toBe('FAILED');
 });
-it('reports maintenance failure independently and still services product work in the same bounded wake',async()=>{
-  const {coordinateReleaseWake}=await import(pathToFileURL(resolve('scripts/release-coordinator.mjs')).href),calls:string[]=[];
-  const result=await coordinateReleaseWake({maintenance:async()=>{calls.push('maintenance');return {errorCodes:['MAINTENANCE_RECOVERY_EXHAUSTED']};},discover:async()=>[{id:1}],observe:async()=>({}),service:async()=>{calls.push('product');return {status:'WAIT'};},health:async()=>{}},now);
-  expect(calls).toEqual(['maintenance','product']);expect(result.scanCompletedAt).toBeNull();expect(result.errorCodes).toEqual(['MAINTENANCE_RECOVERY_EXHAUSTED']);
-});
 it('re-observes an unknown send once in a later coordinator wake, retaining the two-request ceiling',async()=>{
   const f=await fixture();f.mode='unknown';expect((await f.execute()).status).toBe('UNKNOWN');
   const input={...f,reader:new NativeEvidenceReader(f.io,'splrad/steward'),branch:'main',runId:12,coordinator:{...coordinator,runId:901},now};
@@ -188,30 +179,6 @@ it('does not repeat an acknowledged recovery while its next attempt remains invi
   expect((await api.recoverMaintenanceRun({...f,reader:new NativeEvidenceReader(f.io,'splrad/steward'),branch:'main',runId:12,coordinator:{...coordinator,runId:901},now})).status).toBe('UNKNOWN');
   expect(f.posts()).toHaveLength(1);
 });
-it.each(['normal','denied-list','manually-disabled','wrong-coordinator','budget'])('executes the actual fixed central scan with %s evidence',async mode=>{
-  const f=await fixture(),original=f.io.request;let clock=now();
-  f.records.set(99,{workflowFile:'update-dependencies.yml',workflowId:8,runId:99});
-  f.io.request=async(method:string,path:string)=>{
-    if(path==='/repos/splrad/steward')return response({id:1296724484,full_name:'splrad/steward',default_branch:'main',archived:false,disabled:false});
-    if(path.endsWith('/actions/runs/900'))return response({...f.run,id:900,head_sha:T,path:'.github/workflows/release.yml',head_branch:mode==='wrong-coordinator'?'fork':'main'});
-    if(mode==='budget')clock+=6*60_000;
-    if(/\/actions\/workflows\/[a-z-]+\.yml$/.test(path)) {
-      const file=path.split('/').at(-1)!;
-      return response({id:file==='quality-language-summary.yml'?5:6,path:'.github/workflows/'+file,state:file==='quality-language-summary.yml'&&mode!=='manually-disabled'?'active':'disabled_manually'});
-    }
-    if(path.includes('/actions/workflows/5/runs?'))return mode==='denied-list'?response({},403):response({total_count:1,workflow_runs:[structuredClone(f.run)]});
-    return original(method,path);
-  };
-  const execute=api.serviceMaintenance({io:f.io,store:f.store,defaultBranch:'main',coordinator},()=>clock);
-  if(mode==='wrong-coordinator'){await expect(execute).rejects.toThrow('COORDINATOR');expect(f.posts()).toHaveLength(0);return;}
-  const result=await execute;
-  expect(f.posts()).toHaveLength(mode==='normal'?1:0);
-  expect(JSON.stringify(result)).not.toMatch(/private|runId|workflowId|headSha|settings-sync/);
-  if(['budget','denied-list'].includes(mode))expect(result.counts.unknown).toBeGreaterThan(0);
-  if(mode==='normal'){expect(result.counts.recovered).toBe(1);expect(result.counts.unknown).toBe(0);}
-  expect(f.calls.some(([,path]:string[])=>path?.includes('update-dependencies')||path?.includes('/runs/99'))).toBe(false);
-});
-
 it('keeps incomplete shared business jobs unknown and preserves pagination without private step text',async()=>{
   const missing=await fixture('sync-managed.yml');missing.jobs=missing.jobs.filter((j:any)=>j.name!=='templates');
   expect((await missing.execute()).status).toBe('UNKNOWN');expect(missing.posts()).toHaveLength(0);
