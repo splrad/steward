@@ -69,14 +69,15 @@ export async function sourceOptions(reader,repository,controllerSha,appBotId) {
   const mode=await read('STEWARD_DOCS_SOURCE');
   const buildOnly=await read('STEWARD_PAGES_BUILD_ONLY');
   check(['','true','false'].includes(buildOnly),'BUILD_ONLY');
-  let unitId='';
+  let unitId='',declared=false,defaultSha;
   if(mode) {
     check(['default-branch','release'].includes(mode),'MODE');
     const branch=await reader.json('git/ref/heads/'+encodeURIComponent(repository.default_branch));
     check(branch.ref==='refs/heads/'+repository.default_branch && branch.object?.type==='commit' && /^[a-f0-9]{40}$/.test(branch.object.sha),'DEFAULT_HEAD');
-    const workflow=YAML.parse((await pagesContent(reader,pagesWorkflow,branch.object.sha)).toString('utf8'));
+    defaultSha=branch.object.sha;
+    const workflow=YAML.parse((await pagesContent(reader,pagesWorkflow,defaultSha)).toString('utf8'));
     const source=workflow?.env?.STEWARD_DOCS_SOURCE;
-    const declared=source!==undefined && source!=='' &&
+    declared=source!==undefined && source!=='' &&
       !['${{ vars.STEWARD_DOCS_SOURCE }}',"${{ vars.STEWARD_DOCS_SOURCE || 'default-branch' }}"].includes(source);
     if(declared && source!==mode)return {status:'SOURCE_MODE_CONFLICT'};
     if(mode==='release') {
@@ -84,7 +85,7 @@ export async function sourceOptions(reader,repository,controllerSha,appBotId) {
       if(declared && (!unitId || workflow.env.STEWARD_DOCS_UNIT!==unitId))return {status:'SOURCE_UNIT_CONFLICT'};
     }
   }
-  return {reader,repositoryId:repository.id,mode,unitId,controllerSha,appBotId,...(buildOnly==='true'?{buildOnly:true}:{})};
+  return {reader,repositoryId:repository.id,mode,unitId,controllerSha,appBotId,declared,defaultSha,...(buildOnly==='true'?{buildOnly:true}:{})};
 }
 
 /** Fixed product Pages consumer. Records and API writes remain in this repository; no release cycle mutation. */
@@ -102,12 +103,22 @@ export async function servicePages({io,repository,store,coordinator,appBotId,tok
   const bounded=scopedTransport(io);
   const reader=new NativeEvidenceReader(bounded,repository.full_name);
   const current=ports.currentSource??(async()=>{
-    const registration=await readPolicy?.();
-    const site=registration?.adoption==='central'?registration.policy.site:undefined;
-    if(site!==undefined&&site?.mode!=='build-and-deploy')return {status:'DISABLED'};
     const options=await sourceOptions(reader,repository,coordinator.controllerSha,appBotId);
     if(options.status)return options;
     if(options.buildOnly)return {status:'BUILD_ONLY'};
+    if(!options.mode)return {status:'DISABLED'};
+    let registration;
+    if(readPolicy) {
+      if(repository.private!==false || !options.declared)registration=await readPolicy();
+      else {
+        const marker=await bounded.request('GET',reader.path('contents/.github/steward-central-policy?ref='+options.defaultSha));
+        check(marker.status===200||marker.status===404,'REPOSITORY_POLICY_UNAVAILABLE');
+        if(marker.status===200)registration=await readPolicy();
+      }
+    }
+    if(registration?.adoption==='paused')return {status:'DISABLED'};
+    const site=registration?.adoption==='central'?registration.policy.site:undefined;
+    if(site!==undefined&&site?.mode!=='build-and-deploy')return {status:'DISABLED'};
     if(site)check(site.workflow===pagesWorkflow&&site.source===options.mode
       &&(site.unit??'')===options.unitId,'REPOSITORY_POLICY_CONFLICT');
     return currentPagesSource({...options,publicOnly:completion!==undefined},{

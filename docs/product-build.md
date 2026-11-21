@@ -12,4 +12,6 @@ LayerScape 的产品入口是 [steward-release-publish.yml](https://github.com/s
 
 单位只有声明了相应交件步骤才加入该渠道。不同单位可使用各自的 `delivery/<unit-id>` job，也可用名为 `delivery/${{ matrix.unit }}` 的 job 为全部单位采用相同渠道。受信外部适配器使用同一 Run 中各自独立的制品。GHCR 对应 `upload-ghcr-assets` 和 `Upload GHCR assets delivery`，WinGet 对应 `upload-winget` 和 `Upload WinGet delivery`。制品名称按上述格式替换渠道段。外部步骤的 `env.STEWARD_CHANNEL_LOCATION` 需与已授权适配器目标匹配。现有外部适配器仍要求单位的正式 GitHub Release，WinGet 还核对公开安装文件的原名与字节。缺少外部制品时，该渠道保留待处理状态。
 
+当同一交件 job 的固定版本 `actions/attest` 或 `actions/attest-build-provenance` 对该上传步骤的全部选件生成证明时，中央会核验这些文件的证明。若由其它 job 生成整组交件的证明，可在该上传步骤声明 `env.STEWARD_DELIVERY_ATTESTED: 'true'`。证明要求按各单位、渠道独立生效。
+
 历史手动构建入口 `product-build.yml`、`release-build.yml` 及其 .NET、Node、custom、OCI Profile 说明见[维护分支对应版本的构建文档](https://github.com/splrad/steward/blob/e01e3ca89fc98548211e89e9da0f9d6cb803c731/docs/product-build.md)。接入其他产品时应核对产品实际使用的构建步骤、交付资产与中央证据接口。

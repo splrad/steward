@@ -297,7 +297,7 @@ export async function serviceRepositoryPages({app,root,repository,coordinator,co
     const store=pagesGitStore({repositoryId:repository.id,refresh:()=>fetchState(root,repository,token,'steward/governance-state',{governanceAppId}),
       writeDirectory,defaultBranch:repository.default_branch,token,identity});
     return servicePages({io,repository,store,completion,appBotId:app.appBotId,token,coordinator,
-      readPolicy:repository.private===false?undefined:()=>mergedRepositoryPolicy(app,repository)});
+      readPolicy:()=>mergedRepositoryPolicy(app,repository)});
   });
 }
 

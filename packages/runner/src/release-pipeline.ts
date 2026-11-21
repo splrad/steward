@@ -211,7 +211,8 @@ export async function pipelineChannelDownload(context:EvidenceContext,target:Cha
     await verifyContinuationReleases(context,io,new Set([target.unitId]));
     const handoff=original.handoff;
     if(!handoff?.units.get(unit.id)?.has(frozen.channelId))fail('frozen channel source');
-    const {manifest}=await readWorkflowChannel(context,unit,frozen.channelId,handoff.attested,directory,source.controllerDirectory,token!,io,workflowDownload,gh);
+    const attested=handoff.attestations.get(unit.id)?.has(frozen.channelId)===true;
+    const {manifest}=await readWorkflowChannel(context,unit,frozen.channelId,attested,directory,source.controllerDirectory,token!,io,workflowDownload,gh);
     return {...manifest,channelFiles:manifest.artifacts.map(asset=>asset.path)};
   }
   let publicSelection:string[]|undefined;
@@ -698,8 +699,7 @@ function workflowGitHubDelivery(workflow:any) {
     if(prefix.startsWith(other)||other.startsWith(prefix))fail('ambiguous GitHub delivery upload name');
   }
   const freezeJob=jobs.find(job=>job.steps?.some(step=>step?.name==='business-freeze'&&isUpload(step)));
-  return {sealed:Boolean(freezeJob),sameJob:freezeJob===deliver[0],
-    attested:jobs.some(job=>job.steps?.some(step=>/^actions\/attest(?:-build-provenance)?@[a-f0-9]{40}$/.test(step?.uses??'')))};
+  return {sealed:Boolean(freezeJob),sameJob:freezeJob===deliver[0]};
 }
 
 type DeliveryRun=Pick<PipelineSource,'fullName'|'sourceSha'|'repositoryId'|'runId'|'attempt'>;
@@ -713,7 +713,7 @@ const deliverySteps={
   winget:'Upload WinGet delivery',
 } as const;
 type WorkflowChannel=keyof typeof deliverySteps;
-type WorkflowHandoff={units:Map<string,Map<WorkflowChannel,string>>;attested:boolean};
+type WorkflowHandoff={units:Map<string,Map<WorkflowChannel,string>>;attestations:Map<string,Set<WorkflowChannel>>;attested:boolean};
 function matchesDeliveryName(name:unknown,channel:WorkflowChannel,unit?:string) {
   if(typeof name!=='string')return false;
   const actual=name.replace(/\$\{\{\s*([a-z_.]+)\s*}}/g,'${{$1}}');
@@ -728,6 +728,9 @@ export function isWorkflowDeliveryUnavailable(error:unknown) {
   return error instanceof Error && /^ARTIFACT_DOWNLOAD_HTTP_(404|410|429|500|502|503|504)$/.test(error.message);
 }
 function unavailable(message:string):never { throw new WorkflowDeliveryUnavailable('RELEASE_PIPELINE: '+message); }
+function deliveryPaths(value:unknown) {
+  return typeof value==='string'?value.split(/\r?\n/).map(path=>path.trim()).filter(Boolean).sort():[];
+}
 
 export function applyWorkflowDelivery(delivery:DeliveryConfig,bytes:Uint8Array):WorkflowHandoff {
   const document=parseDocument(new TextDecoder('utf-8',{fatal:true}).decode(bytes),{uniqueKeys:true});
@@ -735,6 +738,7 @@ export function applyWorkflowDelivery(delivery:DeliveryConfig,bytes:Uint8Array):
   const workflow=document.toJS({maxAliasCount:0}),jobs=Object.values(workflow?.jobs??{}) as any[];
   if(!jobs.length)fail('workflow delivery jobs');
   const known=new Map(delivery.units.map(unit=>[unit.id,new Map<WorkflowChannel,string>()]));
+  const attestations=new Map<string,Set<WorkflowChannel>>();
   const submissions=new Set<unknown>();
   const allSteps=jobs.flatMap(job=>job.steps??[]);
   if(allSteps.some(step=>step?.name==='business-freeze' && /^actions\/upload-artifact@/.test(step.uses??'')))
@@ -745,12 +749,25 @@ export function applyWorkflowDelivery(delivery:DeliveryConfig,bytes:Uint8Array):
     const explicit=/^delivery\/([a-z][a-z0-9-]*)$/.exec(job.name??'')?.[1];
     const ids=explicit?[explicit]:/^delivery\/\$\{\{\s*matrix\.unit\s*}}$/.test(job.name??'')?[...known.keys()]:[];
     const location=channel==='github-release'?'github':step.env?.STEWARD_CHANNEL_LOCATION;
+    const proof=step.env?.STEWARD_DELIVERY_ATTESTED;
     if(!ids.length||ids.some(id=>!known.has(id)||known.get(id)!.has(channel))
       ||typeof location!=='string'||!location||/[\r\n\0]/.test(location)
       ||step.name!==deliverySteps[channel]||!/^actions\/upload-artifact@[a-f0-9]{40}$/.test(step.uses??'')
       ||!matchesDeliveryName(step.with?.name,channel,explicit)
-      ||![undefined,false,'false'].includes(step.with.overwrite))fail('workflow channel delivery step');
-    for(const id of ids)known.get(id)!.set(channel,location);
+      ||![undefined,false,'false'].includes(step.with.overwrite)
+      ||![undefined,true,'true'].includes(proof))fail('workflow channel delivery step');
+    const paths=deliveryPaths(step.with.path);
+    const attested=proof===true||proof==='true'||paths.length>0&&job.steps.some((candidate:any)=>
+      /^actions\/attest(?:-build-provenance)?@[a-f0-9]{40}$/.test(candidate?.uses??'')
+      &&JSON.stringify(deliveryPaths(candidate.with?.['subject-path']))===JSON.stringify(paths));
+    for(const id of ids) {
+      known.get(id)!.set(channel,location);
+      if(attested) {
+        let channels=attestations.get(id);
+        if(!channels)attestations.set(id,channels=new Set());
+        channels.add(channel);
+      }
+    }
     submissions.add(step);
   }
   const adoptedChannels=new Set([...known.values()].flatMap(channels=>[...channels.keys()]));
@@ -762,7 +779,7 @@ export function applyWorkflowDelivery(delivery:DeliveryConfig,bytes:Uint8Array):
     }
   }
   for(const unit of delivery.units)unit.channels=[...known.get(unit.id)!].map(([id,location])=>({id,location,required:true}));
-  return {units:known,attested:allSteps.some(step=>/^actions\/attest(?:-build-provenance)?@[a-f0-9]{40}$/.test(step?.uses??''))};
+  return {units:known,attestations,attested:attestations.size>0};
 }
 
 async function workflowDeliveryArtifact(record:DeliveryRun,unitId:string,jobName:string,channel:WorkflowChannel,stepName:string,
@@ -851,7 +868,8 @@ export async function prepareWorkflowChannelReceipts(context:EvidenceContext,roo
         unavailable('formal channel release pending');
       await verifyContinuationReleases(context,io,new Set([unitId]));
       const directory=join(root,unitId+'-'+channelId);
-      const {frozen}=await readWorkflowChannel(context,unit,channelId,handoff.attested,directory,controllerDirectory,token,io,download,gh);
+      const attested=handoff.attestations.get(unitId)?.has(channelId)===true;
+      const {frozen}=await readWorkflowChannel(context,unit,channelId,attested,directory,controllerDirectory,token,io,download,gh);
       receipts.push({unitId,frozen});
     } catch(error) {
       if(!isWorkflowDeliveryUnavailable(error))throw error;
@@ -890,9 +908,9 @@ async function prepareWorkflowPublication(options:{
   context:EvidenceContext;delivery:DeliveryConfig;units:CycleRecord['units'];versions:Map<string,string>;
   reader:NativeEvidenceReader;pages:NativePages;source:(path:string)=>Promise<string>;template:string;
   root:string;controllerDirectory:string;token:string;history:{path:string;commit:string;value:unknown}[];
-  attested:boolean;unavailable?:(unitId:string)=>void;
+  handoff:WorkflowHandoff;unavailable?:(unitId:string)=>void;
 },download:typeof downloadWorkflowArtifact) {
-  const {context,delivery,units,versions,reader,pages,source,template,root,controllerDirectory,token,history,attested}=options;
+  const {context,delivery,units,versions,reader,pages,source,template,root,controllerDirectory,token,history,handoff}=options;
   const {cycle}=context,requests=cycle.dispatches.filter(dispatch=>dispatch.purpose==='build');
   if(requests.length!==1||requests[0]!.canonicalRunId===null)
     return {status:'WAIT' as const,reason:'BUILD_BINDING_REQUIRED',publishInvoked:false as const};
@@ -922,6 +940,7 @@ async function prepareWorkflowPublication(options:{
       await download({fullName:context.repository,artifactId:nativeReceipt.artifactId,digest:nativeReceipt.digest,directory,
         policyDirectory:controllerDirectory,home:join(root,'download-'+unit.id)},token);
       const artifacts=await workflowFiles(directory);
+      const attested=handoff.attestations.get(unit.id)?.has('github-release')===true;
       const manifest:WorkflowReleaseManifest={schemaVersion:4,repositoryId:context.repositoryId,fullName:context.repository,cycleId:cycle.id,
         unitId:unit.id,version:target.version,packageVersion,tag:target.tag,sourceSha:cycle.sourceSha,buildWorkflow:dispatchWorkflow(request),
         buildRef:'refs/heads/'+request.ref,workflowId:run.workflowId,runId:run.id,attempt:nativeReceipt.attempt,delivery:nativeReceipt,attested,artifacts};
@@ -1003,7 +1022,7 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
           throw error;
         }
       },
-      root,controllerDirectory,token,history,attested:original.handoff?.attested??false,
+      root,controllerDirectory,token,history,handoff:original.handoff!,
       ...(unavailable?{unavailable}:{})},workflowDownload);
   if (!Array.isArray(matrix) || !matrix.length) fail('native producer matrix');
   const toolLocks = { 'controller/mise.lock': hash((await source('splrad/steward', cycle.controllerSha, 'mise.lock')).bytes),...projection.toolLocks };

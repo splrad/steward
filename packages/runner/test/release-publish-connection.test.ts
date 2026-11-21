@@ -3,8 +3,9 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, writeFile, readdir, copyFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { githubDeliveryArtifact, mergedBuildCycle, pipelineChannelDownload, pipelineIdentity, pipelinePreparePublication, prepareWorkflowChannelReceipts, readCycleDelivery } from '../src/release-pipeline.js';
+import { applyWorkflowDelivery, githubDeliveryArtifact, mergedBuildCycle, pipelineChannelDownload, pipelineIdentity, pipelinePreparePublication, prepareWorkflowChannelReceipts, readCycleDelivery } from '../src/release-pipeline.js';
 import { githubUnits, parseReleaseRecord } from '../../core/src/release-observation.js';
+import { parseDeliveryConfig } from '../../core/src/delivery-config.js';
 import { sealProductArtifacts, fileDigest, type ProductReleaseManifest } from '../src/release-artifacts.js';
 import * as downloads from '../src/native-artifact-download.js';
 import { productPipelineFixture } from './product-pipeline-fixture.js';
@@ -15,6 +16,22 @@ import type { WorkflowDeliveryReceipt } from '../../core/src/release-observation
 const roots:string[]=[];
 afterEach(async()=>{vi.restoreAllMocks();vi.unstubAllEnvs();for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
 const deliveryName=(channel:string,unit:string)=>'delivery-'+channel+'-${{ github.repository_id }}-'+unit+'-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}';
+it('binds required provenance to each unit and channel selection',()=>{
+  const delivery=parseDeliveryConfig({schemaVersion:3,repositoryAuthors:[{id:1,evidence:'approved author record'}]},
+    {packages:{'packages/signed':{component:'signed'},'packages/plain':{component:'plain'}}});
+  const standard=(unit:string,path:string)=>({id:'upload-github-release',name:'Upload GitHub release delivery',
+    uses:'actions/upload-artifact@'+'a'.repeat(40),with:{name:deliveryName('github-release',unit),path}});
+  const attest=(path:string)=>({uses:'actions/attest-build-provenance@'+'b'.repeat(40),with:{'subject-path':path}});
+  const workflow={jobs:{
+    signed:{name:'delivery/signed',steps:[attest('dist/signed.tgz'),standard('signed','dist/signed.tgz'),
+      {id:'upload-ghcr-assets',name:'Upload GHCR assets delivery',uses:'actions/upload-artifact@'+'a'.repeat(40),
+        env:{STEWARD_CHANNEL_LOCATION:'ghcr.io/example/product'},with:{name:deliveryName('ghcr-assets','signed'),path:'dist/registry.tgz'}}]},
+    plain:{name:'delivery/plain',steps:[attest('dist/internal.tgz'),standard('plain','dist/plain.tgz')]},
+  }};
+  const {attestations}=applyWorkflowDelivery(delivery,Buffer.from(JSON.stringify(workflow)));
+  expect([...attestations.get('signed')!]).toEqual(['github-release']);
+  expect(attestations.has('plain')).toBe(false);
+});
 it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-run','unbound-run','undispatched','foreign-run','foreign-source','formal-after-expiry','private-formal','partial-draft','corrupt-formal','missing-public-asset'])('prepares publication from exact native objects: %s',async kind=>{
   const f=productPipelineFixture(1,false,kind==='python-freeze'?'requirements-build.txt':'global.json');
   if(kind==='python-freeze') {
@@ -96,7 +113,8 @@ it('prepares a single native Node delivery, changes the public set in its workfl
   function adoptedWorkflow(files:string[]) {
     return JSON.stringify({'run-name':'为 GitHub 打包 ${{ inputs.operation_key }}',on:{workflow_dispatch:{
       inputs:Object.fromEntries(['cycle_id','operation_key','source_sha','controller_sha'].map(key=>[key,{type:'string',required:true}]))
-    }},jobs:{package:{name:'delivery/app',steps:[
+    }},jobs:{internal:{steps:[{uses:'actions/attest@'+'b'.repeat(40),with:{'subject-path':'internal.zip'}}]},
+      package:{name:'delivery/app',steps:[
       {run:'node build.mjs'},{id:'upload-github-release',name:'Upload GitHub release delivery',
         uses:'actions/upload-artifact@'+'a'.repeat(40),with:{name:deliveryName('github-release','app'),path:files.join('\n')}},
     ]}}});
