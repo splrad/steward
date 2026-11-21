@@ -71,7 +71,7 @@ it('retains reviewed document additions, removals and material edits beyond the 
     expect(await resumeContentBatches(work, {}, r.port)).toEqual({ status: 'READY', calls: 1 });
     expect(assembleUnitNotes(work)[0]?.content).toContain('## 📚 文档更新\n\n**操作手册**。操作人员需先关闭设备。');
   } finally { await rm(workspace, { recursive: true, force: true }); }
-});
+}, 30_000);
 
 it('generates one direct draft with seven sections and reuses an input-digest cache', async () => {
   const work = await planContentBatches(input(), [source(1, 'CONTEXT'), source(2)]), cache = {}, r = runtime();

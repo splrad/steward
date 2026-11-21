@@ -244,8 +244,8 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
     await stable();if(!projectionEvidence)throw Error('CANDIDATE_PROJECTION_UNKNOWN');
     return { status: 'READY', reason: 'CACHED_OBSERVATION', head: observed.head,projectionEvidence };
   }
-  // Missing author facts block only this repository's new takeover, not implementation or other repositories.
-  selectReleaseContributors([], source.authors);
+  // Check the identity inputs before running upstream generation.
+  selectReleaseContributors([], source.authors, source.confirmedHumans);
   const generation = await io.generation(source.baseSha);
   if (generation.status !== 'READY') return { status: 'WAIT', reason: generation.status };
   candidate.contentGenerationDigest = digest([generation.snapshot.sourceDigest, generation.snapshot.configDigest, source.authorsDigest]); await save();
