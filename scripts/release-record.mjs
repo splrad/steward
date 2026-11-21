@@ -12,7 +12,7 @@ import { githubUnits, decodeReleaseRecord, decodeStateFile, stateRecordOwner, as
   inspectNativeCycle, recoverNativeCycle, archiveFile, nativeReadFile, nativeEvidenceTransport,
   dispatchNativeRun, prepareBuildDispatch, defaultBuildWorkflow, dispatchWorkflow, encodeRepositoryPath, verifyDispatchWorkflow, inspectPublications, invokePublication, inspectCycleHistory, verifyFrozenReceipts, completionFile, decodeCompletionArchive,
   pipelinePreparePublication, readCycleDelivery, prepareNormalizedDelivery, NativeGitHubRelease, nativeGhCommand, nativeReleaseDownload, NativeEvidenceReader, nativeRunFact,
-  publicationManifestDigest,sameWorkflowDelivery,prepareWorkflowChannelReceipts,isWorkflowDeliveryUnavailable,
+  publicationManifestDigest,sameWorkflowDelivery,prepareWorkflowChannelReceipts,
   retainedChannelObservations, observeNativeChannels, readChannelSourceRejections, selectChannelDispatch, prepareChannelDispatch, channelTargetsDigest, verifyChannelResult, verifyContinuationReleases, evaluateCompletion } from '../packages/runner/dist/index.js';
 
 import {withReleaseAdoption,recoverReleaseCaches} from './release-adoption.mjs';
@@ -653,15 +653,10 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
     const normalized=await ensureCycleDelivery(request,snapshot,cycle,{token,io,centralIo,now});snapshot=normalized.snapshot;request={...request,directory:normalized.directory};
     const alreadyPublished=new Set(),unavailable=new Set(),reader=new NativeEvidenceReader(io,request.repository),targets=githubUnits(cycle);
     for(const unit of targets.filter(unit=>unit.releaseId!==null&&unit.githubDelivery)) {
-      try {
-        const release=await reader.json('releases/'+unit.releaseId);
-        if(release.draft===false) {
-          await verifyContinuationReleases(context,io,new Set([unit.id]));
-          alreadyPublished.add(unit.id);
-        }
-      } catch(error) {
-        if(!cycle.workflowDelivery||!isWorkflowDeliveryUnavailable(error))throw error;
-        unavailable.add(unit.id);
+      const release=await reader.json('releases/'+unit.releaseId);
+      if(release.draft===false) {
+        await verifyContinuationReleases(context,io,new Set([unit.id]));
+        alreadyPublished.add(unit.id);
       }
     }
     if(alreadyPublished.size&&alreadyPublished.size===targets.length)return {status:'OBSERVED',reason:'FORMAL_RELEASES_VERIFIED',publishInvoked:false};

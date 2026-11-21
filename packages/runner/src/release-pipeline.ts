@@ -722,7 +722,7 @@ function matchesDeliveryName(name:unknown,channel:WorkflowChannel,unit?:string) 
   return [prefix+'${{github.sha}}'+suffix,prefix+'${{inputs.source_sha}}'+suffix].includes(actual);
 }
 class WorkflowDeliveryUnavailable extends Error {}
-export function isWorkflowDeliveryUnavailable(error:unknown) {
+function isWorkflowDeliveryUnavailable(error:unknown) {
   if(error instanceof WorkflowDeliveryUnavailable)return true;
   if(error instanceof EvidenceReadError)return [404,410,429,500,502,503,504].includes(error.status);
   return error instanceof Error && /^ARTIFACT_DOWNLOAD_HTTP_(404|410|429|500|502|503|504)$/.test(error.message);
@@ -863,10 +863,12 @@ export async function prepareWorkflowChannelReceipts(context:EvidenceContext,roo
     if(channelId!=='ghcr-assets'&&channelId!=='winget')fail('workflow channel implementation');
     const unit=context.cycle.units.find(unit=>unit.id===unitId)!;
     if(unit.channelDeliveries?.some(receipt=>receipt.channelId===channelId))continue;
+    if(unit.releaseId===null||(await reader.json('releases/'+unit.releaseId)).draft===true) {
+      missing.push({unitId,channelId});
+      continue;
+    }
+    await verifyContinuationReleases(context,io,new Set([unitId]));
     try {
-      if(unit.releaseId===null||(await reader.json('releases/'+unit.releaseId)).draft===true)
-        unavailable('formal channel release pending');
-      await verifyContinuationReleases(context,io,new Set([unitId]));
       const directory=join(root,unitId+'-'+channelId);
       const attested=handoff.attestations.get(unitId)?.has(channelId)===true;
       const {frozen}=await readWorkflowChannel(context,unit,channelId,attested,directory,controllerDirectory,token,io,download,gh);

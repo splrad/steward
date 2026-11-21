@@ -250,7 +250,7 @@ it('selects separate GitHub and authorized channel assemblies and restores only 
   const makeArtifact=(id:number,attempt:number)=>({id,name:['delivery','ghcr-assets',repositoryId,unit.id,S,100,attempt].join('-'),
     expired:false,digest:'sha256:'+digest(String(id)),workflow_run:{id:100,head_sha:S},created_at:'2026-10-26T00:00:30.000Z'});
   const artifacts=[makeArtifact(810,1)],reads:string[]=[];
-  let publicBytes='public!!';
+  let publicBytes='public!!',publicStatus=200;
   const io={anonymous:()=>io,request:async(method:string,path:string)=>{
     expect(method).toBe('GET');reads.push(path);
     if(path.includes('/contents/')) {
@@ -263,7 +263,7 @@ it('selects separate GitHub and authorized channel assemblies and restores only 
     if(path.includes('/attempts/1/jobs?'))return f.response({total_count:1,jobs:[{name:'delivery/layerscape',id:1001,
       run_id:100,run_attempt:1,head_sha:S,status:'completed',conclusion:'success',
       steps:[{name:'Upload GHCR assets delivery',status:'completed',conclusion:'success',started_at:START,completed_at:END}]}]});
-    if(path.endsWith('/assets/51'))return f.response(publicBytes);
+    if(path.endsWith('/assets/51'))return f.response(publicBytes,publicStatus);
     if(path.includes('/releases/50/assets?'))return f.response([{id:51,name:'desktop.exe',size:8,state:'uploaded'}]);
     if(path.endsWith('/releases/50'))return f.response({id:50,tag_name:unit.tag,author:{id:appBotId},body:'approved notes',draft:false,immutable:true});
     if(path.endsWith('/commits/'+unit.tag))return f.response({sha:S});
@@ -283,6 +283,9 @@ it('selects separate GitHub and authorized channel assemblies and restores only 
   publicBytes='conflict';
   await expect(prepareWorkflowChannelReceipts(context,root,root,'fixture-token',[],io,download)).rejects.toThrow('formal release bytes');
   publicBytes='public!!';
+  publicStatus=404;
+  await expect(prepareWorkflowChannelReceipts(context,root,root,'fixture-token',[],io,download)).rejects.toMatchObject({status:404});
+  publicStatus=200;
   unit.channelDeliveries=prepared.receipts.map(receipt=>receipt.frozen);
   expect(parseReleaseRecord('cycle',cycle).units[0]?.channelDeliveries).toEqual(unit.channelDeliveries);
   const {delivery}=await readCycleDelivery(context,[],io);
