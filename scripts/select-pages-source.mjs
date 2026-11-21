@@ -75,7 +75,10 @@ async function cycleForRelease(reader,release,unitId) {
   const path='git/ref/heads/steward/release-state';
   let ref;
   try {ref=await reader.json(path);}
-  catch(error) {if(error instanceof EvidenceReadError&&error.status===404)return null;throw error;}
+  catch(error) {
+    if(error instanceof EvidenceReadError && error.status === 404)return null;
+    throw error;
+  }
   const stateSha=ref.object?.sha;
   check(ref.ref==='refs/heads/steward/release-state'&&ref.object?.type==='commit'&&sha(stateSha),'RELEASE_STATE');
   const {sha:sourceSha}=await reader.json('commits/'+encodeURIComponent(release.tag_name));

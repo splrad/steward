@@ -216,17 +216,17 @@ export async function pipelineChannelDownload(context:EvidenceContext,target:Cha
   }
   let publicSelection:string[]|undefined;
   const github=source?.unit.channels.find(channel=>channel.id==='github-release');
-  if (source && github && (github.artifactIds?.length !== undefined && github.artifactIds.length !== source.unit.assets.length
-    || github.metadata?.length !== undefined && github.metadata.length !== 4)) {
+  if (source && (unit.githubDelivery || (github && (github.artifactIds?.length !== undefined
+    && github.artifactIds.length !== source.unit.assets.length || github.metadata?.length !== undefined && github.metadata.length !== 4)))) {
     const token=process.env.GH_TOKEN;
     if (!token) return fail('channel source authentication');
-    await verifyContinuationReleases(context,nativeEvidenceTransport(token));
+    await verifyContinuationReleases(context,io,new Set([target.unitId]));
     const inventory=source.unit.assets.map(asset=>({id:asset.id,path:unit.assets.find(item=>item.id===asset.id)?.path ?? asset.name}));
     publicSelection=channelFiles(source.unit,target.channelId,inventory);
     if (!publicSelection.every(path=>unit.assets.some(asset=>asset.path===path))) {
       const root=await mkdtemp(join(tmpdir(),'steward-channel-freeze-'));
       try {
-        const records=await pipelinePreparePublication(context,root,source.controllerDirectory,token,gh,undefined,undefined,download,source.history,new Set([target.unitId]));
+        const records=await pipelinePreparePublication(context,root,source.controllerDirectory,token,gh,io,undefined,download,source.history,new Set([target.unitId]));
         if (!Array.isArray(records)) return fail('channel freeze unavailable');
         const record=records.find(record=>record.unitId===target.unitId);
         if (!record || record.manifest.schemaVersion===4
@@ -962,10 +962,11 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
     const prefix = `repos/${context.repository}/`; if (!path.startsWith(prefix)) fail('native page target');
     return reader.pages(path.slice(prefix.length).replace('?per_page=100', ''), field);
   };
-  if(delivery.schemaVersion===3||workflowDelivery&&!workflowDelivery.sealed)
+  if(workflowDelivery&&!workflowDelivery.sealed)fail('legacy workflow delivery requires its complete original freeze');
+  if(delivery.schemaVersion===3)
     return prepareWorkflowPublication({context,delivery,units,versions:projection.versions,reader,pages,template:template.bytes.toString('utf8'),
       source:async path=>(await source(context.repository,cycle.sourceSha,path)).bytes.toString('utf8'),
-      root,controllerDirectory,token,history,attested:original.handoff?.attested??workflowDelivery?.attested??false,
+      root,controllerDirectory,token,history,attested:original.handoff?.attested??false,
       ...(unavailable?{unavailable}:{})},workflowDownload);
   if (!Array.isArray(matrix) || !matrix.length) fail('native producer matrix');
   const toolLocks = { 'controller/mise.lock': hash((await source('splrad/steward', cycle.controllerSha, 'mise.lock')).bytes),...projection.toolLocks };

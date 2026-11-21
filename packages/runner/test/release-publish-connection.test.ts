@@ -271,3 +271,46 @@ it('uses the first successful original upload when a failed attempt also left an
   await expect(githubDeliveryArtifact(input,'app','delivery/app',pages)).resolves.toMatchObject({artifactId:802,attempt:2});
   await expect(githubDeliveryArtifact(input,'app','delivery/app',pages,1)).rejects.toThrow('successful GitHub delivery artifact missing');
 });
+
+it('uses actual public attachments for an external channel on a legacy complete seal',async()=>{
+  const f=productPipelineFixture(),{context}=f;
+  const unit=context.cycle.units[0]!,name='app-1.0.0.exe',bytes='verified installer data';
+  Object.assign(unit,{releaseId:50,manifestDigest:digest('complete seal'),notesDigest:digest('notes'),
+    assets:[{id:'app',path:name,size:bytes.length,sha256:digest(bytes)}],
+    githubDelivery:{artifactId:500,runId:100,attempt:1,digest:'sha256:'+digest('selected ZIP')}});
+  context.cycle.requiredChannels=[{unitId:unit.id,channelId:'ghcr-assets'}];
+  const {unitId,channelId}=context.cycle.requiredChannels[0]!;
+  const target={unitId,channelId,releaseId:50,version:unit.version,manifestDigest:unit.manifestDigest!};
+  const original=f.delivery.units[0]!;
+  const source={unit:{...original,assets:original.assets.map(({id,name,mediaType})=>({id,name,mediaType})),
+    channels:[...original.channels,{id:channelId,required:true,location:'ghcr.io/example/product',metadata:[]}]},
+    controllerDirectory:process.cwd(),history:[]};
+  const assets=[{id:51,name,size:bytes.length,state:'uploaded'}],release={id:50,tag_name:unit.tag,
+    author:{id:context.appBotId},body:'notes',draft:false,immutable:true};
+  const repo={id:context.repositoryId,full_name:context.repository,private:false,visibility:'public',archived:false,disabled:false};
+  const io={anonymous:()=>io,request:async(method:string,path:string)=>{
+    expect(method).toBe('GET');
+    if(path.includes('/commits/'))return f.response({sha:S});
+    if(path.endsWith('/assets/51'))return f.response(bytes);
+    if(path.includes('/releases/50/assets?'))return f.response(assets);
+    if(path.endsWith('/releases/50'))return f.response(release);
+    if(path.endsWith(context.repository))return f.response(repo);
+    throw Error('Unexpected native object '+path);
+  }};
+  const gh=async (args:readonly string[])=>{
+    if(args[0]==='api')return JSON.stringify(args.includes('--slurp')?[assets]:repo);
+    if(args[0]==='release')return '{}';
+    if(args[0]==='attestation')return JSON.stringify([{verificationResult:{signature:{certificate:{
+      sourceRepositoryIdentifier:String(context.repositoryId),buildTrigger:'workflow_dispatch',
+      runInvocationURI:`https://github.com/${context.repository}/actions/runs/100/attempts/1`,
+    }}}}]);
+    throw Error('Unexpected GitHub command');
+  };
+  const root=await mkdtemp(join(tmpdir(),'legacy-channel-workflow-delivery-'));roots.push(root);
+  const destination=join(root,'download');
+  vi.stubEnv('GH_TOKEN','fixture-token');
+  await expect(pipelineChannelDownload(context,target,destination,gh,async(_repo,id,path)=>{
+    expect(id).toBe(51);await writeFile(path,bytes);
+  },source,io)).resolves.toMatchObject({channelFiles:[name]});
+  expect(await readdir(destination)).toEqual([name]);
+});
