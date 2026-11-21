@@ -10,6 +10,7 @@ import addFormatsModule from 'ajv-formats';
 import schema from '../../../schema/release-state.schema.json' with { type: 'json' };
 import historicalRepositorySchema from '../../../schema/repository-state-v2.schema.json' with { type: 'json' };
 import { assertDeliveryPath } from './delivery-config.js';
+import { isBuildWorkflow } from './release-workflow.js';
 import { decodeBuildJson } from './build-manifest.js';
 import { sha256Hex } from './fingerprint.js';
 import { decodeNativeArchive, decodeNativeReadObservation, decodeNativeDispatchObservation, decodeNativeRetryLimit, decodeNativePublication, decodeNativeChannel, decodeNativeChannelRead, decodeNormalizedDelivery, decodeNativeSourceRejection } from './native-evidence.js';
@@ -53,8 +54,10 @@ export function githubUnits(cycle: Pick<CycleRecord,'units'|'freezeOnly'>): Cycl
 }
 export interface CycleRecord {
   id: string; prNumber: number; sourceSha: string; controllerSha: string; deliveryConfigSha: string; units: CycleUnit[];
+  buildWorkflow?: string;
   requiredChannels: { unitId: string; channelId: string }[];
   dispatches: { requestKey: string; operationKey: string; purpose: 'build' | 'channel-submit' | 'channel-verify'; workflowId: number;
+    buildWorkflow?: string;
     ref: string; sourceSha: string; targetKey: string; inputs: Record<string, string>; inputDigest: string; executionSha: string;
     sentAt: string; searchWindows: { start: string; end: string; observedAt: string; complete: boolean }[]; canonicalRunId: number | null;
     nativeResponseEvidencePath: string | null; continuationOfRunId: number | null; retryLimitEvidencePath: string | null }[];
@@ -93,6 +96,7 @@ export function parseReleaseRecord<K extends keyof RecordKinds>(kind: K, value: 
   }
   if (kind === 'cycle') {
     const record = value as CycleRecord;
+    if (record.buildWorkflow !== undefined && !isBuildWorkflow(record.buildWorkflow)) fail('cycle workflow');
     if (record.id !== `pr-${record.prNumber}-${record.sourceSha}` || !record.units.length || !unique(record.units.map(unit => unit.id))) fail('cycle identity');
     const pair = (value: { unitId: string; channelId: string }) => JSON.stringify([value.unitId, value.channelId]);
     if (!unique(record.requiredChannels.map(pair)) || record.requiredChannels.some(item => !record.units.some(unit => unit.id === item.unitId))) fail('required channels');
@@ -105,6 +109,7 @@ export function parseReleaseRecord<K extends keyof RecordKinds>(kind: K, value: 
       fail('freeze-only receipt');
     if (!unique(record.dispatches.map(item => item.requestKey))) fail('duplicate request');
     for (const request of record.dispatches) {
+      if (request.buildWorkflow !== (request.purpose === 'build' ? record.buildWorkflow : undefined)) fail('dispatch workflow');
       if (request.sourceSha !== record.sourceSha || request.canonicalRunId !== null && request.nativeResponseEvidencePath === null
         || (request.continuationOfRunId === null) !== (request.retryLimitEvidencePath === null)) fail('dispatch evidence');
       const inputs=request.inputs;

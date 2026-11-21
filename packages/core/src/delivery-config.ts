@@ -31,9 +31,11 @@ export function assertDeliveryArtifactMapping(unit: {
 }
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import schema from '../../../schema/delivery.schema.json' with { type: 'json' };
+import { isBuildWorkflow } from './release-workflow.js';
 
 export interface DeliveryConfig {
   schemaVersion: 1 | 2;
+  buildWorkflow?: string;
   repositoryAuthors: { id: number; evidence: string }[];
   units: DeliveryUnit[];
 }
@@ -89,6 +91,7 @@ export function parseDeliveryConfig(input: unknown): DeliveryConfig {
   }
   if (!validateDelivery(input)) throw new Error('DELIVERY_CONFIG_STRUCTURE');
   const value = structuredClone(input) as unknown as DeliveryConfig;
+  if (value.buildWorkflow !== undefined && !isBuildWorkflow(value.buildWorkflow)) throw new Error('DELIVERY_BUILD_WORKFLOW');
   const unique = (values: unknown[]) => new Set(values).size === values.length;
   if (!unique(value.units.map(unit => unit.id)) || !unique(value.units.map(unit => unit.path.toLowerCase()))
     || !unique(value.repositoryAuthors.map(author => author.id)) || value.repositoryAuthors.some(author => !author.evidence.trim()))

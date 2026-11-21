@@ -18,7 +18,8 @@ test('registered native entry separates Pages writes from administrator policy r
     disabled:false,archived:false,owner:{id:302208797}};
   const central=1296724484,bot=301115370,pin='b'.repeat(40),sha='a'.repeat(40),target='.github/workflows/pages.yml';
   const site={repositoryId:repo.id,repository:repo.full_name,workflowId:8};
-  const wf=await fs.readFile(new URL('../../templates/release/pages.yml',import.meta.url));
+  const wf=Buffer.from((await fs.readFile(new URL('../../templates/release/pages.yml',import.meta.url),'utf8'))
+    .replace("STEWARD_DOCS_SOURCE: ${{ vars.STEWARD_DOCS_SOURCE || 'default-branch' }}",'STEWARD_DOCS_SOURCE: default-branch'));
   const productRun={id:12,run_attempt:1,status:'completed',conclusion:'cancelled',path:target,repository:repo,head_repository:repo,
     event:'push',head_branch:'main',head_sha:sha,workflow_id:8,display_title:'Pages default-branch '+sha+' 12',
     created_at:new Date(Date.now()-60000).toISOString(),updated_at:new Date(Date.now()-10000).toISOString()};
@@ -88,7 +89,9 @@ test('registered native entry separates Pages writes from administrator policy r
       const k=p.slice(prefix.length);
       if(k==='')return json(repo);
       if(k==='/actions/variables/STEWARD_DOCS_SOURCE')return json({name:'STEWARD_DOCS_SOURCE',value:'default-branch'});
+      if(k==='/actions/variables/STEWARD_PAGES_BUILD_ONLY')return json({},404);
       if(k==='/git/ref/heads/main')return json({ref:'refs/heads/main',object:{type:'commit',sha}});
+      if(k==='/contents/.github/steward-central-policy')return json({},404);
       if(k==='/contents/'+target)return json({type:'file',path:target,encoding:'base64',size:wf.length,content:wf.toString('base64'),
         sha:createHash('sha1').update('blob '+wf.length+'\0').update(wf).digest('hex')});
       if(k==='/actions/workflows/pages.yml')return json({id:8,state:'active',path:target});
@@ -119,9 +122,8 @@ test('registered native entry separates Pages writes from administrator policy r
     ruleProblem='';await main(env);
     assert.deepEqual(actions,['/actions/runs/12/rerun']);assert.equal(revoked,tokenRequests.length);
     assert.equal(tokenRequests.filter(request=>request.repository_ids[0]===repo.id).length,4);
-    assert.ok(tokenRequests.some(request=>request.repository_ids[0]===admin.id));
-    for(const request of tokenRequests)assert.deepEqual(request.permissions,request.repository_ids[0]===admin.id
-      ?{metadata:'read',contents:'read'}:{metadata:'read',contents:'write',actions:'write',administration:'read',
+    assert.ok(tokenRequests.every(request=>request.repository_ids[0]!==admin.id));
+    for(const request of tokenRequests)assert.deepEqual(request.permissions,{metadata:'read',contents:'write',actions:'write',administration:'read',
         actions_variables:'read',deployments:'read',attestations:'read',organization_administration:'write'});
     const record=JSON.parse(await git('--git-dir='+remote,'show',branch+':maintenance/pages/12.json'));
     assert.equal(record.runId,12);assert.equal(record.requests[0].responseStatus,201);
