@@ -706,8 +706,8 @@ function workflowGitHubDelivery(workflow:any) {
 
 type DeliveryRun=Pick<PipelineSource,'fullName'|'sourceSha'|'repositoryId'|'runId'|'attempt'>;
 export async function githubDeliveryArtifact(record:DeliveryRun,unitId:string,jobName:string,pages:NativePages,retainedAttempt?:number,
-  verifyAttempt?:(attempt:number)=>Promise<boolean>):Promise<WorkflowDeliveryReceipt> {
-  return workflowDeliveryArtifact(record,unitId,jobName,'github-release',githubDeliveryJobStep,pages,retainedAttempt,verifyAttempt);
+  resolveBuildAttempt?:DeliveryBuildAttempt):Promise<WorkflowDeliveryReceipt> {
+  return workflowDeliveryArtifact(record,unitId,jobName,'github-release',githubDeliveryJobStep,pages,retainedAttempt,resolveBuildAttempt);
 }
 
 const deliverySteps={
@@ -828,8 +828,9 @@ export function applyWorkflowDelivery(delivery:DeliveryConfig,bytes:Uint8Array):
   return {units:known,attestations,paths:pathsByUnit,attested:attestations.size>0};
 }
 
+type DeliveryBuildAttempt=(producerAttempt:number,jobId:number)=>Promise<number|null>;
 async function workflowDeliveryArtifact(record:DeliveryRun,unitId:string,jobName:string,channel:WorkflowChannel,stepName:string,
-  pages:NativePages,retainedAttempt?:number,verifyAttempt?:(attempt:number)=>Promise<boolean>):Promise<WorkflowDeliveryReceipt> {
+  pages:NativePages,retainedAttempt?:number,resolveBuildAttempt?:DeliveryBuildAttempt):Promise<WorkflowDeliveryReceipt> {
   const {repositoryId,fullName,runId,sourceSha}=record,prefix='repos/'+fullName+'/actions/runs/'+runId;
   const name=['delivery',channel,repositoryId,unitId,sourceSha,runId,''].join('-');
   const artifacts=await pages(prefix+'/artifacts?per_page=100','artifacts');
@@ -847,15 +848,18 @@ async function workflowDeliveryArtifact(record:DeliveryRun,unitId:string,jobName
     const job=matches[0];
     if(matches.length!==1||job.run_id!==runId||job.run_attempt!==attempt||job.head_sha!==sourceSha||job.status!=='completed')
       fail('GitHub delivery artifact provenance: '+unitId);
-    if(job.conclusion!=='success'||verifyAttempt&&!await verifyAttempt(attempt))continue;
+    if(job.conclusion!=='success')continue;
     const steps=job.steps?.filter((step:any)=>step.name===stepName),step=steps?.[0];
     if(steps?.length!==1||step?.status!=='completed'||step.conclusion!=='success')
       fail('GitHub delivery artifact provenance: '+unitId);
+    const buildAttempt=resolveBuildAttempt?await resolveBuildAttempt(attempt,job.id):attempt;
+    if(buildAttempt===null)continue;
+    if(!Number.isSafeInteger(buildAttempt)||buildAttempt<attempt||buildAttempt>record.attempt)fail('workflow delivery build attempt');
     if(artifact.expired===true)unavailable('expired '+channel+' artifact: '+unitId);
     if(artifact.expired!==false)fail('GitHub delivery artifact expiry evidence');
     const created=Date.parse(artifact.created_at),started=Date.parse(step.started_at),completed=Date.parse(step.completed_at);
     if(![created,started,completed].every(Number.isFinite)||created<started||created>completed)fail('GitHub delivery artifact chronology');
-    return {runId,attempt,artifactId:artifact.id,digest:artifact.digest};
+    return {runId,attempt,...(buildAttempt===attempt?{}:{buildAttempt}),artifactId:artifact.id,digest:artifact.digest};
   }
   return unavailable('successful '+(channel==='github-release'?'GitHub delivery':channel)+' artifact missing: '+unitId);
 }
@@ -867,6 +871,37 @@ async function readWorkflowBuild(context:EvidenceContext,request:CycleRecord['di
   return run;
 }
 const successfulBuild=(run:Awaited<ReturnType<typeof readWorkflowBuild>>)=>run.status==='completed'&&run.conclusion==='success';
+
+function workflowDeliveryBuildAttempt(context:EvidenceContext,request:CycleRecord['dispatches'][number],reader:NativeEvidenceReader,
+  build:Awaited<ReturnType<typeof readWorkflowBuild>>,jobName:string,pages:NativePages,retained:boolean):DeliveryBuildAttempt {
+  const ref='repos/'+context.repository+'/actions/runs/'+build.id;
+  const jobsByAttempt=new Map<number,Promise<NativeJobAttempt>>();
+  const jobs=(attempt:number)=>{
+    let value=jobsByAttempt.get(attempt);
+    if(!value) {
+      value=pages(ref+'/attempts/'+attempt+'/jobs?per_page=100','jobs').then(rows=>{
+        const selected=rows.filter(job=>job.name===jobName).map(jobFact);
+        if(selected.length>1||selected.some(job=>job.runId!==build.id||job.runAttempt!==attempt||job.headSha!==context.cycle.sourceSha))
+          fail('workflow delivery job origin');
+        return {attempt,jobs:selected};
+      });
+      jobsByAttempt.set(attempt,value);
+    }
+    return value;
+  };
+  return async (producerAttempt,jobId)=>{
+    if(producerAttempt===build.runAttempt)return producerAttempt;
+    const producer=await readWorkflowBuild(context,request,reader,producerAttempt);
+    if(!retained&&successfulBuild(producer))return producerAttempt;
+    if(producer.status!=='completed')return null;
+    const attempts:NativeJobAttempt[]=[];
+    for(let attempt=1;attempt<=build.runAttempt;attempt++)attempts.push(await jobs(attempt));
+    // A failed-job rerun may carry the original successful delivery. New or changed
+    // executions at the same job name cannot inherit an earlier artifact.
+    const origin=originalJobExecutions(attempts).at(-1);
+    return origin?.runAttempt===producerAttempt&&origin.id===jobId?build.runAttempt:null;
+  };
+}
 
 function workflowReleaseType(settings:any,delivery:DeliveryConfig,unitId:string):string {
   const unit=delivery.units.find(value=>value.id===unitId);
@@ -883,16 +918,18 @@ async function readWorkflowChannel(context:EvidenceContext,unit:CycleRecord['uni
   if(requests.length===0)unavailable('original channel build required');
   if(requests.length!==1)fail('conflicting original channel builds');
   const request=requests[0]!,selected=unit.channelDeliveries?.find(item=>item.channelId===channelId);
-  const run=await readWorkflowBuild(context,request,reader,selected?.delivery.attempt);
+  const frozen=selected?.delivery;
+  const run=await readWorkflowBuild(context,request,reader,frozen?.buildAttempt??frozen?.attempt);
   if(!successfulBuild(run))unavailable('original channel build not ready');
   const prefix='repos/'+context.repository+'/';
   const pages:NativePages=async(path,field)=>{
     if(!path.startsWith(prefix))fail('native page target');
     return reader.pages(path.slice(prefix.length).replace('?per_page=100',''),field);
   };
+  const jobName='delivery/'+unit.id;
   const receipt=await workflowDeliveryArtifact({fullName:context.repository,sourceSha:cycle.sourceSha,repositoryId:context.repositoryId,
-    runId:run.id,attempt:run.runAttempt},unit.id,'delivery/'+unit.id,channelId,deliverySteps[channelId],pages,selected?.delivery.attempt,
-    async attempt=>attempt===run.runAttempt||successfulBuild(await readWorkflowBuild(context,request,reader,attempt)));
+    runId:run.id,attempt:run.runAttempt},unit.id,jobName,channelId,deliverySteps[channelId],pages,frozen?.attempt,
+    workflowDeliveryBuildAttempt(context,request,reader,run,jobName,pages,Boolean(frozen)));
   if(selected&&!sameWorkflowDelivery(selected.delivery,receipt))fail('frozen channel receipt changed');
   await download({fullName:context.repository,artifactId:receipt.artifactId,digest:receipt.digest,directory,
     policyDirectory:controllerDirectory,home:directory+'-download'},token);
@@ -906,7 +943,7 @@ async function readWorkflowChannel(context:EvidenceContext,unit:CycleRecord['uni
   const attested=handoff.attestations.get(unit.id)?.has(channelId)===true;
   const manifest:WorkflowReleaseManifest={schemaVersion:4,repositoryId:context.repositoryId,fullName:context.repository,cycleId:cycle.id,
     unitId:unit.id,version:unit.version,packageVersion:unit.version,tag:unit.tag,sourceSha:cycle.sourceSha,buildWorkflow:dispatchWorkflow(request),
-    buildRef:'refs/heads/'+request.ref,workflowId:run.workflowId,runId:run.id,attempt:receipt.attempt,delivery:receipt,attested,artifacts};
+    buildRef:'refs/heads/'+request.ref,workflowId:run.workflowId,runId:run.id,attempt:receipt.buildAttempt??receipt.attempt,delivery:receipt,attested,artifacts};
   validateWorkflowManifest(manifest);
   if(channelId==='winget'&&(artifacts.length!==1||!/\.(?:exe|msi|msix|appx|msixbundle|appxbundle)$/i.test(artifacts[0]!.path)
     ||!unit.assets.some(asset=>asset.path===artifacts[0]!.path&&asset.sha256===artifacts[0]!.sha256&&asset.size===artifacts[0]!.size)))
@@ -1014,11 +1051,12 @@ async function prepareWorkflowPublication(options:{
     const directory=join(root,unit.id);
     let nativeReceipt:WorkflowDeliveryReceipt;
     try {
-      const run=target.githubDelivery?await readWorkflowBuild(context,request,reader,target.githubDelivery.attempt):latest;
+      const frozen=target.githubDelivery,jobName='delivery/'+unit.id;
+      const run=frozen?await readWorkflowBuild(context,request,reader,frozen.buildAttempt??frozen.attempt):latest;
       if(!run||!successfulBuild(run))unavailable('original GitHub delivery build not ready: '+unit.id);
       nativeReceipt=await githubDeliveryArtifact({fullName:context.repository,repositoryId:context.repositoryId,sourceSha:cycle.sourceSha,
-        runId:run.id,attempt:run.runAttempt},unit.id,'delivery/'+unit.id,pages,target.githubDelivery?.attempt,
-        async attempt=>attempt===run.runAttempt||successfulBuild(await readWorkflowBuild(context,request,reader,attempt)));
+        runId:run.id,attempt:run.runAttempt},unit.id,jobName,pages,frozen?.attempt,
+        workflowDeliveryBuildAttempt(context,request,reader,run,jobName,pages,Boolean(frozen)));
       if(target.githubDelivery&&!sameWorkflowDelivery(nativeReceipt,target.githubDelivery))fail('workflow delivery receipt changed');
       await download({fullName:context.repository,artifactId:nativeReceipt.artifactId,digest:nativeReceipt.digest,directory,
         policyDirectory:controllerDirectory,home:join(root,'download-'+unit.id)},token);
@@ -1040,7 +1078,8 @@ async function prepareWorkflowPublication(options:{
     const attested=handoff.attestations.get(unit.id)?.has('github-release')===true;
     const manifest:WorkflowReleaseManifest={schemaVersion:4,repositoryId:context.repositoryId,fullName:context.repository,cycleId:cycle.id,
       unitId:unit.id,version:target.version,packageVersion,tag:target.tag,sourceSha:cycle.sourceSha,buildWorkflow:dispatchWorkflow(request),
-      buildRef:'refs/heads/'+request.ref,workflowId:request.workflowId,runId:nativeReceipt.runId,attempt:nativeReceipt.attempt,delivery:nativeReceipt,attested,artifacts};
+      buildRef:'refs/heads/'+request.ref,workflowId:request.workflowId,runId:nativeReceipt.runId,attempt:nativeReceipt.buildAttempt??nativeReceipt.attempt,
+      delivery:nativeReceipt,attested,artifacts};
     validateWorkflowManifest(manifest);
     const config={...releasePlease,...releasePlease.packages[unit.path]},changelog=config['changelog-path']??'CHANGELOG.md';
     assertDeliveryPath(changelog);

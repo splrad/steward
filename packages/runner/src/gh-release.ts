@@ -197,7 +197,7 @@ export class NativeGitHubRelease {
     if (typeof uri !== 'string' || !uri.startsWith(invocation)) return false;
     const attempt = uri.slice(invocation.length);
     return /^[1-9][0-9]*$/.test(attempt) && Number.isSafeInteger(Number(attempt))
-      && (m.schemaVersion===4?Number(attempt)===m.attempt:Number(attempt)>=m.attempt)
+      && (m.schemaVersion===4?Number(attempt)===m.delivery.attempt:Number(attempt)>=m.attempt)
       && certificate.sourceRepositoryIdentifier === String(m.repositoryId) && certificate.buildTrigger === 'workflow_dispatch';
   })) reject('attestation run identity');
     return attestation;

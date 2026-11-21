@@ -50,7 +50,9 @@ export function validateWorkflowManifest(manifest:WorkflowReleaseManifest):void 
     ||!/^[a-f0-9]{40}$/.test(manifest.sourceSha)||!manifest.cycleId.endsWith('-'+manifest.sourceSha)
     ||manifest.buildRef!=='refs/heads/steward/build/'+manifest.cycleId||!isBuildWorkflow(manifest.buildWorkflow)
     ||![manifest.repositoryId,manifest.workflowId,manifest.runId,manifest.attempt,manifest.delivery.artifactId].every(id=>Number.isSafeInteger(id)&&id>0)
-    ||manifest.delivery.runId!==manifest.runId||manifest.delivery.attempt!==manifest.attempt
+    ||manifest.delivery.runId!==manifest.runId||!Number.isSafeInteger(manifest.delivery.attempt)||manifest.delivery.attempt<1
+    ||(manifest.delivery.buildAttempt??manifest.delivery.attempt)!==manifest.attempt
+    ||manifest.delivery.buildAttempt!==undefined&&manifest.delivery.buildAttempt<=manifest.delivery.attempt
     ||!/^sha256:[a-f0-9]{64}$/.test(manifest.delivery.digest)||typeof manifest.attested!=='boolean'
     ||!manifest.artifacts.length||new Set(manifest.artifacts.map(file=>file.path.toLowerCase())).size!==manifest.artifacts.length
     ||manifest.artifacts.some(file=>!Number.isSafeInteger(file.size)||file.size<=0||!/^[a-f0-9]{64}$/.test(file.sha256)))fail('workflow manifest identity');

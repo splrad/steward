@@ -48,9 +48,9 @@ export function assertRepositoryWrite(value: RepositoryRecord, previous?: Reposi
   if(!value||value.schemaVersion!==3)throw new Error('RELEASE_OBSERVATION: historical repository is read-only');
   if(previous?.schemaVersion===3&&(value.releaseAdoption.sourceSha!==previous.releaseAdoption.sourceSha||value.releaseAdoption.prNumber!==previous.releaseAdoption.prNumber))fail('release adoption changed');
 }
-export interface WorkflowDeliveryReceipt { runId: number; attempt: number; artifactId: number; digest: string }
+export interface WorkflowDeliveryReceipt { runId: number; attempt: number; buildAttempt?: number; artifactId: number; digest: string }
 export function sameWorkflowDelivery(a:WorkflowDeliveryReceipt,b:WorkflowDeliveryReceipt):boolean {
-  return a.runId===b.runId&&a.attempt===b.attempt&&a.artifactId===b.artifactId&&a.digest===b.digest;
+  return a.runId===b.runId&&a.attempt===b.attempt&&a.buildAttempt===b.buildAttempt&&a.artifactId===b.artifactId&&a.digest===b.digest;
 }
 export interface CycleAsset { id:string; path:string; size:number; sha256:string }
 export interface WorkflowChannelReceipt { channelId:'ghcr-assets'|'winget'; delivery:WorkflowDeliveryReceipt; assets:CycleAsset[] }
@@ -121,6 +121,9 @@ export function parseReleaseRecord<K extends keyof RecordKinds>(kind: K, value: 
       fail('freeze-only receipt');
     if (!unique(record.dispatches.map(item => item.requestKey))) fail('duplicate request');
     for (const unit of record.units) {
+      const deliveries=[unit.githubDelivery,...(unit.channelDeliveries??[]).map(receipt=>receipt.delivery)];
+      if(deliveries.some(delivery=>delivery?.buildAttempt!==undefined&&(!record.workflowDelivery||delivery.buildAttempt<=delivery.attempt)))
+        fail('workflow delivery build attempt');
       if (unit.githubDelivery && (!unit.assets.length || !unit.notesDigest || !unit.manifestDigest
         || !record.dispatches.some(dispatch=>dispatch.purpose==='build' && dispatch.canonicalRunId===unit.githubDelivery!.runId))) fail('GitHub delivery receipt');
       if (unit.githubDisabled && (!record.workflowDelivery || unit.releaseId!==null || unit.githubDelivery)) fail('disabled GitHub delivery');

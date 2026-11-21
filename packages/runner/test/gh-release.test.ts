@@ -35,6 +35,12 @@ it('finishes a single-file workflow delivery from the same draft after a label w
   await expect(f.adapter.verifyAttestation(target,join(directory,'cli.tgz'))).rejects.toThrow('attestation run identity');
   f.state.invocation=f.state.invocation.replace('/attempts/2','/attempts/1');
   await expect(f.adapter.verifyAttestation(target,join(directory,'cli.tgz'))).resolves.toHaveLength(1);
+  const carried={...target,manifest:{...manifest,attempt:2,delivery:{...manifest.delivery,buildAttempt:2},attested:true}};
+  f.state.originalConclusion='failure';
+  await expect(f.adapter.freezeProof(carried)).resolves.toMatchObject({run_attempt:2,conclusion:'success'});
+  f.state.invocation=f.state.invocation.replace('/attempts/1','/attempts/2');
+  await expect(f.adapter.freezeProof(carried)).rejects.toThrow('attestation run identity');
+  f.state.originalConclusion='success';
   expect(writes(f)).toHaveLength(0);
   f.calls.length=0;
   f.state.runStatus='in_progress';f.state.runConclusion='failure';
