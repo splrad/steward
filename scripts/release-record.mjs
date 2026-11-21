@@ -266,7 +266,9 @@ function gitConfig(request) {
   return `[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = false\n\tsymlinks = false\n\tautocrlf = false\n[user]\n\tname = ${identity.name}\n\temail = ${identity.email}\n[remote "origin"]\n\turl = ${JSON.stringify(remote)}\n[branch "steward-record-write"]\n\tremote = origin\n\tmerge = refs/heads/${targetRef}\n[steward]\n\trepositoryId = ${repositoryId}\n`;
 }
 function cycleProgress(before,after) {
-  if(!compatibleCycle(before,after) || before.freezeCompletedAt && before.freezeCompletedAt!==after.freezeCompletedAt || before.freezeOnly && JSON.stringify(before.freezeOnly)!==JSON.stringify(after.freezeOnly))fail('immutable cycle conflict');
+  if(!compatibleCycle(before,after) || before.freezeCompletedAt && before.freezeCompletedAt!==after.freezeCompletedAt
+    || before.freezeBuildAttempt!==undefined && before.freezeBuildAttempt!==after.freezeBuildAttempt
+    || before.freezeOnly && JSON.stringify(before.freezeOnly)!==JSON.stringify(after.freezeOnly))fail('immutable cycle conflict');
   const oldDecision=before.approvedRepairDecision,newDecision=after.approvedRepairDecision;
   if(oldDecision && JSON.stringify(oldDecision)!==JSON.stringify(newDecision)) {
     if(oldDecision.cycleId===before.id || !newDecision || newDecision.cycleId!==after.id
@@ -634,9 +636,13 @@ export async function publicationAssetFacts(unit,manifest,names,directory) {
 async function confirmFrozenCycle(request,snapshot,cycle,{token,io,now}) {
   if(!cycle.freezeCompletedAt) {
     const context={repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle};
-    try {await verifyFrozenReceipts(context,snapshot.domainRecords,io);}
-    catch {return {status:'UNKNOWN',reason:'FROZEN_BUILD_SOURCE_UNAVAILABLE',publishInvoked:false};}
-    const confirmed={...cycle,freezeCompletedAt:now()};
+    let attempt;
+    try {attempt=await verifyFrozenReceipts(context,snapshot.domainRecords,io);}
+    catch(error) {
+      if(error?.message==='BUILD_RUN_NOT_READY')return {status:'WAIT',reason:'BUILD_RUN_NOT_READY',publishInvoked:false};
+      return {status:'UNKNOWN',reason:'FROZEN_BUILD_SOURCE_UNAVAILABLE',publishInvoked:false};
+    }
+    const confirmed={...cycle,freezeCompletedAt:now(),...(attempt===undefined?{}:{freezeBuildAttempt:attempt})};
     snapshot=(await adoptReleaseCycle(request,snapshot,confirmed,{token,io})).snapshot;
   }
   return {status:'FROZEN',reason:'NO_PUBLICATION_CHANNELS',archiveHead:snapshot.head,publishInvoked:false};
@@ -666,6 +672,8 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
       pending,undefined,cycle.workflowDelivery?unitId=>unavailable.add(unitId):undefined,
       cycle.workflowDelivery?(unitId,reason)=>rejected.push({unitId,channelId:'github-release',reason}):undefined);
     if(!Array.isArray(records))return records;
+    if(cycle.workflowDelivery&&!targets.length)return cycle.requiredChannels.length
+      ?{status:'WAIT',reason:'FORMAL_RELEASE_REQUIRED',publishInvoked:false}:confirmFrozenCycle(request,snapshot,cycle,{token,io,now});
     const deliveryDetails={...(unavailable.size?{units:[...unavailable].sort()}:{}),...(rejected.length?{rejected}:{})};
     if(!records.length&&rejected.length)return {status:'BLOCKED',reason:'WORKFLOW_GITHUB_DELIVERY_INVALID',publishInvoked:false,...deliveryDetails};
     if(!records.length&&unavailable.size)return {status:'UNKNOWN',reason:'WORKFLOW_GITHUB_DELIVERY_REQUIRED',publishInvoked:false,...deliveryDetails};
@@ -883,7 +891,10 @@ export async function releaseCommand(command,request,{token,io=nativeEvidenceTra
   }
   let cycle=snapshot.cycles.find(record=>record.value.id===request.cycleId)?.value;
   if(!cycle)fail('registered cycle required');
-  if((cycle.freezeOnly||cycle.freezeCompletedAt) && !githubUnits(cycle).length)return confirmFrozenCycle(request,snapshot,cycle,{token,io,now});
+  if((cycle.freezeOnly||cycle.freezeCompletedAt) && !cycle.requiredChannels.length && !githubUnits(cycle).length)
+    return confirmFrozenCycle(request,snapshot,cycle,{token,io,now});
+  if(command==='dispatch-channel'&&cycle.workflowDelivery&&cycle.requiredChannels.length&&!githubUnits(cycle).length)
+    return wait('FORMAL_RELEASE_REQUIRED');
   if(command==='reconcile-publication') {
     const context={repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle};
     const history=snapshot.domainRecords.filter(r=>r.path.startsWith('evidence/publication/') && r.value.cycleId===cycle.id);
@@ -1162,8 +1173,10 @@ export async function observeReleaseChannels(request,{token,io,centralIo,control
     let snapshot=await readReleaseRecords({directory:request.directory,targetRef:'steward/release-state',repositoryId:request.repositoryId,includeHistory:false});
   const recovered=await recoverReleaseCaches(request,snapshot,{token,io,centralIo,now});snapshot=recovered.snapshot;request={...request,directory:recovered.directory};assertRepositoryWrite(snapshot.repository);
     const cycle=structuredClone(snapshot.cycles.find(record=>record.value.id===request.cycleId)?.value);
-    if((cycle?.freezeOnly||cycle?.freezeCompletedAt) && !githubUnits(cycle).length)return confirmFrozenCycle(request,snapshot,cycle,{token,io,now});
-    if(cycle?.workflowDelivery&&!githubUnits(cycle).length)return {status:'WAIT',reason:'BUILD_RUN_NOT_READY'};
+    if((cycle?.freezeOnly||cycle?.freezeCompletedAt) && !cycle.requiredChannels.length && !githubUnits(cycle).length)
+      return confirmFrozenCycle(request,snapshot,cycle,{token,io,now});
+    if(cycle?.workflowDelivery&&!githubUnits(cycle).length)
+      return {status:'WAIT',reason:cycle.requiredChannels.length?'FORMAL_RELEASE_REQUIRED':'BUILD_RUN_NOT_READY'};
     if(!cycle||!cycle.workflowDelivery&&githubUnits(cycle).some(unit=>unit.releaseId===null))return {status:'WAIT',reason:'FORMAL_RELEASE_REQUIRED'};
     const context={repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle};
     const normalized=await ensureCycleDelivery(request,snapshot,cycle,{token,io,centralIo,now});snapshot=normalized.snapshot;request={...request,directory:normalized.directory};

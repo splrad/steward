@@ -240,6 +240,18 @@ it.each(['legacy','conditional'])('prepares a native Node delivery with the %s n
         await mkdir(input.directory);for(const name of selected)await writeFile(join(input.directory,name),name.endsWith('.tgz')?delivered:'checksums\n');
       },unavailable);
   };
+  const originalManifest=source['.release-please-manifest.json']!;
+  source['.release-please-manifest.json']='{}';
+  await expect(prepare('missing-version-in-merged-source',initial)).rejects.toThrow('native version source');
+  source['.release-please-manifest.json']=JSON.stringify({...JSON.parse(originalManifest),unknown:'0.1.0'});
+  await expect(prepare('unknown-version-in-merged-source',initial)).rejects.toThrow('Release Please delivery paths');
+  source['.release-please-manifest.json']=originalManifest;
+  const originalSettings=source['release-please-config.json']!;
+  const partial=JSON.parse(originalSettings);
+  partial.packages['packages/docs']={component:'docs','release-type':'simple'};
+  source['release-please-config.json']=JSON.stringify(partial);
+  await expect(prepare('unreleased-package-outside-merged-cycle',initial)).resolves.toMatchObject([{manifest:{unitId:'app',version:'1.0.0'}}]);
+  source['release-please-config.json']=originalSettings;
   delivered='incorrect archive bytes';
   await expect(prepare('invalid-format',initial)).rejects.toThrow('RN_DELIVERY_FORMAT: fixture-cli.tgz');
   delivered=npmPackageFixture('2.0.0');
@@ -300,6 +312,15 @@ it.each(['legacy','conditional'])('prepares a native Node delivery with the %s n
   await expect(prepare('allow-reviewed-directory-glob',[...initial,'checksums.txt'])).resolves.toMatchObject([
     {manifest:{artifacts:[{path:'checksums.txt'},{path:'fixture-cli.tgz'}]}},
   ]);
+
+  source[workflow]=adoptedWorkflow(['dist/app']);
+  await expect(prepare('allow-native-directory-root',initial)).resolves.toMatchObject([{manifest:{artifacts:[{path:'fixture-cli.tgz'}]}}]);
+  source[workflow]=adoptedWorkflow(['dist/app','dist/fixture-cli.tgz']);
+  await expect(prepare('missing-extensionless-sibling',initial)).rejects.toThrow('RN_DELIVERY_SELECTION');
+  await expect(prepare('extensionless-sibling-has-no-format-inspector',[...initial,'app'])).rejects.toThrow('RN_DELIVERY_UNSUPPORTED: app');
+  source[workflow]=adoptedWorkflow(['dist/*','!dist/app']);
+  await expect(prepare('allow-extensionless-exclusion',initial)).resolves.toMatchObject([{manifest:{artifacts:[{path:'fixture-cli.tgz'}]}}]);
+  await expect(prepare('reject-extensionless-exclusion',[...initial,'app'])).rejects.toThrow('RN_DELIVERY_SELECTION');
 
   const aggregate=(targets:{name:string;runner:string}[],usesMatrixFiles=false)=>{
     const built=JSON.parse(adoptedWorkflow([]));

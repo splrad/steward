@@ -164,6 +164,8 @@ export class BoundedGitHub implements GitReader {
        :delivery.units;
      ensure(Array.isArray(units)&&units.length>0,'CANDIDATE_DECLARATION');
      const roots=units.map((unit:any)=>unit.path).sort();
+     // Release Please has no previous version entry for units awaiting their first release.
+     if(delivery.schemaVersion===3)ensure(typeof versions==='object'&&!Array.isArray(versions),'CANDIDATE_DECLARATION');
      ensure(settings['separate-pull-requests']===false&&new Set(roots).size===roots.length&&JSON.stringify(roots)===JSON.stringify(Object.keys(settings.packages).sort())&&
        Object.keys(versions).every(path=>roots.includes(path)),'CANDIDATE_UNIT_COVERAGE');
      ensure(new Set(units.map((unit:any)=>unit.id)).size===units.length,'CANDIDATE_UNIT_COVERAGE');

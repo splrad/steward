@@ -4,15 +4,15 @@ LayerScape 的产品入口是 [steward-release-publish.yml](https://github.com/s
 
 ## 公开产品的 GitHub 发行入口
 
-产品可在一张普通 PR 中补齐 Release Please 配置和版本 manifest、经审查的工作流，以及 [`.github/delivery.json` v3](../schema/delivery.schema.json)。采用新发行说明模板时，精简配置只填 `schemaVersion: 3`。`buildWorkflow` 引用非默认入口，默认路径为 `.github/workflows/steward-release-publish.yml`。`notes` 可按 Release Please package 路径覆盖说明文件位置，缺省为 `.release-notes/<unit-id>.md`。候选按 Release Please 文件取得单位、版本和 CHANGELOG，按核验的控制器提交读取公共发行模板。
+产品可在一张普通 PR 中补齐 Release Please 配置和版本 manifest、经审查的工作流，以及 [`.github/delivery.json` v3](../schema/delivery.schema.json)。采用新发行说明模板时，精简配置只填 `schemaVersion: 3`。`buildWorkflow` 引用非默认入口，默认路径为 `.github/workflows/steward-release-publish.yml`。`notes` 可按 Release Please package 路径覆盖说明文件位置，缺省为 `.release-notes/<unit-id>.md`。候选按 Release Please 文件取得单位、版本和 CHANGELOG，按核验的控制器提交读取公共发行模板。首次候选可使用空 manifest，尚未发版的包可以缺少历史版本。进入已合并周期的单位必须能从冻结的 manifest 核对其版本。
 
 用产品自己的脚本构建，并在同一 Run 中对每个发行单位交付一次。工作流声明 `workflow_dispatch`，接收 `cycle_id`、`source_sha`、`operation_key`、`controller_sha`。运行名称包含 operation key，以便派发响应丢失时恢复。固定中央控制器提交，使用 `release-pipeline identity` 核验来源。交付 job 的原生名称为 `delivery/<unit-id>`。其中一步使用固定提交的 `actions/upload-artifact`，ID 为 `upload-github-release`，步骤名称为 `Upload GitHub release delivery`。制品名称格式为 `delivery-github-release-<repository-id>-<unit-id>-<source-sha>-<run-id>-<attempt>`。
 
 产品在工作流内为每个单位和渠道选择一次公开附件。上传步骤的 `with.path` 可用原文件名、构建矩阵汇总出的路径或用途明确的通配。Python 工作流可用 `*.tar.gz` 和 `*.whl` 分别选择源包和 wheel，平台矩阵可用 `cli-*.tgz` 收集随构建目标增减的分发包。文件数量可以随匹配结果变化。目录上传会包含其中匹配的文件，审查时应核对哪些步骤写入该目录。用于调试和测试的内部制品可另行上传。
 
-交付归档根目录直接包含公开附件，每件使用唯一的原名。需要保留目录层级时，可将 ZIP/TAR 作为单个附件交付。中央核对准确的 Run、attempt、成功交付 job、制品 ID、摘要和适用的构建证明。对于能映射到归档根的字面文件名和简单文件名模式，中央核对实际名称，并按声明顺序应用可直接映射的同目录包含和排除。跨目录排除、复杂模式和运行时表达式的选件语义由产品工作流审阅确认。平铺归档提供的是实际交件的文件名和字节，无法还原 runner 上的路径和表达式取值。
+交付归档根目录直接包含公开附件，每件使用唯一的原名。需要保留目录层级时，可将 ZIP/TAR 作为单个附件交付。中央核对准确的 Run、attempt、成功交付 job、制品 ID、摘要和适用的构建证明。对于能映射到归档根的字面文件名和简单文件名模式，中央核对实际名称，并按声明顺序应用可直接映射的同目录包含和排除。跨目录排除、复杂模式和运行时表达式的选件语义由产品工作流审阅确认。平铺归档提供的是实际交件的文件名和字节，无法还原 runner 上的路径和表达式取值。单独指定的无扩展名路径可以是文件或目录，归档根无法区分两者。同目录简单通配或多个不同的同级字面路径能确认归档根时，中央也会核对归档根中的无扩展名文件。
 
-草稿恢复使用已冻结的 attempt、制品 ID、文件名和摘要。已有完整冻结包的产品仍可从原冻结包取得所选文件，由中央逐字节比较渠道交件和原包。历史 `delivery.json` v1/v2 继续按原规则解码。
+草稿恢复使用已冻结的 attempt、制品 ID、文件名和摘要。已有完整冻结包的产品仍可从原冻结包取得所选文件，由中央逐字节比较渠道交件和原包。历史 `delivery.json` v1/v2 继续按原规则解码。工作流未启用发布渠道时，中央确认并记录实际成功的原构建 attempt，后续历史校验读取该次执行。
 
 中央在冻结交件和写入发布前检查文件格式与适用版本。独立 PE 检查 EXE 或 DLL 类型及版本资源，Python wheel/sdist 与 npm 包检查原生包元数据，AppX/MSIX 检查包或 bundle manifest 的版本。通用 ZIP/TAR 检查容器结构和已识别资源，根 `VERSION` 存在时核对发行单位版本。归档中的第三方 PE 文件可有自己的版本，中央检查其 PE 格式。字体、校验和、文字说明等无内嵌版本的资料走各自的结构和字节检查。格式错误、版本错误和未支持格式分别报告。遇到未支持格式（例如 MSI）时暂停该交件，适用检查需要随产品采用确认。成员路径只表达归档结构，所有公开文件仍由上传步骤选择。
 
