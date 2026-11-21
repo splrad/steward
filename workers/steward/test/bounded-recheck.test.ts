@@ -87,4 +87,37 @@ it('claimed confirmation can finish at exact deadline when its floor equals that
 it('late successful verification retains evidence but cannot mark an expired object DONE',async()=>{const f=fixture();let resolve!:(o:Outcome)=>void;f.effects.observe=vi.fn(()=>new Promise(r=>{resolve=r;}));await f.engine().register(input());const inFlight=f.engine().wake();await Promise.resolve();f.time(t0+120*m+1);resolve({kind:'done',evidence:'late-proof'});await inFlight;const r=await f.store.read();expect(r?.status).toBe('NEEDS_ATTENTION');expect(r?.evidence).toBe('late-proof');expect(f.store.alarm()).toBeNull();});
 
 it('confirmation editing pause retains the original unknown POST and remaining confirmations on resume',async()=>{const f=fixture({kind:'unknown'});await f.engine().register(input());await f.engine().wake();const key=(await f.store.read())!.intent!.key;f.effects.confirm=vi.fn(async()=>({kind:'pause',reason:'EDITING_PAUSED'}));f.time(t0+m);await f.engine().wake();expect((await f.store.read())?.status).toBe('PAUSED');expect((await f.store.read())?.intent?.key).toBe(key);expect((await f.store.read())?.intent?.confirmations).toBe(1);await f.engine().control('resume',2);f.effects.confirm=vi.fn(async()=>({kind:'done',evidence:'original-run'}));await f.engine().wake();expect(f.effects.observe).toHaveBeenCalledTimes(1);expect(f.effects.confirm).toHaveBeenCalledTimes(1);expect((await f.store.read())?.status).toBe('DONE');});
-it('ordinary receipt is a due-alarm hint: early receipt does no IO and terminal receipt cannot add a fourth confirmation',async()=>{let now=t0;const storage=new SqliteDurableStorage(),store=new DurableRecheckStore(storage as any),effects:Effects={observe:vi.fn(async()=>({kind:'unknown'})),confirm:vi.fn(async()=>({kind:'unknown'}))},engine=new BoundedRecheck(store,effects,()=>now),coordinator=new BoundedRecheckCoordinator({storage} as any,{BOUNDED_RECHECK_ENABLED:'true'} as any);(coordinator as any).engine=engine;await engine.register(input());await engine.wake();const requestKey=(await store.read())!.intent!.key,receipt=()=>coordinator.fetch(new Request('https://bounded.internal/receipt',{method:'POST',body:JSON.stringify({requestKey})}));await receipt();expect(effects.confirm).not.toHaveBeenCalled();expect(await storage.get('__alarm')).toBe(t0+m);for(const n of [1,5,15]){now=t0+n*m;await coordinator.alarm();}expect(effects.confirm).toHaveBeenCalledTimes(3);await receipt();expect(effects.confirm).toHaveBeenCalledTimes(3);expect((await store.read())?.status).toBe('NEEDS_ATTENTION');expect(await storage.get('__alarm')).toBeUndefined();expect(effects.observe).toHaveBeenCalledTimes(1);});
+it('ordinary receipt is a due-alarm hint: early receipt does no IO and terminal receipt cannot add a fourth confirmation',async()=>{let now=t0;const storage=new SqliteDurableStorage(),store=new DurableRecheckStore(storage as any),effects:Effects={observe:vi.fn(async()=>({kind:'unknown'})),confirm:vi.fn(async()=>({kind:'unknown'}))},engine=new BoundedRecheck(store,effects,()=>now),coordinator=new BoundedRecheckCoordinator({storage} as any,{BOUNDED_RECHECK_ENABLED:'true'} as any);(coordinator as any).engine=engine;await engine.register(input());await engine.wake();const requestKey=(await store.read())!.intent!.key,receipt=()=>coordinator.fetch(new Request('https://bounded.internal/receipt',{method:'POST',body:JSON.stringify({identity:input().identity,requestKey,runId:42,attempt:1,policySha:input().policySha})}));await receipt();expect(effects.confirm).not.toHaveBeenCalled();expect(await storage.get('__alarm')).toBe(t0+m);for(const n of [1,5,15]){now=t0+n*m;await coordinator.alarm();}expect(effects.confirm).toHaveBeenCalledTimes(3);await receipt();expect(effects.confirm).toHaveBeenCalledTimes(3);expect((await store.read())?.status).toBe('NEEDS_ATTENTION');expect(await storage.get('__alarm')).toBeUndefined();expect(effects.observe).toHaveBeenCalledTimes(1);});
+
+it.each(['duplicate','cancel','incomplete'])('reconciles an exact late receipt across %s',async scenario=>{
+ const f=fixture({kind:'unknown',runId:42});
+ await f.engine().register(input());
+ await f.engine().wake();
+ for(const offset of [1,5,15]){f.time(t0+offset*m);await f.engine().wake();}
+ const before=(await f.store.read())!;
+ expect(before).toMatchObject({generation:2,status:'NEEDS_ATTENTION',intent:{generation:1,runId:42,confirmations:3}});
+ f.time(before.deadline+1000);
+ const locator={identity:before.identity,requestKey:before.intent!.key,runId:42,attempt:1,policySha:before.policySha};
+ for(const bad of [{policySha:'e'.repeat(40)},{runId:43},{attempt:2},{requestKey:'wrong'},{identity:{...before.identity,epoch:'other'}}]){
+   await expect(f.engine().receipt({...locator,...bad})).rejects.toThrow('RECEIPT_INTENT');
+ }
+ let release!:(outcome:Outcome)=>void,started!:()=>void;
+ const entered=new Promise<void>(resolve=>{started=resolve;});
+ vi.mocked(f.effects.confirm).mockImplementationOnce(()=>new Promise(resolve=>{release=resolve;started();}));
+ const first=f.engine().receipt(locator);
+ await entered;
+ if(scenario==='cancel')await f.engine().control('cancel',before.generation);
+ if(scenario==='duplicate'){
+   vi.mocked(f.effects.confirm).mockResolvedValueOnce({kind:'done',evidence:'first accepted'});
+   await f.engine().receipt(locator);
+ }
+ release(scenario==='incomplete'?{kind:'unknown'}:{kind:'done',evidence:'late'});
+ await first;
+ if(scenario==='duplicate'){
+   await f.engine().receipt(locator);
+   expect(await f.store.read()).toEqual({...before,generation:3,status:'DONE',reason:'VERIFIED_DONE',notificationPending:false,evidence:'first accepted'});
+ }else if(scenario==='incomplete')expect(await f.store.read()).toEqual(before);
+ else expect(await f.store.read()).toMatchObject({status:'CANCELLED',evidence:null});
+ expect(f.effects.observe).toHaveBeenCalledTimes(1);
+ expect(f.store.alarm()).toBeNull();
+});

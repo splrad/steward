@@ -16,6 +16,22 @@ export async function dispatchFixed(g:GitReader,id:number,file:'release-observe.
  if(claim&&!await claim())return;
  return g.json(id,`/repos/${name}/actions/workflows/${file}/dispatches`,'POST',{ref:'main',inputs});
 }
+// This reader lives for one confirmation. Only exact Git object reads can repeat
+// without weakening the final ref, PR, comment or workflow checks.
+function confirmationReader(source:GitReader):GitReader {
+ const cache=new Map<string,unknown>();
+ return {
+  target:source.target,
+  artifact:source.artifact.bind(source),
+  async json(id,path,method='GET',body){
+   const immutable=/^\/repos\/[^/]+\/[^/]+\/(?:git\/trees\/[a-f0-9]{40}\?recursive=1|contents\/[^?#]+\?ref=[a-f0-9]{40}|compare\/[a-f0-9]{40}\.\.\.[a-f0-9]{40})$/.test(path);
+   if(method!=='GET'||!immutable)return source.json(id,path,method,body);
+   const key=JSON.stringify([id,path]);
+   if(!cache.has(key))cache.set(key,await source.json(id,path));
+   return structuredClone(cache.get(key));
+  }
+ };
+}
 export class FixedRecheckEffects implements Effects {
  constructor(private env:BoundedEnv,private reader:()=>GitReader=()=>new BoundedGitHub(env)){}
  async observe(r:RecordState,intent:Intent,reservePolicy?:(sha:string)=>Promise<boolean>):Promise<Outcome>{
@@ -32,14 +48,15 @@ export class FixedRecheckEffects implements Effects {
     policy===r.policySha?undefined:async()=>{ensure(reservePolicy,'OBSERVE_POLICY_STORE');return reservePolicy(policy);});
   return {kind:'unknown'}; // Accepted dispatch is not observation completion.
  }
- async confirm(r:RecordState,intent:Intent):Promise<Outcome>{
+ async confirm(r:RecordState,intent:Intent,receiptRunId?:number):Promise<Outcome>{
   if(this.env.BOUNDED_RECHECK_ENABLED!=='true')return {kind:'stop',reason:'QUIESCED'};
   if(r.identity.stage==='winget-pr')return this.upstream(r);
   if(r.identity.stage==='winget-index')return this.index(r,intent);
   const policy=intent.executionPolicySha??r.policySha;
-  const g=await candidateReader(this.reader(),r.identity.repositoryId);const list=await g.json(CENTRAL.id,`/repos/${CENTRAL.name}/actions/workflows/release-observe.yml/runs?event=workflow_dispatch&head_sha=${policy}&created=${encodeURIComponent(new Date(intent.claimedAt-30_000).toISOString()+'..'+new Date(intent.claimedAt+30_000).toISOString())}&per_page=100`);
+  const g=confirmationReader(await candidateReader(this.reader(),r.identity.repositoryId));const list=await g.json(CENTRAL.id,`/repos/${CENTRAL.name}/actions/workflows/release-observe.yml/runs?event=workflow_dispatch&head_sha=${policy}&created=${encodeURIComponent(new Date(intent.claimedAt-30_000).toISOString()+'..'+new Date(intent.claimedAt+30_000).toISOString())}&per_page=100`);
   ensure(Array.isArray(list.workflow_runs)&&list.total_count===list.workflow_runs.length,'RUN_WINDOW_INCOMPLETE');
   const hits=list.workflow_runs.filter((x:any)=>x.repository?.id===CENTRAL.id&&x.head_repository?.id===CENTRAL.id&&x.path==='.github/workflows/release-observe.yml'&&x.head_sha===policy&&x.event==='workflow_dispatch'&&x.display_title===`Observe candidate ${intent.key}`);
+  if(receiptRunId!==undefined)ensure(hits.length===1&&hits[0].id===receiptRunId,'RECEIPT_RUN');
   if(hits.length!==1)return {kind:'unknown'};const run=await g.json(CENTRAL.id,`/repos/${CENTRAL.name}/actions/runs/${hits[0].id}`);
   ensure(run.id===hits[0].id&&run.run_attempt===1&&run.repository?.id===CENTRAL.id&&run.head_repository?.id===CENTRAL.id&&run.head_sha===policy&&run.path==='.github/workflows/release-observe.yml'&&run.event==='workflow_dispatch'&&run.actor?.id===APP_BOT_ID&&run.head_branch==='main'&&run.display_title===`Observe candidate ${intent.key}`,'RUN_BINDING');
   if(run.status!=='completed')return {kind:'unknown',runId:run.id};if(run.conclusion!=='success')return {kind:'stop',reason:'OBSERVATION_RUN_FAILED'};
@@ -51,6 +68,7 @@ export class FixedRecheckEffects implements Effects {
   ensure(Array.isArray(facts.pull.labels),'CANDIDATE_LABELS_UNKNOWN');if(facts.pull.state!=='open'||facts.pull.merged)return {kind:'stop',reason:'CANDIDATE_CLOSED'};if(facts.pull.labels.some((l:any)=>l.name==='release:editing'))return {kind:'pause',reason:'EDITING_PAUSED'};
   const observed=Date.parse(v.observedAt),start=Date.parse(run.run_started_at),end=Date.parse(run.updated_at),created=Date.parse(a.createdAt??'');
   ensure([observed,start,end,created].every(Number.isFinite)&&observed>=start&&observed<=end&&created>=start&&created<=end&&v.sourceSha===r.identity.sourceSha,'OBSERVATION_TIME');
+  if(receiptRunId!==undefined)ensure(observed>=intent.claimedAt&&observed<=r.deadline&&created>=intent.claimedAt&&created<=r.deadline,'RECEIPT_OBSERVATION_WINDOW');
   ensure(v.stateBefore&&v.stateAfter&&Object.entries(facts.evidence).every(([k,x])=>v.stateAfter[k]===x)&&v.stateBefore.head===v.stateAfter.head,'OBSERVATION_GIT_EVIDENCE');
   if(facts.manual&&v.outcome==='done'){ensure(v.status==='READY'&&v.reason==='MANUAL_PROJECTION','MANUAL_OBSERVATION_RESULT');const finalPull=await verifyManualProjection(g,facts,v.projectionEvidence);if(finalPull.state!=='open'||finalPull.merged)return {kind:'stop',reason:'CANDIDATE_CLOSED'};if(finalPull.labels.some((l:any)=>l.name==='release:editing'))return {kind:'pause',reason:'EDITING_PAUSED'};return {kind:'done',evidence:JSON.stringify({runId:run.id,attempt:run.run_attempt,artifactId:a.artifactId,digest:a.digest,projectionEvidence:v.projectionEvidence,state:v.stateAfter})};}
   if(v.outcome==='paused'&&v.reason==='EDITING')return {kind:'pause',reason:'EDITING_PAUSED'};

@@ -29,7 +29,7 @@ export interface Store { transaction<T>(fn: (current: RecordState | null) => { r
 export type Outcome = { kind: 'pending'; retryAfter?: number } | { kind: 'done'; evidence: string } |
   { kind: 'stop'; reason: string } | { kind:'pause'; reason:string } | {kind:'index';mergedAt:number;evidence:string} | { kind: 'unknown'; runId?: number;retryAfter?:number };
 /** These are fixed domain operations, never commands/URLs/workflow names from input. */
-export interface Effects { observe(r: Readonly<RecordState>, intent: Readonly<Intent>, reservePolicy?:(sha:string)=>Promise<boolean>): Promise<Outcome>; confirm(r: Readonly<RecordState>, intent: Readonly<Intent>): Promise<Outcome> }
+export interface Effects { observe(r: Readonly<RecordState>, intent: Readonly<Intent>, reservePolicy?:(sha:string)=>Promise<boolean>): Promise<Outcome>; confirm(r: Readonly<RecordState>, intent: Readonly<Intent>, receiptRunId?:number): Promise<Outcome> }
 const confirmations = [1,5,15].map(n=>n*minute);
 function assert(v: unknown, message: string): asserts v { if(!v) throw new Error(message); }
 function exactKeys(x: object, keys: string[]) { assert(Object.keys(x).sort().join(',')===keys.sort().join(','),'CLOSED_SCHEMA'); }
@@ -83,9 +83,31 @@ export class BoundedRecheck {
       return {record:r,result:r};
     });
   }
-  async wake():Promise<void> {
+  async receipt(locator:{identity:Identity;requestKey:string;runId:number;attempt:number;policySha:string}):Promise<void> {
+    const r=await this.store.read(), intent=r?.intent;
+    assert(r&&intent&&r.identity.stage==='candidate'&&identityKey(r.identity)===identityKey(locator.identity)&&
+      intent.key===locator.requestKey&&locator.attempt===1&&Number.isSafeInteger(locator.runId)&&locator.runId>0&&
+      (intent.executionPolicySha??r.policySha)===locator.policySha&&
+      (intent.runId===undefined||intent.runId===locator.runId),'RECEIPT_INTENT');
+    if(r.status==='PENDING'){await this.wake(locator);return;}
+    if(r.status!=='NEEDS_ATTENTION'||r.reason!=='UNKNOWN_DELIVERY'||intent.runId!==locator.runId)return;
+    if(Math.max(r.retryAfter??0,intent.retryAfter??0)>this.clock())return;
+    const outcome=await this.effects.confirm(r,intent,locator.runId);
+    if(outcome.kind!=='done')return;
+    await this.store.transaction(current=>{
+      if(current?.status==='NEEDS_ATTENTION'&&current.reason==='UNKNOWN_DELIVERY'&&
+         current.generation===r.generation&&current.intent?.key===intent.key&&current.intent.runId===locator.runId){
+        current.evidence=outcome.evidence;
+        stop(current,'DONE','VERIFIED_DONE');
+      }
+      return {record:current,result:undefined};
+    });
+  }
+  async wake(receipt?:{requestKey:string;runId:number;policySha:string}):Promise<void> {
     const now=this.clock();
     const claim=await this.store.transaction(r=>{
+      if(receipt&&(!r?.intent||r.intent.key!==receipt.requestKey||(r.intent.executionPolicySha??r.policySha)!==receipt.policySha||
+        (r.intent.runId!==undefined&&r.intent.runId!==receipt.runId)))return {record:r,result:null};
       if(!r || r.status!=='PENDING'||r.nextAt===null||r.nextAt>now) return {record:r,result:null};
       if(now>r.deadline||(!r.initialClaimed&&now===r.deadline)||Math.max(r.retryAfter??0,r.intent?.retryAfter??0)>r.deadline) {stop(r,'NEEDS_ATTENTION','WINDOW_EXHAUSTED');return {record:r,result:null};}
       if((r.retryAfter??0)>now){r.nextAt=Math.min(r.retryAfter!,r.deadline);return {record:r,result:null};}
@@ -108,7 +130,7 @@ export class BoundedRecheck {
     });
     if(!claim)return;
     let outcome:Outcome;
-    try { outcome=await (claim.confirm?this.effects.confirm(claim.record,claim.intent):this.effects.observe(claim.record,claim.intent,policy=>this.store.transaction(r=>{
+    try { outcome=await (claim.confirm?this.effects.confirm(claim.record,claim.intent,receipt?.runId):this.effects.observe(claim.record,claim.intent,policy=>this.store.transaction(r=>{
       const active=!!r && r.status==='PENDING' && r.identity.stage==='candidate' && r.generation===claim.record.generation &&
         r.intent?.key===claim.intent.key && r.intent.confirmations===0 && !r.intent.executionPolicySha && this.clock()<r.deadline;
       if(active)r!.intent!.executionPolicySha=policy;
@@ -128,7 +150,7 @@ export class BoundedRecheck {
       if('retryAfter' in outcome && outcome.retryAfter !== undefined){r.retryAfter=Math.max(r.retryAfter??0,outcome.retryAfter);r.intent.retryAfter=r.retryAfter;if(r.status==='PENDING'&&r.nextAt!==null)r.nextAt=Math.min(Math.max(r.nextAt,r.retryAfter),r.deadline);}
       if(r.intent.generation!==claim.intent.generation || r.generation!==claim.record.generation || (r.status!=='PENDING' && !(claim.confirm && claim.intent.confirmations===3 && r.reason==='UNKNOWN_DELIVERY'))) {
         // A late verified fact is retained for handoff, never a new timer or permission.
-        if(outcome.kind==='done')r.evidence=outcome.evidence;
+        if(outcome.kind==='done'&&r.status!=='DONE')r.evidence=outcome.evidence;
         return {record:r,result:undefined};
       }
       const now=this.clock();
