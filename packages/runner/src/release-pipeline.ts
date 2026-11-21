@@ -730,21 +730,32 @@ function isWorkflowDeliveryUnavailable(error:unknown) {
 }
 function unavailable(message:string):never { throw new WorkflowDeliveryUnavailable('RELEASE_PIPELINE: '+message); }
 function deliveryPaths(value:unknown) {
-  return typeof value==='string'?value.split(/\r?\n/).map(path=>path.trim()).filter(Boolean).sort():[];
+  return typeof value==='string'?value.split(/\r?\n/).map(path=>path.trim()).filter(Boolean):[];
 }
 
 function assertFlatWorkflowSelection(paths:string[],files:{path:string}[]) {
-  const leaves=paths.map(path=>path.split(/[\\/]/).at(-1)!);
-  // Only compare flat names when every include has a literal filename or a simple filename glob.
-  if(paths.some(path=>path.startsWith('!'))||leaves.some(leaf=>!/^[-\w.*]+$/.test(leaf)||leaf.indexOf('*')!==leaf.lastIndexOf('*')
-    ||!(leaf.includes('*')||leaf.includes('.')||/^(?:README|LICENSE|NOTICE|SHA(?:256|512)SUMS)$/.test(leaf))))return;
+  const rules=paths.map(path=>{
+    const excluded=path.startsWith('!'),source=excluded?path.slice(1):path;
+    const leaf=source.split(/[\\/]/).at(-1)!;
+    return {excluded,leaf,directory:source.slice(0,source.length-leaf.length)};
+  });
+  const simple=(leaf:string)=>/^[-\w.*]+$/.test(leaf)&&leaf.indexOf('*')===leaf.lastIndexOf('*')
+    &&(leaf.includes('*')||leaf.includes('.')||/^(?:README|LICENSE|NOTICE|SHA(?:256|512)SUMS)$/.test(leaf));
+  if(rules.some(({leaf})=>!simple(leaf)))return;
+  if(rules.some(rule=>rule.excluded)) {
+    // Upload removes the common root. An exclusion can be mapped to a flat name when the source directory is shared.
+    const directory=rules[0]!.directory;
+    const literal=directory.replace(/^\$\{\{\s*(?:runner\.temp|github\.workspace)\s*\}\}/i,'');
+    if(!/^[-\w.:/\\ ]*$/.test(literal)||rules.some(rule=>rule.directory!==directory))return;
+  }
   const matches=(name:string,leaf:string)=>{
     const [prefix,suffix]=leaf.split('*');
     return suffix===undefined?name===prefix:
       name.length>=prefix!.length+suffix.length&&name.startsWith(prefix!)&&name.endsWith(suffix);
   };
-  if(files.some(file=>!leaves.some(leaf=>matches(file.path,leaf)))
-    ||leaves.some(leaf=>!leaf.includes('*')&&!files.some(file=>file.path===leaf)))
+  const selected=(name:string)=>rules.findLast(rule=>matches(name,rule.leaf))?.excluded===false;
+  if(files.some(file=>!selected(file.path))||rules.some(({excluded,leaf})=>
+    !excluded&&!leaf.includes('*')&&selected(leaf)&&!files.some(file=>file.path===leaf)))
     throw new WorkflowDeliveryValidationError('RN_DELIVERY_SELECTION: workflow delivery file selection');
 }
 
@@ -777,7 +788,7 @@ export function applyWorkflowDelivery(delivery:DeliveryConfig,bytes:Uint8Array):
       ||![undefined,true,'true'].includes(proof))fail('workflow channel delivery step');
     const attested=proof===true||proof==='true'||paths.length>0&&job.steps.some((candidate:any)=>
       /^actions\/attest(?:-build-provenance)?@[a-f0-9]{40}$/.test(candidate?.uses??'')
-      &&JSON.stringify(deliveryPaths(candidate.with?.['subject-path']))===JSON.stringify(paths));
+      &&JSON.stringify(deliveryPaths(candidate.with?.['subject-path']).sort())===JSON.stringify([...paths].sort()));
     for(const id of ids) {
       known.get(id)!.set(channel,location);
       pathsByUnit.get(id)!.set(channel,paths);
@@ -863,9 +874,11 @@ async function readWorkflowChannel(context:EvidenceContext,unit:CycleRecord['uni
     policyDirectory:controllerDirectory,home:directory+'-download'},token);
   const artifacts=await workflowFiles(directory);
   if(selected&&JSON.stringify(selected.assets)!==JSON.stringify(artifacts))fail('frozen channel bytes changed');
-  assertFlatWorkflowSelection(handoff.paths.get(unit.id)!.get(channelId)!,artifacts);
   // Product channel jobs consume the original bytes already inspected by the central freeze.
-  if(!selected)await inspectWorkflowFiles(directory,artifacts,releaseType,unit.version,controllerDirectory);
+  if(!selected) {
+    assertFlatWorkflowSelection(handoff.paths.get(unit.id)!.get(channelId)!,artifacts);
+    await inspectWorkflowFiles(directory,artifacts,releaseType,unit.version,controllerDirectory);
+  }
   const attested=handoff.attestations.get(unit.id)?.has(channelId)===true;
   const manifest:WorkflowReleaseManifest={schemaVersion:4,repositoryId:context.repositoryId,fullName:context.repository,cycleId:cycle.id,
     unitId:unit.id,version:unit.version,packageVersion:unit.version,tag:unit.tag,sourceSha:cycle.sourceSha,buildWorkflow:dispatchWorkflow(request),
@@ -984,7 +997,7 @@ async function prepareWorkflowPublication(options:{
     }
     const artifacts=await workflowFiles(directory);
     try {
-      assertFlatWorkflowSelection(handoff.paths.get(unit.id)!.get('github-release')!,artifacts);
+      if(!target.githubDelivery)assertFlatWorkflowSelection(handoff.paths.get(unit.id)!.get('github-release')!,artifacts);
       const releaseType=workflowReleaseType(releasePlease,delivery,unit.id);
       await inspectWorkflowFiles(directory,artifacts,releaseType,packageVersion,controllerDirectory);
     } catch(error) {

@@ -15,10 +15,12 @@ const {serviceReleaseWake}=await import(pathToFileURL(resolve('scripts/release-c
 const {publishNativeCycle,readReleaseRecords}=await import(pathToFileURL(resolve('scripts/release-record.mjs')).href);
 const roots:string[]=[];
 afterEach(async()=>{vi.restoreAllMocks();vi.unstubAllGlobals();vi.unstubAllEnvs();for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
-it.each(['failure','in_progress','second-failure','formal-asset-404','wrong-delivery-format','wrong-delivery-version'] as const)('handles %s in the bounded native publication entry',async kind=>{
+it.each(['failure','in_progress','second-failure','formal-asset-404','wrong-delivery-format','wrong-delivery-version',
+  'excluded-delivery-file'] as const)('handles %s in the bounded native publication entry',async kind=>{
   const f=productPipelineFixture(),native=evidenceFixture(kind==='second-failure'?2:1),cycle=f.context.cycle;
-  const rejectDelivery=kind==='wrong-delivery-format'||kind==='wrong-delivery-version';
-  const assetName=kind==='wrong-delivery-version'?'package.json':'app.exe';
+  const excluded=kind==='excluded-delivery-file';
+  const rejectDelivery=kind==='wrong-delivery-format'||kind==='wrong-delivery-version'||excluded;
+  const assetName=excluded?'extra.json':kind==='wrong-delivery-version'?'package.json':'app.exe';
   const archive=zipResult({name:'app',version:'2.0.0'},assetName);
   const artifact={id:800,name:`delivery-github-release-1-app-${cycle.sourceSha}-100-1`,digest:'sha256:'+digest(archive),
     expired:false,size_in_bytes:archive.length,workflow_run:{id:100,head_sha:cycle.sourceSha},created_at:'2026-10-26T00:00:30.000Z'};
@@ -28,7 +30,8 @@ it.each(['failure','in_progress','second-failure','formal-asset-404','wrong-deli
     f.source['.github/delivery.json']=compact;
     f.source[workflow]=JSON.stringify({jobs:{delivery:{name:'delivery/app',steps:[{
       id:'upload-github-release',name:'Upload GitHub release delivery',uses:'actions/upload-artifact@'+'a'.repeat(40),
-      with:{name:'delivery-github-release-${{ github.repository_id }}-app-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}',path:assetName},
+      with:{name:'delivery-github-release-${{ github.repository_id }}-app-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}',
+        path:excluded?'dist/*\n!dist/extra.json':assetName},
     }]}}});
     const settings=JSON.parse(f.source['release-please-config.json']!);
     settings.packages['.'].component='app';
@@ -109,10 +112,11 @@ it.each(['failure','in_progress','second-failure','formal-asset-404','wrong-deli
     const scratch=join(root,'scratch');await mkdir(scratch);
     for(const name of ['TMPDIR','TEMP','TMP'])vi.stubEnv(name,scratch);
     for(const script of ['expand-release-artifact.ps1','inspect-python-release.py'])permitOfflineScript(resolve('scripts',script));
-    const reason=kind==='wrong-delivery-version'?'RN_DELIVERY_VERSION':'RN_DELIVERY_FORMAT';
+    const reason=excluded?'RN_DELIVERY_SELECTION: workflow delivery file selection':
+      (kind==='wrong-delivery-version'?'RN_DELIVERY_VERSION':'RN_DELIVERY_FORMAT')+': '+assetName;
     await expect(publishNativeCycle({...registration,cycleId:cycle.id},publicationPorts)).resolves.toMatchObject({
       status:'BLOCKED',reason:'WORKFLOW_GITHUB_DELIVERY_INVALID',publishInvoked:false,
-      rejected:[{unitId:'app',channelId:'github-release',reason:reason+': '+assetName}],
+      rejected:[{unitId:'app',channelId:'github-release',reason}],
     });
     expect(calls).toContain('/repos/example/product/actions/artifacts/800');
     expect(calls.some(path=>path.includes('/releases')||path.includes('/git/refs/tags'))).toBe(false);

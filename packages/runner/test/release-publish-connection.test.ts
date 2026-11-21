@@ -220,6 +220,21 @@ it('prepares a single native Node delivery, changes the public set in its workfl
   artifact.id=811;
   await expect(prepare('changed-id',initial)).rejects.toThrow('receipt changed');
   delete context.cycle.units[0]!.githubDelivery;
+
+  const scope=['${{ runner.temp }}/dist/*.tgz','!${{ runner.temp }}/dist/internal.tgz'];
+  source[workflow]=adoptedWorkflow(scope);
+  await expect(prepare('allow-matching-glob',initial)).resolves.toMatchObject([{manifest:{artifacts:[{path:'fixture-cli.tgz'}]}}]);
+  await expect(prepare('reject-explicitly-excluded',[...initial,'internal.tgz'])).rejects.toThrow('RN_DELIVERY_SELECTION');
+  await expect(prepare('reject-outside-glob',[...initial,'checksums.txt'])).rejects.toThrow('RN_DELIVERY_SELECTION');
+  source[workflow]=adoptedWorkflow([...scope,'${{ runner.temp }}/dist/internal.tgz']);
+  await expect(prepare('allow-reincluded',[...initial,'internal.tgz'])).resolves.toMatchObject([
+    {manifest:{artifacts:[{path:'fixture-cli.tgz'},{path:'internal.tgz'}]}},
+  ]);
+  source[workflow]=adoptedWorkflow(['dist/*']);
+  await expect(prepare('allow-reviewed-directory-glob',[...initial,'checksums.txt'])).resolves.toMatchObject([
+    {manifest:{artifacts:[{path:'checksums.txt'},{path:'fixture-cli.tgz'}]}},
+  ]);
+
   const next=['fixture-cli.tgz','checksums.txt'];
   source[workflow]=adoptedWorkflow(next);
   expect(source['.github/delivery.json']).toBe(sourceConfig);
@@ -313,6 +328,13 @@ it('selects separate GitHub and authorized channel assemblies and restores only 
     receipts:[],rejected:[{unitId:'layerscape',channelId:'ghcr-assets',reason:'RN_DELIVERY_VERSION: registry.tgz'}],
   });
   bytes=npmPackageFixture('1.0.0');
+  const ghcr=definition.jobs.deliver.steps[1]!.with;
+  ghcr.path='ghcr-assets/*\n!ghcr-assets/registry.tgz';
+  const excluded=join(root,'excluded-channel-file');await mkdir(excluded);
+  await expect(prepareWorkflowChannelReceipts(context,excluded,controller,'fixture-token',[],io,download)).resolves.toMatchObject({
+    receipts:[],rejected:[{unitId:'layerscape',channelId:'ghcr-assets',reason:expect.stringContaining('RN_DELIVERY_SELECTION')}],
+  });
+  ghcr.path='ghcr-assets/*';
   const mixed=join(root,'mixed');await mkdir(mixed);
   artifacts.push(makeArtifact(820,1,'winget'));
   await expect(prepareWorkflowChannelReceipts(context,mixed,controller,'fixture-token',[],io,download)).resolves.toMatchObject({
