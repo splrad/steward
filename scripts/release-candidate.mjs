@@ -96,7 +96,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       fail('CANDIDATE_RELEASE_TEMPLATE');
     return new TextDecoder('utf-8',{fatal:true}).decode(bytes);
   };
-  const checkPolicyAt=async sha=>checkRepositoryPolicy?.(path=>fileAt(sha,path));
+  const checkPolicyAt=async(sha,delivery)=>checkRepositoryPolicy?.(path=>fileAt(sha,path),{buildWorkflow:delivery.buildWorkflow});
   const fetchBranch = async branch => {
     const ref = await api('GET', `/repos/${request.repository}/git/ref/heads/${branch}`, undefined, true);
     if (!ref) return null;
@@ -155,7 +155,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       assertProductDelivery(delivery,request.repository);
       const rules = await native(`rules/branches/${encodeURIComponent(request.defaultBranch)}`);
       if (!Array.isArray(rules) || !rules.some(r => r.type === 'non_fast_forward') || !rules.some(r => r.type === 'deletion')) fail('CANDIDATE_SOURCE_PROTECTION_REQUIRED');
-      await checkPolicyAt(baseSha);
+      await checkPolicyAt(baseSha,delivery);
       const settings = JSON.parse(config), versions = JSON.parse(manifest);
       const initial = Object.values(versions).every(version => !version || version === '0.0.0');
       const releases = initial ? await pages('releases') : [], tags = initial ? await pages('tags') : [];
@@ -517,21 +517,21 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         });
         // Validate the assembled snapshot before the atomic cycle handoff.
         await decodeCandidateDocument(mergedArchive.map(file => JSON.parse(file.content)));
-        return {cycle,mergedArchive,sourceSha,defaultSha};
+        return {cycle,mergedArchive,sourceSha,defaultSha,delivery};
     };
     if(observation)return await advanceReleaseCandidate(session,runtime,observation);
     // Merged source precedes generation: its tag and Release need not exist yet.
     if(session.repository.candidate?.prNumber) {
       const value=await mergedSnapshot(session.repository.candidate,session,expectedHead);
       if(value) {
-        const {cycle,mergedArchive,sourceSha,defaultSha}=value;
+        const {cycle,mergedArchive,sourceSha,defaultSha,delivery}=value;
         if(!verifyHandoff)return {status:'WAIT',reason:'MERGED_CANDIDATE_VERIFICATION_REQUIRED'};
         const history=await verifyHandoff(cycle);
         const eligible=history?.result==='PASS';
         if(!eligible||history.inventoryComplete!==true||history.pendingHandoff!==cycle.id
           ||history.defaultHead!==defaultSha||history.stateHead!==expectedHead)
           return {status:'WAIT',reason:'MERGED_CANDIDATE_SOURCE_UNVERIFIED',history};
-        await checkPolicyAt(sourceSha);
+        await checkPolicyAt(sourceSha,delivery);
         if(await fetchBranch(request.defaultBranch)!==defaultSha||await fetchBranch('steward/release-state')!==expectedHead)
           return {status:'WAIT',reason:'MERGED_CANDIDATE_SOURCE_MOVED'};
         session.repository.activeCycleId = cycle.id; session.repository.candidate = null; session.repository.revision++; session.repository.lastProgressAt = now();

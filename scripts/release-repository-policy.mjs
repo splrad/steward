@@ -5,14 +5,16 @@ import {releaseRegistration} from './repository-registration-policy.mjs';
 
 // Releases already in progress use their frozen source. This guard admits new candidates.
 export function releasePolicyGuard(app, repository, readPolicy=mergedRepositoryPolicy) {
-  return async (read,{nativeEntry=false,priorRegistration=false}={})=>{
+  return async (read,{nativeEntry=false,priorRegistration=false,buildWorkflow=publishPath}={})=>{
     if(nativeEntry&&!priorRegistration)return;
     const selection=await readPolicy(app,repository);
     if(selection.adoption==='paused')throw Error('CANDIDATE_REPOSITORY_POLICY_DISABLED');
     if(selection.adoption!=='central')return;
     if(!selection.policy.release)throw Error('CANDIDATE_REPOSITORY_POLICY_DISABLED');
     if(nativeEntry)return;
-    const files=new Map(await Promise.all([deliveryPath,publishPath,versionsPath].map(async path=>[path,await read(path)])));
+    const [delivery,workflow,versions]=await Promise.all([read(deliveryPath),read(buildWorkflow),read(versionsPath)]);
+    // Registration retains the legacy publisher field. Compare its choices using the reviewed workflow.
+    const files=new Map([[deliveryPath,delivery],[publishPath,workflow],[versionsPath,versions]]);
     const pending=[];
     const current=releaseRegistration(inspectRepository(files),pending);
     if(pending.length||!isDeepStrictEqual(selection.policy.release,current))
