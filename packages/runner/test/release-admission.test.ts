@@ -92,6 +92,23 @@ it('keeps the previously adopted legacy template with an organization-template c
   f.source['.github/release-template.md.mustache']+='changed';
   await expect(pipelineIdentity(f.input,f.environment,f.gh,f.io)).rejects.toThrow('adopted notes template');
 });
+it('binds conditional notes in the build admission to the reviewed delivery path', async () => {
+  const template=await (await import('node:fs/promises')).readFile('templates/repository/.github/release-template.md.mustache','utf8');
+  const f=productPipelineFixture(1,false,'global.json',template);
+  f.source['.github/release-template.md.mustache']=template;
+  const chunk=f.input.state.domainRecords[0]!.value as {content:string;documentDigest:string};
+  const session=JSON.parse(chunk.content);
+  session.identity.noteTemplate=template;
+  const updatePath=(path:string)=>{
+    session.identity.units[0].notesPath=path;
+    chunk.content=JSON.stringify(session);
+    chunk.documentDigest=createHash('sha256').update(chunk.content).digest('hex');
+  };
+  updatePath(f.delivery.units[0]!.notesPath);
+  await expect(pipelineIdentity(f.input,f.environment,f.gh,f.io)).resolves.toMatchObject({status:'ADMITTED'});
+  updatePath('docs/other-release.md');
+  await expect(pipelineIdentity(f.input,f.environment,f.gh,f.io)).rejects.toThrow('reviewed release notes path');
+});
 it('rejects a static artifact identity before admitting a sealed legacy GitHub handoff', async () => {
   const f=productPipelineFixture(), workflow=YAML.parse(f.source[defaultBuildWorkflow]!);
   const upload='actions/upload-artifact@'+'a'.repeat(40);

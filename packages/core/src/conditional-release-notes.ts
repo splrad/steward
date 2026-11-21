@@ -137,28 +137,43 @@ export function parseConditionalNotes(markdown: string): ConditionalNotes {
   };
 }
 
+function githubRepositoryPath(url: URL, repository: string) {
+  if (url.hostname !== 'github.com') return;
+  const prefix = `/${repository.toLowerCase()}/`;
+  let decoded: string;
+  try { decoded = decodeURIComponent(url.pathname); }
+  catch { fail('invalid GitHub link encoding'); }
+  if (!decoded.toLowerCase().startsWith(prefix)) return;
+  return {
+    path: decoded.slice(prefix.length),
+    rawPath: url.pathname.toLowerCase().startsWith(prefix) ? url.pathname.slice(prefix.length) : '',
+  };
+}
+
 /** Product-local acquisition references must point to the actual release or its reviewed source. */
 export function assertVersionAcquisitionLinks(notes: ConditionalNotes, repository: string, tag: string, sourceSha?: string,
   assetNames?: readonly string[]) {
-  const prefix = `/${repository.toLowerCase()}/`;
   const refs = sourceSha ? [tag, sourceSha] : [tag];
   const archives = sourceSha ? [`refs/tags/${tag}`, sourceSha] : [`refs/tags/${tag}`];
   const versioned = (url: URL): boolean => {
-    if (url.hostname !== 'github.com' || !url.pathname.toLowerCase().startsWith(prefix)) return true;
+    const local = githubRepositoryPath(url, repository);
+    if (!local) return true;
     if (url.origin !== 'https://github.com' || url.username || url.password) return false;
-    const path = url.pathname.slice(prefix.length);
-    if (path.startsWith('releases/tag/')) return decodeURIComponent(path.slice('releases/tag/'.length)) === tag;
-    if (path.startsWith('releases/download/')) {
-      const download = decodeURIComponent(path.slice('releases/download/'.length));
+    const { path, rawPath } = local, route = path.toLowerCase();
+    if (rawPath.startsWith('releases/tag/')) return path.slice('releases/tag/'.length) === tag;
+    if (rawPath.startsWith('releases/download/')) {
+      const download = path.slice('releases/download/'.length);
       return assetNames ? assetNames.some(name => download === `${tag}/${name}`) : download.startsWith(tag + '/');
     }
-    if (path === 'releases' || path.startsWith('releases/')) return false;
-    if (/^(?:blob|tree)\//.test(path)) {
-      const ref = decodeURIComponent(path.slice(path.indexOf('/') + 1));
+    if (route === 'releases' || route.startsWith('releases/')) return false;
+    if (/^(?:blob|tree)\//.test(route)) {
+      if (!/^(?:blob|tree)\//.test(rawPath)) return false;
+      const ref = path.slice(path.indexOf('/') + 1);
       return refs.some(version => ref === version || ref.startsWith(version + '/'));
     }
-    if (path.startsWith('archive/')) {
-      const archive = decodeURIComponent(path.slice('archive/'.length));
+    if (route.startsWith('archive/')) {
+      if (!rawPath.startsWith('archive/')) return false;
+      const archive = path.slice('archive/'.length);
       return archives.some(version => archive === `${version}.zip` || archive === `${version}.tar.gz`);
     }
     return true;
@@ -203,17 +218,18 @@ function githubUrls(text: string) {
 }
 
 export function assertSelectedReleaseDownloads(markdown: string, repository: string, tag: string, selected?: ReadonlySet<string>) {
-  const releases = `/${repository.toLowerCase()}/releases/`;
-  const prefix = releases + 'download/';
+  const prefix = 'releases/download/';
   for (const link of githubUrls(markdown)) {
     const url = new URL(link);
-    const path = url.pathname.toLowerCase();
-    if (path === releases + 'latest/download' || path.startsWith(releases + 'latest/download/'))
+    const local = githubRepositoryPath(url, repository);
+    if (!local) continue;
+    const { path, rawPath } = local, route = path.toLowerCase();
+    if (route === 'releases/latest/download' || route.startsWith('releases/latest/download/'))
       fail('conditional release links to a file outside GitHub delivery');
-    if (!path.startsWith(prefix)) continue;
-    const download = decodeURIComponent(url.pathname.slice(prefix.length));
+    if (!route.startsWith(prefix)) continue;
+    const download = path.slice(prefix.length);
     const tagPrefix = tag + '/';
-    if (url.origin !== 'https://github.com' || url.username || url.password || !download.startsWith(tagPrefix) || download === tagPrefix
+    if (!rawPath.startsWith(prefix) || url.origin !== 'https://github.com' || url.username || url.password || !download.startsWith(tagPrefix) || download === tagPrefix
       || (selected && !selected.has(download.slice(tagPrefix.length))))
       fail('conditional release links to a file outside GitHub delivery');
   }

@@ -449,6 +449,9 @@ export async function pipelineIdentity(input: ProductBuildInput, environment: No
     for(const target of cycle.units) {
       if(!session.generated.units.some((unit:typeof target)=>unit.id===target.id&&unit.version===target.version&&unit.tag===target.tag))
         fail('candidate release unit version');
+      const unit = delivery.units.find(unit => unit.id === target.id);
+      if (!unit) fail('native version source');
+      assertReviewedNotesPath(unit, session.identity.units.find((item: { id: string }) => item.id === unit.id));
     }
     if(!await stateRef())return {status:'UNKNOWN' as const,reason:'STATE_SOURCE_MOVED'};
     return {status:'SOURCE_VERIFIED' as const,units:cycle.units.map(unit=>({
@@ -479,6 +482,7 @@ export async function pipelineIdentity(input: ProductBuildInput, environment: No
       return { id, name, build: producers[0]!.id };
     });
     const identity = session.identity.units.find((item: any) => item.id === unit.id); if (!identity) fail('unit identity snapshot');
+    if (conditional) assertReviewedNotesPath(unit, identity);
     const selected = selectReleaseContributors(identity.actors, delivery.repositoryAuthors, confirmedHumans);
     if (JSON.stringify(selected) !== JSON.stringify(identity.contributors)) fail('frozen identity mismatch');
     units.push({ id: unit.id, version: target.version, packageVersion, tag: target.tag, builds, assets, contributors: selected.contributors });
@@ -547,6 +551,10 @@ export async function pipelineInspect(record: BuildPipelineRecord, unitId: strin
 }
 
 function fail(reason: string): never { throw new Error(`RELEASE_PIPELINE: ${reason}`); }
+function assertReviewedNotesPath(unit: DeliveryUnit, identity: { notesPath?: string } | undefined): void {
+  if (!identity || (identity.notesPath ?? `.release-notes/${unit.id}.md`) !== unit.notesPath)
+    fail('reviewed release notes path');
+}
 const positive = (value: string | undefined) => { if (!value || !/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) fail('positive native ID'); return Number(value); };
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 export type NativePages = (path: string, collection: 'jobs' | 'artifacts') => Promise<any[]>;
@@ -1085,6 +1093,7 @@ async function prepareWorkflowPublication(options:{
     const packageVersion=versions.get(unit.id);
     const identity=merged.session.identity.units.find((item:any)=>item.id===unit.id);
     if(!packageVersion||!identity)fail('workflow delivery unit data');
+    assertReviewedNotesPath(unit, identity);
     const contributors=selectReleaseContributors(identity.actors,delivery.repositoryAuthors,confirmedHumans);
     if(JSON.stringify(contributors)!==JSON.stringify(identity.contributors))fail('workflow delivery contributor identity');
     const directory=join(root,unit.id);

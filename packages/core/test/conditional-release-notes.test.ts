@@ -134,7 +134,8 @@ describe('organization conditional release notes', () => {
     expect(render(example(mergedSha))).toContain('@'+mergedSha);
   });
 
-  it.each(['releases/latest', 'tree/main', 'blob/v1.0.0/README.md'])('checks a bare acquisition URL: %s', path => {
+  it.each(['releases/latest', 'tree/main', 'blob/v1.0.0/README.md', 'Releases/latest', 'TREE/main',
+    'archive%2Frefs%2Fheads%2Fmain.zip'])('checks a bare acquisition URL: %s', path => {
     const input=notes('获取与使用',`**本版入口**。见 https://github.com/${repository}/${path} 。`);
     expect(()=>renderCandidateNote('.release-notes/product.md',input,[],{template,repository,sourceSha,tag:frozen.tag})).toThrow('acquisition link');
     expect(()=>renderFrozenReleaseNotes(template,{...frozen,notes:input})).toThrow('acquisition link');
@@ -149,6 +150,27 @@ describe('organization conditional release notes', () => {
       expect(()=>project(location('download/v1.0.0'))).toThrow('outside GitHub delivery');
       expect(project(location('download/'+frozen.tag))).toContain('/download/'+frozen.tag);
     }
+  });
+
+  it.each([
+    'releases%2Fdownload%2Fv1.0.0%2Ffile.zip',
+    'releases%2Fdownload%2Fv1.2.3%2Ffile.zip',
+    'releases/latest%2Fdownload/file.zip',
+    'Releases/Download/v1.2.3/file.zip',
+    'releases/download/v1.2.3/broken%zz.zip',
+  ])('rejects invalid download routes or encoding outside acquisition: %s', path => {
+    const input = notes('本版重点', `**下载**。见 https://github.com/${repository}/${path} 。`);
+    const preview = () => renderCandidateNote('.release-notes/product.md', input, [], {
+      template, repository, sourceSha, tag: frozen.tag,
+    });
+    const render = () => renderFrozenReleaseNotes(template, { ...frozen, notes: input, selectedDownloads: new Set(['file.zip']) });
+    for (const project of [preview, render]) expect(project).toThrow(/outside GitHub delivery|invalid GitHub link encoding/);
+  });
+
+  it('preserves the selected filename case and percent encoding', () => {
+    const input = notes('获取与使用', `**下载**。见[附件](<https://github.com/${repository}/releases/download/${frozen.tag}/Setup%20x64.zip>)。`);
+    expect(renderFrozenReleaseNotes(template, { ...frozen, notes: input, selectedDownloads: new Set(['Setup x64.zip']) })).toContain('Setup%20x64.zip');
+    expect(() => renderFrozenReleaseNotes(template, { ...frozen, notes: input, selectedDownloads: new Set(['setup x64.zip']) })).toThrow('acquisition link');
   });
 
   it.each([
