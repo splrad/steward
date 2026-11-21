@@ -1,11 +1,14 @@
 import {execFile} from 'node:child_process';
+import {createHash} from 'node:crypto';
 import {promisify} from 'node:util';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {isolatedBuildEnvironment,nativeReleaseApp} from '../packages/runner/dist/index.js';
+import {isDeepStrictEqual} from 'node:util';
+import {completionFile,decodeCandidateDocument,evaluateCompletion,isolatedBuildEnvironment,NativeEvidenceReader,nativeReleaseApp,nativeEvidenceTransport} from '../packages/runner/dist/index.js';
 import {initializeReleaseAdoption} from './release-adoption.mjs';
+import {inspectRepositoryHistory,readNativeCompletion,readReleaseRecords} from './release-record.mjs';
 import {adoptionTransport} from './release-state-initialize.mjs';
 import {initializationDiagnostics} from './initialization-diagnostics.mjs';
 
@@ -15,6 +18,7 @@ export const initializationFailureCode=error=>failureCodes.has(error?.message)?e
 const sha=value=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
 const repository={id:1187527897,full_name:'splrad/LayerScape',default_branch:'main',private:false};
 const adoption={prNumber:176,sourceSha:'de10de20b5405d764bfda731ed91d11ac56b5b2c'};
+const closeoutCycle='pr-192-3755e1426c3d9776927658480fe610b298c27813';
 
 export function validateInitialization(env) {
   if(env.GITHUB_REPOSITORY!=='splrad/steward'||env.GITHUB_REPOSITORY_ID!=='1296724484'
@@ -22,10 +26,101 @@ export function validateInitialization(env) {
     ||env.GITHUB_WORKFLOW_REF!=='splrad/steward/.github/workflows/layerscape-release-initialize.yml@refs/heads/main'
     ||!sha(env.GITHUB_SHA)||env.WORKFLOW_SHA!==env.GITHUB_SHA||env.APPROVED_CONTROLLER_SHA!==env.GITHUB_SHA
     ||env.AUTHORIZE_INITIALIZATION!=='true'||!sha(env.EXPECTED_PRODUCT_HEAD))fail('SOURCE');
-  return {repository,baseSha:env.EXPECTED_PRODUCT_HEAD,releaseAdoption:adoption};
+  const plan={repository,baseSha:env.EXPECTED_PRODUCT_HEAD,releaseAdoption:adoption};
+  const operation=env.RELEASE_OPERATION||'initialize';
+  if(operation==='initialize'&&!env.EXPECTED_STATE_HEAD)return plan;
+  if(operation!=='closeout-192'||!sha(env.EXPECTED_STATE_HEAD)||!env.GITHUB_TOKEN)fail('SOURCE');
+  return {...plan,closeoutHead:env.EXPECTED_STATE_HEAD,controllerSha:env.GITHUB_SHA};
 }
 
-export async function initializeProduct(plan,{root,app,execute=promisify(execFile),initialize=initializeReleaseAdoption,fetcher=fetch,stage=()=>{},onFailure=()=>{}}) {
+export async function closeout192(plan,request,{token,io,centralIo,readRecords=readReleaseRecords,readCompletion=readNativeCompletion,inspectHistory=inspectRepositoryHistory}) {
+  const central=new NativeEvidenceReader(centralIo,'splrad/steward');
+  const currentController=()=>central.json('git/ref/heads/steward/validated-controller');
+  if((await currentController()).object?.sha!==plan.controllerSha)fail('SOURCE');
+  const product=new NativeEvidenceReader(io,request.repository);
+  const candidate=async()=>{
+    const pr=await product.json('pulls/201');
+    if(pr.number!==201||pr.state!=='open'||pr.head?.repo?.id!==repository.id
+      ||pr.head.ref!=='steward/release-candidate'||pr.base?.repo?.id!==repository.id
+      ||pr.base.ref!=='main'||!sha(pr.head.sha))fail('STATE_CHANGED');
+    return pr.head.sha;
+  };
+  const currentState=async()=>{
+    const value=await product.json('git/ref/heads/steward/release-state');
+    if(value.ref!=='refs/heads/steward/release-state'||value.object?.type!=='commit'||!sha(value.object.sha))fail('STATE_CHANGED');
+    return value.object.sha;
+  };
+  const candidateHead=await candidate();
+  const before=await readRecords({...request,targetRef:'steward/release-state',includeHistory:true});
+  const [entry]=before.cycles;
+  if(before.head!==plan.closeoutHead||before.history.some(row=>row.status!=='DECODED')
+    ||before.cycles.length!==1||entry.value.id!==closeoutCycle
+    ||entry.value.units.length!==1||entry.value.units[0].releaseId!==450956063
+    ||before.repository?.candidate?.prNumber!==201||before.repository.candidate.branch!=='steward/release-candidate')fail('STATE_CHANGED');
+  const candidateState=before.repository.candidate;
+  const sessionPrefix='generated/'+candidateState.id+'/session';
+  const currentPaths=new Set(before.currentPaths);
+  const sessionChunk=path=>{
+    const chunk=before.domainRecords.find(row=>row.path===path&&currentPaths.has(path))?.value;
+    if(chunk?.documentKind!=='session'||chunk.candidateId!==candidateState.id)fail('STATE_CHANGED');
+    return chunk;
+  };
+  const first=sessionChunk(sessionPrefix+'.json');
+  if(!Number.isSafeInteger(first.count)||first.count<1||first.count>128)fail('STATE_CHANGED');
+  const chunks=[first];
+  for(let index=1;index<first.count;index++)chunks.push(sessionChunk(sessionPrefix+'-'+index+'.json'));
+  const session=await decodeCandidateDocument(chunks);
+  const manual=session.manualValidation;
+  if(manual&&(manual.prNumber!==candidateState.prNumber||manual.branch!==candidateState.branch
+    ||manual.sourceSha!==candidateState.baseSha))fail('STATE_CHANGED');
+  const approvedCandidateHead=manual?.headSha??candidateState.publishedHead;
+  if(session.pending||candidateState.pendingWrite||approvedCandidateHead!==candidateHead)fail('STATE_CHANGED');
+  const validateTarget=async expected=>{
+    const main=await product.json('git/ref/heads/main');
+    if(main.ref!=='refs/heads/main'||main.object?.type!=='commit'||main.object.sha!==plan.baseSha
+      ||(await currentController()).object?.sha!==plan.controllerSha||await candidate()!==candidateHead
+      ||await currentState()!==expected)fail('STATE_CHANGED');
+  };
+  // The history reader takes its evaluation time before it asks for evidence.
+  const completion=await readCompletion(request,entry.value,{io,centralIo});
+  if(evaluateCompletion(completion.source,completion.observation,new Date().toISOString()).result!=='PASS')fail('NOT_APPLIED');
+  if(before.repository.activeCycleId===null&&before.repository.lastCompletedCycleId===closeoutCycle) {
+    const archive=before.domainRecords.find(row=>row.path===entry.value.completedEvidencePath)?.value;
+    if(!archive||!currentPaths.has(entry.value.completedEvidencePath)||!isDeepStrictEqual(archive.source,completion.source)
+      ||evaluateCompletion(archive.source,archive.observation,archive.observation.observedAt).result!=='PASS'
+      ||archive.provenance.some(proof=>!currentPaths.has(proof.path)||!before.domainRecords.some(record=>record.path===proof.path
+        &&typeof record.content==='string'&&createHash('sha256').update(record.content).digest('hex')===proof.digest)))
+      fail('NOT_APPLIED');
+    await validateTarget(before.head);
+    return {status:'UNCHANGED',archiveHead:before.head,cycleId:closeoutCycle,candidateHead};
+  }
+  if(before.repository.activeCycleId!==closeoutCycle)fail('STATE_CHANGED');
+  const result=await inspectHistory(request,{token,io,centralIo,beforeArchivePush:()=>validateTarget(before.head),
+    completionReader:cycle=>{
+      if(cycle.id!==closeoutCycle)fail('STATE_CHANGED');
+      return completion;
+    }});
+  if(result.result!=='PASS'||result.lastCompletedCycleId!==closeoutCycle||!sha(result.archiveHead))fail('NOT_APPLIED');
+  await validateTarget(result.archiveHead);
+  // The native history writer preserves the next candidate and archives fresh completion proof.
+  const state=async path=>{
+    const blob=await product.json('contents/'+path+'?ref='+result.archiveHead);
+    if(blob.path!==path||blob.encoding!=='base64')fail('READ');
+    return JSON.parse(Buffer.from(blob.content,'base64').toString('utf8'));
+  };
+  const evidencePath=completionFile(completion).path;
+  const after=await state('state.json'), cycle=await state('cycles/'+closeoutCycle+'.json');
+  if(after.activeCycleId!==null||after.lastCompletedCycleId!==closeoutCycle
+    ||!isDeepStrictEqual(after.candidate,before.repository.candidate)
+    ||cycle.completedEvidencePath!==evidencePath||!isDeepStrictEqual(await state(evidencePath),completion)
+    ||!isDeepStrictEqual(cycle.channelFacts,entry.value.channelFacts)
+    ||!isDeepStrictEqual(cycle.requiredChannels,entry.value.requiredChannels))
+    fail('STATE_CHANGED');
+  await validateTarget(result.archiveHead);
+  return {status:'APPLIED',archiveHead:result.archiveHead,cycleId:closeoutCycle,candidateHead};
+}
+
+export async function initializeProduct(plan,{root,app,execute=promisify(execFile),initialize=initializeReleaseAdoption,centralIo,fetcher=fetch,stage=()=>{},onFailure=()=>{}}) {
   if(plan.repository?.id!==repository.id||plan.repository.full_name!==repository.full_name
     ||!sha(plan.baseSha)||plan.releaseAdoption?.prNumber!==adoption.prNumber
     ||plan.releaseAdoption.sourceSha!==adoption.sourceSha||app.appBotId!==301115370)fail('IDENTITY');
@@ -48,6 +143,10 @@ export async function initializeProduct(plan,{root,app,execute=promisify(execFil
     stage('state-read');
     const state=await io.request('GET','/repos/'+repository.full_name+'/git/ref/heads/steward/release-state');
     if(![200,404].includes(state.status))fail('STATE_UNKNOWN');
+    if(plan.closeoutHead&&(state.status!==200||!centralIo))fail('STATE_UNKNOWN');
+    const expected=state.status===200?JSON.parse(Buffer.from(state.bytes).toString('utf8')).object?.sha:null;
+    if(state.status===200&&!sha(expected))fail('STATE_UNKNOWN');
+    if(plan.closeoutHead&&expected!==plan.closeoutHead)fail('STATE_CHANGED');
     if(state.status===404) {
       const matches=await read('/git/matching-refs/heads/steward/release-state');
       if(!Array.isArray(matches)||matches.length!==0)fail('STATE_UNKNOWN');
@@ -62,16 +161,15 @@ export async function initializeProduct(plan,{root,app,execute=promisify(execFil
     // Public Git objects only: never checkout or execute product source, and never pass the App key to Git.
     await git('fetch','--no-tags','--no-recurse-submodules',remote,'refs/heads/main:refs/heads/main');
     if(await git('rev-parse','refs/heads/main')!==plan.baseSha)fail('HEAD_CHANGED');
-    if(state.status===200) {
-      const expected=JSON.parse(Buffer.from(state.bytes).toString('utf8')).object?.sha;
-      if(!sha(expected))fail('STATE_UNKNOWN');
+    if(expected) {
       await git('fetch','--no-tags','--no-recurse-submodules',remote,'refs/heads/steward/release-state:refs/heads/steward/release-state');
       if(await git('rev-parse','refs/heads/steward/release-state')!==expected)fail('STATE_CHANGED');
     }
     stage('adoption-reconcile');
-    const result=await initialize({directory,writeDirectory:join(root,'writes'),remote,
+    const request={directory,writeDirectory:join(root,'writes'),remote,
       repository:repository.full_name,repositoryId:repository.id,defaultBranch:'main',appBotId:app.appBotId,
-      identity:{name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'},releaseAdoption:adoption},{token,io,fetcher});
+      identity:{name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'},releaseAdoption:adoption};
+    const result=plan.closeoutHead?await closeout192(plan,request,{token,io,centralIo}):await initialize(request,{token,io,fetcher});
     if(!['APPLIED','UNCHANGED'].includes(result.status))fail('NOT_APPLIED');
     stage('credential-cleanup');
     return result;
@@ -89,7 +187,8 @@ export async function main(env=process.env) {
     diagnostics.stage('app-identity');
     const fetcher=diagnostics.transport(fetch);
     const app=await nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY??'',fetcher,captureFailure);
-    result=await initializeProduct(plan,{root,app,fetcher,stage:diagnostics.stage,onFailure:captureFailure});
+    const centralIo=plan.closeoutHead?nativeEvidenceTransport(env.GITHUB_TOKEN,fetcher):undefined;
+    result=await initializeProduct(plan,{root,app,centralIo,fetcher,stage:diagnostics.stage,onFailure:captureFailure});
 
   } catch(error) {
     captureFailure(error);

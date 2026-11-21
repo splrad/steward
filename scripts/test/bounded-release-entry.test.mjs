@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import YAML from 'yaml';
 import {createHash} from 'node:crypto';
-import {candidateEvidence,validateCandidateEvent,sha256,product} from '../bounded-candidate-contract.mjs';
+import {candidateEvidence,validateCandidateEvent,validateNormalCandidateEvent,sha256,product} from '../bounded-candidate-contract.mjs';
 import {processNormalCandidateEvent} from '../release-candidate-event.mjs';
 import {entryGuard,resultOutcome,applyCandidateEvent} from '../bounded-release-entry.mjs';
 const head='a'.repeat(40),id=1296724484,root='/repos/splrad/steward';
@@ -104,6 +104,27 @@ function candidateFixture(changeSession=()=>{}) {
   };
   return {get,data,state,chunks,files,generatedChunk,prefix,setCorrupt:()=>{corrupt=true;}};
 }
+test('candidate event reads the active cycle from the same protected tree and binds its owner',async()=>{
+  const f=candidateFixture(),sourceSha='c'.repeat(40),prNumber=191,id=`pr-${prNumber}-${sourceSha}`;
+  const cycle={id,prNumber,sourceSha,controllerSha:head,deliveryConfigSha:head,units:[{id:'cli',version:'1.0.0',tag:'v1.0.0',
+    releaseId:null,manifestDigest:null,notesDigest:null,assets:[]}],requiredChannels:[],dispatches:[],publications:[],
+    channelFacts:[],executionEvidence:[],completionObservations:[],completedEvidencePath:null,repairOf:null,approvedRepairDecision:null};
+  f.state.activeCycleId=id;
+  const path=`cycles/${id}.json`;
+  f.files[path]=cycle;
+  const hint={repositoryId:product.id,prNumber:192,eventId:7};
+  assert.equal((await validateCandidateEvent(hint,f.get)).pull.number,192);
+  assert.equal((await validateNormalCandidateEvent(hint,head,f.get)).pull.number,192);
+  f.files[path]={...cycle,prNumber:190,id:`pr-190-${sourceSha}`};
+  await assert.rejects(validateCandidateEvent(hint,f.get),/BOUNDED_CANDIDATE_REQUIRED/);
+  f.files[path]={...cycle,prNumber:190};
+  await assert.rejects(validateCandidateEvent(hint,f.get));
+  delete f.files[path];
+  await assert.rejects(validateCandidateEvent(hint,f.get));
+  f.state.activeCycleId=`pr-192-${sourceSha}`;
+  f.files[`cycles/${f.state.activeCycleId}.json`]={...cycle,id:f.state.activeCycleId,prNumber:192};
+  await assert.rejects(validateCandidateEvent(hint,f.get),/BOUNDED_CANDIDATE_REQUIRED/);
+});
 test('candidate evidence permits unaffected units but rejects losing a frozen unit',async()=>{
   const target={...product,units:[{id:'layerscape',path:'.'},{id:'ui',path:'ui'}]};
   assert.equal((await candidateEvidence(candidateFixture().get,{product:target})).identity.version,'1.0.0');
@@ -224,6 +245,17 @@ test('normal event does not label unknown result as completion',async()=>{
   const f=candidateFixture();
   const v=await processNormalCandidateEvent(normalInput(head),{get:f.get,invoke:async()=>({status:'WAIT',reason:'WRITE_UNKNOWN'})});
   assert.equal(v.outcome,'needs_attention');
+});
+test('normal event preserves the reason and state when release policy moves during admission',async()=>{
+  const f=candidateFixture();
+  const result=await processNormalCandidateEvent(normalInput(head),{
+    get:f.get,
+    invoke:async()=>({status:'WAIT',reason:'CANDIDATE_REPOSITORY_POLICY_MOVED'})
+  });
+  assert.equal(result.status,'WAIT');
+  assert.equal(result.reason,'CANDIDATE_REPOSITORY_POLICY_MOVED');
+  assert.equal(result.outcome,'needs_attention');
+  assert.deepEqual(result.stateAfter,result.stateBefore);
 });
 for(const kind of ['closed','editing','human-head'])test(`normal rechecks ${kind} after candidate processing`,async()=>{
   const f=candidateFixture(),pr=f.data[`${f.prefix}/pulls/192`];

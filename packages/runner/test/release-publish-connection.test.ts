@@ -11,7 +11,8 @@ import { S, C, START, END, digest } from './native-evidence-fixture.js';
 import { permitOfflineScript } from './offline-fixtures.js';
 const roots:string[]=[];
 afterEach(async()=>{vi.restoreAllMocks();for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
-it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-run','unbound-run','undispatched','foreign-run','foreign-source','formal-after-expiry','private-formal','partial-draft','corrupt-formal','missing-public-asset'])('prepares publication from exact native objects: %s',async kind=>{
+it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-run','unbound-run','undispatched','foreign-run','foreign-source','formal-after-expiry','private-formal','partial-draft','corrupt-formal','missing-public-asset',
+  'wrong-contents-path','wrong-contents-blob','missing-v1-template','missing-v2-template'])('prepares publication from exact native objects: %s',async kind=>{
   const f=productPipelineFixture(1,false,kind==='python-freeze'?'requirements-build.txt':'global.json');
   if(kind==='python-freeze') {
     permitOfflineScript(resolve('scripts/inspect-python-release.py'));
@@ -23,7 +24,7 @@ it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-r
   const admitted=await pipelineIdentity(f.input,f.environment,f.gh,f.io);
   if(admitted.status!=='ADMITTED')throw Error('fixture admission');
   const record=admitted.record,root=await mkdtemp(join(tmpdir(),'publish-connection-'));roots.push(root);
-  if (kind === 'historical-formal') {
+  if (kind === 'historical-formal'||kind==='missing-v1-template') {
     const legacy = JSON.parse(f.source['.github/delivery.json']!);
     legacy.schemaVersion = 1;
     delete legacy.units[0].buildLocks;
@@ -50,11 +51,19 @@ it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-r
   Object.assign(f.runs.get(1),{status:kind==='incomplete-run'?'in_progress':'completed',conclusion:kind==='incomplete-run'?null:kind==='failed-run'?'failure':'success'});
   if(kind==='foreign-run')f.runs.get(1).head_sha='e'.repeat(40);
   const artifact={id:702,name:`final-1-app-${S}-100-1`,expired:false,digest:'sha256:'+digest('archive'),workflow_run:{id:100,head_sha:S},created_at:'2026-10-26T00:00:30.000Z'};
-  const sourceBlob=(value:string)=>{const bytes=Buffer.from(value);return {type:'file',encoding:'base64',size:bytes.length,content:bytes.toString('base64'),sha:createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')};};
+  const sourceBlob=(path:string,value:string)=>{const bytes=Buffer.from(value);return {path,type:'file',encoding:'base64',size:bytes.length,content:bytes.toString('base64'),sha:createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')};};
   const calls:string[]=[],io={request:async(method:string,path:string)=>{
     expect(method).toBe('GET');calls.push(path);
-    if(path.startsWith('/repos/splrad/steward/')){expect(path).toBe(`/repos/splrad/steward/contents/mise.lock?ref=${C}`);return f.response(sourceBlob('locked tools'));}
-    if(path.includes('/contents/')){const file=path.split('/contents/')[1]!.split('?')[0]!;expect(path.endsWith(`?ref=${S}`)).toBe(true);return f.response(sourceBlob(f.source[file]!));}
+    if(path.startsWith('/repos/splrad/steward/')){expect(path).toBe(`/repos/splrad/steward/contents/mise.lock?ref=${C}`);return f.response(sourceBlob('mise.lock','locked tools'));}
+    if(path.includes('/contents/')){
+      const file=path.split('/contents/')[1]!.split('?')[0]!;expect(path.endsWith(`?ref=${S}`)).toBe(true);
+      const isTemplate=file==='.github/release-template.md.mustache';
+      if(isTemplate&&(kind==='missing-v1-template'||kind==='missing-v2-template'))return {...f.response({}),status:404};
+      const blob=sourceBlob(file,f.source[file]!);
+      if(isTemplate&&kind==='wrong-contents-path')blob.path='.github/other.md';
+      if(file==='.github/delivery.json'&&kind==='wrong-contents-blob')blob.sha='a'.repeat(40);
+      return f.response(blob);
+    }
     if(path.endsWith('/releases/20'))return f.response({id:20,tag_name:'v1.0.0',author:{id:42},draft:kind==='partial-draft'});
     if(path.includes('/releases/20/assets'))return f.response((kind==='partial-draft'||kind==='missing-public-asset'?names.slice(0,1):names).map((name,i)=>({id:300+i,name,state:'uploaded'})));
     if(path.includes('/artifacts?'))return f.response({total_count:1,artifacts:[artifact]});
@@ -74,6 +83,12 @@ it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-r
     await copyFile(join(original,names[id-300]!),destination);if(kind==='corrupt-formal'&&destination.endsWith('.exe'))await writeFile(destination,'other bytes');
   });
   if(['incomplete-run','failed-run','unbound-run','undispatched'].includes(kind)) { await expect(result).resolves.toMatchObject({status:'WAIT',reason:['unbound-run','undispatched'].includes(kind)?'BUILD_BINDING_REQUIRED':'BUILD_RUN_NOT_READY',publishInvoked:false});expect(download).not.toHaveBeenCalled(); }
+  else if(kind==='wrong-contents-path'||kind==='wrong-contents-blob'||kind==='missing-v1-template'||kind==='missing-v2-template') {
+    const errors={'wrong-contents-path':'source file identity','wrong-contents-blob':'source blob digest',
+      'missing-v1-template':'NATIVE_HTTP_404','missing-v2-template':'NATIVE_HTTP_404'};
+    await expect(result).rejects.toThrow(errors[kind]);
+    expect(download).not.toHaveBeenCalled();
+  }
   else if(['foreign-run','foreign-source','corrupt-formal','missing-public-asset'].includes(kind))await expect(result).rejects.toThrow(kind==='foreign-run'?'execution source':kind==='foreign-source'?'frozen manifest changed':kind==='missing-public-asset'?'formal frozen bytes missing':/manifest|artifact|sealed|hash|size/i);
   else {const prepared=await result;if(!Array.isArray(prepared))throw Error('publication expected');expect(prepared).toHaveLength(1);expect(prepared[0]!.manifest.runId).toBe(100);for(const name of names)expect(await readFile(join(output,'app',name))).toEqual(await readFile(join(original,name)));}
   if(kind==='formal-after-expiry')expect(download).not.toHaveBeenCalled();

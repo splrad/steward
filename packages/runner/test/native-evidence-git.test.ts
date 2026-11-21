@@ -66,7 +66,7 @@ it.each([false,true])('adopts zero-business source rejection before reselecting 
     if(path.endsWith('/runs/100'))return f.native.response(run);
     if(path.endsWith('/attempts/1/jobs?per_page=100'))return f.native.response({total_count:1,jobs:[job]});
     if(path.endsWith('/jobs/1000/logs'))return f.native.response(`${later} STEWARD_SOURCE_REJECTED {"status":"REJECTED","reason":"SOURCE_REF_MOVED"}\n`);
-    if(path.includes('/contents/'))return f.native.response({type:'file',encoding:'base64',content:bytes.toString('base64'),size:bytes.length,sha});
+    if(path.includes('/contents/'))return f.native.response({type:'file',path:path.split('/contents/')[1]!.split('?')[0],encoding:'base64',content:bytes.toString('base64'),size:bytes.length,sha});
     if(path.endsWith('/workflows/10'))return f.native.response({id:10,path:run.path,state:'active'});
     if(path.endsWith('/git/ref/heads/main'))return f.native.response({ref:'refs/heads/main',object:{type:'commit',sha:newR}});
     if(method==='POST') {
@@ -100,12 +100,12 @@ it('the built fixed CLI reaches the real Git bridge without depending on an emit
   expect(JSON.parse(await readFile(output,'utf8'))).toMatchObject({status:'WAIT',reason:'CANDIDATE_SCOPED_READ_CREDENTIAL_REQUIRED'});
 });
 it.each([false,true])('persists canonical dispatch through real fast-forward commits without a duplicate send; concurrent=%s',async concurrent=>{
-  const f=await gitFixture(true),original=f.native.io.request;let sends=0;
+  const f=await gitFixture(true),original=f.native.io.request;let sends=0,wrongPath=false;
   const workflow='run-name: Build ${{ inputs.operation_key }}\non:\n  workflow_dispatch:\n    inputs:\n'+['cycle_id','operation_key','source_sha','controller_sha'].map(key=>`      ${key}: {type: string, required: true}\n`).join('');
   const bytes=Buffer.from(workflow),sha=createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
   f.native.io.request=async(method,path,limit,body)=>{
     if(releaseProtectionFixture(path))return f.native.response(releaseProtectionFixture(path));
-    if(path.includes('/contents/'))return f.native.response({type:'file',encoding:'base64',content:bytes.toString('base64'),size:bytes.length,sha});
+    if(path.includes('/contents/'))return f.native.response({type:'file',path:wrongPath?'.github/workflows/other.yml':path.split('/contents/')[1]!.split('?')[0],encoding:'base64',content:bytes.toString('base64'),size:bytes.length,sha});
     if(path.endsWith('/actions/workflows/10'))return f.native.response({id:10,path:'.github/workflows/steward-release-publish.yml',state:'active'});
     if(path.includes('/git/ref/heads/steward/build/'))return f.native.response({ref:`refs/heads/${f.native.request.ref}`,object:{type:'commit',sha:f.native.context.cycle.sourceSha}});
     if(method==='POST') {
@@ -123,6 +123,12 @@ it.each([false,true])('persists canonical dispatch through real fast-forward com
     expect(persisted.domainRecords.filter((record:any)=>record.value.kind==='PREPARED').length).toBeGreaterThanOrEqual(1);
     return;
   }
+  wrongPath=true;
+  await expect(releaseCommand('dispatch-build',f.input,{io:f.native.io,now:()=>NOW})).rejects.toThrow('dispatch workflow source');
+  expect(sends).toBe(0);
+  const before=await readReleaseRecords({directory:f.remote,targetRef:'steward/release-state',repositoryId:1});
+  expect(before.head).toBe(f.initial.head);
+  wrongPath=false;
   const result=await releaseCommand('dispatch-build',f.input,{io:f.native.io,now:()=>NOW});expect(result.status).toBe('BOUND');
   const readback=await readReleaseRecords({directory:f.remote,targetRef:'steward/release-state',repositoryId:1});
   expect(readback.cycles[0].value.dispatches[0].canonicalRunId).toBe(100);expect(readback.domainRecords).toHaveLength(3);

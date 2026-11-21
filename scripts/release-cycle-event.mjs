@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { NativeEvidenceReader, nativeEvidenceTransport, nativeReleaseApp, nativeRunFact, verifyExecutionSource, githubUnits, channelTargetsDigest, downloadNativeArtifact } from '../packages/runner/dist/index.js';
 import { exact, sha, sha256, withParticipatingProduct } from './bounded-candidate-contract.mjs';
 import { entryGuard } from './bounded-release-entry.mjs';
+import {releasePolicyGuard} from './release-repository-policy.mjs';
 import { fetchState } from './release-coordinator.mjs';
 import { releaseCommand } from './release-record.mjs';
 
@@ -125,7 +126,7 @@ export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invo
     // Reconciliation reads every original attempt/job and formal asset, then archives its proof.
     const prior=await execute('reconcile-publication');
     if(prior.status!=='OBSERVED')return {...prior,cycleId};
-  } else if (run.displayTitle.startsWith('Channels observe ')) {
+  } else if (run.path==='.github/workflows/steward-release-channels.yml'&&run.displayTitle.startsWith('Channels observe ')) {
     const workflow=probeWorkflow?await cycleStage('SOURCE_READ',probeWorkflow):null;
     if(probeWorkflow&&(!Number.isSafeInteger(workflow?.id)||workflow.id<=0||workflow.state!=='active'||
        workflow.path!=='.github/workflows/steward-release-channels.yml'))fail('CYCLE_PROBE_ORIGIN');
@@ -144,7 +145,10 @@ export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invo
     probeReceipt=true;
 
   } else {
-    const {cycle,request}=only(cycles.flatMap(cycle=>cycle.dispatches.filter(d=>run.displayTitle===(d.purpose==='build'?'Build '+d.operationKey:'Channels '+d.inputs.mode+' '+d.requestKey)).map(request=>({cycle,request}))));
+    const {cycle,request}=only(cycles.flatMap(cycle=>cycle.dispatches.filter(d=>d.purpose==='build'
+      ? d.buildWorkflow===undefined ? run.displayTitle==='Build '+d.operationKey
+        : run.path===d.buildWorkflow&&run.workflowId===d.workflowId&&run.displayTitle.includes(d.operationKey)
+      : run.displayTitle==='Channels '+d.inputs.mode+' '+d.requestKey).map(request=>({cycle,request}))));
     verifyExecutionSource(run,{repositoryId:product.id,appBotId:botId,cycle,request});
     cycleId=cycle.id;
     if (!request.canonicalRunId) {
@@ -202,7 +206,8 @@ export async function main(env=process.env) {
           },centralGet,botId:app.appBotId,producer,
           candidate:(expectedSourceSha,expectedStateSha)=>app.forCandidateRepository(product.id,async(writer,candidateReadToken)=>
             releaseCommand('candidate',await request(null,null),{token:writer,io,centralIo,candidateReadToken,copilotToken:env.STEWARD_COPILOT_TOKEN,
-              controllerSha:run.head_sha,controllerDirectory:process.cwd(),candidateRuntime:{expectedSourceSha,expectedStateSha}})),
+              controllerSha:run.head_sha,controllerDirectory:process.cwd(),
+              candidateRuntime:{expectedSourceSha,expectedStateSha,checkRepositoryPolicy:releasePolicyGuard(app,repository)}})),
           invoke:async(command,cycleId,runId,allowProbeDispatch)=>releaseCommand(command,await request(cycleId,runId),{token,io,centralIo,allowProbeDispatch,controllerDirectory:process.cwd(),
             centralInvocation:{runId:run.id,runAttempt:run.run_attempt,controllerSha:run.head_sha,defaultBranch:'main'}})}));
       });

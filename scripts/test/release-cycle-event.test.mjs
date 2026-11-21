@@ -197,6 +197,21 @@ test('run and publication read failures retain their source stage',async()=>{
   }
 });
 
+test('a channel probe source error is reported only for runs on the registered workflow path',async()=>{
+  const event={kind:'run',repositoryId:product.id,runId:52,attempt:1};
+  const run={id:52,run_attempt:1,status:'completed',conclusion:'success',repository:{id:product.id},
+    head_repository:{id:product.id},actor:{id:301115370},head_branch:'main',head_sha:source,
+    event:'workflow_dispatch',workflow_id:410998651,created_at:'2026-11-19T01:00:00Z',
+    updated_at:'2026-11-19T01:01:00Z',display_title:'Channels observe '+source,
+    path:'.github/workflows/steward-release-channels.yml'};
+  const ports={snapshot:async()=>({cycles:[]}),get:async()=>run,
+    probeWorkflow:async()=>{throw Error('NATIVE_HTTP_503');}};
+  await assert.rejects(advanceEvent(event,ports),
+    error=>publicCycleError(error)==='CYCLE_EVENT_STOPPED\nstage=SOURCE_READ category=NATIVE_HTTP_503');
+  run.path='.github/workflows/other.yml';
+  await assert.rejects(advanceEvent(event,ports),/CYCLE_EVENT_AMBIGUOUS/);
+});
+
 test('cleanup runs once and preserves an earlier business failure',async()=>{
   let calls=0;
   const cleanup=async()=>{calls++;throw Error('private path')};

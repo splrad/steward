@@ -5,6 +5,16 @@ from pathlib import Path
 import yaml
 
 
+def legacy_link_url(repository):
+    return 'https://github.com/' + repository + '/blob/HEAD/.github/repository-configuration.md'
+
+
+def has_legacy_link(source, repository):
+    document = yaml.safe_load(source) or {}
+    return any(isinstance(link, dict) and link.get('url') == legacy_link_url(repository)
+               for link in document.get('contact_links', []))
+
+
 def add_link(directory, repository, *, retire=False):
     # The organization community-health repository supplies defaults to unrelated repositories.
     if repository.endswith('/.github'):
@@ -20,7 +30,7 @@ def add_link(directory, repository, *, retire=False):
     links = document.get('contact_links', [])
     if not isinstance(links, list):
         raise ValueError('Invalid issue chooser contact_links')
-    url = 'https://github.com/' + repository + '/blob/HEAD/.github/repository-configuration.md'
+    url = legacy_link_url(repository)
     item = {'name': '仓库配置', 'url': url, 'about': '查看已合并的仓库配置或发起调整。'}
     value = json.dumps(item, ensure_ascii=False)
     if retire:

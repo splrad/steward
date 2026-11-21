@@ -1,7 +1,7 @@
 import {matchesFrozenUnits} from './manual-candidate.mjs';
 import {isDeepStrictEqual} from 'node:util';
 import { createHash } from 'node:crypto';
-import { candidateObservationIdentity, decodeCandidateArchive, decodeCandidateDocument, decodeReleaseRecord } from '../packages/runner/dist/index.js';
+import { candidateCycleIsSeparate, candidateObservationIdentity, decodeCandidateArchive, decodeCandidateDocument, decodeReleaseRecord } from '../packages/runner/dist/index.js';
 import registrations from '../config/release/event-repositories.json' with {type:'json'};
 import {releaseParticipation} from './release-coordinator.mjs';
 import {nativeEvidenceTransport} from '../packages/runner/dist/index.js';
@@ -54,7 +54,9 @@ export async function candidateEvidence(get,{requireReady=true,product}) {
     return JSON.parse(bytes.toString('utf8'));
   };
   const state=decodeReleaseRecord('repository',Buffer.from(JSON.stringify(await file('state.json'))));
-  if(state.defaultBranch!==product.defaultBranch||state.repositoryId!==product.id||state.activeCycleId||!key(state.candidate?.id))throw Error('BOUNDED_CANDIDATE_REQUIRED');
+  if(state.defaultBranch!==product.defaultBranch||state.repositoryId!==product.id||!key(state.candidate?.id))throw Error('BOUNDED_CANDIDATE_REQUIRED');
+  const activeCycle=state.activeCycleId?decodeReleaseRecord('cycle',Buffer.from(JSON.stringify(await file(`cycles/${state.activeCycleId}.json`)))):undefined;
+  if(!candidateCycleIsSeparate(state,activeCycle))throw Error('BOUNDED_CANDIDATE_REQUIRED');
   const chunk=async path=>decodeCandidateArchive(Buffer.from(JSON.stringify(await file(path))),product.id);
   const path=`generated/${state.candidate.id}/session.json`,first=await chunk(path),chunks=[first];
   if(!Number.isSafeInteger(first.count)||first.count<1||first.count>128)throw Error('BOUNDED_CHUNKS');
@@ -94,9 +96,9 @@ export async function candidateEvidence(get,{requireReady=true,product}) {
   let identity=null;
   if(staleConflict||selectionChanged) {
     if(requireReady)throw Error('CANDIDATE_OBSERVATION_NOT_READY');
-  } else if(requireReady)identity=candidateObservationIdentity(session);
-  else if(session.manualValidation)identity=candidateObservationIdentity(session);
-  else {try {identity=candidateObservationIdentity(session);}catch { /* A normal event may recover the existing pending candidate. */ }}
+  } else if(requireReady)identity=candidateObservationIdentity(session,activeCycle);
+  else if(session.manualValidation)identity=candidateObservationIdentity(session,activeCycle);
+  else {try {identity=candidateObservationIdentity(session,activeCycle);}catch { /* A normal event may recover the existing pending candidate. */ }}
   const pull=await get(`/repos/${product.name}/pulls/${state.candidate.prNumber}`);
   if(pull.number!==state.candidate.prNumber||pull.head?.repo?.id!==product.id||pull.base?.repo?.id!==product.id
     ||pull.head.ref!==state.candidate.branch||pull.base.ref!==product.defaultBranch||!sha(pull.head.sha))throw Error('BOUNDED_PULL');
