@@ -93,9 +93,10 @@ async function cycleForRelease(reader,release) {
   const cycle=decodeReleaseRecord('cycle',bytes),matches=cycle.units.filter(unit=>unit.releaseId===release.id);
   check(entry.path==='cycles/'+cycle.id+'.json'&&cycle.sourceSha===sourceSha,'RELEASE_STATE');
   check(matches.length<=1,'RELEASE_STATE');
-  const [unit]=matches;
-  if(!unit?.githubDelivery)return null;
-  check(unit.tag===release.tag_name&&positive(unit.releaseId),'RELEASE_STATE');
+  const [bound]=matches;
+  const unit=bound??(cycle.workflowDelivery?cycle.units.find(item=>item.tag===release.tag_name):undefined);
+  if(!unit||!cycle.workflowDelivery&&!unit.githubDelivery)return null;
+  check(unit.tag===release.tag_name,'RELEASE_STATE');
   return {cycle,unit,stateSha};
 }
 
@@ -129,7 +130,10 @@ export async function desiredPagesSource({reader,repositoryId,mode,unitId='',con
       if(listed.author?.id!==appBotId)continue;
       const frozen=await readCycle(reader,listed);
       if(frozen) {
-        if(frozen.unit.id===unitId)candidates.push({release:listed,frozen});
+        if(frozen.unit.id===unitId) {
+          check(frozen.unit.githubDelivery&&frozen.unit.releaseId===listed.id&&frozen.unit.tag===listed.tag_name,'RELEASE_STATE');
+          candidates.push({release:listed,frozen});
+        }
         continue;
       }
       const bundle=await readManifest(reader,listed);
@@ -149,6 +153,7 @@ export async function desiredPagesSource({reader,repositoryId,mode,unitId='',con
     const deliveryBytes=await readContent(reader,'.github/delivery.json',m.sourceSha);
     const settings=json(await readContent(reader,'release-please-config.json',m.sourceSha));
     const delivery=parseDeliveryConfig(json(deliveryBytes),settings),unit=delivery.units.find(u=>u.id===unitId);
+    check((delivery.schemaVersion===3)===Boolean(frozen?.cycle.workflowDelivery),'RELEASE_STATE');
     const deliveryDigest=frozen?createHash('sha1').update(`blob ${deliveryBytes.length}\0`).update(deliveryBytes).digest('hex'):hash(deliveryBytes);
     check(unit&&deliveryDigest===(frozen?frozen.cycle.deliveryConfigSha:m.deliverySha256),'SOURCE_DELIVERY');
     if(!frozen) {
