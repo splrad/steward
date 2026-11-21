@@ -5,7 +5,8 @@ import YAML from 'yaml';
 import {adaptBuild,renderBuild,repositoryPath,scriptBuild,selectWorkflow,staticMatrixRows} from './configuration-build.mjs';
 import {changeChannels,channelWorkflowPath,ciPath,deliveryPath,explicitDelivery,jsonFile,managedPagesCondition,pagesPath,publishPath,versionsPath} from './configuration-view.mjs';
 import {releaseAdoptionPlan} from './release-adoption.mjs';
-import {assertRegisteredAdapters,isAdoptedOrganizationReleaseTemplate,parseDeliveryConfig,parseSupplementalNotes,productReleaseTemplatePath} from '../packages/runner/dist/index.js';
+import {readControllerReleaseTemplate,releaseTemplateControllerPin} from './release-template-source.mjs';
+import {assertRegisteredAdapters,isAdoptedOrganizationReleaseTemplate,isConditionalTemplate,parseDeliveryConfig,parseSupplementalNotes,productReleaseTemplatePath} from '../packages/runner/dist/index.js';
 
 const key=/^[a-z][a-z0-9-]{0,63}$/;
 const caller='.github/workflows/repository-configuration-trial.yml';
@@ -247,9 +248,17 @@ export async function applySelection(model,operation,plan,context) {
     const manifestPath='.release-please-manifest.json';
     const manifest=JSON.parse(model.files.get(manifestPath)??'{}');
     const configuredUnits=(plan.units??[]).filter(u=>!requested.some(t=>t.unit===u.id) || targets.some(t=>t.unit===u.id));
-    for(const unit of configuredUnits) if(unit.notesBody && !model.files.has(unit.notesPath)) {
+    const newNotes=configuredUnits.filter(unit=>unit.notesBody && !model.files.has(unit.notesPath));
+    let template=model.files.get(productReleaseTemplatePath)??'';
+    if(newNotes.length && delivery?.schemaVersion===3) {
+      const pin=releaseTemplateControllerPin(model.files.get(delivery.buildWorkflow));
+      template=await (context.readControllerTemplate??readControllerReleaseTemplate)(pin);
+      if(isConditionalTemplate(template))
+        must(await isAdoptedOrganizationReleaseTemplate(template),'请先采用组织发行说明模板，再保存发行配置。');
+    }
+    for(const unit of newNotes) {
       must(repositoryPath(unit.notesPath).startsWith('.release-notes/') && unit.notesPath.endsWith('.md'),'New notes belong in the release notes directory');
-      parseSupplementalNotes(unit.notesBody,model.files.get('.github/release-template.md.mustache')??'');
+      parseSupplementalNotes(unit.notesBody,template);
       changes.set(unit.notesPath,unit.notesBody+'\n');
     }
     const config=structuredClone(model.versions??{'separate-pull-requests':false,packages:{}});

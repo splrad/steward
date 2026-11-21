@@ -12,10 +12,11 @@ import { parseDocument } from 'yaml';
 import { advanceReleaseCandidate, pushPreparedCandidate, collectContentInput, planContentBatches,
   resumeContentBatches, assembleUnitNotes, copilotReleaseClient, decodeCandidateDocument, splitContentText, selectReleaseContributors, releaseAffectedUnitIds, isolatedBuildEnvironment,
   candidateObservationIdentity, parseDeliveryConfig, parseSupplementalNotes, assertDeliveryPath, assertProductDelivery, mergedBuildCycle, assertRepositoryWrite, completeMergedPull,
-  defaultBuildWorkflow, productReleaseTemplatePath, sharedReleaseTemplatePath, NativeEvidenceReader, nativeEvidenceTransport,
+  defaultBuildWorkflow, productReleaseTemplatePath,
   isAdoptedOrganizationReleaseTemplate, isConditionalTemplate, confirmedReleaseContributors, confirmedReleaseContributorsPath } from '../packages/runner/dist/index.js';
 import { readReleaseRecords, writeReleaseRecords, assertReleaseWriterProtection } from './release-record.mjs';
 import { restoreContentRecovery } from './release-content-recovery.mjs';
+import {readControllerReleaseTemplate,releaseTemplateControllerPin} from './release-template-source.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const validSha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
@@ -96,14 +97,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       const local=await fileAt(sha,productReleaseTemplatePath,true);
       if(local!==null)return checkedTemplate(local);
     }
-    const reader=new NativeEvidenceReader(nativeEvidenceTransport(undefined,fetcher),'splrad/steward');
-    const file=await reader.json(`contents/${sharedReleaseTemplatePath}?ref=${pin}`);
-    if(file.type!=='file'||file.path!==sharedReleaseTemplatePath||file.encoding!=='base64'||typeof file.content!=='string')
-      fail('CANDIDATE_RELEASE_TEMPLATE');
-    const bytes=Buffer.from(file.content,'base64');
-    if(bytes.length!==file.size||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==file.sha)
-      fail('CANDIDATE_RELEASE_TEMPLATE');
-    return checkedTemplate(new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes));
+    return checkedTemplate(await readControllerReleaseTemplate(pin,fetcher));
   };
   const checkPolicyAt=async(sha,delivery)=>{
     if(!checkRepositoryPolicy)return;
@@ -118,14 +112,8 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       if (local !== null) pinnedTemplate.set(sha, await checkedTemplate(local));
       else if (!delivery.buildWorkflow) pinnedTemplate.set(sha, await templateAt(sha, controllerSha, delivery));
       else {
-        const workflow = parseDocument(await fileAt(sha, delivery.buildWorkflow), { uniqueKeys: true });
-        if (workflow.errors.length) fail('CANDIDATE_CONTROLLER_PIN_INVALID');
-        const jobs = Object.values(workflow.toJS({ maxAliasCount: 0 })?.jobs ?? {});
-        const refs = jobs.flatMap(job => Array.isArray(job?.steps) ? job.steps : [])
-          .filter(step => step.with?.repository === 'splrad/steward' && step.with.path === 'controller')
-          .map(step => step.with.ref);
-        if (!refs.length || !validSha(refs[0]) || refs.some(ref => ref !== refs[0])) fail('CANDIDATE_CONTROLLER_PIN_REQUIRED');
-        pinnedTemplate.set(sha, await templateAt(sha, refs[0], delivery));
+        const pin = releaseTemplateControllerPin(await fileAt(sha, delivery.buildWorkflow));
+        pinnedTemplate.set(sha, await templateAt(sha, pin, delivery));
       }
     }
     return pinnedTemplate.get(sha);

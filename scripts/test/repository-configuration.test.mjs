@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
+import {createHash} from 'node:crypto';
 import {mkdtemp,mkdir,readFile,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {dirname,join,resolve} from 'node:path';
@@ -8,6 +9,7 @@ import {pathToFileURL} from 'node:url';
 import YAML from 'yaml';
 import {candidates,configurationForm,parseForm,planFromForm} from '../configuration-form.mjs';
 import {applySelection} from '../configuration-selection.mjs';
+import {readControllerReleaseTemplate} from '../release-template-source.mjs';
 import {inspectRepository,pagesPath,publishPath,renderConfiguration} from '../configuration-view.mjs';
 import {dynamicBuildInputs,findEvidence,trialInventory} from '../configuration-native.mjs';
 import {stageNativeProducer} from '../configuration-native-artifact.mjs';
@@ -288,6 +290,43 @@ test('routes compact delivery file changes to the reviewed workflow while preser
   await assert.rejects(applySelection(model,'configure',{channels:[{unit:'desktop',id:'github-release'}]},{}),/受审产品工作流/);
   assert.deepEqual(await applySelection(model,'configure',{},{}),new Map());
   assert.deepEqual(await applySelection(model,'trial',{channels:[{unit:'desktop',id:'github-release'}]},{}),new Map());
+});
+
+test('validates a compact repository’s first notes with the release workflow’s pinned template',async()=>{
+  const pin='a'.repeat(40), workflow='.github/workflows/build-release.yml';
+  const templatePath='templates/repository/.github/release-template.md.mustache';
+  const body='## ⚡ 改进\n\n**更清晰的输出**。显示实际文件名。';
+  const notesPath='.release-notes/desktop.md';
+  const files=new Map([
+    ['.github/delivery.json',JSON.stringify({schemaVersion:3,buildWorkflow:workflow})],
+    ['release-please-config.json',JSON.stringify({packages:{'.':{component:'desktop'}}})],
+    [workflow,YAML.stringify({jobs:{publish:{steps:[{with:{repository:'splrad/steward',path:'controller',ref:pin}}]}}})],
+    ['VERSION','1.0.0\n'],['CHANGELOG.md','# Change history\n'],
+  ]);
+  const plan={units:[{id:'desktop',path:'.',notesPath,notesBody:body}],
+    versions:[{path:'.',versionFile:'VERSION',changelog:'CHANGELOG.md'}]};
+  let template=await readFile(templatePath);
+  const requests=[];
+  const context={readControllerTemplate:ref=>readControllerReleaseTemplate(ref,async (url,options)=>{
+    requests.push(url);
+    assert.equal(options.method,'GET');
+    const sha=createHash('sha1').update(`blob ${template.length}\0`).update(template).digest('hex');
+    return Response.json({type:'file',path:templatePath,encoding:'base64',size:template.length,content:template.toString('base64'),sha});
+  })};
+  const model=inspectRepository(files);
+  assert.equal(model.delivery.units[0].notesPath,notesPath);
+  const form=configurationForm(model,'b'.repeat(40),{values:{'s1.use':true,'s1.unit':'desktop','s1.notes':notesPath}});
+  assert.match(form.body,/按采用模板填写的新 Markdown 说明/);
+  const saved=await applySelection(model,'configure',plan,context);
+  assert.equal(saved.get(notesPath),body+'\n');
+  assert.deepEqual(requests,[`https://api.github.com/repos/splrad/steward/contents/${templatePath}?ref=${pin}`]);
+
+  template=await readFile('packages/core/test/fixtures/release-template-compact.mustache');
+  files.set('.github/release-template.md.mustache',await readFile(templatePath,'utf8'));
+  await assert.rejects(applySelection(inspectRepository(files),'configure',plan,context),/RELEASE_TEMPLATE/);
+  files.set(workflow,files.get(workflow).replace(pin,'main'));
+  await assert.rejects(applySelection(inspectRepository(files),'configure',plan,context),/CANDIDATE_CONTROLLER_PIN_REQUIRED/);
+  assert.equal(requests.length,2);
 });
 
 test('reports only declared product platforms and keeps operational Pages conditions out of selections',async()=>{
