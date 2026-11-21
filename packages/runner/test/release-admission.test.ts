@@ -141,6 +141,11 @@ it('keeps two unit asset sets separate and requires every frozen Release ID in p
   if (result.status !== 'ADMITTED') throw new Error('fixture admission');
   const build = result.record;
   expect(parsePipelineRecord(build)).toEqual(build);
+  const missingAuthors={...build,delivery:{...build.delivery,repositoryAuthors:[]}};
+  expect(()=>parsePipelineRecord(missingAuthors)).toThrow('AUTHOR_IDENTITY_UNVERIFIED');
+  const conditional={...missingAuthors,noteFormat:'conditional'} as const;
+  expect(parsePipelineRecord(conditional)).toMatchObject({noteFormat:'conditional'});
+  await expect(pipelineNotes(conditional,'app','source')).rejects.toThrow('notes template format');
   const duplicate=structuredClone(build);duplicate.delivery.units[1]!.assets[0]!.name=duplicate.delivery.units[0]!.assets[0]!.name;
   duplicate.units[1]!.assets[0]!.name=duplicate.units[0]!.assets[0]!.name;
   expect(()=>parsePipelineRecord(duplicate)).toThrow('duplicate product asset');

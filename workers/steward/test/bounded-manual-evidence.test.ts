@@ -219,6 +219,7 @@ describe('manual notes at the generated base',()=>{
    f.blobs[notes]='## 更新内容\r\n\r\n人工修改。\r\n\r\n## 恢复\r\n\r\n当前发布资料未提供此项变化的确认信息。\r\n';
    if(scenario==='conditional v3'){
      f.session.identity.noteTemplate=readFileSync(new URL('../../../templates/repository/.github/release-template.md.mustache',import.meta.url),'utf8');
+     f.session.identity.units[0].notesPath=notes;
      f.blobs['.github/delivery.json']=f.sourceBlobs['.github/delivery.json']=JSON.stringify({schemaVersion:3,notes:{'.':notes}});
      f.blobs['release-please-config.json']=f.sourceBlobs['release-please-config.json']=JSON.stringify({packages:{'.':{component:'layerscape'}}});
      f.blobs[notes]='## 🐛 错误修复\r\n\r\n**启动**。人工修改。\r\n';

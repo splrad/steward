@@ -4,6 +4,7 @@ import { sha256Hex } from './fingerprint.js';
 import { validateCandidateFiles } from './release-candidate.js';
 import { verifyContentAttemptReceipts, retryableContentRejection, validateContentInput, validateContentResult } from './release-content.js';
 import { isConditionalTemplate } from './conditional-release-notes.js';
+import { assertDeliveryPath } from './delivery-config.js';
 
 export interface CandidateArchiveChunk {
   schemaVersion: 1; repositoryId: number; candidateId: string;
@@ -35,7 +36,12 @@ function candidateIdentity(identity: any) {
     ...(typeof identity?.noteTemplate === 'string' && isConditionalTemplate(identity.noteTemplate) ? ['noteTemplate'] : [])]);
   if (!/^[a-f0-9]{64}$/.test(identity.authorsDigest) || !/^[a-f0-9]{64}$/.test(identity.sourceDigest)
     || !Array.isArray(identity.actors) || !Array.isArray(identity.units)) throw new Error('CANDIDATE_IDENTITY_INVALID');
-  for (const unit of identity.units) { exact(unit, ['id', 'actors', 'contributors']); if (!Array.isArray(unit.actors)) throw new Error('CANDIDATE_IDENTITY_INVALID'); }
+  for (const unit of identity.units) {
+    const hasNotesPath = typeof identity.noteTemplate === 'string' && typeof unit?.notesPath === 'string';
+    exact(unit, ['id', 'actors', 'contributors', ...(hasNotesPath ? ['notesPath'] : [])]);
+    if (!Array.isArray(unit.actors)) throw new Error('CANDIDATE_IDENTITY_INVALID');
+    if (hasNotesPath) assertDeliveryPath(unit.notesPath);
+  }
 }
 export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[]): Promise<any> {
   if (!chunks.length) throw new Error('CANDIDATE_ARCHIVE_MISSING');

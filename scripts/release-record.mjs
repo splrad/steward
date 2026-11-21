@@ -570,7 +570,15 @@ export async function inspectReleaseEvidence(request,{token,io=nativeEvidenceTra
   const observedAt=now();
   if(publication.files.length) {const saved=await store.archive(publication.files);if(!['APPLIED','UNCHANGED'].includes(saved.status))return {status:'UNKNOWN',reason:'PUBLICATION_ARCHIVE_NOT_ADOPTED'};}
   if(publisher&&centralIo&&centralInvocation) {
-    const observation=await inspectNativeCycle(context,history,io,observedAt,readHistory);
+    const frozenPublicationBuilds=new Map();
+    if(cycle.workflowDelivery&&publicationUnits) {
+      for(const id of publicationUnits) {
+        const delivery=cycle.units.find(unit=>unit.id===id)?.githubDelivery;
+        if(!delivery)fail('publication frozen workflow delivery required');
+        frozenPublicationBuilds.set(delivery.runId,Math.max(delivery.attempt,frozenPublicationBuilds.get(delivery.runId)??0));
+      }
+    }
+    const observation=await inspectNativeCycle(context,history,io,observedAt,{...readHistory,frozenPublicationBuilds});
     const saved=await store.archive([...observation.archives.map(archiveFile),nativeReadFile(observation.readObservation)]);
     if(!['APPLIED','UNCHANGED'].includes(saved.status)||observation.currentFacts.unknownEvidence.length||observation.currentFacts.conflictEvidence.length)return {status:'UNKNOWN',reason:'PUBLICATION_EVIDENCE_UNKNOWN',publishInvoked:false};
     if(observation.currentFacts.inFlightWaveKeys.length)return {status:'WAIT',reason:'RUN_IN_FLIGHT',publishInvoked:false};

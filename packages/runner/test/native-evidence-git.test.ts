@@ -134,9 +134,25 @@ it.each([false,true])('persists canonical dispatch through real fast-forward com
   expect(readback.cycles[0].value.dispatches[0].canonicalRunId).toBe(100);expect(readback.domainRecords).toHaveLength(3);
   expect(await releaseCommand('dispatch-build',{...f.input,directory:f.remote},{io:f.native.io,now:()=>NOW})).toMatchObject({status:'BOUND'});expect(sends).toBe(1);
 },60_000);
-it('keeps the archived snapshot and Git object directory paired when saving a native Release binding',async()=>{
-  const f=await gitFixture(false,native=>Object.assign(native.context.cycle.units[0]!,{manifestDigest:digest('manifest'),notesDigest:digest('notes'),
-    assets:[{id:'app',path:'app.zip',size:1,sha256:digest('f')}]}));
+it.each([false,true])('keeps the archived snapshot and Git object directory paired when saving a native Release binding; workflow-owned=%s',async workflowOwned=>{
+  const f=await gitFixture(false,native=>{
+    const cycle=native.context.cycle,unit=cycle.units[0]!;
+    Object.assign(unit,{manifestDigest:digest('manifest'),notesDigest:digest('notes'),assets:[{id:'app',path:'app.zip',size:1,sha256:digest('f')}]});
+    if(workflowOwned) {
+      cycle.workflowDelivery=true;
+      unit.githubDelivery={runId:100,attempt:1,artifactId:910,digest:'sha256:'+digest('delivery')};
+      native.runs.get(1).conclusion='success';
+      native.jobs.get(1)![0].conclusion='success';
+      native.jobs.get(1)![0].steps=[];
+    }
+  });
+  if(workflowOwned) {
+    f.native.overrides.set('GET /repos/example/product/actions/runs/100',f.native.response({...f.native.runs.get(1),run_attempt:2,status:'in_progress',conclusion:null}));
+    let reads=0;
+    f.native.overrides.set('GET /repos/example/product/actions/runs/100/artifacts?per_page=100',()=>f.native.response({
+      total_count:1,artifacts:[{id:920+(++reads),name:'steward-result-100-2-'+reads+'-1'}],
+    }));
+  }
   f.native.overrides.set('GET /repos/example/product/releases/tags/v1.0.0',f.native.response({},404));
   f.native.overrides.set('GET /repos/example/product/releases?per_page=100',f.native.response([]));
   const sha=f.native.context.cycle.controllerSha,run={id:900,repository:{id:1296724484},head_repository:{id:1296724484},workflow_id:20,path:'.github/workflows/release.yml',event:'schedule',
@@ -155,6 +171,7 @@ it('keeps the archived snapshot and Git object directory paired when saving a na
     ?f.native.response(releaseProtectionFixture(path)):transport(method,path,limit,body);
   let saved=false,saveError:unknown,archivedHead:string|undefined;
   await inspectReleaseEvidence(f.input,{io:f.native.io,centralIo,centralInvocation:{runId:900,runAttempt:1,controllerSha:sha,defaultBranch:'main'},now:()=>NOW,
+    publicationUnits:workflowOwned?new Set(['app']):undefined,
     publisher:async(context:any,save:(next:any)=>Promise<void>)=>{
       const archived=await readReleaseRecords({directory:f.remote,targetRef:'steward/release-state',repositoryId:1});
       archivedHead=archived.head;
@@ -165,6 +182,10 @@ it('keeps the archived snapshot and Git object directory paired when saving a na
       try {await save(next);saved=true;} catch(error) {saveError=error;throw error;}
     }});
   expect(saveError).toBeUndefined();expect(saved).toBe(true);
+  if(workflowOwned) {
+    expect(f.native.calls.some(call=>call.endsWith('/actions/runs/100/attempts/1'))).toBe(true);
+    expect(f.native.calls.some(call=>call.endsWith('/actions/runs/100')||call.includes('/attempts/2'))).toBe(false);
+  }
   const readback=await readReleaseRecords({directory:f.remote,targetRef:'steward/release-state',repositoryId:1});
   expect(readback.cycles[0].value.units[0].releaseId).toBe(20);
   expect(readback.head).not.toBe(archivedHead);

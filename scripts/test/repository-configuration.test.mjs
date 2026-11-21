@@ -69,7 +69,7 @@ for(const mode of ['reviewed scripts','native container, service and dynamic mat
   for(const path of ['tools/route/CHANGELOG.md','maps/data/CHANGELOG.md','.release-notes/route.md','.release-notes/maps.md']) await put(path,['概述','更新内容','兼容性','升级与迁移','安装说明','已知问题','恢复'].map(h=>'## '+h+'\n\nFixture notes.\n').join('\n'));
   await put('.github/workflows/steward-release-publish.yml',await readFile('templates/release/steward-release-publish.yml'));
   await put(reviewedChannel,channelFixture);
-  await put('.github/release-template.md.mustache','{{{upgradeNotices}}}');
+  await put('.github/release-template.md.mustache',await readFile('templates/repository/.github/release-template.md.mustache'));
   git('add','-A');git('-c','commit.gpgsign=false','commit','-m','Adopt protected trial and declare product documentation');
   const base=git('rev-parse','HEAD'),repo={id:15,name:'map-tools',full_name:'splrad/map-tools',owner:{login:'splrad'},default_branch:'trunk'};
   const load=async(api,ref)=>{
@@ -232,6 +232,10 @@ for(const mode of ['reviewed scripts','native container, service and dynamic mat
       return evidence.get(preparedHead+'/'+target.unit).files;
     }};
   const partial=await applySelection(adopted,'select',scenario,options);
+  const legacyFiles=new Map(adopted.files);
+  legacyFiles.delete('.github/delivery.json');
+  legacyFiles.set('.github/release-template.md.mustache','{{{upgradeNotices}}}');
+  await assert.rejects(applySelection(inspectRepository(legacyFiles),'select',scenario,options),/先采用组织发行说明模板/);
   const result=JSON.parse(partial.get('.github/delivery.json'));
   assert.equal(result.units[0].assets[0].description,'Reviewed CLI package');
   assert.deepEqual(result.units[1],adopted.delivery.units[1]);

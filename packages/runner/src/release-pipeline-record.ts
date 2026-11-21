@@ -109,6 +109,7 @@ export interface BuildPipelineRecord {
   cycleId: string; requestKey: string; sourceSha: string; controllerSha: string; buildRef: string;
   runId: number; runAttempt: number; toolLocks: Record<string, string>;
   delivery: DeliveryConfig; deliverySha256: string; templateSha256: string;
+  noteFormat?: 'conditional';
   units: (Omit<PipelineSource['unit'], 'deliverySha256' | 'templateSha256'> & {
     contributors: ReleaseContributor[];
   })[];
@@ -135,8 +136,9 @@ const buildFields = {
 };
 const releases = { type: 'array', minItems: 1, items: exactObject({ unitId: key, releaseId: id, manifestDigest: digest }) };
 const recordAjv = new Ajv2020({ strict: false }).addSchema(deliverySchema);
-const validateRecord = recordAjv.compile({ oneOf: [exactObject(buildFields),
-  exactObject({ schemaVersion: { const: 1 }, kind: { const: 'publish' }, build: exactObject(buildFields), releases }),
+const buildRecordSchema = { ...exactObject(buildFields), properties: { ...buildFields, noteFormat: { const: 'conditional' } } };
+const validateRecord = recordAjv.compile({ oneOf: [buildRecordSchema,
+  exactObject({ schemaVersion: { const: 1 }, kind: { const: 'publish' }, build: buildRecordSchema, releases }),
   exactObject({ schemaVersion: { const: 1 }, kind: { const: 'channel' }, repositoryId: id, fullName: properties.fullName,
     cycleId: buildFields.cycleId, sourceSha: sha, controllerSha: sha, requestKey: digest, runId: id, runAttempt: id, releases }),
 ] });
@@ -168,7 +170,7 @@ export function parsePipelineRecord(input: unknown): PipelineRecord {
         if (jobs.has(producer.jobName)) throw new Error('RELEASE_RECORD: duplicate product job'); jobs.add(producer.jobName);
       }
       const selected = selectReleaseContributors(unit.contributors.map(person => ({ ...person, type: 'User' })),
-        repositoryAuthors, repositoryAuthors.length ? undefined : unit.contributors);
+        repositoryAuthors, build.noteFormat === 'conditional' ? unit.contributors : undefined);
       if (JSON.stringify(selected.contributors) !== JSON.stringify(unit.contributors)) throw new Error('RELEASE_RECORD: frozen contributor identity');
     }
   }

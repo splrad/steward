@@ -52,14 +52,17 @@ export function renderCandidateNote(path:string,markdown:string,contributors:Par
 
 export function renderCandidateProjection(
   generated: { files: { path: string; content: string | null }[]; baseSha?: string; units?: {id: string; tag: string}[] },
-  identity: { noteTemplate?: string; units: { id: string; contributors: { contributors: ReleaseContributor[] } }[] },
+  identity: { noteTemplate?: string; units: { id: string; notesPath?: string; contributors: { contributors: ReleaseContributor[] } }[] },
   repository: string,
 ): string {
-  const notes = generated.files.filter(file => file.path.startsWith('.release-notes/') && file.content !== null);
+  const notePath = (unit: (typeof identity.units)[number]) => unit.notesPath ?? `.release-notes/${unit.id}.md`;
+  const paths = identity.noteTemplate ? new Set(identity.units.map(notePath)) : null;
+  const notes = generated.files.filter(file => file.content !== null && (paths ? paths.has(file.path) : file.path.startsWith('.release-notes/')));
   if (!notes.length) throw Error('CANDIDATE_PROJECTION_NOTES');
+  if (paths && (paths.size !== identity.units.length || notes.length !== paths.size)) throw Error('CANDIDATE_PROJECTION_NOTES');
   return notes.map(file => {
-    const unit = identity.units.find(item => `.release-notes/${item.id}.md` === file.path)
-      ?? (identity.units.length === 1 ? identity.units[0] : undefined);
+    const unit = identity.units.find(item => notePath(item) === file.path)
+      ?? (!paths && identity.units.length === 1 ? identity.units[0] : undefined);
     if (!unit || typeof file.content !== 'string' || !Array.isArray(unit.contributors?.contributors))
       throw Error('CANDIDATE_PROJECTION_UNIT');
     const tag = generated.units?.find(item => item.id === unit.id)?.tag;

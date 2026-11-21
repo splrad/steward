@@ -212,12 +212,14 @@ function conditionalOutputError(keyword: string) {
     validationErrors: [{ instancePath: '/paragraphs', schemaPath: '#/properties/paragraphs', keyword }],
   });
 }
-export function assembleUnitNotes(work: ContentWork) {
+export function assembleUnitNotes(work: ContentWork, notesPaths?: Record<string,string>) {
   if (!work.input.batches.every(b => b.status === 'READY')) throw new Error('CONTENT_NOT_READY');
   return work.input.units.map(unit => {
     const batches = work.input.batches.filter(b => b.unitIds.includes(unit.id));
     const paragraphs = batches.flatMap(b => (work.results[b.id] as { paragraphs: ContentParagraph[] }).paragraphs);
     const render = batches.some(batch => work.payloads[batch.id]?.conditional) ? buildConditionalDraft : renderUnitContent;
-    return { path: `.release-notes/${unit.id}.md`, mode: '100644' as const, content: render(paragraphs) };
+    const path=notesPaths ? notesPaths[unit.id] : `.release-notes/${unit.id}.md`;
+    if(!path)throw Error('CONTENT_NOTES_PATH');
+    return { path, mode: '100644' as const, content: render(paragraphs) };
   });
 }

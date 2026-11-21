@@ -149,7 +149,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     const persisted = new Map([...loaded].filter(([path]) => state.currentPaths.includes(path)));
     for (const path of state.currentPaths.filter(path => path.startsWith('cycles/')))
       persisted.set(path, await fileAt(state.head, path));
-    let expectedHead = state.head, writes = 0, lastFacts = null, lastProtections = null, delivery = null, conditional = false, confirmedHumans;
+    let expectedHead = state.head, writes = 0, lastFacts = null, lastProtections = null, delivery = null, conditional = false, confirmedHumans, notesPaths;
     const loadDocument = async path => {
       const text = loaded.get(path); if (text === undefined) return null;
       const first = JSON.parse(text), chunks = [first];
@@ -187,6 +187,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       const template = await sourceTemplateAt(baseSha, delivery);
       conditional = isConditionalTemplate(template);
       confirmedHumans = conditional ? await confirmedHumansAt(baseSha) : undefined;
+      notesPaths = conditional ? Object.fromEntries(delivery.units.map(unit => [unit.id,unit.notesPath])) : undefined;
       const rules = await native(`rules/branches/${encodeURIComponent(request.defaultBranch)}`);
       if (!Array.isArray(rules) || !rules.some(r => r.type === 'non_fast_forward') || !rules.some(r => r.type === 'deletion')) fail('CANDIDATE_SOURCE_PROTECTION_REQUIRED');
       await checkPolicyAt(baseSha,delivery);
@@ -245,7 +246,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       lastFacts = facts;
       lastProtections = { branch: rules, tags: protectedTags };
       return { baseSha, authors: delivery.repositoryAuthors, authorsDigest: hash(JSON.stringify(delivery.repositoryAuthors)),
-        ...(conditional ? { confirmedHumans, noteFormat: { template, repository: request.repository, sourceSha: baseSha } } : {}) };
+        ...(conditional ? { confirmedHumans, noteTemplate: template, notesPaths } : {}) };
     };
     const prs = async branch => {
       const values = await pages(`pulls?state=all&base=${encodeURIComponent(request.defaultBranch)}&head=${encodeURIComponent(request.repository.split('/')[0] + ':' + branch)}`);
@@ -368,7 +369,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         if (result.status !== 'READY') return { status: result.status === 'EDITING' ? 'EDITING' : result.status === 'FAILED' ? 'FAILED' : 'WAIT' };
         const unitActors = Object.fromEntries(snapshot.units.map(unit => [unit.id, []]));
         if (session.identity?.sourceDigest === snapshot.sourceDigest && session.identity.authorsDigest === hash(JSON.stringify(delivery.repositoryAuthors)))
-          return { status: 'READY', files: assembleUnitNotes(work), actors: session.identity.actors,
+          return { status: 'READY', files: assembleUnitNotes(work, notesPaths), actors: session.identity.actors,
             unitActors: Object.fromEntries(session.identity.units.map(unit => [unit.id, unit.actors])) };
         const commits = new Map();
         for (const manifest of work.evidence.manifests) for (const commit of manifest.commits) {
@@ -392,7 +393,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
             actors.push(users.get(actor.id)); for (const id of units) unitActors[id].push(users.get(actor.id));
           }
         }
-        return { status: 'READY', files: assembleUnitNotes(work), actors, unitActors };
+        return { status: 'READY', files: assembleUnitNotes(work, notesPaths), actors, unitActors };
       },
       save: async session => {
         const { repository, ...data } = session, id = repository.candidate.id;
@@ -558,8 +559,11 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         const conditional = isConditionalTemplate(template);
         if(data.identity.noteTemplate!==(conditional?template:undefined))fail('MERGED_CANDIDATE_TEMPLATE_DRIFT');
         const confirmedHumans = conditional ? await confirmedHumansAt(sourceSha) : undefined;
-        for (const unit of delivery.units.filter(unit => data.generated.units.some(generated => generated.id === unit.id)))
+        for (const unit of delivery.units.filter(unit => data.generated.units.some(generated => generated.id === unit.id))) {
+          const frozen=data.identity.units.find(value=>value.id===unit.id);
+          if(conditional&&(frozen?.notesPath??`.release-notes/${unit.id}.md`)!==unit.notesPath)fail('MERGED_CANDIDATE_NOTE_PATH');
           parseSupplementalNotes(await fileAt(sourceSha,unit.notesPath),template);
+        }
         const deliveryBlobSha = (await git('rev-parse', `${sourceSha}:.github/delivery.json`)).toString().trim();
         const cycle=mergedBuildCycle({prNumber:pull.number,sourceSha,controllerSha:cycleControllerSha,sourceTree,reviewedTree,
           deliveryBlobSha,delivery:rawDelivery,releasePlease,workflow:Buffer.from(workflowSource),units:data.generated.units,repository:request.repository,repositoryId:request.repositoryId});

@@ -192,10 +192,12 @@ describe('generated candidate projection completion',()=>{
    const f=await fixture(),session=f.document;
    session.identity.noteTemplate=conditionalNoteTemplate;
    session.generated.units[0].tag='v1.0.0';
+   session.identity.units[0].notesPath=session.generated.files[0].path='docs/release-current.md';
    session.generated.files[0].content='## 🐛 错误修复\n\n**启动**。已修复错误。\n';
    session.identity.units[0].contributors.contributors=[{id:42,login:'x',profileUrl:'https://github.com/x',avatarUrl:'https://avatars.githubusercontent.com/u/42',alt:'x'}];
    const preview=generatedProjectionPreview(session);
    expect(preview).toContain('width="48" height="48"');
+   expect(preview).toContain('# docs/release-current.md');
    expect(preview).toContain(`[查看候选源码](<https://github.com/${TARGET.name}/tree/${session.generated.baseSha}>)`);
    session.preview=preview;refreshFixture(f);
    const facts=await candidateFacts(f.g);

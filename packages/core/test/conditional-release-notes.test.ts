@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { confirmedReleaseContributors, selectReleaseContributors } from '../src/release-candidate.js';
-import { renderCandidateNote } from '../src/candidate-note.js';
+import { renderCandidateNote, renderCandidateProjection } from '../src/candidate-note.js';
 import { parseSupplementalNotes, renderFrozenReleaseNotes, type FrozenReleaseNotes } from '../src/release-template.js';
 
 const template = readFileSync('templates/repository/.github/release-template.md.mustache', 'utf8');
@@ -82,6 +82,20 @@ describe('organization conditional release notes', () => {
       expect(renderFrozenReleaseNotes(template,{...frozen,notes:input,selectedDownloads:new Set([name])})).toContain(url);
       expect(() => renderFrozenReleaseNotes(template,{...frozen,notes:input,selectedDownloads:new Set()})).toThrow();
     }
+  });
+
+  it('projects two notes at the exact configured paths using their own tags', () => {
+    const first='units/cli/release.md', second='handbook/latest.adoc';
+    const use=(tag:string)=>notes('获取与使用',`**引用**。使用此版本。\n\n~~~yaml\n- uses: example/product@${tag}\n~~~`);
+    const generated={baseSha:sourceSha,units:[{id:'cli',tag:'cli-v1.2.3'},{id:'doc',tag:'doc-v1.2.3'}],
+      files:[{path:second,content:use('doc-v1.2.3')},{path:'.release-notes/internal.md',content:'internal'},{path:first,content:use('cli-v1.2.3')}]};
+    const identity={noteTemplate:template,units:[{id:'cli',notesPath:first,contributors:{contributors:[]}},
+      {id:'doc',notesPath:second,contributors:{contributors:[]}}]};
+    const preview=renderCandidateProjection(generated,identity,repository);
+    expect(preview).toContain('# '+first);
+    expect(preview).toContain('# '+second);
+    expect(preview).not.toContain('internal');
+    expect(()=>renderCandidateProjection({...generated,files:generated.files.slice(0,2)},identity,repository)).toThrow('CANDIDATE_PROJECTION_NOTES');
   });
 
   it.each(['steps:\n  - uses: example/product/action@main', 'steps: [{uses: "example/product@main"}]',

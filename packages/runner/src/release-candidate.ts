@@ -1,4 +1,4 @@
-import { renderCandidateNote, renderCandidateProjection, type CandidateNoteFormat } from '../../core/src/candidate-note.js';
+import { renderCandidateNote, renderCandidateProjection } from '../../core/src/candidate-note.js';
 export { renderCandidateNote };
 import { manualCandidateFacts, type ManualCandidate } from '../../core/src/manual-candidate.js';
 import { createHash } from 'node:crypto';
@@ -12,7 +12,7 @@ export interface CandidateSession {
   manualValidation?: ManualCandidate | null;
   repository: RepositoryRecord; generated: CandidateSnapshot | null; pending: { write: PreparedCandidateWrite; generated: CandidateSnapshot; previousIdentity?: CandidateSession['identity'] } | null;
   identity: null | { authorsDigest: string; sourceDigest: string; noteTemplate?: string; actors: (ReleaseActor | null)[]; contributors: ReturnType<typeof selectReleaseContributors>;
-    units: { id: string; actors: (ReleaseActor | null)[]; contributors: ReturnType<typeof selectReleaseContributors> }[] };
+    units: { id: string; notesPath?: string; actors: (ReleaseActor | null)[]; contributors: ReturnType<typeof selectReleaseContributors> }[] };
   conflict: null | { head: string; generated: CandidateSnapshot; paths: string[] };
   preview: string | null;
   adoption: null | { humanHead: string; generatedBase: string; differences: CandidateSnapshot['files'] };
@@ -21,7 +21,8 @@ export interface CandidateRuntime {
   activeCycle?: CycleRecord;
   workspace: string; temporaryRoot: string; repository: string; defaultBranch: string; appBotId: number; identity: { name: string; email: string };
   now(): string;
-  source(): Promise<{ baseSha: string; authors: RepositoryAuthor[]; authorsDigest: string; noteFormat?: CandidateNoteFormat; confirmedHumans?: RepositoryAuthor[] }>;
+  source(): Promise<{ baseSha: string; authors: RepositoryAuthor[]; authorsDigest: string; noteTemplate?: string;
+    notesPaths?: Record<string,string>; confirmedHumans?: RepositoryAuthor[] }>;
   pullRequests(branch: string): Promise<CandidatePullRequest[]>;
   legacyCandidate(): Promise<CandidatePullRequest | null>;
   generation(baseSha: string): Promise<{ status: 'READY'; snapshot: CandidateSnapshot; title: string; body: string } | { status: 'UNCHANGED' | 'DRIFT' }>;
@@ -108,6 +109,8 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
       throw new Error('CANDIDATE_OBSERVATION_IDENTITY');
   }
   const source = await io.source();
+  const notePaths = source.notesPaths ? new Set(Object.values(source.notesPaths)) : null;
+  const isNotesPath = (path:string) => notePaths ? notePaths.has(path) : path.startsWith('.release-notes/');
   if (observation && source.baseSha !== observation.sourceSha) return { status: 'WAIT', reason: 'SOURCE_CHANGED' };
   let candidate = repository.candidate;
   if (!candidate) {
@@ -180,7 +183,8 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   if (frozen && generated && generated.baseSha === source.baseSha
     && frozen.sourceDigest === generated.sourceDigest && frozen.authorsDigest === source.authorsDigest
     && JSON.stringify(frozen.units.map(u => u.id).sort()) === JSON.stringify(generated.units.map(u => u.id).sort())) {
-    if (frozen.noteTemplate !== source.noteFormat?.template) throw Error('CANDIDATE_NOTE_TEMPLATE_DRIFT');
+    if (frozen.noteTemplate !== source.noteTemplate || frozen.units.some(unit => unit.notesPath !== source.notesPaths?.[unit.id]))
+      throw Error('CANDIDATE_NOTE_TEMPLATE_DRIFT');
     const projected = { ...frozen, contributors: selectReleaseContributors(frozen.actors, source.authors, source.confirmedHumans),
       units: frozen.units.map(unit => ({ ...unit, contributors: selectReleaseContributors(unit.actors, source.authors, source.confirmedHumans) })) };
     if (JSON.stringify(projected) !== JSON.stringify(frozen)) { session.identity = projected; await save(); }
@@ -221,7 +225,7 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
       session.conflict = { head: observed.head, generated: session.generated, paths: difference.conflictPaths };
       session.preview = `检测到候选人工修改，已保留当前文件；请在原PR处理冲突。当前 head：${observed.head}。\n`;
       const archive = await save(); await statusComment(session.preview, archive, observed.head);
-      return { status: 'CONFLICT', reason: difference.conflictPaths.some(path => !path.startsWith('.release-notes/')) ? 'SOURCE_CHANGED' : 'HUMAN_EDIT_CONFLICT', paths: difference.conflictPaths };
+      return { status: 'CONFLICT', reason: difference.conflictPaths.every(isNotesPath) ? 'HUMAN_EDIT_CONFLICT' : 'SOURCE_CHANGED', paths: difference.conflictPaths };
     }
   }
   // A fixed observation can only project the frozen identity and protect existing notes.
@@ -255,9 +259,10 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   if (JSON.stringify(Object.keys(content.unitActors).sort()) !== JSON.stringify(N.units.map(unit => unit.id).sort())) throw new Error('CANDIDATE_CONTRIBUTOR_UNIT_COVERAGE');
   const previousIdentity = session.identity;
   session.identity = { authorsDigest: source.authorsDigest, sourceDigest: N.sourceDigest,
-    ...(source.noteFormat ? { noteTemplate: source.noteFormat.template } : {}),
+    ...(source.noteTemplate ? { noteTemplate: source.noteTemplate } : {}),
     actors: content.actors, contributors: selectReleaseContributors(content.actors, source.authors, source.confirmedHumans),
-    units: N.units.map(unit => ({ id: unit.id, actors: content.unitActors[unit.id]!, contributors: selectReleaseContributors(content.unitActors[unit.id]!, source.authors, source.confirmedHumans) })) };
+    units: N.units.map(unit => ({ id: unit.id, ...(source.notesPaths ? {notesPath:source.notesPaths[unit.id]!} : {}),
+      actors: content.unitActors[unit.id]!, contributors: selectReleaseContributors(content.unitActors[unit.id]!, source.authors, source.confirmedHumans) })) };
   const latestSource = await io.source();
   if (latestSource.baseSha !== source.baseSha || latestSource.authorsDigest !== source.authorsDigest) return { status: 'WAIT', reason: 'SOURCE_DRIFT' };
   observed = await current();
@@ -266,7 +271,7 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   const merged = await mergeCandidate(io.workspace, session.generated, observed.retiredHead ? source.baseSha : H ?? source.baseSha, N, io.temporaryRoot);
   if (merged.status === 'CONFLICT') {
     session.conflict = { head: H ?? source.baseSha, generated: N, paths: merged.conflictPaths }; await save();
-    return { status: 'CONFLICT', reason: merged.conflictPaths.some(path => !path.startsWith('.release-notes/')) ? 'SOURCE_CHANGED' : 'HUMAN_EDIT_CONFLICT', paths: merged.conflictPaths };
+    return { status: 'CONFLICT', reason: merged.conflictPaths.every(isNotesPath) ? 'HUMAN_EDIT_CONFLICT' : 'SOURCE_CHANGED', paths: merged.conflictPaths };
   }
   const unchanged = H !== null && await candidateTreeMatches(io.workspace, H, N.baseSha, merged.files, io.temporaryRoot);
   if (!unchanged) {
