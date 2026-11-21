@@ -71,7 +71,7 @@ export async function verifyPagesRelease({reader,release,bundle,appBotId,unitId}
 }
 function releaseFacts(r){return [r.id,r.author?.id,r.tag_name,r.draft,r.prerelease,r.immutable,r.published_at,r.target_commitish];}
 
-async function cycleForRelease(reader,release,unitId) {
+async function cycleForRelease(reader,release) {
   const path='git/ref/heads/steward/release-state';
   let ref;
   try {ref=await reader.json(path);}
@@ -90,8 +90,10 @@ async function cycleForRelease(reader,release,unitId) {
   check(entries.length===1&&entries[0].type==='blob'&&entries[0].mode==='100644','RELEASE_STATE');
   const entry=entries[0],bytes=await pagesContent(reader,entry.path,stateSha);
   check(createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')===entry.sha,'RELEASE_STATE');
-  const cycle=decodeReleaseRecord('cycle',bytes),unit=cycle.units.find(unit=>unit.id===unitId&&unit.releaseId===release.id);
+  const cycle=decodeReleaseRecord('cycle',bytes),matches=cycle.units.filter(unit=>unit.releaseId===release.id);
   check(entry.path==='cycles/'+cycle.id+'.json'&&cycle.sourceSha===sourceSha,'RELEASE_STATE');
+  check(matches.length<=1,'RELEASE_STATE');
+  const [unit]=matches;
   if(!unit?.githubDelivery)return null;
   check(unit.tag===release.tag_name&&positive(unit.releaseId),'RELEASE_STATE');
   return {cycle,unit,stateSha};
@@ -125,9 +127,9 @@ export async function desiredPagesSource({reader,repositoryId,mode,unitId='',con
       if(listed.draft!==false||listed.prerelease!==false||listed.immutable!==true)continue;
       check(positive(listed.id)&&utc(listed.published_at),'RELEASE');
       if(listed.author?.id!==appBotId)continue;
-      const frozen=await readCycle(reader,listed,unitId);
+      const frozen=await readCycle(reader,listed);
       if(frozen) {
-        candidates.push({release:listed,frozen});
+        if(frozen.unit.id===unitId)candidates.push({release:listed,frozen});
         continue;
       }
       const bundle=await readManifest(reader,listed);

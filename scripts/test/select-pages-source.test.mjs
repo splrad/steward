@@ -5,11 +5,12 @@ import {createHash} from 'node:crypto';
 import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {NativeEvidenceReader,sealProductArtifacts} from '../../packages/runner/dist/index.js';
+import {NativeEvidenceReader,sealProductArtifacts,mergedBuildCycle} from '../../packages/runner/dist/index.js';
 import {desiredPagesSource,selectPagesSource,selectWorkflowPagesSource,admitPagesEvent,pagesInputDigest,pagesDispatchInputs,pagesRunName,verifyPagesRelease} from '../select-pages-source.mjs';
 import {currentPagesSource} from '../pages-runtime.mjs';
 
 const S='a'.repeat(40),R='b'.repeat(40),P='c'.repeat(40),hash=b=>createHash('sha256').update(b).digest('hex');
+const gitBlob=bytes=>createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
 async function fixture(t) {
   const root=await mkdtemp(join(tmpdir(),'pages-source-test-'));t.after(()=>rm(root,{recursive:true,force:true}));
   const state={head:R,corrupt:false,ref:S,changed:false,workflowAtSource:true};
@@ -30,7 +31,7 @@ async function fixture(t) {
   for(const [i,name] of names.entries()){const b=await readFile(join(root,name));bytes.set(200+i,b);assets.push({id:200+i,name,size:b.length,state:'uploaded',digest:'sha256:'+hash(b)});}
   const release={id:20,author:{id:42},draft:false,prerelease:false,immutable:true,published_at:'2026-10-30T01:00:00Z',
     tag_name:'v1.2.3',target_commitish:S,body:(await readFile(join(root,'release-notes.md'))).toString(),html_url:'https://github.com/fixture/product/releases/tag/v1.2.3'};
-  const releases=[release],calls=[],contentReads=[];
+  const releases=[release],calls=[],contentReads=[],releaseAssets=new Map(),cycleFiles=new Map();
   async function readContent(reader,path,ref) {
     contentReads.push([path,ref]);
     if(path==='.github/delivery.json')return delivery;
@@ -47,11 +48,17 @@ async function fixture(t) {
       if(!state.releaseState)return {status:404,headers:new Headers(),bytes:Buffer.from('{}')};
       value={ref:'refs/heads/steward/release-state',object:{type:'commit',sha:state.releaseState}};
     }
-    else if(endpoint==='/commits/v1.2.3')value={sha:S};
+    else if(endpoint.startsWith('/commits/'))value={sha:releases.find(r=>r.tag_name===endpoint.slice(9))?.target_commitish};
+    else if(endpoint==='/git/trees/'+state.releaseState)value={truncated:false,
+      tree:[...cycleFiles].map(([path,bytes])=>({path,sha:gitBlob(bytes),mode:'100644',type:'blob'}))};
+    else if(endpoint.startsWith('/contents/cycles/')) {
+      const path=endpoint.slice(10),bytes=cycleFiles.get(path);
+      value={type:'file',path,sha:gitBlob(bytes),encoding:'base64',size:bytes.length,content:bytes.toString('base64')};
+    }
     else if(endpoint==='/git/ref/tags/v1.2.3')value={ref:'refs/tags/v1.2.3',object:{type:'commit',sha:state.ref}};
     else if(endpoint==='/releases')value=releases;
     else if(/^\/releases\/\d+$/.test(endpoint))value=releases.find(r=>r.id===Number(endpoint.split('/').at(-1)));
-    else if(/^\/releases\/\d+\/assets$/.test(endpoint))value=assets;
+    else if(/^\/releases\/\d+\/assets$/.test(endpoint))value=releaseAssets.get(Number(endpoint.split('/')[2]))??assets;
     else if(endpoint.startsWith('/releases/assets/'))return {status:200,headers:new Headers(),bytes:bytes.get(Number(endpoint.split('/').at(-1)))};
     else throw Error('unexpected '+path);
     return {status:200,headers:new Headers(),bytes:Buffer.from(JSON.stringify(value))};
@@ -73,7 +80,7 @@ async function fixture(t) {
   const options={reader,repositoryId:repo.id,mode:'release',unitId:'app',controllerSha:P,appBotId:42};
   const ports={readContent,verifyRelease:args=>verifyPagesRelease(args,{gh,download})};
   const event={name:'release',repositoryId:repo.id,repository:repo.full_name,ref:'refs/tags/v1.2.3',sha:S,payload:{action:'published',release:{id:20}}};
-  return {options,ports,event,state,repo,release,releases,manifest,bytes,assets,calls,contentReads};
+  return {options,ports,event,state,repo,release,releases,manifest,bytes,assets,calls,contentReads,releaseAssets,cycleFiles};
 }
 test('disabled site performs no native source lookup',async t=>{
   const f=await fixture(t);assert.equal((await desiredPagesSource({...f.options,mode:''},f.ports)).status,'DISABLED');assert.equal(f.calls.length,0);
@@ -125,6 +132,51 @@ for(const productFile of [false,true])test('formal release Pages uses frozen wor
   assert.ok(f.calls.some(([,path])=>path.endsWith('/releases/assets/200')));
   f.bytes.set(200,Buffer.from('bad'));
   await assert.rejects(selectPagesSource(f.options,f.event,ports),/formal release bytes/);
+});
+test('Pages skips a different unit’s formal workflow delivery without parsing its own manifest as history',async t=>{
+  const f=await fixture(t);
+  const delivery={schemaVersion:3,repositoryAuthors:[{id:7,evidence:'fixture author'}]};
+  const settings={'include-component-in-tag':false,packages:{'.':{component:'app'},
+    'packages/sdk':{component:'sdk','include-component-in-tag':true}}};
+  const entries=[{id:'app',path:'.',version:'1.2.3',tag:f.release.tag_name},
+    {id:'sdk',path:'packages/sdk',version:'1.2.3',tag:'sdk-v1.2.3'}];
+  const workflow={jobs:Object.fromEntries(entries.map(({id})=>[id,{name:'delivery/'+id,steps:[{
+    id:'upload-github-release',name:'Upload GitHub release delivery',uses:'actions/upload-artifact@'+'a'.repeat(40),
+    with:{name:'delivery-github-release-${{ github.repository_id }}-'+id+'-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}',
+      path:'dist/*'}
+  }]}]))};
+  const deliveryBytes=Buffer.from(JSON.stringify(delivery));
+  const cycle=mergedBuildCycle({prNumber:2,sourceSha:S,sourceTree:S,reviewedTree:S,controllerSha:P,
+    deliveryBlobSha:gitBlob(deliveryBytes),delivery,releasePlease:settings,workflow:Buffer.from(JSON.stringify(workflow)),units:entries});
+  const operationKey=hash('dispatch operation');
+  cycle.dispatches.push({purpose:'build',workflowId:8,buildWorkflow:cycle.buildWorkflow,ref:'steward/build/'+cycle.id,sourceSha:S,
+    executionSha:S,sentAt:'2026-10-30T00:50:00Z',searchWindows:[],canonicalRunId:111,
+    nativeResponseEvidencePath:'evidence/build-111.json',continuationOfRunId:null,retryLimitEvidencePath:null,
+    operationKey,requestKey:hash('dispatch request'),inputDigest:hash('dispatch inputs'),targetKey:'build app and sdk',
+    inputs:{cycle_id:cycle.id,operation_key:operationKey,source_sha:S,controller_sha:P}});
+
+  f.state.releaseState=R;
+  f.assets.splice(1);
+  const sdk={...f.release,id:21,tag_name:entries[1].tag,published_at:'2026-10-30T02:00:00Z'};
+  const productManifest=Buffer.from('{"name":"SDK metadata","version":"1.2.3"}');
+  f.bytes.set(250,productManifest);
+  f.releaseAssets.set(sdk.id,[{id:250,name:'artifact-manifest.json',size:productManifest.length,state:'uploaded',
+    digest:'sha256:'+hash(productManifest)}]);
+  f.releases.unshift(sdk);
+  for(const [index,release] of [f.release,sdk].entries()) {
+    Object.assign(cycle.units[index],{releaseId:release.id,manifestDigest:hash('seal '+index),notesDigest:hash(release.body),
+      assets:(f.releaseAssets.get(release.id)??f.assets).map(asset=>({id:'file-'+asset.id,path:asset.name,
+        size:asset.size,sha256:hash(f.bytes.get(asset.id))})),
+      githubDelivery:{runId:111,attempt:1,artifactId:114+index,digest:'sha256:'+hash('archive '+index)}});
+  }
+  f.cycleFiles.set('cycles/'+cycle.id+'.json',Buffer.from(JSON.stringify(cycle)));
+  const ports={...f.ports,readContent:(reader,path,ref)=>path==='.github/delivery.json'?deliveryBytes:
+    path==='release-please-config.json'?Buffer.from(JSON.stringify(settings)):f.ports.readContent(reader,path,ref)};
+  const result=await selectPagesSource(f.options,f.event,ports);
+  assert.equal(result.status,'READY');
+  assert.equal(result.source.releaseId,f.release.id);
+  assert.ok(f.calls.some(([,path])=>path.includes('/commits/'+sdk.tag_name)));
+  assert.ok(f.calls.every(([,path])=>!path.includes('/releases/'+sdk.id+'/assets')));
 });
 test('wired release mode uses the workflow pin at S even when main and coordinator advanced',async t=>{
   const f=await fixture(t),yaml=await readFile(new URL('../../templates/release/pages.yml',import.meta.url));
