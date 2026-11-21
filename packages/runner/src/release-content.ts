@@ -143,7 +143,7 @@ export async function resumeContentBatches(work: ContentWork, cache: ContentCach
         throw conditionalOutputError('documentationEvidence');
       if (conditional && runtime.repository) {
         const notes = parseConditionalNotes(buildConditionalDraft(result.paragraphs));
-        try { assertVersionAcquisitionLinks(notes, runtime.repository, payload.units[0]!.tag, work.input.baseSha); }
+        try { assertVersionAcquisitionLinks(notes, runtime.repository, payload.units[0]!.tag); }
         catch { throw conditionalOutputError('acquisitionVersion'); }
       }
       return result;

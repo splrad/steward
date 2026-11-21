@@ -89,6 +89,17 @@ it('generates one direct draft with seven sections and reuses an input-digest ca
   const next = await planContentBatches({...input(), baseSha:'d'.repeat(40)}, [source(1,'CONTEXT'),source(2)]);
   expect(await resumeContentBatches(next, cache, r.port)).toEqual({status:'READY', calls:0});
 });
+
+it.each(['base','tag'])('validates candidate draft acquisition against the release tag: %s', async choice => {
+  const current=input(), evidence=source(1), port=runtime().port;
+  const work=await planContentBatches(current,[evidence],undefined,true);
+  const ref=choice==='tag'?current.units[0]!.tag:current.baseSha;
+  port.repository='example/product';
+  port.call=async()=>({text:JSON.stringify({paragraphs:[{sourceIds:[evidence.id],section:'acquisition',
+    textZh:`**读本版源码**。见[源码](<https://github.com/example/product/tree/${ref}>)。`,qualification:'SOURCE_CONFIRMED'}]}),
+    model:'fixture',usage:null});
+  expect(await resumeContentBatches(work,{},port)).toMatchObject({status:choice==='tag'?'READY':'FAILED', calls:1});
+});
 it('requires Chinese closed output, known references and evidence for test claims without exhaustive source coverage', () => {
   const paragraph = {sourceIds:[source(1).id],section:'changes',textZh:'修复实际问题。',qualification:'SOURCE_CONFIRMED'};
   expect(validateContentResult('DRAFT',JSON.stringify({paragraphs:[paragraph]}),[source(1).id,source(2).id])).toBeDefined();

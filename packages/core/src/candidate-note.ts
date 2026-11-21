@@ -44,7 +44,7 @@ export function renderCandidateNote(path:string,markdown:string,contributors:Par
   if (format && isConditionalTemplate(format.template)) {
     const url = `https://github.com/${format.repository}/tree/${format.sourceSha}`;
     const notes = parseConditionalNotes(markdown);
-    if (format.tag) assertVersionAcquisitionLinks(notes, format.repository, format.tag, format.sourceSha);
+    if (format.tag) assertVersionAcquisitionLinks(notes, format.repository, format.tag);
     return `# ${path}\n\n` + renderConditionalNotes(format.template, notes, { label: '查看候选源码', url }, contributors);
   }
   return `# ${path}\n\n${previewUnitNotes(markdown)}`+renderReleaseContributors(contributors);

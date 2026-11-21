@@ -120,4 +120,17 @@ describe('organization conditional release notes', () => {
       }
       expect(()=>render(shell(`releases/download/${frozen.tag}/internal.zip`))).toThrow('acquisition example link');
     });
+
+  it('uses a release tag in candidate acquisition so it remains valid after the merge SHA changes', () => {
+    const example=(ref:string)=>notes('获取与使用',`**引用工作流**。见[本版源码](<https://github.com/${repository}/tree/${ref}>)。\n\n~~~yaml\n- uses: example/product@${ref}\n~~~`);
+    const preview=(text:string)=>renderCandidateNote('.release-notes/product.md',text,[],{template,repository,sourceSha,tag:frozen.tag});
+    const mergedSha='c'.repeat(40);
+    const render=(text:string)=>renderFrozenReleaseNotes(template,{...frozen,notes:text,sourceSha:mergedSha,
+      sourceUrl:`https://github.com/${repository}/tree/${mergedSha}`,commitUrl:`https://github.com/${repository}/commit/${mergedSha}`});
+    expect(()=>preview(example(sourceSha))).toThrow('acquisition link');
+    expect(()=>preview(example(frozen.tag).replace('@'+frozen.tag,'@'+sourceSha))).toThrow('workflow example');
+    expect(preview(example(frozen.tag))).toContain('/tree/'+sourceSha);
+    expect(render(example(frozen.tag))).toContain('@'+frozen.tag);
+    expect(render(example(mergedSha))).toContain('@'+mergedSha);
+  });
 });

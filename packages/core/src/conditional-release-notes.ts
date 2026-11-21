@@ -138,9 +138,11 @@ export function parseConditionalNotes(markdown: string): ConditionalNotes {
 }
 
 /** Product-local acquisition references must point to the actual release or its reviewed source. */
-export function assertVersionAcquisitionLinks(notes: ConditionalNotes, repository: string, tag: string, sourceSha: string,
+export function assertVersionAcquisitionLinks(notes: ConditionalNotes, repository: string, tag: string, sourceSha?: string,
   assetNames?: readonly string[]) {
   const prefix = `/${repository.toLowerCase()}/`;
+  const refs = sourceSha ? [tag, sourceSha] : [tag];
+  const archives = sourceSha ? [`refs/tags/${tag}`, sourceSha] : [`refs/tags/${tag}`];
   const versioned = (url: URL): boolean => {
     if (url.hostname !== 'github.com' || !url.pathname.toLowerCase().startsWith(prefix)) return true;
     if (url.origin !== 'https://github.com' || url.username || url.password) return false;
@@ -153,11 +155,11 @@ export function assertVersionAcquisitionLinks(notes: ConditionalNotes, repositor
     if (path === 'releases' || path.startsWith('releases/')) return false;
     if (/^(?:blob|tree)\//.test(path)) {
       const ref = decodeURIComponent(path.slice(path.indexOf('/') + 1));
-      return [tag, sourceSha].some(version => ref === version || ref.startsWith(version + '/'));
+      return refs.some(version => ref === version || ref.startsWith(version + '/'));
     }
     if (path.startsWith('archive/')) {
       const archive = decodeURIComponent(path.slice('archive/'.length));
-      return [sourceSha, `refs/tags/${tag}`].some(version => archive === `${version}.zip` || archive === `${version}.tar.gz`);
+      return archives.some(version => archive === `${version}.zip` || archive === `${version}.tar.gz`);
     }
     return true;
   };
@@ -184,7 +186,7 @@ export function assertVersionAcquisitionLinks(notes: ConditionalNotes, repositor
             const value = reference.value.trim(), at = value.indexOf('@');
             const action = (at === -1 ? value : value.slice(0, at)).toLowerCase();
             if ((action === repository.toLowerCase() || action.startsWith(repository.toLowerCase() + '/'))
-              && (at === -1 || ![tag, sourceSha].includes(value.slice(at + 1)))) fail('workflow example is outside the release version');
+              && (at === -1 || !refs.includes(value.slice(at + 1)))) fail('workflow example is outside the release version');
           },
         });
       }
