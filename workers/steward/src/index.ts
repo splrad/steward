@@ -486,7 +486,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
   const [quality,existing,release,winget,promotion]=await Promise.allSettled([
     dispatchQualityEvent(env,event,payload,deliveryId),
     handleExistingEvent(env,event,payload,deliveryId,action),
-    acceptReleaseHint(env,event,payload),
+    acceptReleaseHint(env,event,payload,deliveryId),
     acceptWingetSubmit(env,event,payload),
     acceptReleasePromotion(env,event,payload),
   ]);

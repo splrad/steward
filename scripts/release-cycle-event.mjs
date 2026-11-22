@@ -7,10 +7,15 @@ import { exact, sha, sha256, withParticipatingProduct } from './bounded-candidat
 import { entryGuard } from './bounded-release-entry.mjs';
 import {releasePolicyGuard} from './release-repository-policy.mjs';
 import { fetchState } from './release-coordinator.mjs';
+import { setTimeout as delay } from 'node:timers/promises';
+import { nativeReleaseCandidate } from './release-candidate.mjs';
 import { releaseCommand } from './release-record.mjs';
 
 const centralId = 1296724484, central = 'splrad/steward';
 // The promoted controller binds legacy callbacks and external adapter credentials.
+const isHomepageEvent=kind=>kind==='candidate-head'||kind==='candidate-status';
+const eventKinds=['push','run','publication','candidate-head','candidate-status'];
+const deliveryGuid=/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
 const registrations=JSON.parse(await readFile(new URL('../config/release/event-repositories.json',import.meta.url),'utf8'));
 function registeredRepository(event, registry=registrations) {
   const id=event.kind==='publication'?event.productRepositoryId:event.repositoryId;
@@ -23,7 +28,7 @@ export function withCycleEventProduct(app,event,operation,transport=nativeEviden
   const oldCallback=event.kind==='publication'&&!Object.hasOwn(event,'productRepositoryId');
   const legacy=oldCallback?registeredRepository(event):undefined;
   const id=legacy?legacy.id:event.kind==='publication'?event.productRepositoryId:event.repositoryId;
-  if(!['push','run','publication'].includes(event.kind)||!Number.isSafeInteger(id)||id<1)fail('CYCLE_EVENT_KIND');
+  if(!eventKinds.includes(event.kind)||!Number.isSafeInteger(id)||id<1)fail('CYCLE_EVENT_KIND');
   return withParticipatingProduct(app,id,product=>{
     if(!legacy)return operation(product);
     if(product.name!==legacy.name||product.defaultBranch!==legacy.defaultBranch)fail('CYCLE_EVENT_KIND');
@@ -36,7 +41,18 @@ const positive = n => Number.isSafeInteger(n) && n > 0;
 export function validateEvent(event, requestKey, registry=registrations) {
   const {repositoryId,kind} = event;
   const product=registeredRepository(event,registry);
-  if (!['push','run','publication'].includes(kind) || repositoryId !== (kind === 'publication' ? centralId : product.id)) fail('CYCLE_EVENT_KIND');
+  if (!eventKinds.includes(kind) || repositoryId !== (kind === 'publication' ? centralId : product.id)) fail('CYCLE_EVENT_KIND');
+  if (isHomepageEvent(kind)) {
+    const fields = kind==='candidate-status' ? ['commentId'] : ['head',...(Object.hasOwn(event,'delivery') ? ['delivery'] : [])];
+    exact(event, ['repositoryId','kind','prNumber',...fields]);
+    if (!positive(event.prNumber)) fail('CYCLE_EVENT_ID');
+    if (kind==='candidate-status' ? !positive(event.commentId)
+      : !sha(event.head) || /^0+$/.test(event.head) ||
+        Object.hasOwn(event,'delivery') && (typeof event.delivery!=='string'||!deliveryGuid.test(event.delivery)))
+      fail('CYCLE_EVENT_ID');
+    if (requestKey !== sha256([repositoryId,kind,event.prNumber,...fields.map(key=>event[key])])) fail('CYCLE_EVENT_KEY');
+    return;
+  }
   const push = kind === 'push';
   exact(event, ['repositoryId','kind',...(push ? ['sourceSha'] : ['runId','attempt']),...(kind==='publication' && event.productRepositoryId!==undefined?['productRepositoryId']:[])]);
   if (push ? !sha(event.sourceSha) : !positive(event.runId) || !positive(event.attempt)) fail('CYCLE_EVENT_ID');
@@ -80,8 +96,28 @@ function publicationStarts(state,runId,attempt,sha) {
   return state.domainRecords.filter(r=>r.path.startsWith('evidence/publication/') && r.value.startEvidencePath===null
     && r.value.centralRun.id===runId && r.value.centralRun.runAttempt<=attempt && r.value.centralRun.headSha===sha);
 }
-export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invoke,botId,producer,probeArtifacts,probeReport,probeWorkflow,registry=registrations}) {
+export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invoke,botId,producer,probeArtifacts,probeReport,probeWorkflow,homepage,waitForPreview=delay,registry=registrations}) {
   const product=registeredRepository(event,registry);
+  if (isHomepageEvent(event.kind)) {
+    let reason = 'CANDIDATE_HOMEPAGE_NOT_READY';
+    for (const interval of [0, 3000, 10000]) {
+      if (interval) await waitForPreview(interval);
+      try {
+        const result = await homepage({prNumber:event.prNumber,
+          ...(event.kind==='candidate-status' ? {commentId:event.commentId} : {})});
+        if (result.status !== 'WAIT') return result;
+        reason = result.reason;
+      } catch (error) {
+        const code = error?.message;
+        if (code === 'CANDIDATE_REF_DRIFT' || code === 'RELEASE_STATE_MOVED' || code === 'CANDIDATE_STATE_UNAVAILABLE') {
+          reason = 'CANDIDATE_HOMEPAGE_STATE_MOVED';
+          continue;
+        }
+        return {status:'FAILED',reason:publicCodes.has(code) ? code : 'CANDIDATE_HOMEPAGE_FAILED'};
+      }
+    }
+    return {status:'FAILED',reason};
+  }
   const state=await cycleStage('LEDGER_READ',snapshot), cycles=state.cycles.map(record=>record.value);
   let cycleId=null;
   let probeReceipt=false;
@@ -196,7 +232,10 @@ export async function main(env=process.env) {
         const refresh=()=>cycleStage('LEDGER_READ',()=>fetchState(root,repository,token));
         const request=async(cycleId,runId)=>({directory:(await refresh()).directory,writeDirectory:await mkdtemp(join(root,'write-')),
           remote:'https://github.com/'+product.name+'.git',repository:product.name,repositoryId:product.id,defaultBranch:product.defaultBranch,appBotId:app.appBotId,cycleId,runId,identity});
-        return cycleStage('EVENT_ROUTE',()=>advanceEvent(event,{registry:[product],snapshot:async()=>(await refresh()).snapshot,get:path=>productReader.json(path),probeArtifacts:run=>productReader.pages('actions/runs/'+run.id+'/artifacts','artifacts'),
+        return cycleStage('EVENT_ROUTE',()=>advanceEvent(event,{registry:[product],
+          homepage: homepageEvent => app.forCandidateRepository(product.id, async (writer, readToken) =>
+            nativeReleaseCandidate(await request(null, null), {token: writer, readToken, controllerSha: run.head_sha, homepageEvent})),
+          snapshot:async()=>(await refresh()).snapshot,get:path=>productReader.json(path),probeArtifacts:run=>productReader.pages('actions/runs/'+run.id+'/artifacts','artifacts'),
           probeWorkflow:()=>productReader.json('actions/workflows/steward-release-channels.yml'),
           probeReport:async artifact=>{
             const directory=join(root,'probe-'+artifact.id);
@@ -214,13 +253,16 @@ export async function main(env=process.env) {
     });
     const result=await cycleStage('PARTICIPATION',()=>withCycleEventProduct(app,event,processProduct));
     await cycleStage('RESULT_WRITE',()=>writeFile('result.json',JSON.stringify({schemaVersion:1,requestKey,producer,event,status:result.status,reason:result.reason??null,
-      cycleId:result.cycleId??null,publishInvoked:result.publishInvoked===true})+'\n',{flag:'wx'}));
+      cycleId:result.cycleId??null,publishInvoked:result.publishInvoked===true,
+      ...(isHomepageEvent(event.kind) ? {previewHead:result.head??null} : {})})+'\n',{flag:'wx'}));
+    if (isHomepageEvent(event.kind)) console.log('Candidate preview: '+result.status+' '+result.reason);
   },()=>rm(root,{recursive:true,force:true}));
 }
 const publicCodes=new Set([
   'CYCLE_ACTOR','CYCLE_EVENT_AMBIGUOUS','CYCLE_EVENT_ID','CYCLE_EVENT_KEY','CYCLE_EVENT_KIND',
   'CYCLE_EVENT_RUN','CYCLE_EVENT_SOURCE','CYCLE_POLICY','CYCLE_POLICY_UNPROMOTED',
   'CYCLE_PROBE_ORIGIN','CYCLE_PUBLICATION_ORIGIN','CYCLE_RECORD_RECONSTRUCTION_REQUIRED',
+  'CANDIDATE_HOMEPAGE_BODY_LIMIT','CANDIDATE_HOMEPAGE_MARKERS','CANDIDATE_HOMEPAGE_VERSION','CANDIDATE_HOMEPAGE_UNIT','CANDIDATE_HOMEPAGE_WRITE_REJECTED',
   'BOUNDED_RUN_SOURCE','CANDIDATE_REF_DRIFT','CANDIDATE_PR_HEAD_DRIFT','CANDIDATE_STATE_CONFLICT',
 ]);
 const categories=new Set([
