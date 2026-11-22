@@ -49,13 +49,14 @@ const { readReleaseRecords,writeReleaseRecords,releaseCommand } = await import(p
 const roots: string[] = [];
 afterEach(async () => { vi.unstubAllGlobals();for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-recovery', 'pending-recovery', 'legacy-pending-cancel', 'retained-legacy-manual', 'retained-controller-manual',
-  'compact', 'compact-registered', 'conditional-organization', 'conditional-before-adoption', 'conditional-compact', 'conditional-tampered'])('runs the native candidate adapter through protected state, real Git, upstream generation, fake SDK and same-PR editing: %s', async pinCase => {
+  'compact', 'compact-registered', 'conditional-organization', 'conditional-before-adoption', 'conditional-controller-upgrade', 'conditional-compact', 'conditional-tampered'])('runs the native candidate adapter through protected state, real Git, upstream generation, fake SDK and same-PR editing: %s', async pinCase => {
   const root = await mkdtemp(join(tmpdir(), 'candidate-native-test-')); roots.push(root); registerOfflineFixtureRoot(root);
   const directory = join(root, 'source'), remote = join(root, 'remote.git'); await mkdir(directory);
   const env = isolatedBuildEnvironment(process.env, root), identity = { name: 'Fixture', email: 'fixture@example.invalid' };
   const git = async (...args: string[]) => (await promisify(execFile)('git', args, { cwd: directory, env, encoding: 'utf8', windowsHide: true })).stdout.trim();
   const conditional = pinCase.startsWith('conditional-');
-  const olderConditionalLayout = pinCase === 'conditional-before-adoption';
+  const upgradeController = pinCase === 'conditional-controller-upgrade';
+  const olderConditionalLayout = pinCase === 'conditional-before-adoption' || upgradeController;
   const retainedController = pinCase==='retained-controller-manual';
   const retainedManual = pinCase==='retained-legacy-manual'||retainedController;
   await git('init', '--initial-branch=main'); await git('config', 'user.name', identity.name); await git('config', 'user.email', identity.email);
@@ -64,16 +65,16 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   const compactRegistered=pinCase==='compact-registered'||pinCase==='conditional-compact';
   const compact=pinCase==='compact'||compactRegistered;
   if(compactRegistered)await writeFile(join(directory,'.github/steward-central-policy'),'central\n');
-  const explicitWorkflow=pinCase==='new-source'||retainedController?'.github/workflows/fixture-release.yaml':undefined;
+  const explicitWorkflow=pinCase==='new-source'||retainedController||upgradeController?'.github/workflows/fixture-release.yaml':undefined;
   const buildWorkflow=explicitWorkflow??'.github/workflows/steward-release-publish.yml';
   const notesPath=compact?(compactRegistered?'docs/release-current.md':'.release-notes/root.md'):'.release-notes/app.md';
   for(const path of (compact?[buildWorkflow]:[buildWorkflow,'.github/workflows/steward-release-channels.yml','.github/release-template.md.mustache']))
-    if((pinCase!=='old-source'&&!retainedController)||!path.endsWith('release-template.md.mustache'))
+    if((pinCase!=='old-source'&&!retainedController&&!upgradeController)||!path.endsWith('release-template.md.mustache'))
     await writeFile(join(directory,path),'# offline adopted source\n');
   const legacyTemplate=retainedManual?await readFile('packages/core/test/fixtures/release-template-compact.mustache'):undefined;
   if(legacyTemplate&&!retainedController)await writeFile(join(directory,'.github/release-template.md.mustache'),legacyTemplate);
   const sourceControllerSha = (pinCase === 'new-source' ? 'f' : 'e').repeat(40);
-  const historicalControllerSha = retainedController ? 'd'.repeat(40) : sourceControllerSha;
+  const historicalControllerSha = retainedController||upgradeController ? 'd'.repeat(40) : sourceControllerSha;
   const publisherMatrix=explicitWorkflow?'    strategy:\n      matrix:\n        include:\n          - {unit: app, target: fixture}\n':'';
   if (pinCase !== 'missing-pin') await writeFile(join(directory,buildWorkflow),
     `jobs:\n  build:\n${publisherMatrix}    steps:\n      - uses: actions/checkout@${'a'.repeat(40)}\n        with:\n          repository: splrad/steward\n          path: controller\n          ref: ${pinCase === 'conflicting-pin' ? 'b'.repeat(40) : historicalControllerSha}\n  sign:\n    uses: splrad/steward/.github/workflows/product-release.yml@${historicalControllerSha}\n`);
@@ -92,7 +93,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
       assets:[{id:'app',name:'app-${version}.zip',mediaType:'application/zip'}],channels:registeredChannels}]};
   for (const [path, text] of Object.entries({ 'README.md': '# 应用\n\n公开使用说明。\n', 'VERSION': '0.0.0\n', 'release-please-config.json': JSON.stringify(config),
     '.release-please-manifest.json': '{".":"0.0.0"}', '.github/delivery.json': JSON.stringify(delivery), 'code.txt': '功能实现\n' })) await writeFile(join(directory, path), text);
-  if (conditional) {
+  if (conditional&&!upgradeController) {
     await writeFile(join(directory, '.github/release-template.md.mustache'), compact ? 'Product override is ignored in schema v3.\n'
       : (await readFile(olderConditionalLayout ? 'packages/core/test/fixtures/release-template-conditional-v1.mustache'
         : 'templates/repository/.github/release-template.md.mustache','utf8')).replace('width="48"',pinCase==='conditional-tampered'?'width="12"':'width="48"'));
@@ -153,7 +154,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
       const file=path.split('/contents/')[1]!,ref=url.searchParams.get('ref');
       if(path.startsWith('/repos/splrad/steward/'))expect(pinCase==='old-source'?[sourceControllerSha,'f'.repeat(40)]:[sourceControllerSha,historicalControllerSha]).toContain(ref);
       const bytes=path.startsWith('/repos/splrad/steward/')
-        ?await readFile(olderConditionalLayout ? 'packages/core/test/fixtures/release-template-conditional-v1.mustache'
+        ?await readFile(olderConditionalLayout && (!upgradeController||ref===historicalControllerSha) ? 'packages/core/test/fixtures/release-template-conditional-v1.mustache'
           : conditional||retainedController&&ref===sourceControllerSha ? file : 'packages/core/test/fixtures/release-template-compact.mustache')
         :Buffer.from(await git('show',ref+':'+file));
       const fileSha=path.startsWith('/repos/splrad/steward/')?createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex')
@@ -364,6 +365,24 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     expect(comments[0].body.split('github.com&#x2F;contributor')).toHaveLength(2);
     expect(comments[0].body).toContain('github.com&#x2F;owner');
     expect(comments[0].body).not.toMatch(/committer-only|merge-operator|web-flow|&#x2F;robot|&#x2F;service|&#x2F;unknown|文档更新/);
+  }
+  if(upgradeController) {
+    const workflow = await readFile(join(directory,buildWorkflow), 'utf8');
+    await writeFile(join(directory,buildWorkflow),workflow.replaceAll(historicalControllerSha,sourceControllerSha));
+    await git('add','--',buildWorkflow); await git('commit','--signoff','-m','chore: update the release controller pin');
+    const base=await git('rev-parse','HEAD');
+    await git('push','--porcelain',remote,'HEAD:refs/heads/main');
+    expect(await nativeReleaseCandidate({...request,writeDirectory:join(root,'controller-upgrade-writes')},options))
+      .toMatchObject({status:'READY',prNumber:9});
+    const updated=await head('steward/release-candidate');
+    expect(updated).not.toBe(firstHead);
+    expect(await git('rev-parse',`${updated}^2`)).toBe(base);
+    expect(await git('rev-parse',`${updated}:${notesPath}`)).toBe(await git('rev-parse',`${firstHead}:${notesPath}`));
+    expect(comments[0].body).toContain('github.com&#x2F;contributor');
+    expect(comments[0].body).not.toContain('贡献者 GitHub ID');
+    expect(modelCalls).toBe(firstCalls);
+    expect(requests.filter(r=>/\/commits\/|\/users\//.test(r.path))).toHaveLength(identityCalls);
+    return;
   }
   pr.title = '人工修改标题'; pr.body = '人工修改正文'; pr.labels = [{ name: 'release:editing' }];
   expect(await nativeReleaseCandidate({ ...request, writeDirectory: join(root, 'edit-writes') }, options)).toMatchObject({ reason: 'EDITING', head: firstHead });

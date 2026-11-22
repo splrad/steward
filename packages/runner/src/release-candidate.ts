@@ -24,7 +24,8 @@ export interface CandidateRuntime {
   workspace: string; temporaryRoot: string; repository: string; defaultBranch: string; appBotId: number; identity: { name: string; email: string };
   now(): string;
   source(): Promise<{ baseSha: string; authors: RepositoryAuthor[]; authorsDigest: string; noteTemplate?: string;
-    notesPaths?: Record<string,string>; contributorMode?: 'github-authors' }>;
+    notesPaths?: Record<string,string>; contributorMode?: 'github-authors'; noteTemplateController?: {workflow: string; pin: string} }>;
+  readControllerTemplate?(pin: string): Promise<string>;
   pullRequests(branch: string): Promise<CandidatePullRequest[]>;
   legacyCandidate(): Promise<CandidatePullRequest | null>;
   generation(baseSha: string): Promise<{ status: 'READY'; snapshot: CandidateSnapshot; title: string; body: string } | { status: 'UNCHANGED' | 'DRIFT' }>;
@@ -196,11 +197,17 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
     const sameBase = generated.baseSha === source.baseSha, currentTemplate = source.noteTemplate;
     const reviewedTemplate = currentTemplate === undefined ? undefined
       : await reviewedConditionalReleaseTemplate(currentTemplate, frozen.noteTemplate);
-    const approvedUpgrade = currentTemplate !== undefined && reviewedTemplate !== currentTemplate;
-    if (!sameBase && approvedUpgrade && observed.pr && candidate.publishedHead
-      && !generated.files.some(file => file.path === productReleaseTemplatePath)
+    const approvedUpgrade = reviewedTemplate !== currentTemplate;
+    const policyUpgrade = reviewedTemplate !== undefined && !frozen.contributorMode && source.contributorMode === 'github-authors';
+    const controller = source.noteTemplateController, readTemplate = io.readControllerTemplate;
+    if (!sameBase && reviewedTemplate !== undefined && currentTemplate !== undefined
+      && (approvedUpgrade || (controller && policyUpgrade)) && observed.pr && candidate.publishedHead
+      && (!controller || readTemplate)
+      && !generated.files.some(file => file.path === (controller?.workflow ?? productReleaseTemplatePath))
       && await io.isAncestor(generated.baseSha, source.baseSha)
-      && await candidateTemplateAdoption(io.workspace, source.baseSha, generated.baseSha, currentTemplate, io.temporaryRoot)) {
+      && await candidateTemplateAdoption(io.workspace, source.baseSha, generated.baseSha, {
+        template: currentTemplate, ...(controller && readTemplate ? {controller: {...controller, reviewedTemplate, readTemplate}} : {}),
+      }, io.temporaryRoot)) {
       templateOnlyAdvance = { generated, identity: frozen };
     }
     if (sameBase || templateOnlyAdvance) {
@@ -209,8 +216,7 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
         return declared ? (unit.notesPath ?? `.release-notes/${unit.id}.md`) !== declared : unit.notesPath !== undefined;
       }))
         throw Error('CANDIDATE_NOTE_TEMPLATE_DRIFT');
-      retainReviewedGeneration = approvedUpgrade
-        || (reviewedTemplate !== undefined && !frozen.contributorMode && source.contributorMode === 'github-authors');
+      retainReviewedGeneration = approvedUpgrade || policyUpgrade;
       const mode = frozen.contributorMode ?? (frozen.noteTemplate ? 'recorded' : undefined);
       const projected = { ...frozen, contributors: replayReleaseContributors(frozen, source.authors, mode),
         units: frozen.units.map(unit => ({ ...unit, contributors: replayReleaseContributors(unit, source.authors, mode) })) };

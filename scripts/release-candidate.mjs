@@ -93,12 +93,13 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     if(isConditionalTemplate(text) && !await isAdoptedOrganizationReleaseTemplate(text))fail('CANDIDATE_ORGANIZATION_TEMPLATE');
     return text;
   };
+  const checkedControllerTemplate=async pin=>checkedTemplate(await readControllerReleaseTemplate(pin,fetcher));
   const templateAt=async(sha,pin,delivery)=>{
     if(delivery.schemaVersion!==3) {
       const local=await fileAt(sha,productReleaseTemplatePath,true);
       if(local!==null)return checkedTemplate(local);
     }
-    return checkedTemplate(await readControllerReleaseTemplate(pin,fetcher));
+    return checkedControllerTemplate(pin);
   };
   const checkPolicyAt=async(sha,delivery)=>{
     if(!checkRepositoryPolicy)return;
@@ -107,18 +108,19 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     await checkRepositoryPolicy(path=>fileAt(sha,path),{nativeEntry,priorRegistration,buildWorkflow:delivery.buildWorkflow});
   };
   const pinnedTemplate = new Map();
-  const sourceTemplateAt = async (sha, delivery) => {
+  const templateSourceAt = async (sha, delivery) => {
     if (!pinnedTemplate.has(sha)) {
       const local = delivery.schemaVersion === 3 ? null : await fileAt(sha, productReleaseTemplatePath, true);
-      if (local !== null) pinnedTemplate.set(sha, await checkedTemplate(local));
-      else if (!delivery.buildWorkflow) pinnedTemplate.set(sha, await templateAt(sha, controllerSha, delivery));
+      if (local !== null) pinnedTemplate.set(sha, {template:await checkedTemplate(local)});
+      else if (!delivery.buildWorkflow) pinnedTemplate.set(sha, {template:await checkedControllerTemplate(controllerSha)});
       else {
-        const pin = releaseTemplateControllerPin(await fileAt(sha, delivery.buildWorkflow));
-        pinnedTemplate.set(sha, await templateAt(sha, pin, delivery));
+        const workflow = delivery.buildWorkflow, pin = releaseTemplateControllerPin(await fileAt(sha, workflow));
+        pinnedTemplate.set(sha, {template:await checkedControllerTemplate(pin), controller:{workflow,pin}});
       }
     }
     return pinnedTemplate.get(sha);
   };
+  const sourceTemplateAt=async (sha,delivery)=>(await templateSourceAt(sha,delivery)).template;
   const fetchBranch = async branch => {
     const ref = await api('GET', `/repos/${request.repository}/git/ref/heads/${branch}`, undefined, true);
     if (!ref) return null;
@@ -177,7 +179,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       const settings=JSON.parse(config),versions=JSON.parse(manifest);
       delivery=parseDeliveryConfig(JSON.parse(await fileAt(baseSha,'.github/delivery.json')),settings);
       assertProductDelivery(delivery);
-      const template = await sourceTemplateAt(baseSha, delivery);
+      const {template,controller:noteTemplateController} = await templateSourceAt(baseSha, delivery);
       conditional = isConditionalTemplate(template);
       candidateTemplate = conditional ? template : undefined;
       notesPaths = conditional || delivery.schemaVersion === 3
@@ -240,7 +242,8 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       lastFacts = facts;
       lastProtections = { branch: rules, tags: protectedTags };
       return { baseSha, authors: delivery.repositoryAuthors, authorsDigest: hash(JSON.stringify(delivery.repositoryAuthors)),
-        ...(notesPaths ? {notesPaths} : {}), ...(conditional ? { contributorMode: 'github-authors', noteTemplate: template } : {}) };
+        ...(notesPaths ? {notesPaths} : {}), ...(conditional ? { contributorMode: 'github-authors', noteTemplate: template } : {}),
+        ...(noteTemplateController ? {noteTemplateController} : {}) };
     };
     const prs = async branch => {
       const values = await pages(`pulls?state=all&base=${encodeURIComponent(request.defaultBranch)}&head=${encodeURIComponent(request.repository.split('/')[0] + ':' + branch)}`);
@@ -259,6 +262,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     const sdk = observation ? null : language ?? copilotReleaseClient(controllerDirectory, copilotToken ?? '');
     const activeCycle=state.cycles.find(record=>record.value.id===state.repository.activeCycleId)?.value;
     const runtime = { activeCycle, workspace: request.directory, temporaryRoot: root, repository: request.repository, defaultBranch: request.defaultBranch, appBotId: request.appBotId, identity: request.identity, now, source,
+      readControllerTemplate:checkedControllerTemplate,
       pullRequests: prs, branchHead: fetchBranch,
       legacyCandidate: async () => {
         const workflows = await native('actions/workflows?per_page=100');

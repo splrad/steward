@@ -370,21 +370,32 @@ async function observationFixture() {
   f.io.createPullRequest=async()=>{throw Error('CREATE_PR_MUST_NOT_RUN');};
   return f;
 }
-it.each(['refresh', 'observation', 'editing', 'policy-first', 'creation-retry', 'creation-race', 'template-commit', 'product-change', 'unapproved'])(
+it.each(['refresh', 'observation', 'editing', 'policy-first', 'creation-retry', 'creation-race', 'template-commit', 'product-change',
+  'controller-pin', 'controller-pin-again', 'controller-policy-first', 'workflow-change', 'wrong-prior-controller', 'unapproved'])(
   'protects a reviewed conditional candidate during a template upgrade: %s', async kind => {
     const f = await controllerFixture();
     const originalTemplate = await readFile('packages/core/test/fixtures/release-template-conditional-v1.mustache', 'utf8');
     const upgradedTemplate = await readFile('templates/repository/.github/release-template.md.mustache', 'utf8');
     const notes = '## 概述\n\n已审核的发行说明。\n';
-    const baseAdvances = kind === 'template-commit' || kind === 'product-change';
+    const pinned = ['controller-pin', 'controller-pin-again', 'controller-policy-first', 'workflow-change', 'wrong-prior-controller'].includes(kind);
+    const baseAdvances = pinned || kind === 'template-commit' || kind === 'product-change';
+    const preserve = ['template-commit', 'controller-pin', 'controller-pin-again', 'controller-policy-first'].includes(kind);
+    const workflow = '.github/workflows/build.yml', oldPin = 'a'.repeat(40), newPin = 'b'.repeat(40);
+    const workflowBody = (pin: string) => JSON.stringify({jobs:{
+      build:{steps:[{uses:'actions/checkout@'+'c'.repeat(40),with:{repository:'splrad/steward',path:'controller',ref:pin}},
+        {run:kind==='workflow-change' && pin===newPin?'changed command':'original command'}]},
+      release:{uses:'splrad/steward/.github/workflows/product-release.yml@'+pin},
+    }});
     const answers = '_commit: v0.1.7\n_src_path: https://github.com/splrad/steward.git\nproduct_repository: fixture/product\n';
     const instructions = '# Repository instructions\n';
     if (baseAdvances) {
-      await mkdir(join(f.repo, '.github'));
+      await mkdir(join(f.repo, '.github/workflows'), {recursive:true});
       await f.commit('.copier-answers.yml', answers);
       await f.commit('AGENTS.md', instructions);
     }
-    const priorBase = baseAdvances ? await f.commit(productReleaseTemplatePath, originalTemplate, 'adopt initial template') : f.B;
+    const priorBase = baseAdvances
+      ? await f.commit(pinned ? workflow : productReleaseTemplatePath, pinned ? workflowBody(oldPin) : originalTemplate, 'adopt initial template')
+      : f.B;
     const head = await f.commit('.release-notes/app.md', notes, 'freeze reviewed draft');
     f.pr.head = head;
     f.session.repository.candidate!.publishedHead = head;
@@ -402,16 +413,25 @@ it.each(['refresh', 'observation', 'editing', 'policy-first', 'creation-retry', 
     const before = structuredClone(f.session.identity);
     const originalSource = f.io.source;
     const recoveringCreation = kind === 'creation-retry' || kind === 'creation-race';
-    const noteTemplate = kind === 'policy-first' || recoveringCreation ? originalTemplate
+    const noteTemplate = kind === 'policy-first' || kind === 'controller-policy-first' || recoveringCreation ? originalTemplate
       : kind === 'unapproved' ? upgradedTemplate + '\n' : upgradedTemplate;
     let base = priorBase;
     if (baseAdvances) {
       await f.git('push', '--porcelain', join(f.root, 'remote.git'), 'HEAD:refs/heads/steward/release-candidate');
       await f.git('switch', '--detach', priorBase);
-      await f.commit(productReleaseTemplatePath, upgradedTemplate, 'adopt updated template');
-      await f.commit('.copier-answers.yml', answers.replace('v0.1.7','v0.1.9'));
-      base = await f.commit('AGENTS.md', instructions + '\n<!-- BEGIN SPLRAD REPOSITORY REVIEW RULES -->\n\n<!-- END SPLRAD REPOSITORY REVIEW RULES -->\n');
-      if (kind === 'product-change') base = await f.commit('code.txt', 'product changed\n');
+      if (pinned) {
+        base = await f.commit(workflow, workflowBody(newPin), 'update release controller');
+        f.io.readControllerTemplate = async pin => {
+          expect(pin).toBe(oldPin);
+          if (kind === 'wrong-prior-controller') return '{{version}}\n';
+          return kind === 'controller-pin-again' ? upgradedTemplate : originalTemplate;
+        };
+      } else {
+        await f.commit(productReleaseTemplatePath, upgradedTemplate, 'adopt updated template');
+        await f.commit('.copier-answers.yml', answers.replace('v0.1.7','v0.1.9'));
+        base = await f.commit('AGENTS.md', instructions + '\n<!-- BEGIN SPLRAD REPOSITORY REVIEW RULES -->\n\n<!-- END SPLRAD REPOSITORY REVIEW RULES -->\n');
+        if (kind === 'product-change') base = await f.commit('code.txt', 'product changed\n');
+      }
       const originalIsAncestor = f.io.isAncestor;
       f.io.isAncestor = async (ancestor, descendant) => {
         if (ancestor !== priorBase || descendant !== base) return originalIsAncestor(ancestor, descendant);
@@ -419,9 +439,10 @@ it.each(['refresh', 'observation', 'editing', 'policy-first', 'creation-retry', 
       };
       f.setSnapshot({ ...f.snapshot(base, '## 概述\n\n新一轮生成的文稿。\n'), sourceDigest: 'e'.repeat(64) });
     }
-    f.io.source = async () => ({ ...await originalSource(), baseSha: base, contributorMode: 'github-authors', noteTemplate });
+    f.io.source = async () => ({ ...await originalSource(), baseSha: base, contributorMode: 'github-authors', noteTemplate,
+      ...(pinned ? {noteTemplateController:{workflow,pin:newPin}} : {}) });
     f.io.content = async () => { throw Error('must use the reviewed archive'); };
-    if (kind === 'product-change')
+    if (baseAdvances && !preserve)
       f.io.content = async () => ({status:'READY', files:[], actors, unitActors:{app:actors}});
     f.pr.editing = kind === 'editing';
     const binding = kind === 'observation' ? candidateObservationIdentity(f.session) : undefined;
@@ -442,8 +463,9 @@ it.each(['refresh', 'observation', 'editing', 'policy-first', 'creation-retry', 
       expect(f.session.generated?.baseSha).toBe(base);
       expect(f.session.identity?.sourceDigest).toBe('e'.repeat(64));
       expect(await f.git('rev-parse', `${f.pr.head}^2`)).toBe(base);
-      expect(await f.git('show', `${f.pr.head}:${productReleaseTemplatePath}`)).toBe(upgradedTemplate.trim());
-      if (kind === 'template-commit') {
+      expect(await f.git('show', `${f.pr.head}:${pinned ? workflow : productReleaseTemplatePath}`))
+        .toBe(pinned ? workflowBody(newPin) : upgradedTemplate.trim());
+      if (preserve) {
         expect(f.session.identity).toEqual({...before, sourceDigest:'e'.repeat(64)});
         expect(await f.git('show', `${f.pr.head}:.release-notes/app.md`)).toBe(notes.trim());
         expect(f.session.preview).toContain('alt="reviewed-author"');
