@@ -29,10 +29,11 @@ function productRepository(t) {
   mkdirSync(workflowDir, {recursive: true});
   function pinFiles(pin, {
     pagePin = pin, reusablePin = pin, pagesJobPin, pagesStepPin, extraCheckout, publishBytes,
+    checkoutPath = 'controller', extraReusablePin,
   } = {}) {
     for (const name of workflows) {
       const workflow = {jobs: {sample: {steps: [
-        {uses: 'actions/checkout@' + '0'.repeat(40), with: {repository: 'splrad/steward', ref: pin}},
+        {uses: 'actions/checkout@' + '0'.repeat(40), with: {repository: 'splrad/steward', ref: pin, path: checkoutPath}},
       ]}}};
       if (extraCheckout) workflow.jobs.sample.steps.push({
         uses: 'Actions/Checkout@' + '0'.repeat(40),
@@ -45,6 +46,9 @@ function productRepository(t) {
       }
       if (name === 'steward-release-publish') {
         workflow.jobs.build = {uses: 'splrad/steward/.github/workflows/product-release.yml@' + reusablePin};
+        if (extraReusablePin) workflow.jobs.extraBuild = {
+          uses: 'SPLRAD/Steward/.github/workflows/product-release.yml@' + extraReusablePin,
+        };
       }
       const bytes = name === 'steward-release-publish' && publishBytes !== undefined
         ? publishBytes : YAML.stringify(workflow);
@@ -67,8 +71,13 @@ test('requires forward promotion and consistent Steward references when LayerSca
   const next = pinFiles(unpromoted);
   const mixedPages = pinFiles(promoted, {pagePin: older});
   const mixedReusable = pinFiles(promoted, {reusablePin: older});
+  const mixedReusableCase = pinFiles(promoted, {extraReusablePin: older});
+  const invalidMount = pinFiles(promoted, {checkoutPath: 'elsewhere'});
+  const missingMount = pinFiles(promoted, {checkoutPath: null});
+  const expressionMount = pinFiles(promoted, {extraCheckout: {path: '${{ inputs.checkout_path }}'}});
+  const invalidNestedMount = pinFiles(promoted, {extraCheckout: {path: './Controller/nested'}});
   const mixedCheckout = pinFiles(promoted, {
-    extraCheckout: {repository: 'SPLRAD/Steward', ref: older},
+    extraCheckout: {repository: 'SPLRAD/Steward', ref: older, path: 'controller'},
   });
   const expressionCheckout = pinFiles(promoted, {
     extraCheckout: {repository: '${{ github.repository }}', ref: promoted},
@@ -88,6 +97,11 @@ test('requires forward promotion and consistent Steward references when LayerSca
   assert.throws(() => validate(updated, next), /VALIDATION_CONTROLLER_NOT_PROMOTED/);
   assert.throws(() => validate(prior, mixedPages), /VALIDATION_CONTROLLER_PIN_MISMATCH/);
   assert.throws(() => validate(prior, mixedReusable), /VALIDATION_CONTROLLER_PIN_MISMATCH/);
+  assert.throws(() => validate(prior, mixedReusableCase), /VALIDATION_CONTROLLER_PIN_MISMATCH/);
+  assert.throws(() => validate(prior, invalidMount), /VALIDATION_CONTROLLER_CHECKOUT_MOUNT/);
+  assert.throws(() => validate(prior, missingMount), /VALIDATION_CONTROLLER_CHECKOUT_MOUNT/);
+  assert.throws(() => validate(prior, expressionMount), /VALIDATION_CONTROLLER_CHECKOUT_MOUNT/);
+  assert.throws(() => validate(prior, invalidNestedMount), /VALIDATION_CONTROLLER_CHECKOUT_MOUNT/);
   assert.throws(() => validate(prior, mixedCheckout), /VALIDATION_CONTROLLER_PIN_MISMATCH/);
   assert.throws(() => validate(prior, expressionCheckout), /VALIDATION_CONTROLLER_CHECKOUT_REPOSITORY_EXPRESSION/);
   assert.throws(() => validate(prior, mixedPagesJob), /VALIDATION_CONTROLLER_PIN_MISMATCH/);

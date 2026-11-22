@@ -1,10 +1,13 @@
+import {posix} from 'node:path';
 import YAML from 'yaml';
 import {git} from './validation-input.mjs';
 
 const layerScapeId = 1187527897;
 const controllerRepository = 'splrad/steward';
 const publishWorkflow = '.github/workflows/steward-release-publish.yml';
+const controllerPath = 'controller';
 const archiveReaderPath = 'configuration-controller';
+const controllerMounts = [controllerPath, archiveReaderPath];
 const managedWorkflows = [
   '.github/workflows/channel-preflight.yml',
   '.github/workflows/pages.yml',
@@ -38,13 +41,25 @@ function readWorkflowPins(repo, revision, path, archiveReaders) {
     for (const [index, step] of steps.entries()) {
       if (typeof step.uses !== 'string' || !step.uses.toLowerCase().startsWith('actions/checkout@')) continue;
       const repository = step.with?.repository;
-      if (typeof repository !== 'string') continue;
-      if (repository.includes('${{')) {
+      if (typeof repository === 'string' && repository.includes('${{')) {
         throw Error('VALIDATION_CONTROLLER_CHECKOUT_REPOSITORY_EXPRESSION ' + path);
       }
-      if (repository.toLowerCase() !== controllerRepository) continue;
+      const mount = step.with?.path;
+      if (typeof mount === 'string' && mount.includes('${{')) {
+        throw Error('VALIDATION_CONTROLLER_CHECKOUT_MOUNT ' + path);
+      }
+      const normalizedMount = typeof mount === 'string'
+        ? posix.resolve('/', mount.replaceAll('\\', '/')).slice(1).toLowerCase() : '';
+      if (typeof repository !== 'string' || repository.toLowerCase() !== controllerRepository) {
+        if (controllerMounts.some(reserved => normalizedMount === reserved || normalizedMount.startsWith(reserved + '/'))) {
+          throw Error('VALIDATION_CONTROLLER_CHECKOUT_MOUNT ' + path);
+        }
+        continue;
+      }
+      const archiveReader = path === publishWorkflow && jobId === 'build' && mount === archiveReaderPath;
+      if (!archiveReader && mount !== controllerPath) throw Error('VALIDATION_CONTROLLER_CHECKOUT_MOUNT ' + path);
       if (!isPin(step.with.ref)) throw Error('VALIDATION_CONTROLLER_PIN_INVALID ' + path);
-      if (path === publishWorkflow && jobId === 'build' && step.with.path === archiveReaderPath) {
+      if (archiveReader) {
         // The configuration panel can update one archive producer while preserving the others.
         const key = archiveReaderKey(step, steps[index + 1], steps[index + 2]);
         if (archiveReaders.has(key)) throw Error('VALIDATION_CONTROLLER_ARCHIVE_READER_WIRING');
