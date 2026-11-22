@@ -1,6 +1,7 @@
 import {posix} from 'node:path';
 import YAML from 'yaml';
 import {git} from './validation-input.mjs';
+import {controllerTagPrefix,controllerVersionNumber} from './controller-version.mjs';
 
 const layerScapeId = 1187527897;
 const controllerRepository = 'splrad/steward';
@@ -33,9 +34,15 @@ function archiveReaderKey(checkout, install, collect) {
 
 function readWorkflowPins(repo, revision, path, archiveReaders) {
   const value = git(repo, ['cat-file', 'blob', revision + ':' + path]).toString('utf8');
-  const workflow = YAML.parse(value);
+  const document = YAML.parseDocument(value);
+  if (document.errors.length) throw document.errors[0];
+  const workflow = document.toJS();
   const jobs = Object.entries(workflow?.jobs ?? {});
   const controllerPins = [];
+  const pin = (sha, location) => {
+    const comment = document.getIn(location, true)?.comment?.trim();
+    controllerPins.push({sha, version: comment?.startsWith('controller-v') ? comment : null});
+  };
   for (const [jobId, job] of jobs) {
     const steps = job.steps ?? [];
     // The managed workflows declare controller entry points directly.
@@ -77,37 +84,59 @@ function readWorkflowPins(repo, revision, path, archiveReaders) {
         if (archiveReaders.has(key)) throw Error('VALIDATION_CONTROLLER_ARCHIVE_READER_WIRING');
         archiveReaders.set(key, step.with.ref);
       } else {
-        controllerPins.push(step.with.ref);
+        pin(step.with.ref, ['jobs', jobId, 'steps', index, 'with', 'ref']);
       }
     }
   }
   if (!controllerPins.length) throw Error('VALIDATION_CONTROLLER_CHECKOUT_MISSING ' + path);
-  const jobValues = jobs.map(([, job]) => job);
   if (path.endsWith('/pages.yml')) {
     if (!workflow.jobs?.select?.steps?.some(step => step.run === 'node controller/scripts/select-pages-source.mjs')
       || !workflow.jobs?.deploy?.steps?.some(step => step.run === 'node controller/scripts/pages-runtime.mjs check')) {
       throw Error('VALIDATION_CONTROLLER_PAGES_RUNTIME_CHECKS');
     }
     const variable = 'STEWARD_CONTROLLER_SHA';
-    controllerPins.push(workflow.env?.[variable]);
-    for (const {env} of [...jobValues, ...jobValues.flatMap(job => job.steps ?? [])]) {
-      if (env && Object.hasOwn(env, variable)) controllerPins.push(env[variable]);
+    pin(workflow.env?.[variable], ['env', variable]);
+    for (const [jobId, job] of jobs) {
+      if (job.env && Object.hasOwn(job.env, variable)) pin(job.env[variable], ['jobs', jobId, 'env', variable]);
+      for (const [index, {env}] of (job.steps ?? []).entries()) {
+        if (env && Object.hasOwn(env, variable)) pin(env[variable], ['jobs', jobId, 'steps', index, 'env', variable]);
+      }
     }
   }
   if (path === publishWorkflow) {
     const prefix = controllerRepository + '/.github/workflows/product-release.yml@';
-    const builds = jobValues.filter(job => typeof job.uses === 'string' && job.uses.toLowerCase().startsWith(prefix));
+    const builds = jobs.filter(([, job]) => typeof job.uses === 'string' && job.uses.toLowerCase().startsWith(prefix));
     if (!builds.length) throw Error('VALIDATION_CONTROLLER_REUSABLE_WORKFLOW_MISSING ' + path);
-    controllerPins.push(...builds.map(job => job.uses.slice(prefix.length)));
+    for (const [jobId, job] of builds) pin(job.uses.slice(prefix.length), ['jobs', jobId, 'uses']);
   }
-  if (!controllerPins.every(isPin)) throw Error('VALIDATION_CONTROLLER_PIN_INVALID ' + path);
+  if (!controllerPins.every(({sha}) => isPin(sha))) throw Error('VALIDATION_CONTROLLER_PIN_INVALID ' + path);
   return controllerPins;
 }
 
 function readRevisionPins(workspace, revision) {
   const archiveReaders = new Map();
-  const controller = new Set(managedWorkflows.flatMap(path => readWorkflowPins(workspace, revision, path, archiveReaders)));
-  return {controller, archiveReaders};
+  const pins = managedWorkflows.flatMap(path => readWorkflowPins(workspace, revision, path, archiveReaders));
+  return {controller: new Set(pins.map(pin => pin.sha)), versions: new Set(pins.map(pin => pin.version)), archiveReaders};
+}
+
+function verifyVersionLabels(policy, before, after, sha) {
+  if (before.size === 1 && before.has(null) && after.size === 1 && after.has(null)) return;
+  const [version] = after;
+  const number = controllerVersionNumber(version);
+  if (after.size !== 1 || !number) throw Error('VALIDATION_CONTROLLER_VERSION_LABELS');
+  const ref = controllerTagPrefix + number;
+  let published;
+  try {
+    published = git(policy, ['rev-parse', '--verify', '--quiet', ref]).toString().trim();
+  } catch (error) {
+    if (error.status === 128 || error.status === 1) throw Error('VALIDATION_CONTROLLER_VERSION_TAG_MISSING ' + version);
+    throw error;
+  }
+  if (published !== sha) throw Error('VALIDATION_CONTROLLER_VERSION_SHA_MISMATCH ' + version);
+  const [previous] = before;
+  const previousNumber = controllerVersionNumber(previous);
+  if (before.size !== 1 || previous !== null && !previousNumber) throw Error('VALIDATION_CONTROLLER_VERSION_LABELS');
+  if (previousNumber && previousNumber > number) throw Error('VALIDATION_CONTROLLER_VERSION_DOWNGRADE ' + previous + ' -> ' + version);
 }
 
 function verifyPromotion(policy, previousPins, candidate, promotedController) {
@@ -130,6 +159,7 @@ export function verifyLayerScapeControllerPins(workspace, input, policy, promote
   const after = readRevisionPins(workspace, input.head);
   if (after.controller.size !== 1) throw Error('VALIDATION_CONTROLLER_PIN_MISMATCH');
   const [candidate] = after.controller;
+  verifyVersionLabels(policy, before.versions, after.versions, candidate);
   if (before.controller.size !== 1 || !before.controller.has(candidate)) {
     verifyPromotion(policy, before.controller, candidate, promotedController);
   }

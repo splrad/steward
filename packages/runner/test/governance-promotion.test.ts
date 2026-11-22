@@ -125,7 +125,10 @@ it('already adopted source is a read-only NOP',async()=>{
 it.each(['success','lost','conflict','changed','first security adoption'])('template tags are create-only, exact commit bound and recover lost responses: %s',async mode=>{
   const refs:any={'refs/tags/v1.0.0':P},plan={status:'CREATE',commit:M,tag:'v1.0.1',tags:{...refs}};
   let writes=0;const io={request:async(method:string,url:string,body:any)=>{
-    if(url.endsWith('matching-refs/tags/'))return {status:200,value:Object.entries(refs).map(([ref,sha])=>({ref,object:{sha,type:'commit'}}))};
+    if(url.endsWith('matching-refs/tags/'))return {status:200,value:[
+      {ref:'refs/tags/controller-v1000',object:{sha:P,type:'commit'}},
+      ...Object.entries(refs).map(([ref,sha])=>({ref,object:{sha,type:'commit'}})),
+    ]};
     if(method==='GET'){const value=refs['refs/tags/v1.0.1'];return value?{status:200,value:{ref:'refs/tags/v1.0.1',object:{type:'commit',sha:value}}}:{status:404};}
     expect(method).toBe('POST');expect(body).toEqual({ref:'refs/tags/v1.0.1',sha:M});writes++;refs[body.ref]=M;
     if(mode==='lost')throw Error('lost');return {status:201};

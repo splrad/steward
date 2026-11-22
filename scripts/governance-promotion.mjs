@@ -12,6 +12,7 @@ import {isolatedBuildEnvironment,nativeReleaseApp,resolvePolicyTool} from '../pa
 import {requiredWorkflowBinding as binding} from './required-workflow-binding.mjs';
 import {completeNativeRuleParameters} from './native-rule-parameters.mjs';
 import {createSourceGuard,publishControllerSource} from './controller-source.mjs';
+import {bootstrapControllerVersion,controllerTagPrefix,publishControllerVersion} from './controller-version.mjs';
 import {compareValidatorSources} from './validator-source.mjs';
 import {epoch,hasPendingValidators,journalRepository,reconcileValidators,validatorJournal} from './validator-revalidation.mjs';
 
@@ -244,7 +245,7 @@ export async function publishTemplateTag(io,plan,assertCurrent,record) {
     const refs=await get(io,`${repo}/git/matching-refs/tags/`);
     check(Array.isArray(refs)&&refs.every(r=>r.ref?.startsWith('refs/tags/')&&sha(r.object?.sha))
       &&new Set(refs.map(r=>r.ref)).size===refs.length,'TEMPLATE_REFS');
-    return Object.fromEntries(refs.map(r=>[r.ref,r.object.sha]));
+    return Object.fromEntries(refs.filter(r=>!r.ref.startsWith(controllerTagPrefix)).map(r=>[r.ref,r.object.sha]));
   };
   const observed=await readTags();await record({kind:'template-refs-before',observed});
   check(same(observed,plan.tags),'TEMPLATE_REFS_CHANGED');
@@ -361,15 +362,19 @@ export async function wakePublishedTemplate(io,published,assertCurrent,record) {
 }
 
 export async function recordPromotionFailure(error,record) {
-  const code=/^(?:PROMOTION|CONTROLLER_SOURCE|NATIVE_RULE_PARAMETERS|VALIDATOR(?:_SOURCE|_REVALIDATION)?)_[A-Z0-9_]+$/.test(error?.message??'')?error.message:'PROMOTION_UNAVAILABLE';
+  const code=/^(?:PROMOTION|CONTROLLER_SOURCE|CONTROLLER_VERSION|NATIVE_RULE_PARAMETERS|VALIDATOR(?:_SOURCE|_REVALIDATION)?)_[A-Z0-9_]+$/.test(error?.message??'')?error.message:'PROMOTION_UNAVAILABLE';
   await record({kind:'failure',code});throw Error(code);
 }
 
-export async function publishPromotedSources(io,plan,target,appId,guard,record){
+export async function publishPromotedSources(io,plan,target,appId,guard,record,readVersionRefs){
   const published=await publishTemplateTag(io,plan,guard,record);
   await record({kind:'template-result',...published});
+  const baseline=await bootstrapControllerVersion(io,appId,guard,readVersionRefs);
+  if(baseline) await record({kind:'controller-version-baseline',...baseline});
   const controller=await publishControllerSource(io,target,appId,guard,record);
   await record({kind:'controller-source-result',...controller});
+  const version=await publishControllerVersion(io,target,appId,guard,readVersionRefs);
+  await record({kind:'controller-version-result',...version});
   await wakePublishedTemplate(io,published,guard,record);
   await guard();
 }
@@ -421,7 +426,10 @@ export async function main(env=process.env,transport=fetch) {
     const {verifyCurrent,...adopted}=await stage('validator-promotion',
       ()=>promoteRequiredWorkflow(io,source.sha,guard,record,{beforeWrite}));
     await record({kind:'rules-result',...adopted});
-    await stage('publish-sources',()=>publishPromotedSources(io,plan,source.sha,appId,verifyCurrent,record));
+    const readVersionRefs=async()=>(await execute('git',['--no-replace-objects','-c','core.hooksPath=',
+      '-c','credential.helper=','ls-remote','--tags','--refs','origin',controllerTagPrefix+'*'],
+      {env:clean,windowsHide:true,timeout:90000,maxBuffer:8*1024*1024})).stdout;
+    await stage('publish-sources',()=>publishPromotedSources(io,plan,source.sha,appId,verifyCurrent,record,readVersionRefs));
     await withJournal(async journal=>{
       const pending=await stage('journal-read',()=>journal.load());
       if(pending?.validator===adopted.sha&&hasPendingValidators(pending))await reconcile(pending,journal,verifyCurrent);
