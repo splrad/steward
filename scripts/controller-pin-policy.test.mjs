@@ -151,6 +151,7 @@ test('checks independently promoted archive reader revisions from the configurat
   const secondReader = commit(second);
   const currentReaders = commit(bothCurrent);
   const invalidWiring = commit(first.replace('Install native archive reader dependencies', 'Install dependencies'));
+  const sharedController = commit(adaptBuild(generated, seed, [native('one')], controller));
   const withoutCheckout = YAML.parse(first);
   withoutCheckout.jobs.build.steps = withoutCheckout.jobs.build.steps.filter(step =>
     !['Check out native archive reader', 'Install native archive reader dependencies'].includes(step.name));
@@ -160,6 +161,8 @@ test('checks independently promoted archive reader revisions from the configurat
     repositoryId: 1187527897, base, head, changedPaths: [publishPath],
   }, upstream.dir, current);
   assert.doesNotThrow(() => verify(base, firstReader, older));
+  assert.doesNotThrow(() => verify(base, sharedController, controller));
+  assert.throws(() => verify(firstReader, sharedController, older), /VALIDATION_CONTROLLER_DOWNGRADE/);
   assert.throws(() => verify(base, firstReader, promoted), /VALIDATION_CONTROLLER_NOT_PROMOTED/);
   assert.doesNotThrow(() => verify(firstReader, secondReader, promoted));
   assert.doesNotThrow(() => verify(secondReader, currentReaders, promoted));
