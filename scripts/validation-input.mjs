@@ -122,15 +122,18 @@ export async function validationFileInputs(workspace,env=process.env) {
     &&/^[a-f0-9]{40}$/.test(env.WORKFLOW_SHA),'TRUSTED_SOURCE');
   const repositoryId=Number(env.GITHUB_REPOSITORY_ID);
   check(repositoryId===event.repository?.id&&event.repository?.full_name===env.GITHUB_REPOSITORY,'REPOSITORY');
-  let base,head;
+  let base,head,baseRef;
   if(env.GITHUB_EVENT_NAME==='pull_request'){
     check(event.pull_request?.base?.repo?.id===repositoryId,'PULL_SOURCE');
     base=event.pull_request.base.sha;head=event.pull_request.head.sha;
-    const ref=event.pull_request.base.ref;
-    git(workspace,['check-ref-format','--branch',ref]);
-    check(git(workspace,['rev-parse','--verify',`refs/remotes/origin/${ref}^{commit}`]).toString().trim()===base,'BASE_MOVED');
+    baseRef=event.pull_request.base.ref;
+    git(workspace,['check-ref-format','--branch',baseRef]);
   }else{check(env.GITHUB_EVENT_NAME==='push'&&typeof event.repository.default_branch==='string'&&event.ref==='refs/heads/'+event.repository.default_branch,'EVENT');base=event.before;head=event.after;}
   check([base,head].every(v=>typeof v==='string'&&/^[a-f0-9]{40}$/.test(v)&&!/^0+$/.test(v)),'COMMITS');
+  if(baseRef){
+    const observedBase=git(workspace,['rev-parse','--verify',`refs/remotes/origin/${baseRef}^{commit}`]).toString().trim();
+    check(observedBase===base,`BASE_MOVED eventBase=${base} observedBase=${observedBase}`);
+  }
   for(const value of [base,head])check(git(workspace,['rev-parse','--verify',value+'^{commit}']).toString().trim()===value,'COMMITS');
   check(git(workspace,['rev-parse','HEAD']).toString().trim()===head,'CHECKOUT');
   check(git(workspace,['rev-parse','--is-shallow-repository']).toString().trim()==='false','SHALLOW');
