@@ -243,7 +243,15 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
         &&(!url.searchParams.has('state')||url.searchParams.get('state')==='all'||pull.state===url.searchParams.get('state')));
     }
     else if (path.includes('/git/ref/tags/') || path.includes('/releases/tags/')) return new Response('{}',{status:404});
-    else if (/\/pulls\/[0-9]+$/.test(path)) value = pulls.find(pull=>pull.number===Number(path.split('/').at(-1)));
+    else if (/\/pulls\/[0-9]+$/.test(path)) {
+      value = pulls.find(pull=>pull.number===Number(path.split('/').at(-1)));
+      if(method==='PATCH') {
+        expect(new Headers(init?.headers).get('authorization')).toBe('Bearer fixture-write');
+        expect(Object.keys(body)).toEqual(['body']);
+        value.body=body.body;
+        throw Error('accepted preview response lost');
+      }
+    }
     else if (/\/issues\/[0-9]+\/events$/.test(path)) {
       const number=Number(path.split('/').at(-2)),merge=merges.get(number),id=number+3;
       value=[...(merge?[{id,event:'merged',url:`https://api.github.com/repos/fixture/product/issues/events/${id}`,
@@ -262,7 +270,12 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     }
     else if (/\/issues\/[0-9]+\/comments$/.test(path) && method === 'GET') value = comments.filter(comment=>comment.issue===Number(path.split('/').at(-2)));
     else if (/\/issues\/[0-9]+\/comments$/.test(path) && method === 'POST') { value = { id: comments.length+1,issue:Number(path.split('/').at(-2)),user: { id: 301115370 }, body: body.body }; comments.push(value); }
-    else if (/\/issues\/comments\/[0-9]+$/.test(path) && method === 'PATCH') { value=comments.find(comment=>comment.id===Number(path.split('/').at(-1)));value.body=body.body; }
+    else if (/\/issues\/comments\/[0-9]+$/.test(path)) {
+      value=comments.find(comment=>comment.id===Number(path.split('/').at(-1)));
+      if (!value) return new Response('{}',{status:404});
+      if (method==='PATCH') value.body=body.body;
+      value={...value,issue_url:'https://api.github.com/repos/fixture/product/issues/'+value.issue};
+    }
     else throw new Error('Unregistered native candidate fixture: ' + method + ' ' + path);
     return new Response(JSON.stringify(value), { status: 200, headers: { 'content-type': 'application/json' } });
   }) as typeof fetch;
@@ -436,6 +449,50 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   }
   expect(await nativeReleaseCandidate(request, options)).toMatchObject({ status: 'READY', prNumber: 9 });
   const firstHead = await head('steward/release-candidate'), firstCalls = modelCalls; expect(firstCalls).toBeGreaterThan(0); await refresh();
+  if (compactRegistered) {
+    const stateBefore = await head('steward/release-state');
+    // Isolate the protected state just before statusCommentId was recorded.
+    const previewDirectory = join(root,'preview-fixture'), previewRemote = join(root,'preview.git');
+    await mkdir(previewDirectory);
+    await git('-C',previewDirectory,'init','--initial-branch=local-preview');
+    await git('-C',previewDirectory,'config','user.name',identity.name);
+    await git('-C',previewDirectory,'config','user.email',identity.email);
+    await git('-C',previewDirectory,'fetch','--no-tags','--no-recurse-submodules',remote,'refs/heads/steward/release-state');
+    await git('-C',previewDirectory,'checkout','--detach',stateBefore!);
+    await git('init','--bare',previewRemote);
+    await git('-C',previewRemote,'fetch','--no-tags','--no-recurse-submodules',remote,'refs/heads/steward/release-candidate');
+    await git('-C',previewRemote,'update-ref','refs/heads/steward/release-candidate','FETCH_HEAD');
+    const stateFile = join(previewDirectory,'state.json');
+    const opening = JSON.parse(await readFile(stateFile,'utf8'));
+    opening.candidate.statusCommentId = null;
+    await writeFile(stateFile,JSON.stringify(opening)+'\n');
+    await git('-C',previewDirectory,'commit','-am','Snapshot prior to status registration');
+    const stateAtOpen = await git('-C',previewDirectory,'rev-parse','HEAD');
+    await git('-C',previewDirectory,'push','--porcelain',previewRemote,'HEAD:refs/heads/steward/release-state');
+    const previewFetcher:typeof fetch = async (input,init) => String(input).endsWith('/git/ref/heads/steward/release-state')
+      ? Response.json({object:{type:'commit',sha:stateAtOpen}}) : fetcher(input,init);
+    const previewRequest = {...request,directory:previewDirectory,remote:previewRemote};
+    const previewOptions = {...options,fetcher:previewFetcher};
+    const requestsBefore = requests.length;
+    expect(await nativeReleaseCandidate(previewRequest,{...previewOptions,homepageEvent:{prNumber:9}}))
+      .toEqual({status:'WAIT',reason:'CANDIDATE_HOMEPAGE_NOT_READY'});
+    expect(requests.slice(requestsBefore).some(r=>r.method==='PATCH')).toBe(false);
+    const preview = await nativeReleaseCandidate(previewRequest,{...previewOptions,homepageEvent:{prNumber:9,commentId:1}});
+    expect(preview).toEqual({status:'READY',reason:'CANDIDATE_HOMEPAGE_UPDATED',head:firstHead});
+    const notes = await git('show', firstHead+':'+notesPath);
+    expect(pr.body).toContain(notes);
+    expect(pr.body).toContain('/blob/'+firstHead+'/'+notesPath);
+    expect(pr.body).toContain('/pull/9#issuecomment-1');
+    expect(pr.body).toContain('<summary>创建 PR 时的变更记录</summary>');
+    const previewRequests = requests.splice(requestsBefore);
+    expect(previewRequests.filter(r=>r.method!=='GET').map(({method,path})=>({method,path})))
+      .toEqual([{method:'PATCH',path:'/repos/fixture/product/pulls/9'}]);
+    expect(await head('steward/release-state')).toBe(stateBefore);
+    expect(await head('steward/release-candidate')).toBe(firstHead);
+    expect(modelCalls).toBe(firstCalls);
+    expect(await nativeReleaseCandidate(request,{...options,homepageEvent:{prNumber:99}}))
+      .toEqual({status:'SKIPPED',reason:'CANDIDATE_HOMEPAGE_NOT_CURRENT'});
+  }
   const identityCalls = requests.filter(r => /\/commits\/|\/users\//.test(r.path)).length;
   expect(comments[0].body).toContain('github.com&#x2F;contributor');
   expect(comments[0].body.includes('github.com&#x2F;author')).toBe(conditional);
