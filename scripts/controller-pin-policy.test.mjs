@@ -31,6 +31,7 @@ function productRepository(t) {
     pagePin = pin, reusablePin = pin, pagesJobPin, pagesStepPin, extraCheckout, publishBytes,
     checkoutPath = 'controller', extraReusablePin, extraControllerWorkflowPin, localReference, pagesRuntime = true,
     extraControllerActionPin, extraRun,
+    omitPagesCheckout, omitWorkflowCheckout,
   } = {}) {
     for (const name of workflows) {
       const workflow = {jobs: {sample: {steps: [
@@ -50,9 +51,15 @@ function productRepository(t) {
         if (extraControllerWorkflowPin) workflow.jobs.extra = {
           uses: 'splrad/steward/.github/workflows/check-inputs.yml@' + extraControllerWorkflowPin,
         };
-        if (pagesRuntime) {
-          workflow.jobs.select = {steps: [{run: 'node controller/scripts/select-pages-source.mjs'}]};
-          workflow.jobs.deploy = {steps: [{run: 'node controller/scripts/pages-runtime.mjs check'}]};
+        const checkout = workflow.jobs.sample.steps[0];
+        const pagesSteps = {
+          select: 'node controller/scripts/select-pages-source.mjs',
+          build: 'node controller/scripts/build-pages.mjs',
+          deploy: 'node controller/scripts/pages-runtime.mjs check',
+        };
+        for (const [job, run] of Object.entries(pagesSteps)) {
+          workflow.jobs[job] = {steps: job === omitPagesCheckout ? [] : [structuredClone(checkout)]};
+          if (pagesRuntime) workflow.jobs[job].steps.push({run});
         }
         workflow.env = {STEWARD_CONTROLLER_SHA: pagePin};
         if (pagesJobPin !== undefined) workflow.jobs.sample.env = {STEWARD_CONTROLLER_SHA: pagesJobPin};
@@ -64,6 +71,7 @@ function productRepository(t) {
           uses: 'SPLRAD/Steward/.github/workflows/product-release.yml@' + extraReusablePin,
         };
       }
+      if (name === omitWorkflowCheckout) workflow.jobs.sample.steps.shift();
       const bytes = name === 'steward-release-publish' && publishBytes !== undefined
         ? publishBytes : YAML.stringify(workflow);
       writeFileSync(join(workflowDir, name + '.yml'), bytes);
@@ -93,6 +101,8 @@ test('requires forward promotion and consistent Steward references when LayerSca
   const checkoutMutation = pinFiles(promoted, {extraRun: {'working-directory': 'controller', run: 'git restore -- package.json'}});
   const directFileMutation = pinFiles(promoted, {extraRun: {run: 'Remove-Item controller/build.cache'}});
   const readOnlyRun = pinFiles(promoted, {extraRun: {'working-directory': 'controller', run: 'git status --short'}});
+  const missingPagesCheckout = pinFiles(promoted, {omitPagesCheckout: 'select'});
+  const reusableWithoutCheckout = pinFiles(promoted, {omitWorkflowCheckout: 'steward-release-publish'});
   const invalidMount = pinFiles(promoted, {checkoutPath: 'elsewhere'});
   const missingMount = pinFiles(promoted, {checkoutPath: null});
   const expressionMount = pinFiles(promoted, {extraCheckout: {path: '${{ inputs.checkout_path }}'}});
@@ -129,6 +139,8 @@ test('requires forward promotion and consistent Steward references when LayerSca
   assert.throws(() => validate(prior, checkoutMutation), /VALIDATION_CONTROLLER_MOUNT_MUTATION/);
   assert.throws(() => validate(prior, directFileMutation), /VALIDATION_CONTROLLER_MOUNT_MUTATION/);
   assert.doesNotThrow(() => validate(prior, readOnlyRun));
+  assert.throws(() => validate(prior, missingPagesCheckout), /VALIDATION_CONTROLLER_CHECKOUT_MISSING/);
+  assert.throws(() => validate(prior, reusableWithoutCheckout), /VALIDATION_CONTROLLER_CHECKOUT_MISSING/);
   assert.throws(() => validate(prior, invalidMount), /VALIDATION_CONTROLLER_CHECKOUT_MOUNT/);
   assert.throws(() => validate(prior, missingMount), /VALIDATION_CONTROLLER_CHECKOUT_MOUNT/);
   assert.throws(() => validate(prior, expressionMount), /VALIDATION_CONTROLLER_CHECKOUT_MOUNT/);

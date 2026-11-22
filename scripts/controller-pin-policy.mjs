@@ -56,6 +56,7 @@ function readWorkflowPins(repo, revision, path, archiveReaders) {
   const workflow = YAML.parse(value);
   const jobs = Object.entries(workflow?.jobs ?? {});
   const controllerPins = [];
+  const primaryCheckoutJobs = new Set();
   for (const [jobId, job] of jobs) {
     const steps = job.steps ?? [];
     let jobController;
@@ -109,13 +110,17 @@ function readWorkflowPins(repo, revision, path, archiveReaders) {
         archiveReaders.set(key, step.with.ref);
       } else {
         jobController = step.with.ref;
+        primaryCheckoutJobs.add(jobId);
         controllerPins.push(jobController);
       }
     }
   }
-  if (!controllerPins.length) throw Error('VALIDATION_CONTROLLER_CHECKOUT_MISSING ' + path);
+  if (!primaryCheckoutJobs.size) throw Error('VALIDATION_CONTROLLER_CHECKOUT_MISSING ' + path);
   const jobValues = jobs.map(([, job]) => job);
   if (path.endsWith('/pages.yml')) {
+    if (!['select', 'build', 'deploy'].every(job => primaryCheckoutJobs.has(job))) {
+      throw Error('VALIDATION_CONTROLLER_CHECKOUT_MISSING ' + path);
+    }
     if (!workflow.jobs?.select?.steps?.some(step => step.run === 'node controller/scripts/select-pages-source.mjs')
       || !workflow.jobs?.deploy?.steps?.some(step => step.run === 'node controller/scripts/pages-runtime.mjs check')) {
       throw Error('VALIDATION_CONTROLLER_PAGES_RUNTIME_CHECKS');
