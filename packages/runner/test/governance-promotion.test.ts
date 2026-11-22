@@ -163,6 +163,106 @@ it('uses the independent Governance App, one repository, exact permissions and r
   await expect(withGovernanceCredential({GOVERNANCE_APP_ID:'765',GOVERNANCE_APP_PRIVATE_KEY:privateKey},async()=>{throw Error('business failure');},transport)).rejects.toThrow('business failure');
   expect(calls.at(-1)).toBe('DELETE /installation/token');
 });
+it('records a journal API failure and cleanup failure without masking the first error',async()=>{
+  const {withGovernanceCredential,recordPromotionFailure}=await module();
+  const privateKey=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs8',format:'pem'});
+  const calls:string[]=[],records:unknown[]=[];
+  const record=async(value:unknown)=>{records.push(value);};
+  const transport:typeof fetch=async(input,init)=>{
+    const path=new URL(String(input)).pathname;
+    const method=init?.method;
+    const token=new Headers(init?.headers).get('authorization');
+    calls.push(method+' '+path);
+    if(path==='/app')return Response.json({id:765,slug:'splrad-governance'});
+    if(path==='/orgs/splrad/installation')return Response.json({id:99,app_id:765,account:{id:302208797}});
+    if(path.endsWith('/access_tokens')){
+      const request=JSON.parse(String(init?.body));
+      return request.repository_ids[0]===1447987054
+        ?Response.json({message:'untrusted API response body'},{status:502})
+        :Response.json({token:'fixture-controller',permissions:request.permissions},{status:201});
+    }
+    if(path==='/installation/repositories')return Response.json({total_count:1,repositories:[{id:1296724484,full_name:'splrad/steward'}]});
+    if(path==='/installation/token'){
+      expect(token).toBe('token fixture-controller');
+      return Response.json({message:'another untrusted message'},{status:503});
+    }
+    throw Error('unregistered fixture');
+  };
+  const run=async()=>{
+    try {
+      await withGovernanceCredential({GOVERNANCE_APP_ID:'765',GOVERNANCE_APP_PRIVATE_KEY:privateKey},
+        async(_io:unknown,withJournal:(work:unknown)=>Promise<unknown>)=>withJournal(vi.fn()),transport,record);
+    }catch(error){await recordPromotionFailure(error,record);}
+  };
+  await expect(run()).rejects.toThrow('PROMOTION_UNAVAILABLE');
+  expect(records).toEqual([
+    {kind:'stage-failure',stage:'journal-token',errorKind:'HTTP',httpStatus:502},
+    {kind:'stage-failure',stage:'controller-token-revoke',errorKind:'HTTP',httpStatus:503},
+    {kind:'failure',code:'PROMOTION_UNAVAILABLE'}
+  ]);
+  expect(calls.filter(call=>call.startsWith('POST '))).toHaveLength(2);
+  expect(calls.filter(call=>call.startsWith('DELETE '))).toHaveLength(1);
+});
+it('authenticates the shipped bot identity lookup when the anonymous IP bucket is exhausted',async()=>{
+  const {promotionTransport}=await module();
+  const {nativeReleaseApp}=await import(pathToFileURL(resolve('packages/runner/dist/index.js')).href);
+  const privateKey=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs8',format:'pem'});
+  const workflowAuthorization='Bearer workflow-read-fixture';
+  const calls:string[]=[];
+  const transport:typeof fetch=async(input,init)=>{
+    const url=new URL(String(input));
+    const route=decodeURIComponent(url.pathname);
+    const authorization=new Headers(init?.headers).get('authorization');
+    calls.push(route);
+    if(route==='/users/splrad-steward[bot]'&&url.origin==='https://api.github.com'){
+      if(!authorization)return Response.json({message:'API rate limit exceeded'},{status:403});
+      expect(authorization).toBe(workflowAuthorization);
+      expect(init?.redirect).toBe('error');
+      return Response.json({id:301115370,type:'Bot'});
+    }
+    expect(authorization).not.toBe(workflowAuthorization);
+    if(route==='/app')return Response.json({id:4243096,client_id:'Iv23liuSr0qd4WLJdZhH',slug:'splrad-steward'});
+    if(route==='/orgs/splrad/installation')return Response.json({id:99,app_id:4243096,account:{id:302208797}});
+    return Response.json({});
+  };
+  await expect(nativeReleaseApp(privateKey,transport)).rejects.toMatchObject({status:403});
+  const authenticatedTransport=promotionTransport(transport,vi.fn(),'workflow-read-fixture');
+  expect((await nativeReleaseApp(privateKey,authenticatedTransport)).appBotId).toBe(301115370);
+  await authenticatedTransport('https://example.invalid/users/splrad-steward%5Bbot%5D',{method:'GET'});
+  await authenticatedTransport('https://api.github.com/users/human-account',{method:'GET'});
+  expect(calls.filter(path=>path.endsWith('/access_tokens'))).toEqual([]);
+});
+it.each([
+  ['GET',502,2],['GET',503,2],['GET',504,2],['GET',403,1],['GET',429,1],['GET',404,1],
+  ['POST',502,1],['PATCH',502,1],['PUT',502,1],['DELETE',502,1]
+])('retries only a transient read, once (%s %s)',async(method,status,calls)=>{
+  const {promotionTransport}=await module();
+  const record=vi.fn();
+  const fetcher=vi.fn(async()=>Response.json({message:'fixture'}, {status}));
+  const response=await promotionTransport(fetcher,record)('https://api.github.com/repos/example/repository',{method});
+  expect(response.status).toBe(status);
+  expect(fetcher).toHaveBeenCalledTimes(calls);
+  expect(record.mock.calls).toEqual(calls===2?[[{kind:'read-retry',httpStatus:status}]]:[]);
+});
+it('recovers a transient journal read and respects an explicit server retry window',async()=>{
+  const {promotionTransport,promotionIO}=await module();
+  const {validatorJournal}=await import(pathToFileURL(resolve('scripts/validator-revalidation.mjs')).href);
+  const journal={schema:1,previous:'a'.repeat(40),validator:'b'.repeat(40),phase:'observe',pulls:[]};
+  const original=vi.fn().mockResolvedValue(Response.json({}, {status:503}));
+  const id='read-only-test-fixture';
+  await expect(validatorJournal(promotionIO(id,original)).load()).rejects.toThrow('JOURNAL_READ');
+  expect(original).toHaveBeenCalledTimes(1);
+  const fetcher=vi.fn().mockResolvedValueOnce(Response.json({}, {status:503}))
+    .mockResolvedValueOnce(Response.json({name:'STEWARD_VALIDATOR_REVALIDATION',value:JSON.stringify(journal)}));
+  const record=vi.fn();
+  await expect(validatorJournal(promotionIO(id,promotionTransport(fetcher,record))).load()).resolves.toEqual(journal);
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(record).toHaveBeenCalledWith({kind:'read-retry',httpStatus:503});
+  fetcher.mockReset();
+  fetcher.mockResolvedValue(Response.json({}, {status:503,headers:{'retry-after':'60'}}));
+  await expect(validatorJournal(promotionIO(id,promotionTransport(fetcher,record))).load()).rejects.toThrow('JOURNAL_READ');
+  expect(fetcher).toHaveBeenCalledTimes(1);
+});
 it('wires trusted native validation and serialized promotion without upstream artifacts or caches',async()=>{
   const {validationJobNames}=await module(),native=YAML.parse(await readFile('.github/workflows/pr-validation-native.yml','utf8'));
   expect(validationJobNames(native)).toEqual(['Validation scope','Product CI evidence','Governance scans','Dependency review','Documentation links','SPLRAD Validation']);expect(JSON.stringify(native)).not.toMatch(/PRIVATE_KEY|environment|secrets\./);
