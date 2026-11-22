@@ -3,8 +3,8 @@ import {readFile,writeFile,mkdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import semver from 'semver';
-import YAML from 'yaml';
 import {assert} from './private-dependency-policy.mjs';
+import {npmToolLock} from './npm-tool-lock.mjs';
 export async function publicBytes(url){
   const response=await fetch(url,{redirect:'error',signal:AbortSignal.timeout(30000)});
   assert(response.ok,'SUPPLIER_HTTP_'+response.status);const b=Buffer.from(await response.arrayBuffer());
@@ -96,14 +96,9 @@ export async function scanTools({workspace,entries,blob,input,output,documents,r
   const versions=miseVersions(documents,requiredWorkflow);
   for(const version of versions)await github(`/repos/jdx/mise/releases/tags/v${version}`,env.GH_TOKEN);
   const toolPath=`.mise/locks/npm/${p.version}`;assert(p.aube?.path===toolPath,'NPM_LOCK_PATH');
-  const aube=YAML.parse(blob(workspace,entries,toolPath+'/aube-lock.yaml').toString());
-  const pkg=JSON.parse(blob(workspace,entries,toolPath+'/package.json').toString());
-  assert(Object.keys(pkg).every(k=>['name','private','dependencies'].includes(k))&&pkg.name==='mise-npm-install'&&pkg.private===true&&JSON.stringify(pkg.dependencies)===JSON.stringify({npm:p.version}),'NPM_TOOL_MANIFEST');
-  assert(Object.keys(aube.packages??{}).join(',')===`npm@${p.version}`&&Object.keys(aube.importers??{}).join(',')==='.'&&aube.importers['.'].dependencies?.npm?.version===p.version,'NPM_TOOL_INVENTORY');
-  const integrity=aube.packages[`npm@${p.version}`].resolution?.integrity;
-  assert(/^sha512-[A-Za-z0-9+/=]+$/.test(integrity??''),'NPM_INTEGRITY');
   const meta=JSON.parse((await publicBytes(`https://registry.npmjs.org/npm/${p.version}`)).toString());
-  assert(meta.dist?.integrity===integrity&&meta.dist.tarball===`https://registry.npmjs.org/npm/-/npm-${p.version}.tgz`,'NPM_DISTRIBUTION');
+  const integrity=npmToolLock(blob(workspace,entries,toolPath+'/package.json').toString(),
+    blob(workspace,entries,toolPath+'/aube-lock.yaml').toString(),p.version,meta);
   const archive=await publicBytes(meta.dist.tarball);assert('sha512-'+createHash('sha512').update(archive).digest('base64')===integrity,'NPM_ARCHIVE_DIGEST');
   const dir=join(input,'npm-tool');await mkdir(dir);const archivePath=join(dir,'npm.tgz');await writeFile(archivePath,archive);
   const syftConfig=join(dir,'syft.yml');await writeFile(syftConfig,'check-for-app-update: false\n');
