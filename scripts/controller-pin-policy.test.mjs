@@ -31,7 +31,7 @@ function productRepository(t) {
     pagePin = pin, reusablePin = pin, pagesJobPin, pagesStepPin, extraCheckout, publishBytes,
     checkoutPath = 'controller', extraReusablePin, extraControllerWorkflowPin, localReference,
     pagesRuntime = true, extraControllerActionPin, extraRun, omitPagesCheckout, omitWorkflowCheckout,
-    version, omitLabelFrom,
+    nativePagesBuild = false, version, omitLabelFrom,
   } = {}) {
     for (const name of workflows) {
       const workflow = {jobs: {sample: {steps: [
@@ -54,7 +54,7 @@ function productRepository(t) {
         const checkout = workflow.jobs.sample.steps[0];
         const pagesSteps = {
           select: 'node controller/scripts/select-pages-source.mjs',
-          build: 'node controller/scripts/build-pages.mjs',
+          build: nativePagesBuild ? 'node product/scripts/build-pages.mjs' : 'node controller/scripts/build-pages.mjs',
           deploy: 'node controller/scripts/pages-runtime.mjs check',
         };
         for (const [job, run] of Object.entries(pagesSteps)) {
@@ -105,6 +105,8 @@ test('requires forward promotion and consistent Steward references when LayerSca
   const directFileMutation = pinFiles(promoted, {extraRun: {run: 'Remove-Item controller/build.cache'}});
   const readOnlyRun = pinFiles(promoted, {extraRun: {'working-directory': 'controller', run: 'git status --short'}});
   const missingPagesCheckout = pinFiles(promoted, {omitPagesCheckout: 'select'});
+  const nativeBuildWithoutController = pinFiles(promoted, {omitPagesCheckout: 'build', nativePagesBuild: true});
+  const controllerBuildWithoutCheckout = pinFiles(promoted, {omitPagesCheckout: 'build'});
   const reusableWithoutCheckout = pinFiles(promoted, {omitWorkflowCheckout: 'steward-release-publish'});
   const invalidMount = pinFiles(promoted, {checkoutPath: 'elsewhere'});
   const missingMount = pinFiles(promoted, {checkoutPath: null});
@@ -143,6 +145,8 @@ test('requires forward promotion and consistent Steward references when LayerSca
   assert.throws(() => validate(prior, directFileMutation), /VALIDATION_CONTROLLER_MOUNT_MUTATION/);
   assert.doesNotThrow(() => validate(prior, readOnlyRun));
   assert.throws(() => validate(prior, missingPagesCheckout), /VALIDATION_CONTROLLER_CHECKOUT_MISSING/);
+  assert.doesNotThrow(() => validate(prior, nativeBuildWithoutController));
+  assert.throws(() => validate(prior, controllerBuildWithoutCheckout), /VALIDATION_CONTROLLER_CHECKOUT_MISSING/);
   assert.throws(() => validate(prior, reusableWithoutCheckout), /VALIDATION_CONTROLLER_CHECKOUT_MISSING/);
   assert.throws(() => validate(prior, invalidMount), /VALIDATION_CONTROLLER_CHECKOUT_MOUNT/);
   assert.throws(() => validate(prior, missingMount), /VALIDATION_CONTROLLER_CHECKOUT_MOUNT/);

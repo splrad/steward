@@ -87,6 +87,11 @@ function readWorkflowPins(repo, revision, path, archiveReaders) {
       }
       const runDirectory = step['working-directory'] ?? job.defaults?.run?.['working-directory']
         ?? workflow.defaults?.run?.['working-directory'];
+      if (!jobController && typeof step.run === 'string' &&
+        (/\bnode(?:\.exe)?\s+['"]?(?:\.\/)?controller[\/\\]/i.test(step.run)
+          || (runDirectory === controllerPath && /\bnode(?:\.exe)?\s+['"]?(?:\.\/)?scripts[\/\\]/i.test(step.run)))) {
+        throw Error('VALIDATION_CONTROLLER_CHECKOUT_MISSING ' + path);
+      }
       if (directlyMutatesController(step.run, runDirectory)) {
         throw Error('VALIDATION_CONTROLLER_MOUNT_MUTATION ' + path);
       }
@@ -126,7 +131,7 @@ function readWorkflowPins(repo, revision, path, archiveReaders) {
   }
   if (!primaryCheckoutJobs.size) throw Error('VALIDATION_CONTROLLER_CHECKOUT_MISSING ' + path);
   if (path.endsWith('/pages.yml')) {
-    if (!['select', 'build', 'deploy'].every(job => primaryCheckoutJobs.has(job))) {
+    if (!['select', 'deploy'].every(job => primaryCheckoutJobs.has(job))) {
       throw Error('VALIDATION_CONTROLLER_CHECKOUT_MISSING ' + path);
     }
     if (!workflow.jobs?.select?.steps?.some(step => step.run === 'node controller/scripts/select-pages-source.mjs')
