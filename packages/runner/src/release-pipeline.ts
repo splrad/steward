@@ -1239,13 +1239,14 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
       legacyNotesTemplate=merged.legacyNotesTemplate;
     }
   }
-  const previousTemplate = historicalNotesTemplate(async (sha,path)=>{
-    try { return (await source(context.repository,sha,path)).bytes; }
-    catch(error) {
-      if(error instanceof EvidenceReadError&&error.status===404)return null;
+  const previousTemplate = historicalNotesTemplate(async (sha, path) => {
+    try {
+      return (await source(context.repository, sha, path)).bytes;
+    } catch (error) {
+      if (error instanceof EvidenceReadError && error.status === 404) return null;
       throw error;
     }
-  },controllerIo);
+  }, controllerIo);
   const templateBytes=legacyNotesTemplate?await legacyNotesTemplateBytes(legacyNotesTemplate,currentTemplate.bytes,previousTemplate):currentTemplate.bytes;
   if (delivery.buildWorkflow !== cycle.buildWorkflow) fail('frozen delivery workflow');
   const workflow = await source(context.repository, cycle.sourceSha, delivery.buildWorkflow ?? defaultBuildWorkflow);
