@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "repositoryId": 1296724484,
   "pullRequestNumber": 444,
-  "currentHead": "f8ed6d46ed1f0758ecfca93205a357222c01abc3",
+  "currentHead": "16a41ca9e0cae9385417bd844a65534e5eb96ee7",
   "configVersion": "quality-native-comments-v1",
   "heads": {
     "f8ed6d46ed1f0758ecfca93205a357222c01abc3": {
@@ -12,8 +12,52 @@
       "checkId": null,
       "externalId": "splrad-quality:1296724484:444:f8ed6d46ed1f0758ecfca93205a357222c01abc3",
       "observedAt": "2026-11-22T02:01:47.007Z"
+    },
+    "16a41ca9e0cae9385417bd844a65534e5eb96ee7": {
+      "sourceSetDigest": "71d653711b504c51a4eb62a8fcbec6655b22088fedbbe0b554ab8979178d9106",
+      "sources": [
+        {
+          "sourceCommentId": "review-comment:4656168072",
+          "sourceCommit": "5c90ca66069467363a0ec20a40f54d606ffe6833",
+          "sourceUrl": "https://github.com/splrad/steward/pull/444#discussion_r4656168072",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Whitespace contradicts operator precedence\n\nWhitespace around nested operators contradicts precedence.\n\n---\n\nThe best fix is to rewrite the condition with explicit spacing (and optionally grouping) so the operator structure is visually clear while preserving exact logic.</p>\n<p>In <code>packages/runner/src/release-pipeline.ts</code>, update the <code>catch</code> block condition at line 1245:</p>\n<ul>\n<li>From: <code>if(error instanceof EvidenceReadError&amp;&amp;error.status===404)return null;</code></li>\n<li>To: <code>if (error instanceof EvidenceReadError &amp;&amp; error.status === 404) return null;</code></li>\n</ul>\n<p>This keeps functionality identical and resolves the whitespace/precedence readability complaint. No imports, new methods, or definitions are required.",
+          "updatedAt": "2026-11-22T02:15:51Z"
+        }
+      ],
+      "keys": [
+        "6bcbaf39d7c2676f606851601e315e40effcf241d70e7d443b15cd893ebb3116"
+      ],
+      "checkId": null,
+      "externalId": "splrad-quality:1296724484:444:16a41ca9e0cae9385417bd844a65534e5eb96ee7",
+      "observedAt": "2026-11-22T02:47:55.317Z"
     }
   },
-  "entries": {},
+  "entries": {
+    "6bcbaf39d7c2676f606851601e315e40effcf241d70e7d443b15cd893ebb3116": {
+      "key": "6bcbaf39d7c2676f606851601e315e40effcf241d70e7d443b15cd893ebb3116",
+      "segment": {
+        "sourceCommentId": "review-comment:4656168072",
+        "sourceCommit": "5c90ca66069467363a0ec20a40f54d606ffe6833",
+        "sourceUrl": "https://github.com/splrad/steward/pull/444#discussion_r4656168072",
+        "severity": "原文未说明",
+        "bodyMarkdown": "## Whitespace contradicts operator precedence\n\nWhitespace around nested operators contradicts precedence.\n\n---\n\nThe best fix is to rewrite the condition with explicit spacing (and optionally grouping) so the operator structure is visually clear while preserving exact logic.</p>\n<p>In <code>packages/runner/src/release-pipeline.ts</code>, update the <code>catch</code> block condition at line 1245:</p>\n<ul>\n<li>From: <code>if(error instanceof EvidenceReadError&amp;&amp;error.status===404)return null;</code></li>\n<li>To: <code>if (error instanceof EvidenceReadError &amp;&amp; error.status === 404) return null;</code></li>\n</ul>\n<p>This keeps functionality identical and resolves the whitespace/precedence readability complaint. No imports, new methods, or definitions are required.",
+        "segmentIndex": 0,
+        "originalIdentifiers": [
+          "<code>packages/runner/src/release-pipeline.ts</code>",
+          "<code>catch</code>",
+          "<code>if(error instanceof EvidenceReadError&amp;&amp;error.status===404)return null;</code>",
+          "<code>if (error instanceof EvidenceReadError &amp;&amp; error.status === 404) return null;</code>",
+          "packages/runner/src/release-pipeline.ts",
+          "whitespace/precedence"
+        ]
+      },
+      "configVersion": "quality-native-comments-v1",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    }
+  },
   "cursor": 0
 }
