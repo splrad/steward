@@ -24,7 +24,7 @@ test('registered native entry separates Pages writes from administrator policy r
     event:'push',head_branch:'main',head_sha:sha,workflow_id:8,display_title:'Pages default-branch '+sha+' 12',
     created_at:new Date(Date.now()-60000).toISOString(),updated_at:new Date(Date.now()-10000).toISOString()};
   const env={GITHUB_EVENT_NAME:'workflow_dispatch',GITHUB_RUN_ID:'99',GITHUB_RUN_ATTEMPT:'1',GITHUB_REF:'refs/heads/main',
-    GITHUB_REPOSITORY:'splrad/steward',GITHUB_REPOSITORY_ID:String(central),STEWARD_CONTROLLER_SHA:pin,STEWARD_EXPECTED_PAUSED_RELEASE:'311600220',
+    GITHUB_REPOSITORY:'splrad/steward',GITHUB_REPOSITORY_ID:String(central),STEWARD_CONTROLLER_SHA:pin,
     BOUNDED_MODE:'pages',PAGES_POLICY_SHA:pin,PAGES_REPOSITORY_ID:String(site.repositoryId),PAGES_WORKFLOW_ID:'8',PAGES_RUN_ID:'12',PAGES_ATTEMPT:'1',
     STEWARD_CENTRAL_TOKEN:'offline-central',STEWARD_APP_PRIVATE_KEY:generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs8',format:'pem'}).toString()};
   const actions=[],tokenRequests=[];let ruleProblem='missing',revoked=0;
@@ -78,7 +78,6 @@ test('registered native entry separates Pages writes from administrator policy r
         if(k==='/git/ref/heads/main')return json({object:{sha:pin}});
         if(k==='/actions/runs/99/attempts/1')return json({id:99,run_attempt:1,path:receiver,event:'workflow_dispatch',head_branch:'main',
           head_sha:pin,repository:{id:central},head_repository:{id:central},actor:botFact,triggering_actor:botFact,workflow_id:7});
-        if(k==='/actions/workflows/311600220')return json({id:311600220,path:'.github/workflows/release.yml',state:'disabled_manually'});
         if(k==='/actions/workflows/pages-maintenance-event.yml')return json({id:7,path:receiver,state:'active'});
       }
       if(p==='/graphql'){

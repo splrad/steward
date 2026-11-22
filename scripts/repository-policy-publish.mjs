@@ -21,11 +21,15 @@ export async function projectMergedRepositoryPolicy(app, repository, source, obs
   if(!selected&&!ports.revokeMissing&&!await ports.hasResidualProjection?.())return;
   if(selected?.adoption==='central') {
     const proposal=await observe();
-    const [conflict]=configurationConflicts(selected,proposal);
+    // The merged record supplies the existing admission decision; compact delivery supplies the live unit IDs.
+    const [conflict]=configurationConflicts(selected,proposal,selected.release);
     check(!conflict,conflict);
     if(selected.site) {
       check(await readSource(selected.site.workflow),'PAGES');
-      if(selected.site.source==='release')check(proposal.policy.release?.units.some(unit=>unit.id===selected.site.unit),'PAGES');
+      if(selected.site.source==='release') {
+        const unit=selected.site.unit;
+        check(proposal.nativeReleaseUnits?.includes(unit)??proposal.policy.release?.units.some(entry=>entry.id===unit),'PAGES');
+      }
     }
   }
   const content=projectionBytes(selected??{repositoryId:repository.id,adoption:'legacy',productCi:[],site:null});

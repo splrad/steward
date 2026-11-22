@@ -5,6 +5,7 @@ import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import { selectReleaseContributors, type ReleaseContributor, type RepositoryAuthor } from './release-candidate.js';
 import { assertDeliveryAssetName, assertDeliveryPath } from './delivery-config.js';
+import { assertSelectedReleaseDownloads, assertVersionAcquisitionLinks, isConditionalTemplate, parseConditionalNotes, renderConditionalNotes } from './conditional-release-notes.js';
 
 type NotesField = typeof headingFields[keyof typeof headingFields];
 const usesCompactLayout = (template: string) => template.includes('{{{upgradeNotices}}}');
@@ -26,7 +27,7 @@ function filled(value: unknown): asserts value is string {
 }
 
 /** Keep the committed Markdown bytes between unique level-two headings. */
-export function parseSupplementalNotes(markdown: string, template = ''): Record<NotesField, string> {
+export function parseLegacyNotes(markdown: string, template = ''): Record<NotesField, string> {
   const nodes = unified().use(remarkParse).parse(markdown).children;
   const result: Partial<Record<NotesField, string>> = {};
   const headings = nodes.filter(node => node.type === 'heading' && node.depth === 2);
@@ -42,6 +43,10 @@ export function parseSupplementalNotes(markdown: string, template = ''): Record<
   if (usesCompactLayout(template)) for (const key of optionalNotes) result[key] ??= '';
   if (Object.keys(result).length !== Object.keys(headingFields).length) fail('missing heading');
   return result as Record<NotesField, string>;
+}
+
+export function parseSupplementalNotes(markdown: string, template = '') {
+  return isConditionalTemplate(template) ? parseConditionalNotes(markdown) : parseLegacyNotes(markdown, template);
 }
 
 export interface ReleaseTemplateData extends Record<NotesField, string> {
@@ -94,6 +99,26 @@ export function renderCommittedReleaseNotes(template: string, data: ReleaseTempl
   if (!/^[^\r\n<>\[\]{}*`]+$/.test(data.productName)) fail('product name must be plain text');
   if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$/.test(data.version)) fail('invalid version');
   if (![data.sourceSha, data.controllerSha].every(sha => /^[a-f0-9]{40}$/.test(sha))) fail('invalid commit identity');
+  validateSourceLink(data);
+  if (!Array.isArray(data.channels)) fail('invalid channels');
+  for (const channel of data.channels) {
+    if (Object.keys(channel).sort().join(',') !== 'location,name,status' || channel.status !== '待分发') fail('invalid channel status');
+    filled(channel.name); filled(channel.location);
+  }
+  if (!Array.isArray(data.contributors) || typeof data.hasContributors !== 'boolean'
+    || data.hasContributors !== (data.contributors.length > 0)) fail('invalid contributors');
+  for (const person of data.contributors) {
+    if (Object.keys(person).sort().join(',') !== 'alt,avatarUrl,id,login,profileUrl' || !Number.isSafeInteger(person.id) || person.id <= 0
+      || !/^[A-Za-z0-9-]+$/.test(person.login) || person.alt !== person.login) fail('invalid contributor');
+    for (const key of ['profileUrl', 'avatarUrl', 'alt', 'login'] as const) filled(person[key]);
+    const profile = new URL(person.profileUrl), avatar = new URL(person.avatarUrl);
+    if (profile.href !== `https://github.com/${person.login}` || avatar.protocol !== 'https:' || avatar.hostname !== 'avatars.githubusercontent.com'
+      || avatar.username || avatar.password || avatar.port || avatar.hash) fail('invalid contributor URL');
+  }
+  return renderLegacyTemplate(template, data, compact);
+}
+
+function validateSourceLink(data: Pick<ReleaseTemplateData, 'commitUrl' | 'sourceUrl' | 'sourceLinkLabel' | 'sourceSha'>) {
   const commit = new URL(data.commitUrl), source = new URL(data.sourceUrl);
   const prefix = commit.pathname.replace(/\/commit\/[a-f0-9]{40}$/, '');
   if (!/^\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(prefix) || prefix.split('/').some(part => part === '.' || part === '..')
@@ -110,21 +135,9 @@ export function renderCommittedReleaseNotes(template: string, data: ReleaseTempl
     const range = decodeURIComponent(source.pathname.slice(`${prefix}/compare/`.length)).split('...');
     if (range.length !== 2 || !range[0] || /[\s\0?#]/.test(range[0]) || range[1] !== data.sourceSha) fail('comparison boundary');
   } else fail('source link label');
-  if (!Array.isArray(data.channels)) fail('invalid channels');
-  for (const channel of data.channels) {
-    if (Object.keys(channel).sort().join(',') !== 'location,name,status' || channel.status !== '待分发') fail('invalid channel status');
-    filled(channel.name); filled(channel.location);
-  }
-  if (!Array.isArray(data.contributors) || typeof data.hasContributors !== 'boolean'
-    || data.hasContributors !== (data.contributors.length > 0)) fail('invalid contributors');
-  for (const person of data.contributors) {
-    if (Object.keys(person).sort().join(',') !== 'alt,avatarUrl,id,login,profileUrl' || !Number.isSafeInteger(person.id) || person.id <= 0
-      || !/^[A-Za-z0-9-]+$/.test(person.login) || person.alt !== person.login) fail('invalid contributor');
-    for (const key of ['profileUrl', 'avatarUrl', 'alt', 'login'] as const) filled(person[key]);
-    const profile = new URL(person.profileUrl), avatar = new URL(person.avatarUrl);
-    if (profile.href !== `https://github.com/${person.login}` || avatar.protocol !== 'https:' || avatar.hostname !== 'avatars.githubusercontent.com'
-      || avatar.username || avatar.password || avatar.port || avatar.hash) fail('invalid contributor URL');
-  }
+}
+
+function renderLegacyTemplate(template: string, data: ReleaseTemplateData, compact: boolean) {
   const used = new Set<string>();
   function inspect(tokens: ReturnType<typeof Mustache.parse>, context = 'root') {
     for (const token of tokens) {
@@ -184,19 +197,62 @@ export function nestReleaseMarkdown(markdown: string, minimumDepth = 4): string 
 export interface FrozenReleaseNotes {
   repository: string; unitId: string; displayName?: string | undefined; version: string; tag: string; sourceSha: string; controllerSha: string;
   notes: string; sourceLinkLabel: string; sourceUrl: string; commitUrl: string; contributors: ReleaseContributor[]; repositoryAuthors: RepositoryAuthor[];
+  confirmedHumans?: RepositoryAuthor[];
+  selectedDownloads?: ReadonlySet<string>;
   githubDisabled?: boolean;
   assets: { id: string; name: string; build: string; description?: string | undefined }[];
   channels: { id: string; location: string }[];
 }
-/** Four user-facing sections, rendered only from reviewed source and frozen native identities. */
+
+type ReleaseDownloadInput = Pick<FrozenReleaseNotes,'assets'|'repository'|'tag'>;
+function releaseDownloadMarkdown(template: string, data: ReleaseDownloadInput): string {
+  const legacy = template.includes('{{controllerSha}}');
+  return [ ...(legacy ? ['| 用途（产物 ID，详见安装说明） | 系统/架构（构建目标） | 文件 |', '| --- | --- | --- |'] : []), ...data.assets.map(asset => {
+    if (asset.description !== undefined && (!asset.description.trim() || /[\p{C}\p{Zl}\p{Zp}]/u.test(asset.description))) fail('asset description');
+    assertDeliveryAssetName(asset.name);
+    if (![asset.id, asset.build].every(value => /^[a-z][a-z0-9-]*$/.test(value))) fail('download source');
+    const link = `[${asset.name}](https://github.com/${data.repository}/releases/download/${encodeURIComponent(data.tag)}/${encodeURIComponent(asset.name)})`;
+    const description = asset.description?.replace(/[\\`*_{}\[\]()<>#!|~&]/g, char => `&#${char.codePointAt(0)};`);
+    return legacy ? `| ${asset.id} | ${asset.build} | ${link} |` : `- ${link}${description ? ' — ' + description : ''}`;
+  })].join('\n');
+}
+
+/** Preserve the reviewed prose and change only the original renderer's download block. */
+export function projectFrozenReleaseDownloads(template: string, notes: string, native: ReleaseDownloadInput, selected: ReadonlySet<string>): string {
+  if (isConditionalTemplate(template)) {
+    assertSelectedReleaseDownloads(notes, native.repository, native.tag, selected);
+    return notes;
+  }
+  const assets=native.assets.filter(asset=>selected.has(asset.name));
+  if(assets.length===native.assets.length)return notes;
+  if(!assets.length)fail('empty public download set');
+  const original='\n'+releaseDownloadMarkdown(template,native)+'\n';
+  const framed='\n'+notes+'\n', start=framed.indexOf(original);
+  if(start<0 || framed.indexOf(original,start+1)>=0)fail('frozen download block');
+  const replacement='\n'+releaseDownloadMarkdown(template,{...native,assets})+'\n';
+  return (framed.slice(0,start)+replacement+framed.slice(start+original.length)).slice(1,-1);
+}
+
+/** Render only from reviewed source and frozen native identities. */
 export function renderFrozenReleaseNotes(template: string, data: FrozenReleaseNotes): string {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(data.repository) || data.repository.split('/').some(part => part === '.' || part === '..')
     || ![data.sourceSha, data.controllerSha].every(sha => /^[a-f0-9]{40}$/.test(sha)) || !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$/.test(data.version)) fail('frozen identity');
   if (!/^[a-z][a-z0-9-]*$/.test(data.unitId) || !data.tag || /[\s\0]/.test(data.tag)) fail('unit or tag');
-  const sections = parseSupplementalNotes(data.notes, template);
-  const contributors = selectReleaseContributors(data.contributors.map(person => ({ ...person, type: 'User' })), data.repositoryAuthors).contributors;
+  const conditional = isConditionalTemplate(template);
+  const contributors = selectReleaseContributors(data.contributors.map(person => ({ ...person, type: 'User' })),
+    data.repositoryAuthors, conditional ? data.confirmedHumans ?? [] : undefined).contributors;
   if (JSON.stringify(contributors) !== JSON.stringify(data.contributors)) fail('frozen contributors');
   if (data.commitUrl !== `https://github.com/${data.repository}/commit/${data.sourceSha}`) fail('commit URL');
+  if (conditional) {
+    validateSourceLink(data);
+    const notes = parseConditionalNotes(data.notes);
+    const selected = data.selectedDownloads ?? new Set(data.assets.map(asset => asset.name));
+    assertVersionAcquisitionLinks(notes, data.repository, data.tag, data.sourceSha, [...selected]);
+    const body = renderConditionalNotes(template, notes, { label: data.sourceLinkLabel, url: data.sourceUrl }, contributors);
+    assertSelectedReleaseDownloads(body, data.repository, data.tag, selected);
+    return body;
+  }
+  const sections = parseLegacyNotes(data.notes, template);
   const channels = data.channels.map(channel => {
     if (!/^[a-z][a-z0-9-]*$/.test(channel.id) || !channel.location.trim() || /[\r\n\0]/.test(channel.location)) fail('channel facts');
     return { name: channel.id, status: '待分发' as const, location: `目标 <code>${Mustache.escape(channel.location)}</code>。` };
@@ -204,15 +260,7 @@ export function renderFrozenReleaseNotes(template: string, data: FrozenReleaseNo
   if ((!data.assets.length && !data.githubDisabled) || new Set(data.assets.map(asset => asset.id)).size !== data.assets.length
     || new Set(data.assets.map(asset => asset.name.toLowerCase())).size !== data.assets.length) fail('download set');
   const legacy = template.includes('{{controllerSha}}');
-  const downloads = !data.assets.length ? (usesCompactLayout(template) ? '' : '本次构建未配置 GitHub 下载项。') : [ ...(legacy ? ['| 用途（产物 ID，详见安装说明） | 系统/架构（构建目标） | 文件 |', '| --- | --- | --- |'] : []), ...data.assets.map(asset => {
-    if (asset.description !== undefined && (!asset.description.trim() || /[\p{C}\p{Zl}\p{Zp}]/u.test(asset.description))) fail('asset description');
-
-    assertDeliveryAssetName(asset.name);
-    if (![asset.id, asset.build].every(value => /^[a-z][a-z0-9-]*$/.test(value))) fail('download source');
-    const link = `[${asset.name}](https://github.com/${data.repository}/releases/download/${encodeURIComponent(data.tag)}/${encodeURIComponent(asset.name)})`;
-    const description = asset.description?.replace(/[\\`*_{}\[\]()<>#!|~&]/g, char => `&#${char.codePointAt(0)};`);
-    return legacy ? `| ${asset.id} | ${asset.build} | ${link} |` : `- ${link}${description ? ' — ' + description : ''}`;
-  })].join('\n');
+  const downloads = !data.assets.length ? (usesCompactLayout(template) ? '' : '本次构建未配置 GitHub 下载项。') : releaseDownloadMarkdown(template,data);
   const values = { ...Object.fromEntries(Object.entries(sections).map(([key, value]) => [key, nestReleaseMarkdown(value, key === 'userChanges' ? 3 : 4)])),
     productName: data.displayName ?? (legacy ? data.unitId : data.repository.split('/')[1]!), version: data.version, downloads, sourceLinkLabel: data.sourceLinkLabel, sourceUrl: data.sourceUrl, commitUrl: data.commitUrl,
     sourceSha: data.sourceSha, controllerSha: data.controllerSha, channels, hasContributors: contributors.length > 0, contributors } as ReleaseTemplateData;
