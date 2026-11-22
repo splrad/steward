@@ -79,6 +79,28 @@ def changed_paths(base, head):
     return set(git("diff", "--name-only", "--no-renames", "-z", base, head).decode().split("\0")) - {""}
 
 
+def title_lock_update(before, after, old_pin, new_pin):
+    action = b"amannn/action-semantic-pull-request@"
+
+    def entries(pin):
+        sha, tag = pin
+        reference = action + sha
+        workflow = b"    '%s':\n        - '%s'\n" % (ROOT_TITLE.encode(), reference)
+        dependency = b"    '%s':\n        ref: '%s'\n        commit: 'sha1-%s'\n" % (reference, tag, sha)
+        return workflow, dependency
+
+    # A shared dependency or a change in the generated lock format takes the full path.
+    workflows, separator, dependencies = before.partition(b"\ndependencies:\n")
+    old_workflow, old_dependency = entries(old_pin)
+    new_workflow, new_dependency = entries(new_pin)
+    old_ref, new_ref = action + old_pin[0], action + new_pin[0]
+    if (not separator or workflows.count(old_workflow) != 1 or dependencies.count(old_dependency) != 1
+            or before.count(old_ref) != 2 or (new_ref != old_ref and new_ref in before)):
+        return False
+    return (workflows.replace(old_workflow, new_workflow) + separator
+            + dependencies.replace(old_dependency, new_dependency)) == after
+
+
 def classify(base, head):
     if os.environ.get("GITHUB_EVENT_NAME") == "push":
         # Only a single-parent default-branch update can reuse a narrow profile.
@@ -107,12 +129,10 @@ def classify(base, head):
     old_pin, new_pin = PINS.findall(old), PINS.findall(new)
     if len(old_pin) != 1 or len(new_pin) != 1 or PINS.sub(b"PIN", old) != PINS.sub(b"PIN", new):
         return "full"
-    if ACTION_LOCK in paths:
-        old_ref = b"amannn/action-semantic-pull-request@" + old_pin[0][0]
-        new_ref = b"amannn/action-semantic-pull-request@" + new_pin[0][0]
-        lock = blob(base, ACTION_LOCK)
-        if lock.count(old_ref) != 1 or lock.replace(old_ref, new_ref) != blob(head, ACTION_LOCK):
-            return "full"
+    if ACTION_LOCK in paths and not title_lock_update(
+        blob(base, ACTION_LOCK), blob(head, ACTION_LOCK), old_pin[0], new_pin[0]
+    ):
+        return "full"
     return "title"
 
 

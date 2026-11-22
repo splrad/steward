@@ -64,6 +64,38 @@ class LockContractTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "field set"):
             list(check(tomllib.loads(base.decode()), tomllib.loads(unexpected.decode())))
 
+    def test_root_title_lock_updates_both_generated_entries(self):
+        old_pin = b"a" * 40, b"v1.2.3"
+        new_pin = b"b" * 40, b"v1.2.4"
+
+        def lock(sha, tag):
+            reference = b"amannn/action-semantic-pull-request@" + sha
+            return (
+                b"version: 'v0.0.3'\nworkflows:\n"
+                b"    '.github/workflows/pr-title.yml':\n        - '%s'\n"
+                b"    '.github/workflows/other.yml':\n        - 'actions/checkout@pinned'\n"
+                b"dependencies:\n    '%s':\n        ref: '%s'\n        commit: 'sha1-%s'\n"
+                b"        owner_id: 4038316\n        repo_id: 220418983\n"
+            ) % (reference, reference, tag, sha)
+
+        matches = candidate["rules"].title_lock_update
+        before, after = lock(*old_pin), lock(*new_pin)
+        self.assertTrue(matches(before, after, old_pin, new_pin))
+        for altered in (
+            after.replace(new_pin[0], old_pin[0], 1),
+            after.replace(b"commit: 'sha1-" + new_pin[0], b"commit: 'sha1-" + old_pin[0]),
+            after.replace(new_pin[1], old_pin[1]),
+            after.replace(b"owner_id: 4038316", b"owner_id: 10"),
+            after.replace(b"actions/checkout@pinned", b"actions/checkout@different"),
+        ):
+            with self.subTest(altered=altered):
+                self.assertFalse(matches(before, altered, old_pin, new_pin))
+
+        def shared(lock_bytes, sha):
+            return lock_bytes.replace(b"actions/checkout@pinned", b"amannn/action-semantic-pull-request@" + sha)
+
+        self.assertFalse(matches(shared(before, old_pin[0]), shared(after, new_pin[0]), old_pin, new_pin))
+
     def test_docs_and_push_parent(self):
         with tempfile.TemporaryDirectory() as directory, chdir(directory):
             repo = Path("target")
