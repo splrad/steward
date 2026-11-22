@@ -15,7 +15,7 @@ import { setLogger } from 'release-please/build/src/util/logger.js';
 import { releaseProtectionFixture } from './fixtures/release-protection.js';
 import { createHash } from 'node:crypto';
 import { CONTENT_OUTPUT_SCHEMA } from '../../core/src/release-content.js';
-import { pipelineNotes } from '../src/release-pipeline.js';
+import { pipelineExpectedNotes, pipelineNotes } from '../src/release-pipeline.js';
 import type { BuildPipelineRecord } from '../src/release-pipeline-record.js';
 
 // This scenario includes many durable state commits and five independent wakes, including merged-source handoff.
@@ -48,13 +48,14 @@ it('projects legacy web-flow cache at merge while preserving original actors and
 const { readReleaseRecords,writeReleaseRecords,releaseCommand } = await import(pathToFileURL(resolve('scripts/release-record.mjs')).href);
 const roots: string[] = [];
 afterEach(async () => { vi.unstubAllGlobals();for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
-it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-recovery', 'pending-recovery', 'legacy-pending-cancel',
+it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-recovery', 'pending-recovery', 'legacy-pending-cancel', 'retained-legacy-manual',
   'compact', 'compact-registered', 'conditional-organization', 'conditional-compact', 'conditional-tampered'])('runs the native candidate adapter through protected state, real Git, upstream generation, fake SDK and same-PR editing: %s', async pinCase => {
   const root = await mkdtemp(join(tmpdir(), 'candidate-native-test-')); roots.push(root); registerOfflineFixtureRoot(root);
   const directory = join(root, 'source'), remote = join(root, 'remote.git'); await mkdir(directory);
   const env = isolatedBuildEnvironment(process.env, root), identity = { name: 'Fixture', email: 'fixture@example.invalid' };
   const git = async (...args: string[]) => (await promisify(execFile)('git', args, { cwd: directory, env, encoding: 'utf8', windowsHide: true })).stdout.trim();
   const conditional = pinCase.startsWith('conditional-');
+  const retainedManual = pinCase==='retained-legacy-manual';
   await git('init', '--initial-branch=main'); await git('config', 'user.name', identity.name); await git('config', 'user.email', identity.email);
   await mkdir(join(directory, '.github'));
   await mkdir(join(directory,'.github/workflows'));
@@ -67,6 +68,8 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   for(const path of (compact?[buildWorkflow]:[buildWorkflow,'.github/workflows/steward-release-channels.yml','.github/release-template.md.mustache']))
     if(pinCase!=='old-source'||!path.endsWith('release-template.md.mustache'))
     await writeFile(join(directory,path),'# offline adopted source\n');
+  const legacyTemplate=retainedManual?await readFile('packages/core/test/fixtures/release-template-compact.mustache'):undefined;
+  if(legacyTemplate)await writeFile(join(directory,'.github/release-template.md.mustache'),legacyTemplate);
   const sourceControllerSha = (pinCase === 'new-source' ? 'f' : 'e').repeat(40);
   const publisherMatrix=explicitWorkflow?'    strategy:\n      matrix:\n        include:\n          - {unit: app, target: fixture}\n':'';
   if (pinCase !== 'missing-pin') await writeFile(join(directory,buildWorkflow),
@@ -80,7 +83,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     ]}}}));
   const config = { 'separate-pull-requests': false, 'include-component-in-tag': false, packages: { '.': { 'release-type': 'simple', 'version-file': 'VERSION' } } };
   const repositoryAuthors=[{id:7,evidence:'offline explicit authorship record'}];
-  const registeredChannels=explicitWorkflow?[{id:'github-release',required:true,location:'github',artifactIds:['app'],metadata:[]}]:[];
+  const registeredChannels=explicitWorkflow||retainedManual?[{id:'github-release',required:true,location:'github',artifactIds:['app'],metadata:[]}]:[];
   const delivery=compact?{schemaVersion:3,...(!conditional?{repositoryAuthors}:{}),...(compactRegistered?{notes:{'.':notesPath}}:{})}:{schemaVersion:explicitWorkflow?2:1,buildWorkflow:explicitWorkflow,
     repositoryAuthors,units:[{id:'app',path:'.',notesPath:'.release-notes/app.md',
       assets:[{id:'app',name:'app-${version}.zip',mediaType:'application/zip'}],channels:registeredChannels}]};
@@ -363,7 +366,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   reviewedNotes=reviewedNotes.replace(/\n/g, '\r\n') + '\r\n';
   await writeFile(join(directory,notesPath),reviewedNotes);
   await git('add','--',notesPath);await git('commit','--signoff','-m','docs: review candidate notes');
-  const humanHead = await git('rev-parse', 'HEAD'); await git('push', '--porcelain', remote, 'HEAD:refs/heads/steward/release-candidate');
+  let humanHead = await git('rev-parse', 'HEAD'); await git('push', '--porcelain', remote, 'HEAD:refs/heads/steward/release-candidate');
   pr.head.sha = humanHead; await git('switch', 'main');
   pr.labels = []; pr.state = 'closed';
   expect(await nativeReleaseCandidate({ ...request, writeDirectory: join(root, 'closed-writes') }, options)).toMatchObject({ reason: 'CLOSED_PR' });
@@ -375,15 +378,26 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   expect(pr.title).toBe('人工修改标题'); expect(pr.body).toBe('人工修改正文');
   expect(requests.filter(r => r.method === 'POST' && r.path.endsWith('/pulls'))).toHaveLength(1);
   expect(requests.filter(r => r.method === 'PATCH').every(r => r.path.endsWith('/issues/comments/1'))).toBe(true);
-  if (conditional) {
+  if(retainedManual) {
+    const templatePath='.github/release-template.md.mustache';
+    await writeFile(join(directory,templatePath),await readFile('templates/repository/'+templatePath));
+    await git('add','--',templatePath);await git('commit','--signoff','-m','chore: adopt organization notes template');
+    await git('push','--porcelain',remote,'HEAD:refs/heads/main');
+    await git('switch','reviewed-notes');await git('merge','--no-ff','--no-edit','main');
+    humanHead=await git('rev-parse','HEAD');pr.head.sha=humanHead;
+    await git('push','--porcelain',remote,'HEAD:refs/heads/steward/release-candidate');await git('switch','main');
+    expect(await git('show',humanHead+':'+notesPath)).toBe(reviewedNotes.trim());
+  }
+  if (conditional || retainedManual) {
     const producer={repositoryId:1296724484,runId:42,attempt:1,controllerSha:options.controllerSha,requestKey:'f'.repeat(64)};
     expect(await nativeReleaseCandidate({...request,writeDirectory:join(root,'manual-writes')},{...options,manualCandidateProducer:producer}))
       .toMatchObject({status:'READY',reason:'MANUAL_VALIDATED',head:humanHead});
     await refresh();
     const updated=await readReleaseRecords({directory,targetRef:'steward/release-state',repositoryId:1});
     const archived=await decodeCandidateDocument(updated.domainRecords.filter((entry:any)=>entry.value.documentKind==='session').map((entry:any)=>entry.value));
-    expect(archived.manualValidation.projection.preview).toContain('人工审核确认的启动错误');
-    expect(archived.manualValidation.projection.preview).toContain('width="48"');
+    expect(archived.manualValidation.projection.preview).toContain(retainedManual?'人工完成稿已核验':'人工审核确认的启动错误');
+    expect(archived.manualValidation.schemaVersion).toBe(retainedManual?2:3);
+    if(conditional)expect(archived.manualValidation.projection.preview).toContain('width="48"');
     expect(await head('steward/release-candidate')).toBe(humanHead);
   }
   await refresh();
@@ -493,6 +507,27 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   if (conditional) expect(archive.session.identity).toMatchObject({noteTemplate:expect.stringContaining('{{#hasContributors}}'),
     contributors:{contributors:[7,42,44].map(id=>expect.objectContaining({id}))},units:[{notesPath}]});
   if (compactRegistered && !conditional) expect(archive.session.identity.units).toMatchObject([{notesPath}]);
+  if (legacyTemplate) {
+    expect(archive.legacyNotesTemplate).toEqual({sourceSha:B,sha256:createHash('sha256').update(legacyTemplate).digest('hex')});
+    const {tag,version}=merged.cycles[0].value.units[0];
+    const build: BuildPipelineRecord = { schemaVersion: 1, kind: 'build', repositoryId: request.repositoryId,
+      fullName: request.repository, sourceSha: S, controllerSha: sourceControllerSha,
+      delivery: { schemaVersion: 1, units: delivery.units!, repositoryAuthors },
+      legacyNotesTemplateSourceSha:archive.legacyNotesTemplate.sourceSha,
+      cycleId: merged.cycles[0].value.id, requestKey: 'a'.repeat(64), buildRef: 'refs/heads/steward/build/fixture',
+      runId: 10, runAttempt: 1, toolLocks: {}, deliverySha256: 'b'.repeat(64), templateSha256:archive.legacyNotesTemplate.sha256,
+      units: [{id:'app',tag,version,packageVersion:version,builds:[],assets:[{id:'app',name:`app-${version}.zip`,build:'fixture'}],contributors:[]}] };
+    const frozen=await pipelineNotes(build,'app',directory);
+    expect(frozen).toContain('人工审核说明。');
+    expect(frozen).toContain(`/releases/download/${tag}/app-${version}.zip`);
+    expect(frozen).not.toContain('## 版本记录');
+    expect(await pipelineExpectedNotes(build,'app',directory,directory)).toBe(frozen);
+    const altered=JSON.parse(chunks[0].content);
+    altered.legacyNotesTemplate.sourceSha=S;
+    const content=JSON.stringify(altered);
+    await expect(decodeCandidateDocument([{...chunks[0],content,documentDigest:createHash('sha256').update(content).digest('hex')}]))
+      .rejects.toThrow('MERGED_CANDIDATE_LEGACY_TEMPLATE');
+  }
   if (conditional && !compact) {
     const { tag, version } = merged.cycles[0].value.units[0];
     const contributors = archive.session.identity.units[0].contributors.contributors;
@@ -532,6 +567,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   expect(requests.slice(readsBeforeMerge).some(r => r.method !== 'GET' || /\/(?:releases|tags)$/.test(r.path))).toBe(false);
 
   expect(merged.repository.candidate).toBeNull();
+  if(retainedManual)return;
   // A subsequent normal candidate is allowed while the previous cycle still exists.
   await writeFile(join(directory,'code.txt'),'修正后继版本。\n');await git('add','code.txt');
   await git('commit','--signoff','-m','fix: next release');await git('push','--porcelain',remote,'HEAD:refs/heads/main');

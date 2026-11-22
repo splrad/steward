@@ -110,6 +110,7 @@ export interface BuildPipelineRecord {
   runId: number; runAttempt: number; toolLocks: Record<string, string>;
   delivery: DeliveryConfig; deliverySha256: string; templateSha256: string;
   noteFormat?: 'conditional';
+  legacyNotesTemplateSourceSha?: string;
   units: (Omit<PipelineSource['unit'], 'deliverySha256' | 'templateSha256'> & {
     contributors: ReleaseContributor[];
   })[];
@@ -136,7 +137,9 @@ const buildFields = {
 };
 const releases = { type: 'array', minItems: 1, items: exactObject({ unitId: key, releaseId: id, manifestDigest: digest }) };
 const recordAjv = new Ajv2020({ strict: false }).addSchema(deliverySchema);
-const buildRecordSchema = { ...exactObject(buildFields), properties: { ...buildFields, noteFormat: { const: 'conditional' } } };
+const buildRecordSchema = { ...exactObject(buildFields), properties: {
+  ...buildFields, noteFormat: { const: 'conditional' }, legacyNotesTemplateSourceSha: sha,
+} };
 const validateRecord = recordAjv.compile({ oneOf: [buildRecordSchema,
   exactObject({ schemaVersion: { const: 1 }, kind: { const: 'publish' }, build: buildRecordSchema, releases }),
   exactObject({ schemaVersion: { const: 1 }, kind: { const: 'channel' }, repositoryId: id, fullName: properties.fullName,
@@ -151,6 +154,8 @@ export function parsePipelineRecord(input: unknown): PipelineRecord {
   if (!identity.cycleId.endsWith('-' + identity.sourceSha) || identity.fullName.split('/').some(part => part === '.' || part === '..'))
     throw new Error('RELEASE_RECORD: source identity');
   if (build) {
+    if (build.legacyNotesTemplateSourceSha && (build.noteFormat || build.legacyNotesTemplateSourceSha === build.sourceSha))
+      throw new Error('RELEASE_RECORD: legacy notes template source');
     const { repositoryAuthors } = parseDeliveryConfig(build.delivery);
     build.delivery.repositoryAuthors = repositoryAuthors;
     if (build.buildRef !== `refs/heads/steward/build/${build.cycleId}`

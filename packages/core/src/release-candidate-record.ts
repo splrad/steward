@@ -11,6 +11,10 @@ export interface CandidateArchiveChunk {
   documentKind: 'session' | 'content' | 'cache' | 'generated' | 'adoption' | 'native-input' | 'content-result' | 'content-payload' | 'content-evidence' | 'cache-entry' | 'merged-candidate' | 'repair-decision';
   documentDigest: string; index: number; count: number; content: string;
 }
+export interface LegacyNotesTemplate {
+  sourceSha: string;
+  sha256: string;
+}
 const exact = (value: any, keys: string[]) => { if (!value || typeof value !== 'object' || Array.isArray(value)
   || Object.keys(value).sort().join(',') !== [...keys].sort().join(',')) throw new Error('CANDIDATE_RECORD_FIELDS'); };
 /** Closed UTF-8 archive fragments. Complete typed documents are verified after digest-bound assembly. */
@@ -111,7 +115,9 @@ export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[]): 
     if (!['DRAFT', 'CONTEXT', 'DIFF', 'COMPOSE'].includes(value.stage) || !Array.isArray(value.sourceIds)) throw new Error('CONTENT_RESULT_INVALID');
     validateContentResult(value.stage, JSON.stringify(value.result), value.sourceIds, [], undefined, value.conditional === true);
   } else if (first.documentKind === 'merged-candidate') {
-    exact(value, ['schemaVersion', 'cycleId', 'sourceSha', 'stateCommit', 'candidate', 'session', 'pull', 'documents']);
+    const hasLegacyTemplate = value && Object.hasOwn(value, 'legacyNotesTemplate');
+    exact(value, ['schemaVersion', 'cycleId', 'sourceSha', 'stateCommit', 'candidate', 'session', 'pull', 'documents',
+      ...(hasLegacyTemplate ? ['legacyNotesTemplate'] : [])]);
     exact(value.pull, ['number', 'head', 'branch', 'base', 'repositoryId', 'mergedAt', 'mergeCommitSha']);
     exact(value.candidate, ['id', 'prNumber', 'branch', 'baseSha', 'generatedSnapshotPath', 'publishedHead', ...('editingAckHead' in value.candidate ? ['editingAckHead'] : []), 'statusCommentId',
       'contentGenerationDigest', 'adoptionOverride', 'observedLabelEventIds', 'pendingWrite']);
@@ -124,6 +130,16 @@ export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[]): 
       || !Array.isArray(value.documents) || !value.documents.length) throw new Error('MERGED_CANDIDATE_IDENTITY');
     const sessionText = JSON.stringify(value.session);
     await decodeCandidateDocument([{ ...first, documentKind: 'session', index: 0, count: 1, content: sessionText, documentDigest: await sha256Hex(sessionText) }]);
+    if (hasLegacyTemplate) {
+      const template = value.legacyNotesTemplate, manual = value.session.manualValidation;
+      exact(template, ['sourceSha', 'sha256']);
+      if (!manual || manual.schemaVersion === 3 || manual.headSha !== value.pull.head
+        || manual.prNumber !== value.pull.number || manual.branch !== value.pull.branch || value.session.identity.noteTemplate !== undefined
+        || value.session.identity.sourceDigest !== value.session.generated.sourceDigest
+        || template.sourceSha !== value.session.generated.baseSha || template.sourceSha !== value.candidate.baseSha
+        || template.sourceSha === manual.sourceSha || template.sourceSha === value.sourceSha || !/^[a-f0-9]{64}$/.test(template.sha256))
+        throw new Error('MERGED_CANDIDATE_LEGACY_TEMPLATE');
+    }
     const paths = new Set<string>();
     for (const document of value.documents) {
       exact(document, ['path', 'sha256']);
