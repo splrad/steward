@@ -1,5 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import {publishPromotedSources} from './governance-promotion.mjs';
 import {bootstrapControllerVersion, controllerVersionNumber, latestControllerVersion, publishControllerVersion} from './controller-version.mjs';
 
 const appId = 5639432;
@@ -37,6 +38,16 @@ function fixture({versions = 999, target = 1000, loseResponse = false} = {}) {
     if (path.startsWith('/orgs/splrad/rulesets/')) return {status: 200, value: rules[path.split('/').at(-1)]};
     if (path.endsWith('/git/ref/heads/steward%2Fvalidated-controller')) {
       return {status: 200, value: refValue(branch, sha(source.target))};
+    }
+    if (path.endsWith('/git/refs/heads/steward%2Fvalidated-controller')) {
+      assert.equal(method, 'PATCH');
+      assert.equal(body.force, false);
+      history.push(body);
+      source.target = Number.parseInt(body.sha, 16);
+      return {status: 200, value: refValue(branch, body.sha)};
+    }
+    if (path.endsWith('/git/matching-refs/tags/')) {
+      return {status: 200, value: [...tags].map(([name, commit]) => refValue(name, commit))};
     }
     if (path.includes('/compare/')) {
       const [base, head] = path.split('/').at(-1).split('...');
@@ -96,4 +107,32 @@ test('refuses to number a moved source, a downgrade, or a namespace with widened
   data.rules[26970365].rules.pop();
   await assert.rejects(publish(998), /CONTROLLER_SOURCE_RULE_TYPES/);
   assert.equal(data.history.length, 0);
+});
+
+test('the production promotion coordinator records the baseline, advances the source, then publishes the successor once', async () => {
+  const data = fixture({versions: 0, target: 101});
+  const plan = {status: 'UNCHANGED', commit: sha(102), tags: {}};
+  const records = [];
+  const publish = () => publishPromotedSources(data.io, plan, sha(102), appId, async () => {},
+    async value => records.push(value), data.read);
+  await publish();
+  assert.deepEqual(data.history, [
+    {ref: ref(1), sha: sha(101)},
+    {sha: sha(102), force: false},
+    {ref: ref(2), sha: sha(102)},
+  ]);
+  const receipts = () => records.filter(value => /^(?:controller-version-(?:baseline|result)|controller-source-result)$/.test(value.kind))
+    .map(({kind, status, tag}) => [kind, status, tag]);
+  assert.deepEqual(receipts(), [
+    ['controller-version-baseline', 'PUBLISHED', 'controller-v1'],
+    ['controller-source-result', 'PUBLISHED', undefined],
+    ['controller-version-result', 'PUBLISHED', 'controller-v2'],
+  ]);
+  records.length = 0;
+  await publish();
+  assert.equal(data.history.length, 3);
+  assert.deepEqual(receipts(), [
+    ['controller-source-result', 'ALREADY_PUBLISHED', undefined],
+    ['controller-version-result', 'ALREADY_PUBLISHED', 'controller-v2'],
+  ]);
 });
