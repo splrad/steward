@@ -3,7 +3,7 @@ import { promisify } from 'node:util';
 import { mkdtemp } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { nativeEvidenceTransport, isolatedBuildEnvironment, githubUnits,evaluateCompletion,parseDeliveryConfig,assertProductDelivery,verifyDispatchWorkflow,encodeRepositoryPath,applyWorkflowDelivery,assertRegisteredAdapters } from '../packages/runner/dist/index.js';
+import { nativeEvidenceTransport, isolatedBuildEnvironment, parseDeliveryConfig,assertProductDelivery,verifyDispatchWorkflow,encodeRepositoryPath,applyWorkflowDelivery,assertRegisteredAdapters } from '../packages/runner/dist/index.js';
 import { readReleaseRecords, assertReleaseWriterProtection } from './release-record.mjs';
 import {servicePages,pagesGitStore} from './pages-maintenance.mjs';
 import {assertQualityProtection,qualityNativeIO} from './quality-language-summary.mjs';
@@ -11,104 +11,10 @@ import {validateReleaseConfiguration} from './release-adoption.mjs';
 import {mergedRepositoryPolicy} from './repository-policy-read.mjs';
 
 const identity={name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'};
-const safeCode=error=>error instanceof Error && /^RELEASE_[A-Z_]+$/.test(error.message)?error.message:'RELEASE_NATIVE_UNAVAILABLE';
-const iso=clock=>new Date(clock()).toISOString();
 const isGitSha=value=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
 const validMatchingRefs=(refs,target)=>Array.isArray(refs)
   &&refs.every(r=>typeof r?.ref==='string'&&r.ref.startsWith(`refs/heads/${target}`)&&r.object?.type==='commit'&&isGitSha(r.object.sha))
   &&new Set(refs.map(r=>r.ref)).size===refs.length;
-
-/** One wake has one fixed domain sequence. A publish invocation always ends this repository's wake. */
-export async function serviceReleaseWake(request,refresh,invoke,clock=Date.now) {
-  let snapshot=await refresh();
-  if(!snapshot.repository)return {status:'WAIT',reason:'RELEASE_BOOTSTRAP_REQUIRED'};
-  let candidate;
-  try {
-    candidate=await invoke('candidate',{...request,cycleId:snapshot.repository.activeCycleId,runId:null});
-  } catch(error) {
-    const reason=error?.message;
-    if(!['CANDIDATE_REPOSITORY_POLICY_DISABLED','CANDIDATE_REPOSITORY_POLICY_CONFLICT',
-      'CANDIDATE_REPOSITORY_POLICY_MOVED','REPOSITORY_POLICY_UNAVAILABLE']
-      .includes(reason))throw error;
-    candidate={status:'WAIT',reason};
-  }
-  snapshot=await refresh();
-  const results=[];
-  for(const {value:registered} of snapshot.cycles) {
-    if((registered.freezeOnly||registered.freezeCompletedAt) && !registered.requiredChannels?.length && !githubUnits(registered).length) {
-      if(!registered.freezeCompletedAt)results.push(await invoke('observe-channel',{...request,cycleId:registered.id,runId:null}));
-      continue;
-    }
-    const read=snapshot.domainRecords?.filter(record=>record.path.startsWith('evidence/reads/')&&record.value.cycleId===registered.id)
-      .sort((a,b)=>b.value.observedAt.localeCompare(a.value.observedAt))[0]?.value;
-    if(read?.nextCheckAt&&Date.parse(read.nextCheckAt)>clock()) {
-      results.push({status:'WAIT',reason:'NATIVE_READ_BACKOFF',nextCheckAt:read.nextCheckAt});continue;
-    }
-    const latest=snapshot.domainRecords?.find(record=>record.path===registered.completedEvidencePath)?.value;
-    if(latest&&evaluateCompletion(latest.source,latest.observation,latest.observation.observedAt).distributionResult==='PASS'
-      &&evaluateCompletion(latest.source,latest.observation,latest.observation.observedAt).result==='PASS')continue;
-    request={...request,cycleId:registered.id,runId:null};
-    if(!registered.completedEvidencePath) {
-      results.push(await invoke('dispatch-build',request));await refresh();
-      const publish=await invoke('publish',request);results.push(publish);
-      if(publish.publishInvoked===true)return publish;
-      if(publish.status==='FROZEN')continue;
-    }
-    if(registered.requiredChannels?.length!==0) {await refresh();results.push(await invoke('dispatch-channel',request));}
-    await refresh();results.push(await invoke('observe-channel',request));
-    snapshot=await refresh();
-    const cycle=snapshot.cycles.find(value=>value.value.id===registered.id)?.value;
-    for(const dispatch of cycle?.dispatches??[])if(dispatch.canonicalRunId!==null) {
-      results.push(await invoke('rerun',{...request,runId:dispatch.canonicalRunId}));snapshot=await refresh();
-    }
-  }
-  if(!results.length)return snapshot.cycles.length && candidate.status==='WAIT' && candidate.reason==='UNCHANGED' && !snapshot.repository.candidate
-    ?{status:'COMPLETE',reason:'REGISTERED_RELEASES_VERIFIED'}:candidate;
-  const nextCheckAt=results.map(value=>value.nextCheckAt??value.observation?.readObservation?.nextCheckAt).filter(Boolean).sort().at(-1)??null;
-  if(results.some(value=>['UNKNOWN','CONFLICT','BLOCKED'].includes(value.status)))return {status:'UNKNOWN',reason:'NATIVE_EVIDENCE_REQUIRED',nextCheckAt};
-  return {status:'WAIT',reason:'REGISTERED_CYCLES_OBSERVED',nextCheckAt};
-}
-
-/** Ports are fixed I/O boundaries, never persisted tasks, action tables or callback names. */
-export async function coordinateReleaseWake({discover,observe,service,health,maintenance,pages},clock=Date.now) {
-  const started=clock(),deadline=started+40*60_000,counts={scanned:0,completed:0,waiting:0,failed:0,unknown:0},errors=new Set(),ready=[];
-  let inventoryComplete=false,scanComplete=true;
-  if(maintenance) {
-    try {const result=await maintenance();for(const code of result.errorCodes)errors.add(code);if(result.errorCodes.length)scanComplete=false;}
-    catch {scanComplete=false;errors.add('MAINTENANCE_UNAVAILABLE');}
-  }
-  try {
-    const repositories=await discover();inventoryComplete=true;
-    for(const repository of repositories) {
-      if(clock()>=deadline){scanComplete=false;errors.add('CLAIM_WINDOW_CLOSED');break;}
-      if(repository.archived||repository.disabled)continue;
-      // Pages remains independent of release bootstrap, channel waits and product release progress.
-      if(pages)try {
-        const result=await pages(repository);
-        if(['UNKNOWN','EXHAUSTED','EXPIRED'].includes(result.status)){scanComplete=false;errors.add('PAGES_EVIDENCE_REQUIRED');}
-      }catch {scanComplete=false;errors.add('PAGES_UNAVAILABLE');}
-      try {const observation=await observe(repository);counts.scanned++;
-        if(observation.status==='NOT_APPLICABLE')counts.completed++;
-        else ready.push({repository,...observation});}
-      catch(error){counts.unknown++;scanComplete=false;errors.add(safeCode(error));}
-    }
-    ready.sort((a,b)=>Date.parse(a.lastServedAt??'1970-01-01T00:00:00Z')-Date.parse(b.lastServedAt??'1970-01-01T00:00:00Z')||a.repository.id-b.repository.id);
-    for(const item of ready) {
-      if(clock()>=deadline){scanComplete=false;errors.add('CLAIM_WINDOW_CLOSED');break;}
-      if(item.nextCheckAt && Date.parse(item.nextCheckAt)>clock()){counts.waiting++;continue;}
-      try {
-        const result=await service(item.repository);
-        if(result.status==='COMPLETE')counts.completed++;
-        // A prepared candidate and a protected notes edit both await human action.
-        else if(['READY','WAIT','BOUND','SATISFIED','OBSERVED','ACCEPTED'].includes(result.status)
-          || result.status==='CONFLICT'&&result.reason==='HUMAN_EDIT_CONFLICT')counts.waiting++;
-        else {counts.unknown++;scanComplete=false;errors.add('NATIVE_EVIDENCE_REQUIRED');}
-      }catch(error){counts.failed++;scanComplete=false;errors.add(safeCode(error));}
-    }
-  }catch(error){errors.add(safeCode(error));scanComplete=false;}
-  const summary={observedAt:iso(clock),scanCompletedAt:inventoryComplete&&scanComplete?iso(clock):null,errorCodes:[...errors].sort(),counts};
-  await health(summary);return summary;
-}
 
 /** Repository visibility is not product enrollment. Only proven absent inputs and obligations are inapplicable. */
 export async function releaseParticipation(repository,io,{includeUnits=false}={}) {
@@ -250,7 +156,6 @@ export async function fetchState(root,repository,token,targetRef='steward/releas
   return {directory,remote,io,snapshot,lastServedAt,readBytes};
 }
 
-/** The first central health record describes this real wake, including incomplete scans. */
 export async function serviceRepositoryPages({app,root,repository,coordinator,completion,site}) {
   return app.forPagesRepository(repository.id,async token=>{
     const io=nativeEvidenceTransport(token);

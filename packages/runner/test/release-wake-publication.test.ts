@@ -12,7 +12,6 @@ import {archiveFile,nativeRequestIdentity,nativeRunFact,recoverNativeCycle} from
 import {isolatedBuildEnvironment} from '../src/build-environment.js';
 import {permitOfflineScript,registerOfflineFixtureRoot} from './offline-fixtures.js';
 import {releaseProtectionFixture} from './fixtures/release-protection.js';
-const {serviceReleaseWake}=await import(pathToFileURL(resolve('scripts/release-coordinator.mjs')).href);
 const {observeReleaseChannels,publishNativeCycle,readReleaseRecords}=await import(pathToFileURL(resolve('scripts/release-record.mjs')).href);
 const roots:string[]=[];
 afterEach(async()=>{vi.restoreAllMocks();vi.unstubAllGlobals();vi.unstubAllEnvs();for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
@@ -186,22 +185,13 @@ it.each(['failure','in_progress','second-failure','formal-asset-404','wrong-deli
     expect(await git('rev-parse','refs/heads/steward/release-state')).toBe(head);
     return;
   }
-  const snapshot=await readReleaseRecords({directory:root,targetRef:'steward/release-state',repositoryId:1});
-  const later={...structuredClone(cycle),id:'pr-99-'+'e'.repeat(40),sourceSha:'e'.repeat(40),dispatches:[]};
-  snapshot.cycles.push({value:later});
-  const steps:string[]=[],results:any[]=[];
-  await serviceReleaseWake(registration,async()=>snapshot,async(command:string,input:any)=>{
-    steps.push(command+':'+input.cycleId);
-    if(command==='publish'&&input.cycleId===cycle.id){
-      const result=await publishNativeCycle(input,publicationPorts);
-      expect(result).toMatchObject({status:'WAIT',reason:'BUILD_RUN_NOT_READY',publishInvoked:false});return result;
-    }
-    if(command==='rerun'&&input.cycleId===cycle.id){const result=await recoverNativeCycle(native.context,100,native.store,[],native.io,NOW);results.push(result);return result;}
-    return {status:'WAIT',publishInvoked:false};
+  await expect(publishNativeCycle({...registration,cycleId:cycle.id},publicationPorts)).resolves.toMatchObject({
+    status:'WAIT',reason:'BUILD_RUN_NOT_READY',publishInvoked:false,
   });
-  expect(steps).toContain('rerun:'+cycle.id);expect(steps).toContain('dispatch-build:'+later.id);expect(steps).toContain('publish:'+later.id);
+  const result=await recoverNativeCycle(native.context,100,native.store,[],native.io,NOW);
   expect(native.calls.filter(call=>call.startsWith('POST'))).toHaveLength(kind==='failure'?1:0);
-  expect(results[0]).toMatchObject(kind==='failure'?{status:'ACCEPTED',observedAttempt:2}:kind==='second-failure'?{status:'BLOCKED',reason:'NATIVE_MAINTENANCE_REQUIRED'}:{status:'WAIT',reason:'RUN_IN_FLIGHT'});
+  expect(result).toMatchObject(kind==='failure'?{status:'ACCEPTED',observedAttempt:2}:kind==='second-failure'
+    ?{status:'BLOCKED',reason:'NATIVE_MAINTENANCE_REQUIRED'}:{status:'WAIT',reason:'RUN_IN_FLIGHT'});
   expect(await git('rev-parse','refs/heads/steward/release-state')).toBe(head);
   expect(calls.some(path=>path.includes('/artifacts')||path.includes('/releases'))).toBe(false);
 },60_000);
