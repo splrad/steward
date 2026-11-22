@@ -65,10 +65,11 @@ it('binds required provenance to each unit and channel selection',()=>{
   expect([...attestations.get('signed')!]).toEqual(['github-release']);
   expect(attestations.has('plain')).toBe(false);
 });
-it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-run','unbound-run','undispatched','foreign-run','foreign-source','formal-after-expiry','retained-manual-formal','retained-controller-formal','retained-conditional-formal','private-formal','partial-draft','corrupt-formal','missing-public-asset',
+it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-run','unbound-run','undispatched','foreign-run','foreign-source','formal-after-expiry','retained-manual-formal','retained-controller-formal','retained-conditional-formal','retained-empty-conditional-formal','private-formal','partial-draft','corrupt-formal','missing-public-asset',
   'wrong-contents-path','wrong-contents-blob','missing-v1-template','missing-v2-template','marked-v1','marked-v2'])('prepares publication from exact native objects: %s',async kind=>{
   const retainedController=kind==='retained-controller-formal';
-  const retainedConditional=kind==='retained-conditional-formal';
+  const reviewedEmpty=kind==='retained-empty-conditional-formal';
+  const retainedConditional=kind==='retained-conditional-formal'||reviewedEmpty;
   const retained=kind==='retained-manual-formal'||retainedController||retainedConditional;
   const organizationTemplate=retained?await readFile('templates/repository/.github/release-template.md.mustache','utf8'):undefined;
   const f=productPipelineFixture(1,false,kind==='python-freeze'?'requirements-build.txt':'global.json',organizationTemplate);
@@ -115,8 +116,8 @@ it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-r
     if(retainedConditional) {
       const person={id:902,login:'reviewed-author',profileUrl:'https://github.com/reviewed-author',
         avatarUrl:'https://avatars.githubusercontent.com/u/902',alt:'reviewed-author'};
-      const actors=[{...person,type:'User'}].map(({alt,...actor})=>actor);
-      const reviewed={actors,contributors:{contributors:[person],unresolved:0}};
+      const actors=reviewedEmpty?[]:[{...person,type:'User'}].map(({alt,...actor})=>actor);
+      const reviewed={actors,contributors:{contributors:reviewedEmpty?[]:[person],unresolved:0}};
       Object.assign(archived.session.identity,reviewed,{noteTemplate:oldTemplate,units:[{id:'app',...reviewed}]});
     } else {
       archived.legacyNotesTemplate={sourceSha:D,sha256:'e'.repeat(64),
@@ -175,7 +176,7 @@ it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-r
   const frozenNotes=retained?await pipelineNotes(record,'app',f.input.sourceDirectory,undefined,controllerIo):`1.0.0\n${S}\n${C}\n`;
   if(retained)expect(frozenNotes).toContain('原人工确认的文稿。');
   if(retainedConditional) {
-    expect(frozenNotes).toContain('alt="reviewed-author"');
+    expect(frozenNotes.includes('alt="reviewed-author"')).toBe(!reviewedEmpty);
     expect(frozenNotes).not.toContain('贡献者 GitHub ID');
   }
   await writeFile(join(original,'release-notes.md'),frozenNotes);
@@ -223,11 +224,13 @@ it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-r
   const output=join(root,'prepared');await mkdir(output);
   if(kind==='unbound-run')f.request.canonicalRunId=null;
   if(kind==='undispatched')f.context.cycle.dispatches=[];
-  const result=pipelinePreparePublication(f.context,output,f.input.controllerDirectory,'fixture-product-token',async args=>JSON.stringify(args.at(-1)==='repos/example/product'
-    ?{id:1,full_name:'example/product',archived:false,disabled:false,private:kind==='private-formal'}:artifact),io,io,async(_repo,id,destination,anonymous)=>{
+  const formalDownload=vi.fn(async(_repo:string,id:number,destination:string,anonymous:boolean)=>{
     expect(anonymous).toBe(kind!=='private-formal');
     await copyFile(join(original,names[id-300]!),destination);if(kind==='corrupt-formal'&&destination.endsWith('.exe'))await writeFile(destination,'other bytes');
-  },history);
+  });
+  const prepare=(archive=history)=>pipelinePreparePublication(f.context,output,f.input.controllerDirectory,'fixture-product-token',async args=>JSON.stringify(args.at(-1)==='repos/example/product'
+    ?{id:1,full_name:'example/product',archived:false,disabled:false,private:kind==='private-formal'}:artifact),io,io,formalDownload,archive);
+  const result=prepare();
   if(['incomplete-run','failed-run','unbound-run','undispatched'].includes(kind)) { await expect(result).resolves.toMatchObject({status:'WAIT',reason:['unbound-run','undispatched'].includes(kind)?'BUILD_BINDING_REQUIRED':'BUILD_RUN_NOT_READY',publishInvoked:false});expect(download).not.toHaveBeenCalled(); }
   else if(kind==='marked-v1'||kind==='marked-v2') {
     await expect(result).rejects.toThrow('frozen delivery mode');
@@ -256,6 +259,24 @@ it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-r
       const recovered=publication[0]!.build!;
       expect(recovered).toMatchObject({reviewedNotesTemplate:{sourceSha:D,template:oldTemplate},templateSha256:digest(oldTemplate)});
       expect(await pipelineNotes(recovered,'app',f.input.sourceDirectory)).toBe(frozenNotes);
+      if(!reviewedEmpty) {
+        download.mockClear();
+        formalDownload.mockClear();
+        await expect(prepare([])).rejects.toThrow('frozen candidate identity required');
+        const entry=history[0]!, archived=JSON.parse(entry.value.content);
+        const withIdentity=(identity:unknown)=>{
+          const content=JSON.stringify({...archived,session:{...archived.session,identity}});
+          return [{...entry,value:{...entry.value,content,documentDigest:digest(content)}}];
+        };
+        const identity=archived.session.identity;
+        await expect(prepare(withIdentity({...identity,units:[]}))).rejects.toThrow('frozen contributor identity required');
+        f.source[templatePath]=oldTemplate;
+        await expect(prepare(withIdentity({...identity,noteTemplate:organizationTemplate}))).rejects.toThrow('frozen candidate template');
+        f.source[templatePath]='{{version}}\n';
+        await expect(prepare()).rejects.toThrow('frozen candidate template');
+        expect(download).not.toHaveBeenCalled();
+        expect(formalDownload).not.toHaveBeenCalled();
+      }
     }
     if(retainedController)expect(calls).toContain(`/repos/splrad/steward/contents/${sharedPath}?ref=${previousController}`);
   }

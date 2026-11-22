@@ -1244,7 +1244,7 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
   const currentTemplateText = currentTemplate.bytes.toString('utf8');
   let reviewedNotesTemplate: BuildPipelineRecord['reviewedNotesTemplate'];
   let reviewedIdentity: CandidateSession['identity'] | undefined;
-  if(delivery.schemaVersion!==3&&isConditionalTemplate(currentTemplateText)) {
+  if(delivery.schemaVersion!==3) {
     const chunks=mergedCandidateChunks(history,cycle.id);
     if(chunks.length) {
       const merged=await decodeCandidateDocument(chunks);
@@ -1292,6 +1292,22 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
       },
       root,controllerDirectory,token,history,handoff:original.handoff!,
       ...(unavailable?{unavailable}:{}),...(reject?{reject}:{})},workflowDownload);
+  }
+  if (conditional && !reviewedIdentity) fail('frozen candidate identity required');
+  if (reviewedIdentity?.noteTemplate !== (conditional ? notesTemplate : undefined)) fail('frozen candidate template');
+  const contributorMode = conditional ? reviewedIdentity?.contributorMode : undefined;
+  const reviewedContributors = new Map<string, BuildPipelineRecord['units'][number]['contributors']>();
+  if (conditional && reviewedIdentity) {
+    if (reviewedIdentity.authorsDigest !== hash(Buffer.from(JSON.stringify(delivery.repositoryAuthors))))
+      fail('frozen identity mismatch');
+    for (const unit of units) {
+      const identity = reviewedIdentity.units.find(item => item.id === unit.id);
+      if (!identity || !Array.isArray(identity.contributors?.contributors))
+        fail('frozen contributor identity required');
+      const contributors = replayReleaseContributors(identity, delivery.repositoryAuthors, contributorMode ?? 'recorded');
+      if (JSON.stringify(contributors) !== JSON.stringify(identity.contributors)) fail('frozen identity mismatch');
+      reviewedContributors.set(unit.id, contributors.contributors);
+    }
   }
   if (!Array.isArray(matrix) || !matrix.length) fail('native producer matrix');
   const toolLocks = { 'controller/mise.lock': hash((await source('splrad/steward', cycle.controllerSha, 'mise.lock')).bytes),...projection.toolLocks };
@@ -1347,12 +1363,6 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
     const m: unknown = JSON.parse(await readFile(join(directory, 'artifact-manifest.json'), 'utf8')); validateProductManifest(m);
     const request = cycle.dispatches.find(value => value.requestKey === m.requestKey && value.canonicalRunId === m.runId && value.purpose === 'build');
     if (!request || m.cycleId !== cycle.id || m.sourceSha !== cycle.sourceSha || m.controllerSha !== cycle.controllerSha) fail('frozen canonical producer');
-    const contributorMode = conditional ? reviewedIdentity?.contributorMode : undefined;
-    const contributorIdentity = conditional ? reviewedIdentity?.units.find(item => item.id === unit.id) : undefined;
-    const contributors = contributorIdentity
-      ? replayReleaseContributors(contributorIdentity, delivery.repositoryAuthors, contributorMode ?? 'recorded') : undefined;
-    if (contributorIdentity && JSON.stringify(contributors) !== JSON.stringify(contributorIdentity.contributors))
-      fail('frozen identity mismatch');
     const build = parsePipelineRecord({ schemaVersion: 1, kind: 'build', repositoryId: context.repositoryId, fullName: context.repository,
       cycleId: cycle.id, requestKey: request.requestKey, sourceSha: cycle.sourceSha, controllerSha: cycle.controllerSha, buildRef: `refs/heads/${request.ref}`,
       runId: m.runId, runAttempt: m.attempt, toolLocks, delivery, deliverySha256: hash(deliverySource.bytes), templateSha256: hash(templateBytes),
@@ -1363,7 +1373,7 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
         legacyNotesTemplateSourceSha:legacyNotesTemplate.sourceSha,
         ...(legacyNotesTemplate.controllerSha ? {legacyNotesTemplateControllerSha:legacyNotesTemplate.controllerSha} : {}),
       } : {}),
-      units: [{ id: unit.id, version: unit.version, packageVersion, tag: unit.tag, builds, assets, contributors:contributors?.contributors??[] }] }) as BuildPipelineRecord;
+      units: [{ id: unit.id, version: unit.version, packageVersion, tag: unit.tag, builds, assets, contributors:reviewedContributors.get(unit.id)??[] }] }) as BuildPipelineRecord;
     await pipelineFrozenManifest(build, unit.id, directory);
     if (unit.manifestDigest !== null && unit.manifestDigest !== (await fileDigest(directory, 'artifact-manifest.json')).sha256) fail('frozen manifest changed');
     let selected=declared,publicBody:string|undefined,githubDelivery:WorkflowDeliveryReceipt|undefined;
