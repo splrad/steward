@@ -21,9 +21,12 @@ export async function retainedManualNotesTemplate(session,currentTemplate,{sourc
     ||candidate.baseSha!==generated.baseSha||generated.baseSha===sourceSha
     ||generated.sourceDigest!==session.identity.sourceDigest||!await isAdoptedOrganizationReleaseTemplate(currentTemplate)
     ||!await io.isAncestor(generated.baseSha,sourceSha)||!await io.isAncestor(candidate.publishedHead,headSha))return null;
-  const template=await (io.readLegacyTemplate??(sha=>io.read(sha,productReleaseTemplatePath)))(generated.baseSha);
-  if(typeof template!=='string'||!await isPreviouslyAdoptedReleaseTemplate(template))return null;
-  return {template,sourceSha:generated.baseSha,sha256:hash(template)};
+  const historical=io.readLegacyTemplate
+    ?await io.readLegacyTemplate(generated.baseSha)
+    :{template:await io.read(generated.baseSha,productReleaseTemplatePath)};
+  if(typeof historical?.template!=='string'||!await isPreviouslyAdoptedReleaseTemplate(historical.template))return null;
+  const {template,controllerSha}=historical;
+  return {template,lock:{sourceSha:generated.baseSha,sha256:hash(template),...(controllerSha?{controllerSha}:{})}};
 }
 /** Read-only proof of an existing manual candidate. No generation or write port is accepted. */
 export async function validateManualCandidate(session,producer,io) {

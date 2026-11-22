@@ -107,13 +107,13 @@ test('a template transition is limited to the protected earlier draft and still 
   f.session.identity.authorsDigest=hash(f.delivery.repositoryAuthors);
   f.session.generated.files=[{path,mode:'100644',content:f.files[path]}];
   f.io.isAncestor=async(a,b)=>a===S&&b===H||a===G&&(b===S||b===H);
-  f.io.readLegacyTemplate=async sha=>{assert.equal(sha,G);return old;};
+  f.io.readLegacyTemplate=async sha=>{assert.equal(sha,G);return {template:old};};
   const manual=await validateManualCandidate(f.session,f.producer,f.io);
   assert.equal(manual.files.find(file=>file.path===path).sha256,hash(f.files[path]));
   f.io.changedPaths=async()=>[path,'source.ts'];
   await assert.rejects(validateManualCandidate(f.session,f.producer,f.io),/MANUAL_UNMANAGED_CHANGES/);
   f.io.changedPaths=async()=>[path];
-  await assert.rejects(validateManualCandidate(f.session,f.producer,{...f.io,readLegacyTemplate:async()=>old+'\n'}),/MANUAL_NOTE_TEMPLATE/);
+  await assert.rejects(validateManualCandidate(f.session,f.producer,{...f.io,readLegacyTemplate:async()=>({template:old+'\n'})}),/MANUAL_NOTE_TEMPLATE/);
   f.session.generated.baseSha=f.session.repository.candidate.baseSha=S;
   await assert.rejects(validateManualCandidate(f.session,f.producer,f.io),/MANUAL_NOTE_TEMPLATE/);
   f.session.identity.noteTemplate=current;

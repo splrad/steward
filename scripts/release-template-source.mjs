@@ -1,21 +1,9 @@
 import {createHash} from 'node:crypto';
-import {parseDocument} from 'yaml';
 import {NativeEvidenceReader,nativeEvidenceTransport,sharedReleaseTemplatePath} from '../packages/runner/dist/index.js';
 
 const validPin = ref => typeof ref === 'string' && /^[a-f0-9]{40}$/.test(ref);
 
-export function releaseTemplateControllerPin(source) {
-  if (typeof source !== 'string') throw new Error('CANDIDATE_CONTROLLER_PIN_REQUIRED');
-  const workflow = parseDocument(source, {uniqueKeys:true});
-  if (workflow.errors.length) throw new Error('CANDIDATE_CONTROLLER_PIN_INVALID');
-  const jobs = Object.values(workflow.toJS({maxAliasCount:0})?.jobs ?? {});
-  const refs = jobs.flatMap(job => Array.isArray(job?.steps) ? job.steps : [])
-    .filter(step => step?.with?.repository === 'splrad/steward' && step.with.path === 'controller')
-    .map(step => step.with.ref);
-  if (!refs.length || !validPin(refs[0]) || refs.some(ref => ref !== refs[0]))
-    throw new Error('CANDIDATE_CONTROLLER_PIN_REQUIRED');
-  return refs[0];
-}
+export {releaseTemplateControllerPin} from '../packages/runner/dist/index.js';
 
 export async function readControllerReleaseTemplate(pin, fetcher = fetch) {
   if (!validPin(pin)) throw new Error('CANDIDATE_CONTROLLER_PIN_REQUIRED');

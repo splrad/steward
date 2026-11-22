@@ -6,6 +6,7 @@ export { manualCandidateFacts, manualCandidatePreview, manualCandidateBody, vali
 export { parseDeliveryConfig, deliveryAssetNames, assertDeliveryPath } from '../../core/src/delivery-config.js';
 export { defaultBuildWorkflow, dispatchWorkflow, encodeRepositoryPath, staticMatrixRows } from '../../core/src/release-workflow.js';
 export { productReleaseTemplatePath, sharedReleaseTemplatePath } from '../../core/src/release-template.js';
+export { readLegacyReleaseTemplate, releaseTemplateControllerPin } from './release-template-source.js';
 export { githubUnits } from '../../core/src/release-observation.js';
 export { downloadNativeArtifact } from './native-artifact-download.js';
 export { assertProductDelivery, assertRegisteredAdapters } from './release-pipeline.js';

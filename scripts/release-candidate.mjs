@@ -12,7 +12,7 @@ import { parseDocument } from 'yaml';
 import { advanceReleaseCandidate, pushPreparedCandidate, collectContentInput, planContentBatches,
   resumeContentBatches, assembleUnitNotes, copilotReleaseClient, decodeCandidateDocument, splitContentText, selectReleaseContributors, releaseAffectedUnitIds, isolatedBuildEnvironment,
   candidateObservationIdentity, parseDeliveryConfig, parseSupplementalNotes, assertDeliveryPath, assertProductDelivery, mergedBuildCycle, assertRepositoryWrite, completeMergedPull,
-  defaultBuildWorkflow, productReleaseTemplatePath,
+  defaultBuildWorkflow, productReleaseTemplatePath, readLegacyReleaseTemplate,
   isAdoptedOrganizationReleaseTemplate, isConditionalTemplate, confirmedReleaseContributors, confirmedReleaseContributorsPath } from '../packages/runner/dist/index.js';
 import { readReleaseRecords, writeReleaseRecords, assertReleaseWriterProtection } from './release-record.mjs';
 import { restoreContentRecovery } from './release-content-recovery.mjs';
@@ -420,7 +420,13 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     };
     const manualBlobs=new Map(),manualFetched=new Set();
     const manualIO={activeCycle,readTemplate:sourceTemplateAt,confirmedHumans:confirmedHumansAt,
-      readLegacyTemplate:sha=>fileAt(sha,productReleaseTemplatePath,true),
+      readLegacyTemplate:async sha=>{
+        const prior=await readLegacyReleaseTemplate(sha,async(commit,path)=>{
+          const text=await fileAt(commit,path,true);
+          return text===null?null:Buffer.from(text);
+        },async pin=>Buffer.from(await readControllerReleaseTemplate(pin,fetcher)));
+        return prior?{template:prior.bytes.toString('utf8'),controllerSha:prior.controllerSha}:null;
+      },
       product:{id:request.repositoryId,name:request.repository,defaultBranch:request.defaultBranch},
       pull:()=>native(`pulls/${session.repository.candidate.prNumber}`),
       changedPaths:async(base,head)=>{
@@ -575,7 +581,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
           schemaVersion: 1, cycleId: cycle.id, sourceSha, stateCommit, candidate,
           session: {...archivedSession, identity:mergedContributorIdentity(archivedSession.identity,delivery.repositoryAuthors,confirmedHumans)}, pull: { number: pull.number, head: pull.head.sha, branch: pull.head.ref,
             base: pull.base.ref, repositoryId: request.repositoryId, mergedAt: pull.merged_at, mergeCommitSha: sourceSha }, documents,
-          ...(retained?{legacyNotesTemplate:{sourceSha:retained.sourceSha,sha256:retained.sha256}}:{}),
+          ...(retained?{legacyNotesTemplate:retained.lock}:{}),
         });
         // Validate the assembled snapshot before the atomic cycle handoff.
         await decodeCandidateDocument(mergedArchive.map(file => JSON.parse(file.content)));

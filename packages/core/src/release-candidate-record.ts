@@ -14,6 +14,7 @@ export interface CandidateArchiveChunk {
 export interface LegacyNotesTemplate {
   sourceSha: string;
   sha256: string;
+  controllerSha?: string;
 }
 const exact = (value: any, keys: string[]) => { if (!value || typeof value !== 'object' || Array.isArray(value)
   || Object.keys(value).sort().join(',') !== [...keys].sort().join(',')) throw new Error('CANDIDATE_RECORD_FIELDS'); };
@@ -132,7 +133,10 @@ export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[]): 
     await decodeCandidateDocument([{ ...first, documentKind: 'session', index: 0, count: 1, content: sessionText, documentDigest: await sha256Hex(sessionText) }]);
     if (hasLegacyTemplate) {
       const template = value.legacyNotesTemplate, manual = value.session.manualValidation;
-      exact(template, ['sourceSha', 'sha256']);
+      const pinnedController = typeof template === 'object' && template !== null && Object.hasOwn(template, 'controllerSha');
+      exact(template, ['sourceSha', 'sha256', ...(pinnedController ? ['controllerSha'] : [])]);
+      if (pinnedController && (typeof template.controllerSha !== 'string' || !/^[a-f0-9]{40}$/.test(template.controllerSha)))
+        throw new Error('MERGED_CANDIDATE_LEGACY_TEMPLATE');
       if (!manual || manual.schemaVersion === 3 || manual.headSha !== value.pull.head
         || manual.prNumber !== value.pull.number || manual.branch !== value.pull.branch || value.session.identity.noteTemplate !== undefined
         || value.session.identity.sourceDigest !== value.session.generated.sourceDigest

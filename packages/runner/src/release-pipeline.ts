@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import registrations from '../../../config/release/event-repositories.json' with { type: 'json' };
 import { nativeGhCommand, NativeGitHubRelease, nativeReleaseDownload, releaseReadIsAnonymous, type GhCommand, type ReleaseDownload } from './gh-release.js';
 import { localGitSnapshot, safeGitPath } from './git-snapshot.js';
+import { readLegacyReleaseTemplate, type HistoricalTemplate } from './release-template-source.js';
 import { selectReleaseProducers, producerArtifactName } from './release-run.js';
 import { jobFact } from './native-release-evidence.js';
 import { originalJobExecutions, type NativeJobAttempt } from '../../core/src/native-job-origins.js';
@@ -108,12 +109,29 @@ function mergedCandidateChunks(records: readonly { path: string; value: unknown 
     .map(item => item.value as CandidateArchiveChunk);
 }
 
-async function legacyNotesTemplateBytes(lock: LegacyNotesTemplate, current: Buffer, read: (sourceSha: string) => Promise<Buffer | null>) {
+type HistoricalTemplateReader = (sourceSha: string) => Promise<HistoricalTemplate | null>;
+
+async function legacyNotesTemplateBytes(
+  lock: LegacyNotesTemplate, current: Buffer, read: HistoricalTemplateReader,
+) {
   if (!await isAdoptedOrganizationReleaseTemplate(current.toString('utf8'))) fail('legacy notes template transition');
   const previous = await read(lock.sourceSha);
-  if (!previous || hash(previous) !== lock.sha256 || !await isPreviouslyAdoptedReleaseTemplate(previous.toString('utf8')))
+  if (!previous || previous.controllerSha !== lock.controllerSha
+    || hash(previous.bytes) !== lock.sha256 || !await isPreviouslyAdoptedReleaseTemplate(previous.bytes.toString('utf8')))
     fail('legacy notes template source');
-  return previous;
+  return previous.bytes;
+}
+
+function historicalNotesTemplate(
+  readProduct: (sha: string, path: string) => Promise<Buffer | null>, controllerIo: EvidenceTransport,
+): HistoricalTemplateReader {
+  const reader = new NativeEvidenceReader(controllerIo, 'splrad/steward');
+  return sha => readLegacyReleaseTemplate(sha, readProduct,
+    async pin => (await readNativeSourceFile(reader, pin, sharedReleaseTemplatePath)).bytes);
+}
+
+function localHistoricalNotesTemplate(sourceDirectory: string, controllerIo: EvidenceTransport) {
+  return historicalNotesTemplate((sha, path) => localGitSnapshot.file(sourceDirectory, sha, path), controllerIo);
 }
 
 export async function readCycleDelivery(context:EvidenceContext,records:{path:string;commit:string;value:unknown}[],io:EvidenceTransport) {
@@ -386,7 +404,8 @@ async function nativeDeliveryProjection(delivery:DeliveryConfig,targets:CycleRec
 }
 /** Read-only admission: no release/tag lookup, controller catalog, state write or future attempt allocation. */
 export async function pipelineIdentity(input: ProductBuildInput, environment: NodeJS.ProcessEnv = process.env,
-  gh: GhCommand = nativeGhCommand, io: EvidenceTransport = nativeEvidenceTransport(process.env.GH_TOKEN)) {
+  gh: GhCommand = nativeGhCommand, io: EvidenceTransport = nativeEvidenceTransport(process.env.GH_TOKEN),
+  controllerIo: EvidenceTransport = nativeEvidenceTransport(undefined)) {
   const repositoryId = positive(environment.GITHUB_REPOSITORY_ID), runId = positive(environment.GITHUB_RUN_ID), runAttempt = positive(environment.GITHUB_RUN_ATTEMPT);
   const fullName = environment.GITHUB_REPOSITORY;
   if (!fullName || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(fullName) || fullName.split('/').some(part => part === '.' || part === '..')
@@ -478,7 +497,7 @@ export async function pipelineIdentity(input: ProductBuildInput, environment: No
   const currentTemplate=delivery.buildWorkflow===undefined?await source(productReleaseTemplatePath):
     await localGitSnapshot.file(input.sourceDirectory,cycle.sourceSha,productReleaseTemplatePath)??sharedTemplate;
   const template=legacyNotesTemplate?await legacyNotesTemplateBytes(legacyNotesTemplate,currentTemplate,
-    sha=>localGitSnapshot.file(input.sourceDirectory,sha,productReleaseTemplatePath)):currentTemplate;
+    localHistoricalNotesTemplate(input.sourceDirectory,controllerIo)):currentTemplate;
   const templateText = template.toString('utf8');
   const conditional = isConditionalTemplate(templateText);
   const previous = !conditional && !template.equals(sharedTemplate)
@@ -511,18 +530,24 @@ export async function pipelineIdentity(input: ProductBuildInput, environment: No
   const record = parsePipelineRecord({ schemaVersion: 1, kind: 'build', repositoryId, fullName, cycleId: cycle.id, requestKey: request.requestKey,
     sourceSha: cycle.sourceSha, controllerSha: cycle.controllerSha, buildRef: environment.GITHUB_REF, runId, runAttempt, toolLocks,
     delivery, ...(conditional ? {noteFormat: 'conditional'} : {}),
-    ...(legacyNotesTemplate ? {legacyNotesTemplateSourceSha:legacyNotesTemplate.sourceSha} : {}),
+    ...(legacyNotesTemplate ? {
+      legacyNotesTemplateSourceSha:legacyNotesTemplate.sourceSha,
+      ...(legacyNotesTemplate.controllerSha ? {legacyNotesTemplateControllerSha:legacyNotesTemplate.controllerSha} : {}),
+    } : {}),
     deliverySha256: hash(deliveryBytes), templateSha256: hash(template), units }) as BuildPipelineRecord;
   return { status: 'ADMITTED' as const, record };
 }
 
-async function pipelineNotesTemplate(record: BuildPipelineRecord, sourceDirectory: string, controllerDirectory?: string) {
+async function pipelineNotesTemplate(record: BuildPipelineRecord, sourceDirectory: string, controllerDirectory?: string,
+  controllerIo: EvidenceTransport = nativeEvidenceTransport(undefined)) {
   let template = await localGitSnapshot.file(sourceDirectory, record.sourceSha, productReleaseTemplatePath);
   if (!template && record.delivery.buildWorkflow !== undefined && controllerDirectory)
     template = await localGitSnapshot.file(controllerDirectory, record.controllerSha, sharedReleaseTemplatePath);
   if (record.legacyNotesTemplateSourceSha && template)
-    template = await legacyNotesTemplateBytes({sourceSha:record.legacyNotesTemplateSourceSha,sha256:record.templateSha256},template,
-      sha=>localGitSnapshot.file(sourceDirectory,sha,productReleaseTemplatePath));
+    template = await legacyNotesTemplateBytes({
+      sourceSha:record.legacyNotesTemplateSourceSha,sha256:record.templateSha256,
+      ...(record.legacyNotesTemplateControllerSha ? {controllerSha:record.legacyNotesTemplateControllerSha} : {}),
+    },template,localHistoricalNotesTemplate(sourceDirectory,controllerIo));
   if (!template || hash(template) !== record.templateSha256) fail('notes template source');
   const text = template.toString('utf8');
   if (isConditionalTemplate(text) !== (record.noteFormat === 'conditional')) fail('notes template format');
@@ -530,8 +555,9 @@ async function pipelineNotesTemplate(record: BuildPipelineRecord, sourceDirector
   return text;
 }
 
-export async function pipelineNotes(record: BuildPipelineRecord, unitId: string, sourceDirectory: string, controllerDirectory?: string) {
-  return renderPipelineNotes(record, unitId, sourceDirectory, await pipelineNotesTemplate(record, sourceDirectory, controllerDirectory));
+export async function pipelineNotes(record: BuildPipelineRecord, unitId: string, sourceDirectory: string, controllerDirectory?: string,
+  controllerIo?: EvidenceTransport) {
+  return renderPipelineNotes(record, unitId, sourceDirectory, await pipelineNotesTemplate(record, sourceDirectory, controllerDirectory, controllerIo));
 }
 
 export async function pipelineExpectedNotes(record: BuildPipelineRecord, unitId: string, sourceDirectory: string, controllerDirectory: string) {
@@ -1213,8 +1239,14 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
       legacyNotesTemplate=merged.legacyNotesTemplate;
     }
   }
-  const templateBytes=legacyNotesTemplate?await legacyNotesTemplateBytes(legacyNotesTemplate,currentTemplate.bytes,
-    async sha=>(await source(context.repository,sha,productReleaseTemplatePath)).bytes):currentTemplate.bytes;
+  const previousTemplate = historicalNotesTemplate(async (sha,path)=>{
+    try { return (await source(context.repository,sha,path)).bytes; }
+    catch(error) {
+      if(error instanceof EvidenceReadError&&error.status===404)return null;
+      throw error;
+    }
+  },controllerIo);
+  const templateBytes=legacyNotesTemplate?await legacyNotesTemplateBytes(legacyNotesTemplate,currentTemplate.bytes,previousTemplate):currentTemplate.bytes;
   if (delivery.buildWorkflow !== cycle.buildWorkflow) fail('frozen delivery workflow');
   const workflow = await source(context.repository, cycle.sourceSha, delivery.buildWorkflow ?? defaultBuildWorkflow);
   const document = parseDocument(workflow.bytes.toString('utf8'), { uniqueKeys: true }); if (document.errors.length) fail('source workflow');
@@ -1304,7 +1336,10 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
       cycleId: cycle.id, requestKey: request.requestKey, sourceSha: cycle.sourceSha, controllerSha: cycle.controllerSha, buildRef: `refs/heads/${request.ref}`,
       runId: m.runId, runAttempt: m.attempt, toolLocks, delivery, deliverySha256: hash(deliverySource.bytes), templateSha256: hash(templateBytes),
       ...(conditional ? {noteFormat: 'conditional'} : {}),
-      ...(legacyNotesTemplate ? {legacyNotesTemplateSourceSha:legacyNotesTemplate.sourceSha} : {}),
+      ...(legacyNotesTemplate ? {
+        legacyNotesTemplateSourceSha:legacyNotesTemplate.sourceSha,
+        ...(legacyNotesTemplate.controllerSha ? {legacyNotesTemplateControllerSha:legacyNotesTemplate.controllerSha} : {}),
+      } : {}),
       units: [{ id: unit.id, version: unit.version, packageVersion, tag: unit.tag, builds, assets, contributors: [] }] }) as BuildPipelineRecord;
     await pipelineFrozenManifest(build, unit.id, directory);
     if (unit.manifestDigest !== null && unit.manifestDigest !== (await fileDigest(directory, 'artifact-manifest.json')).sha256) fail('frozen manifest changed');

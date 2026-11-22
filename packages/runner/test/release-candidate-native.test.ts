@@ -48,32 +48,34 @@ it('projects legacy web-flow cache at merge while preserving original actors and
 const { readReleaseRecords,writeReleaseRecords,releaseCommand } = await import(pathToFileURL(resolve('scripts/release-record.mjs')).href);
 const roots: string[] = [];
 afterEach(async () => { vi.unstubAllGlobals();for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
-it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-recovery', 'pending-recovery', 'legacy-pending-cancel', 'retained-legacy-manual',
+it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-recovery', 'pending-recovery', 'legacy-pending-cancel', 'retained-legacy-manual', 'retained-controller-manual',
   'compact', 'compact-registered', 'conditional-organization', 'conditional-compact', 'conditional-tampered'])('runs the native candidate adapter through protected state, real Git, upstream generation, fake SDK and same-PR editing: %s', async pinCase => {
   const root = await mkdtemp(join(tmpdir(), 'candidate-native-test-')); roots.push(root); registerOfflineFixtureRoot(root);
   const directory = join(root, 'source'), remote = join(root, 'remote.git'); await mkdir(directory);
   const env = isolatedBuildEnvironment(process.env, root), identity = { name: 'Fixture', email: 'fixture@example.invalid' };
   const git = async (...args: string[]) => (await promisify(execFile)('git', args, { cwd: directory, env, encoding: 'utf8', windowsHide: true })).stdout.trim();
   const conditional = pinCase.startsWith('conditional-');
-  const retainedManual = pinCase==='retained-legacy-manual';
+  const retainedController = pinCase==='retained-controller-manual';
+  const retainedManual = pinCase==='retained-legacy-manual'||retainedController;
   await git('init', '--initial-branch=main'); await git('config', 'user.name', identity.name); await git('config', 'user.email', identity.email);
   await mkdir(join(directory, '.github'));
   await mkdir(join(directory,'.github/workflows'));
   const compactRegistered=pinCase==='compact-registered'||pinCase==='conditional-compact';
   const compact=pinCase==='compact'||compactRegistered;
   if(compactRegistered)await writeFile(join(directory,'.github/steward-central-policy'),'central\n');
-  const explicitWorkflow=pinCase==='new-source'?'.github/workflows/fixture-release.yaml':undefined;
+  const explicitWorkflow=pinCase==='new-source'||retainedController?'.github/workflows/fixture-release.yaml':undefined;
   const buildWorkflow=explicitWorkflow??'.github/workflows/steward-release-publish.yml';
   const notesPath=compact?(compactRegistered?'docs/release-current.md':'.release-notes/root.md'):'.release-notes/app.md';
   for(const path of (compact?[buildWorkflow]:[buildWorkflow,'.github/workflows/steward-release-channels.yml','.github/release-template.md.mustache']))
-    if(pinCase!=='old-source'||!path.endsWith('release-template.md.mustache'))
+    if((pinCase!=='old-source'&&!retainedController)||!path.endsWith('release-template.md.mustache'))
     await writeFile(join(directory,path),'# offline adopted source\n');
   const legacyTemplate=retainedManual?await readFile('packages/core/test/fixtures/release-template-compact.mustache'):undefined;
-  if(legacyTemplate)await writeFile(join(directory,'.github/release-template.md.mustache'),legacyTemplate);
+  if(legacyTemplate&&!retainedController)await writeFile(join(directory,'.github/release-template.md.mustache'),legacyTemplate);
   const sourceControllerSha = (pinCase === 'new-source' ? 'f' : 'e').repeat(40);
+  const historicalControllerSha = retainedController ? 'd'.repeat(40) : sourceControllerSha;
   const publisherMatrix=explicitWorkflow?'    strategy:\n      matrix:\n        include:\n          - {unit: app, target: fixture}\n':'';
   if (pinCase !== 'missing-pin') await writeFile(join(directory,buildWorkflow),
-    `jobs:\n  build:\n${publisherMatrix}    steps:\n      - uses: actions/checkout@${'a'.repeat(40)}\n        with:\n          repository: splrad/steward\n          path: controller\n          ref: ${pinCase === 'conflicting-pin' ? 'b'.repeat(40) : sourceControllerSha}\n  sign:\n    uses: splrad/steward/.github/workflows/product-release.yml@${sourceControllerSha}\n`);
+    `jobs:\n  build:\n${publisherMatrix}    steps:\n      - uses: actions/checkout@${'a'.repeat(40)}\n        with:\n          repository: splrad/steward\n          path: controller\n          ref: ${pinCase === 'conflicting-pin' ? 'b'.repeat(40) : historicalControllerSha}\n  sign:\n    uses: splrad/steward/.github/workflows/product-release.yml@${historicalControllerSha}\n`);
   if(compact)await writeFile(join(directory,buildWorkflow),JSON.stringify({'run-name':'打包 ${{ inputs.operation_key }}',
     on:{workflow_dispatch:{inputs:Object.fromEntries(['cycle_id','operation_key','source_sha','controller_sha'].map(key=>[key,{required:true,type:'string'}]))}},
     jobs:{package:{name:'delivery/root',steps:[
@@ -140,9 +142,9 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     }
     else if((compact||path.startsWith('/repos/splrad/steward/'))&&path.includes('/contents/')) {
       const file=path.split('/contents/')[1]!,ref=url.searchParams.get('ref');
-      if(path.startsWith('/repos/splrad/steward/'))expect(pinCase==='old-source'?[sourceControllerSha,'f'.repeat(40)]:[sourceControllerSha]).toContain(ref);
+      if(path.startsWith('/repos/splrad/steward/'))expect(pinCase==='old-source'?[sourceControllerSha,'f'.repeat(40)]:[sourceControllerSha,historicalControllerSha]).toContain(ref);
       const bytes=path.startsWith('/repos/splrad/steward/')
-        ?await readFile(conditional?file:'packages/core/test/fixtures/release-template-compact.mustache')
+        ?await readFile(conditional||retainedController&&ref===sourceControllerSha?file:'packages/core/test/fixtures/release-template-compact.mustache')
         :Buffer.from(await git('show',ref+':'+file));
       const fileSha=path.startsWith('/repos/splrad/steward/')?createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex')
         :await git('rev-parse',ref+':'+file);
@@ -381,6 +383,11 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   if(retainedManual) {
     const templatePath='.github/release-template.md.mustache';
     await writeFile(join(directory,templatePath),await readFile('templates/repository/'+templatePath));
+    if (retainedController) {
+      const path = join(directory,buildWorkflow);
+      await writeFile(path,(await readFile(path,'utf8')).replaceAll(historicalControllerSha,sourceControllerSha));
+      await git('add','--',buildWorkflow);
+    }
     await git('add','--',templatePath);await git('commit','--signoff','-m','chore: adopt organization notes template');
     await git('push','--porcelain',remote,'HEAD:refs/heads/main');
     await git('switch','reviewed-notes');await git('merge','--no-ff','--no-edit','main');
@@ -508,12 +515,15 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     contributors:{contributors:[7,42,44].map(id=>expect.objectContaining({id}))},units:[{notesPath}]});
   if (compactRegistered && !conditional) expect(archive.session.identity.units).toMatchObject([{notesPath}]);
   if (legacyTemplate) {
-    expect(archive.legacyNotesTemplate).toEqual({sourceSha:B,sha256:createHash('sha256').update(legacyTemplate).digest('hex')});
+    expect(archive.legacyNotesTemplate).toEqual({sourceSha:B,sha256:createHash('sha256').update(legacyTemplate).digest('hex'),
+      ...(retainedController ? {controllerSha:historicalControllerSha} : {})});
     const {tag,version}=merged.cycles[0].value.units[0];
     const build: BuildPipelineRecord = { schemaVersion: 1, kind: 'build', repositoryId: request.repositoryId,
       fullName: request.repository, sourceSha: S, controllerSha: sourceControllerSha,
-      delivery: { schemaVersion: 1, units: delivery.units!, repositoryAuthors },
+      delivery: { schemaVersion: retainedController?2:1, units: delivery.units!, repositoryAuthors,
+        ...(explicitWorkflow ? {buildWorkflow:explicitWorkflow} : {}) },
       legacyNotesTemplateSourceSha:archive.legacyNotesTemplate.sourceSha,
+      ...(retainedController ? {legacyNotesTemplateControllerSha:historicalControllerSha} : {}),
       cycleId: merged.cycles[0].value.id, requestKey: 'a'.repeat(64), buildRef: 'refs/heads/steward/build/fixture',
       runId: 10, runAttempt: 1, toolLocks: {}, deliverySha256: 'b'.repeat(64), templateSha256:archive.legacyNotesTemplate.sha256,
       units: [{id:'app',tag,version,packageVersion:version,builds:[],assets:[{id:'app',name:`app-${version}.zip`,build:'fixture'}],contributors:[]}] };
@@ -522,6 +532,9 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     expect(frozen).toContain(`/releases/download/${tag}/app-${version}.zip`);
     expect(frozen).not.toContain('## 版本记录');
     expect(await pipelineExpectedNotes(build,'app',directory,directory)).toBe(frozen);
+    if (retainedController)
+      await expect(pipelineNotes({...build,legacyNotesTemplateControllerSha:sourceControllerSha},'app',directory))
+        .rejects.toThrow('legacy notes template source');
     const altered=JSON.parse(chunks[0].content);
     altered.legacyNotesTemplate.sourceSha=S;
     const content=JSON.stringify(altered);
