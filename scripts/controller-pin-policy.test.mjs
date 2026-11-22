@@ -30,7 +30,7 @@ function productRepository(t) {
   function pinFiles(pin, {
     pagePin = pin, reusablePin = pin, pagesJobPin, pagesStepPin, extraCheckout, publishBytes,
     checkoutPath = 'controller', extraReusablePin, extraControllerWorkflowPin, localReference, pagesRuntime = true,
-    extraControllerActionPin, extraRun,
+    extraControllerActionPin, extraRun, pagesWorkdir, selectWorkdir,
     omitPagesCheckout, omitWorkflowCheckout, nativePagesBuild = false,
   } = {}) {
     for (const name of workflows) {
@@ -61,6 +61,8 @@ function productRepository(t) {
           workflow.jobs[job] = {steps: job === omitPagesCheckout ? [] : [structuredClone(checkout)]};
           if (pagesRuntime) workflow.jobs[job].steps.push({run});
         }
+        if (pagesWorkdir) workflow.defaults = {run: {'working-directory': pagesWorkdir}};
+        if (selectWorkdir) workflow.jobs.select.steps.at(-1)['working-directory'] = selectWorkdir;
         workflow.env = {STEWARD_CONTROLLER_SHA: pagePin};
         if (pagesJobPin !== undefined) workflow.jobs.sample.env = {STEWARD_CONTROLLER_SHA: pagesJobPin};
         if (pagesStepPin !== undefined) workflow.jobs.sample.steps[0].env = {STEWARD_CONTROLLER_SHA: pagesStepPin};
@@ -101,6 +103,19 @@ test('requires forward promotion and consistent Steward references when LayerSca
   const checkoutMutation = pinFiles(promoted, {extraRun: {'working-directory': 'controller', run: 'git restore -- package.json'}});
   const directFileMutation = pinFiles(promoted, {extraRun: {run: 'Remove-Item controller/build.cache'}});
   const readOnlyRun = pinFiles(promoted, {extraRun: {'working-directory': 'controller', run: 'git status --short'}});
+  const safeWorkspaceRoot = pinFiles(promoted, {selectWorkdir: '${{ github.workspace }}'});
+  const wrongPagesDirectory = pinFiles(promoted, {selectWorkdir: 'product'});
+  const inheritedPagesDirectory = pinFiles(promoted, {pagesWorkdir: 'product'});
+  const unresolvedDirectory = pinFiles(promoted, {
+    extraRun: {'working-directory': '${{ inputs.workdir }}', run: 'git status --short'},
+  });
+  const declaredMutations = [
+    {run: 'echo unexpected > ./controller/build.cache'},
+    {run: 'tar -xf fixture.tar -C controller'},
+    {run: '[IO.File]::WriteAllText("controller/build.cache", "unexpected")'},
+    {'working-directory': 'controller', run: 'Remove-Item build.cache'},
+    {'working-directory': '${{ github.workspace }}/controller', run: 'git restore -- package.json'},
+  ].map(extraRun => pinFiles(promoted, {extraRun}));
   const missingPagesCheckout = pinFiles(promoted, {omitPagesCheckout: 'select'});
   const nativeBuildWithoutController = pinFiles(promoted, {omitPagesCheckout: 'build', nativePagesBuild: true});
   const controllerBuildWithoutCheckout = pinFiles(promoted, {omitPagesCheckout: 'build'});
@@ -140,7 +155,12 @@ test('requires forward promotion and consistent Steward references when LayerSca
   assert.throws(() => validate(prior, mixedAction), /VALIDATION_CONTROLLER_PIN_MISMATCH/);
   assert.throws(() => validate(prior, checkoutMutation), /VALIDATION_CONTROLLER_MOUNT_MUTATION/);
   assert.throws(() => validate(prior, directFileMutation), /VALIDATION_CONTROLLER_MOUNT_MUTATION/);
+  for (const head of declaredMutations) assert.throws(() => validate(prior, head), /VALIDATION_CONTROLLER_MOUNT_MUTATION/);
   assert.doesNotThrow(() => validate(prior, readOnlyRun));
+  assert.doesNotThrow(() => validate(prior, safeWorkspaceRoot));
+  for (const head of [wrongPagesDirectory, inheritedPagesDirectory, unresolvedDirectory]) {
+    assert.throws(() => validate(prior, head), /VALIDATION_CONTROLLER_RUN_DIRECTORY/);
+  }
   assert.throws(() => validate(prior, missingPagesCheckout), /VALIDATION_CONTROLLER_CHECKOUT_MISSING/);
   assert.doesNotThrow(() => validate(prior, nativeBuildWithoutController));
   assert.throws(() => validate(prior, controllerBuildWithoutCheckout), /VALIDATION_CONTROLLER_CHECKOUT_MISSING/);

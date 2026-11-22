@@ -19,8 +19,22 @@ const managedWorkflows = [
 const isPin = value => typeof value === 'string' && /^[0-9a-f]{40}$/.test(value);
 
 const controllerAction = /^splrad\/steward(?:\/|@)/i;
+const isCheckout = uses => typeof uses === 'string' && uses.toLowerCase().startsWith('actions/checkout@');
 const gitMutation = /\bgit(?:\.exe)?\b[^;&|]*?\b(?:clone|checkout|switch|reset|restore|worktree|pull|update-ref|merge|rebase|fetch)\b/i;
-const fileMutation = /\b(?:rm|cp|mv|rmdir|del|remove-item|move-item|copy-item|rsync|set-content|add-content|out-file|ln)\b/i;
+const fileMutation = /\b(?:rm|cp|mv|rmdir|del|remove-item|move-item|copy-item|rsync|set-content|add-content|out-file|ln|tar|unzip|expand-archive)\b/i;
+const fileWriteCall = /\b(?:write|append)all(?:text|bytes|lines)\b|\bopen\s*\([^)]*,\s*['"][wax][+bt]*['"]/i;
+const mountMention = /(?:^|[\s"'=:/(\\])(?:configuration-)?controller(?=$|[\s"'/:)\\;|&])/i;
+const mountRedirect = />>?\s*["']?(?:\.[/\\])?(?:configuration-)?controller(?=$|[/\\\s"';|&])/i;
+const controllerInvocation = /\bnode(?:\.exe)?\s+['"]?(?:\.\/)?controller[/\\]/i;
+// The protected working directories admit the existing locked setup and archive-reader commands.
+const controllerWorkdirCommands = new Set([
+  'npm ci --ignore-scripts --no-audit --no-fund',
+  'mise bin-paths node >> "$GITHUB_PATH"',
+  '$toolPaths = mise bin-paths\nif ($LASTEXITCODE) { exit $LASTEXITCODE }\n$toolPaths | Add-Content -LiteralPath $env:GITHUB_PATH',
+  '$toolPaths = mise bin-paths\nif ($LASTEXITCODE) { exit $LASTEXITCODE }\n$toolPaths | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8',
+  'uv sync --project tools/template --frozen --only-group release-inspection --no-build\nif ($LASTEXITCODE) { exit $LASTEXITCODE }',
+  archiveReaderCommand,
+]);
 
 function isControllerMount(value) {
   if (typeof value !== 'string') return false;
@@ -28,12 +42,23 @@ function isControllerMount(value) {
   return controllerMounts.some(mount => normalized === mount || normalized.startsWith(mount + '/'));
 }
 
-function directlyMutatesController(run, directory) {
-  if (typeof run !== 'string') return false;
-  const mentionsMount = /(?:^|[\s"'=:/(\\])(?:configuration-)?controller(?=$|[\s"'/:)\\;|&])/i;
+function workspaceDirectory(value) {
+  if (value === undefined || value === null) return '.';
+  if (typeof value !== 'string') return null;
+  const relative = value.replaceAll('\\', '/').replace(/^\$\{\{\s*github\.workspace\s*\}\}(?:\/+|$)/, '');
+  const path = posix.normalize(relative);
+  if (relative.includes('${{') || /^(?:\/|[a-z]:)/i.test(relative) || path === '..' || path.startsWith('../')) return null;
+  return path.replace(/\/$/, '');
+}
+
+function violatesControllerMountPolicy(run, directory) {
+  if (isControllerMount(directory)) {
+    const command = run.replaceAll('\r\n', '\n').trimEnd();
+    return !controllerWorkdirCommands.has(command) && !/^git status(?: --short| --porcelain)?$/.test(command);
+  }
   return run.split(/\r?\n/).some(line =>
-    (gitMutation.test(line) && isControllerMount(directory))
-    || (mentionsMount.test(line) && (gitMutation.test(line) || fileMutation.test(line))));
+    mountRedirect.test(line)
+    || (mountMention.test(line) && (gitMutation.test(line) || fileMutation.test(line) || fileWriteCall.test(line))));
 }
 
 function archiveReaderKey(checkout, install, collect) {
@@ -59,6 +84,7 @@ function readWorkflowPins(repo, revision, path, archiveReaders) {
   const primaryCheckoutJobs = new Set();
   for (const [jobId, job] of jobs) {
     const steps = job.steps ?? [];
+    const mountsController = steps.some(step => isCheckout(step.uses) && isControllerMount(step.with?.path));
     let jobController;
     // The managed workflows declare controller entry points directly.
     if ([job, ...steps].some(entry => typeof entry.uses === 'string' && entry.uses.startsWith('./'))) {
@@ -78,19 +104,25 @@ function readWorkflowPins(repo, revision, path, archiveReaders) {
           }
         }
       }
-      const runDirectory = step['working-directory'] ?? job.defaults?.run?.['working-directory']
-        ?? workflow.defaults?.run?.['working-directory'];
-      if (!jobController && typeof step.run === 'string' &&
-        (/\bnode(?:\.exe)?\s+['"]?(?:\.\/)?controller[\/\\]/i.test(step.run)
-          || (runDirectory === controllerPath && /\bnode(?:\.exe)?\s+['"]?(?:\.\/)?scripts[\/\\]/i.test(step.run)))) {
-        throw Error('VALIDATION_CONTROLLER_CHECKOUT_MISSING ' + path);
-      }
-      if (directlyMutatesController(step.run, runDirectory)) {
-        throw Error('VALIDATION_CONTROLLER_MOUNT_MUTATION ' + path);
+      if (typeof step.run === 'string') {
+        const runDirectory = workspaceDirectory(step['working-directory'] ?? job.defaults?.run?.['working-directory']
+          ?? workflow.defaults?.run?.['working-directory']);
+        const fromWorkspace = controllerInvocation.test(step.run);
+        if ((mountsController && runDirectory === null) || (fromWorkspace && runDirectory !== '.')) {
+          throw Error('VALIDATION_CONTROLLER_RUN_DIRECTORY ' + path);
+        }
+        if (!jobController && (fromWorkspace
+          || (runDirectory?.toLowerCase() === controllerPath
+            && /\bnode(?:\.exe)?\s+['"]?(?:\.\/)?scripts[/\\]/i.test(step.run)))) {
+          throw Error('VALIDATION_CONTROLLER_CHECKOUT_MISSING ' + path);
+        }
+        if (violatesControllerMountPolicy(step.run, runDirectory)) {
+          throw Error('VALIDATION_CONTROLLER_MOUNT_MUTATION ' + path);
+        }
       }
       if (typeof step.uses !== 'string') continue;
       if (controllerAction.test(step.uses)) controllerPins.push(step.uses.slice(step.uses.lastIndexOf('@') + 1));
-      if (!step.uses.toLowerCase().startsWith('actions/checkout@')) continue;
+      if (!isCheckout(step.uses)) continue;
       const repository = step.with?.repository;
       if (typeof repository === 'string' && repository.includes('${{')) {
         throw Error('VALIDATION_CONTROLLER_CHECKOUT_REPOSITORY_EXPRESSION ' + path);
