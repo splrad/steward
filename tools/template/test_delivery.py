@@ -44,7 +44,9 @@ class DeliveryTests(unittest.TestCase):
         (self.product/'VERSION').write_text('9.2.2\n');(self.product/'manual.txt').write_text('keep product\n')
         self.base = self.commit(self.product,'Adopt reviewed native Copier output')
         self.git(self.root,'clone','--bare',str(self.product),str(self.remote))
-        path=self.central/'templates/repository/AGENTS.md';path.write_text(path.read_text(encoding='utf-8')+'\nShared v2.\n',encoding='utf-8')
+        path = self.central / bridge.REVIEW_RULES_SOURCE
+        public, section = bridge.review_rules_sections(path.read_bytes())
+        path.write_bytes(public + b'\nShared v2.\n' + section)
         self.new=self.commit(self.central,'Second template');self.git(self.central,'tag','v2.0.0')
         self.request={'repository':'splrad/fixture','repositoryId':12,'defaultBranch':'develop','runId':51,
                       'workflowSha':self.new,'templateSha':self.new,'bot':self.bot,'central':str(self.central),'temporaryRoot':str(self.root)}
@@ -106,6 +108,25 @@ class DeliveryTests(unittest.TestCase):
         before=len(self.api.mutations);again=self.run_delivery();self.assertEqual(again['status'],'UNCHANGED')
         self.assertEqual(len(self.api.mutations),before)
         self.assertFalse(any('/pulls/' in p for _,p,_ in self.api.mutations))
+
+    def test_signed_delivery_preserves_repository_rules_and_rejects_damage_without_writes(self):
+        path = self.product / bridge.REVIEW_RULES_PATH
+        public, _ = bridge.review_rules_sections(path.read_bytes())
+        section = bridge.REVIEW_RULES_START + '\n### 发行\n\n- 保留逐字节内容。\n'.encode() + bridge.REVIEW_RULES_FINISH
+        self.edit('develop', 'AGENTS.md', (public + section).decode(), newline='\n')
+        first = self.run_delivery()
+        self.assertEqual(first['status'], 'DELIVERED')
+        blob = bridge.git(self.remote, ['show', first['head'] + ':AGENTS.md'], os.environ)
+        expected_public, _ = bridge.review_rules_sections((self.central / bridge.REVIEW_RULES_SOURCE).read_bytes())
+        self.assertEqual(blob, expected_public + section)
+        self.assertEqual(self.run_delivery()['status'], 'UNCHANGED')
+        malformed = (expected_public + section + b'After the end marker\n').decode()
+        human = self.edit(BRANCH, 'AGENTS.md', malformed, newline='\n')
+        writes = len(self.api.mutations)
+        with self.assertRaises(bridge.TemplateConflict):
+            self.run_delivery()
+        self.assertEqual(self.head(), human)
+        self.assertEqual(len(self.api.mutations), writes)
 
     def test_initial_adoption_preserves_full_conflict_and_resolves_in_the_same_pr(self):
         self.git(self.product,'rm','.copier-answers.yml')

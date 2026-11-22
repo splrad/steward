@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import {dependencyMode,loadPolicy,inventory,checkInventory,highFindings,requireOnline,actionFindings,newActions,newPackageFindings,newTools,assertInputScope,assertGovernanceOnlyScope,assertCopierInputs,licenseFacts} from '../private-dependency-policy.mjs';
 import {upstreamReference,run,assertVerifiedActionTag,main,docker} from '../validation-private-dependencies.mjs';
 import {nodeFindings,miseFindings,miseVersions,archiveInventory} from '../private-tool-security.mjs';
+import {npmToolLock} from '../npm-tool-lock.mjs';
 import {readFile,writeFile,mkdtemp,rm} from 'node:fs/promises';
 import YAML from 'yaml';
 import {join} from 'node:path';
@@ -143,7 +144,7 @@ test('tool execution errors are not clean scan results',()=>{
 test('workflow keeps private execution under dependency job, fixed policy source and native review elsewhere',async()=>{
  const workflow=YAML.parse(await readFile(new URL('../../.github/workflows/pr-validation-native.yml',import.meta.url),'utf8'));
  assert.deepEqual(Object.keys(workflow.jobs),['scope','source','governance','dependency','docs','summary']);
- assert.equal(workflow.jobs.scope.outputs.source,"${{ steps.identity.outputs.workflows != '[]' && 'true' || steps.identity.outputs.productApplicable == 'false' && 'false' || steps.scope.outputs.source }}");
+ assert.equal(workflow.jobs.scope.outputs.source,"${{ steps.identity.outputs.productApplicable }}");
  assert.equal(workflow.jobs.source.if,"needs.scope.outputs.source == 'true'");
  const steps=workflow.jobs.dependency.steps;
  assert.equal(steps.find(s=>s.uses?.startsWith('actions/dependency-review-action@')).if,"needs.scope.outputs.dependency-mode == 'native'");
@@ -215,6 +216,31 @@ with tarfile.open(sys.argv[1],'w:gz') as archive:
   assert.throws(()=>archiveInventory(python,archive,run,process.env),/TOOL_FAILED/);
  }finally{await rm(directory,{recursive:true,force:true});}
 });
+test('npm tool manifest and aube inventory must match the exact registry release',()=>{
+ const version='12.2.3',id='npm@'+version,integrity='sha512-'+Buffer.alloc(64,1).toString('base64');
+ const manifest={name:'mise-npm-install',private:true,dependencies:{npm:version}};
+ const supplier={name:'npm',version,engines:{node:'>=26.0.0'},bundleDependencies:['cacache','semver'],
+  dist:{integrity,tarball:'https://registry.npmjs.org/npm/-/npm-'+version+'.tgz'}};
+ const lock={
+  lockfileVersion:'9.0',
+  settings:{autoInstallPeers:true,excludeLinksFromLockfile:false},
+  importers:{'.':{dependencies:{npm:{specifier:version,version}}}},
+  packages:{[id]:{resolution:{integrity},engines:supplier.engines,hasBin:true}},
+  snapshots:{[id]:{bundledDependencies:['semver','cacache']}},
+ };
+ const validate=(pkg,document)=>npmToolLock(JSON.stringify(pkg),YAML.stringify(document),version,supplier);
+ assert.equal(validate(manifest,lock),integrity);
+ assert.throws(()=>validate({...manifest,scripts:{test:'echo unexpected'}},lock),/NPM_TOOL_MANIFEST/);
+ for(const section of ['importers','packages','snapshots']){
+  const extra={...lock,[section]:{...lock[section],unexpected:{}}};
+  assert.throws(()=>validate(manifest,extra),/NPM_TOOL_INVENTORY/);
+ }
+ const wrongBundle={...lock,snapshots:{[id]:{bundledDependencies:['cacache','unexpected']}}};
+ assert.throws(()=>validate(manifest,wrongBundle),/NPM_BUNDLED_INVENTORY/);
+ const wrongDigest={...lock,packages:{[id]:{...lock.packages[id],resolution:{integrity:'sha512-unknown'}}}};
+ assert.throws(()=>validate(manifest,wrongDigest),/NPM_TOOL_INVENTORY/);
+});
+
 test('preflight token failure still writes a failed evidence summary',async()=>{
  const directory=await mkdtemp(join(tmpdir(),'private-preflight-test-'));
  try{

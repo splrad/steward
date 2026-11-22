@@ -26,7 +26,20 @@ const file=(path:string,value:unknown,previousSha256:string|null=null)=>{
   const content=typeof value==='string'?value:JSON.stringify(value)+'\n';return {path,content,sha256:hash(content),previousSha256};
 };
 const original=(execFile as any)[promisify.custom] as (...args:any[])=>Promise<{stdout:Buffer;stderr:Buffer}>;
-afterEach(async()=>{vi.restoreAllMocks();for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
+let activeRace: Promise<void> | undefined;
+// These cases seed a real repository, race two writers and verify the remote tree.
+// Keep every per-process bound, but allow the whole transaction to span several of them.
+const raceTimeout = process.platform === 'win32' ? 90_000 : 30_000;
+function gitRace(name: string, run: () => Promise<void>) {
+  it(name, () => (activeRace = run()), raceTimeout);
+}
+afterEach(async () => {
+  // Vitest can time out the test while its promise and Git children are still running.
+  if (activeRace) await Promise.allSettled([activeRace]);
+  activeRace = undefined;
+  vi.restoreAllMocks();
+  for (const root of roots.splice(0)) await rm(root, {recursive:true, force:true});
+}, raceTimeout);
 async function fixture(){
   const root=await mkdtemp(join(tmpdir(),'state-write-'));roots.push(root);registerOfflineFixtureRoot(root);
   const seed=join(root,'seed'),remote=join(root,'remote.git'),profile=join(root,'profile');await mkdir(seed);await mkdir(profile);
@@ -72,7 +85,7 @@ it('preserves the complete existing tree and uses the observed ref as the only p
   expect(b.status).toBe('APPLIED');expect(await f.show(b.head,'generated/old.md')).toBe('Earlier');
   expect(await f.git('-C',f.remote,'show','-s','--format=%P',b.head)).toBe(a.head);
 });
-it('reconciles two concurrent App-owned directories without replaying the losing full tree',async()=>{
+gitRace('reconciles two concurrent App-owned directories without replaying the losing full tree',async()=>{
   const f=await fixture(),path=`quality/1/${S}.md`,initial=await writeReleaseRecords(f.request('seed-state',[file(path,'Original\n')],null,'quality'));
   let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});let arrivals=0;
   const pushes:string[][]=[];
@@ -80,17 +93,21 @@ it('reconciles two concurrent App-owned directories without replaying the losing
     if(args.includes('push')){pushes.push(args);if(++arrivals<=2){if(arrivals===2)release();await gate;}}
     return run();
   });
-  const [a,b]=await Promise.all([
+  const writers=await Promise.allSettled([
     writeReleaseRecords(f.request('quality',[file(`quality/2/${S}.md`,'Chinese findings\n')],initial.head,'quality')),
     writeReleaseRecords(f.request('other-quality',[file(`quality/50/${S}.md`,'Independent findings\n')],initial.head,'quality')),
-  ]);
+  ].map(writer => writer.finally(release)));
+  const [a,b]=writers.map(outcome => {
+    if (outcome.status === 'rejected') throw outcome.reason;
+    return outcome.value;
+  });
   expect([a.status,b.status]).toEqual(['APPLIED','APPLIED']);
   const head=(await f.head('steward/governance-state'))!;
   expect(await f.show(head,path)).toBe('Original');expect(await f.show(head,`quality/2/${S}.md`)).toBe('Chinese findings');expect(await f.show(head,`quality/50/${S}.md`)).toBe('Independent findings');
   expect(await f.git('-C',f.remote,'rev-list','--count',head)).toBe('3');
   expect(pushes.length).toBeGreaterThanOrEqual(3);expect(pushes.every(args=>!args.some(arg=>arg.includes('force')))).toBe(true);
 });
-it('stops on a same-path conflict and preserves the other writer value',async()=>{
+gitRace('stops on a same-path conflict and preserves the other writer value',async()=>{
   const f=await fixture(),path=`quality/1/${S}.md`,old=file(path,'Original\n'),a=await writeReleaseRecords(f.request('a',[old],null,'quality'));
   let raced=false;
   intercept(async(args,_options,run)=>{

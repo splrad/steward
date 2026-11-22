@@ -3,11 +3,11 @@ import {join,resolve,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import YAML from 'yaml';
-import {NativeEvidenceReader,jobFact,originalJobExecutions,activeMaintenanceWorkflows,maintenanceJobKeys,maintenanceDisposition,maintenanceFailed,decodeMaintenanceRecord,assertMaintenanceProgress} from '../packages/runner/dist/index.js';
+import {jobFact,originalJobExecutions,activeMaintenanceWorkflows,maintenanceJobKeys,maintenanceDisposition,maintenanceFailed,decodeMaintenanceRecord,assertMaintenanceProgress} from '../packages/runner/dist/index.js';
 import {writeReleaseRecords} from './release-record.mjs';
 import {centralRegistrationWorkflow, registrationRunName} from './repository-registration-policy.mjs';
 
-const repository='splrad/steward',repositoryId=1296724484;
+const repositoryId=1296724484;
 const policyRoot=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const check=(value,code)=>{if(!value)throw Error('MAINTENANCE_'+code);};
 const hash=value=>createHash('sha256').update(value).digest('hex');
@@ -70,21 +70,6 @@ function jobsProjection(raw,run,definition) {
     check(key,'UNREGISTERED_JOB');
     return {id:j.id,key,matrixIndex:null,attempt:j.run_attempt,conclusion:j.conclusion,empty:null,found:null};
   }).sort((a,b)=>a.attempt-b.attempt||a.id-b.id);
-}
-
-/** Read all pages and bisect GitHub's filtered 1000-result windows. */
-export async function maintenanceRunWindow(reader,workflowId,branch,start,end) {
-  check(positive(workflowId)&&Number.isSafeInteger(start)&&Number.isSafeInteger(end)&&start<=end,'WINDOW');
-  const path=`actions/workflows/${workflowId}/runs?branch=${encodeURIComponent(branch)}&created=${new Date(start*1000).toISOString()}..${new Date(end*1000).toISOString()}`;
-  const first=await reader.json(path+'&per_page=100');check(Number.isSafeInteger(first.total_count)&&first.total_count>=0,'INVENTORY');
-  if(first.total_count>=1000) {
-    check(start<end,'WINDOW_SATURATED');const mid=Math.floor((start+end)/2);
-    return [...await maintenanceRunWindow(reader,workflowId,branch,start,mid),...await maintenanceRunWindow(reader,workflowId,branch,mid+1,end)];
-  }
-  const runs=await reader.pages(path,'workflow_runs');check(runs.length<1000,'WINDOW_CHANGED');
-  check(runs.every(r=>r.workflow_id===workflowId&&r.repository?.id===repositoryId&&r.head_repository?.id===repositoryId
-    &&r.head_branch===branch&&Date.parse(utc(r.created_at))>=start*1000&&Date.parse(utc(r.created_at))<(end+1)*1000),'INVENTORY_SOURCE');
-  return runs;
 }
 
 export async function recoverMaintenanceRun({reader,io,workflow,definition,branch,runId,store,coordinator,expectedRun,beforePost,wait=ms=>new Promise(resolve=>setTimeout(resolve,ms)),now=Date.now}) {
@@ -155,7 +140,6 @@ export function maintenanceGitStore({refresh,writeDirectory,defaultBranch,token,
   const current=async()=>{const state=await refresh();check(state.snapshot.repositoryId===repositoryId&&state.snapshot.targetRef==='steward/release-state','STATE_SCOPE');return state;};
   const find=(state,id)=>state.snapshot.domainRecords.find(r=>r.path===`maintenance/${id}.json`)??null;
   return {
-    async list(){return (await current()).snapshot.domainRecords.filter(r=>/^maintenance\/[1-9][0-9]*\.json$/.test(r.path)).map(r=>r.value);},
     async load(id){return find(await current(),id)?.value??null;},
     async save(value,expected) {
       const path=`maintenance/${value.runId}.json`,content=JSON.stringify(value)+'\n';decodeMaintenanceRecord(Buffer.from(content),repositoryId,path);
@@ -171,41 +155,4 @@ export function maintenanceGitStore({refresh,writeDirectory,defaultBranch,token,
       const readback=await current();check(readback.snapshot.currentPaths.includes(path)&&find(readback,value.runId)?.content===content,'ARCHIVE_READBACK');
     }
   };
-}
-
-/** One bounded pass over fixed central consumers; no dispatch, enable, product target or arbitrary command. */
-export async function serviceMaintenance({io,store,defaultBranch,coordinator},now=Date.now) {
-  const started=now(),deadline=started+5*60_000,counts={observed:0,recovered:0,waiting:0,exhausted:0,unknown:0},errors=new Set();let requests=0;
-  const bounded={request:async(method,path,...args)=>{check(now()<deadline&&requests++<1000,'READ_BUDGET');check(path==='/repos/splrad/steward'||path.startsWith('/repos/splrad/steward/'),'API_SCOPE');return io.request(method,path,...args);}};
-  const reader=new NativeEvidenceReader(bounded,repository);
-  const repoResponse=await bounded.request('GET','/repos/splrad/steward');check(repoResponse.status===200,'REPOSITORY_READ');
-  const repo=JSON.parse(Buffer.from(repoResponse.bytes).toString('utf8'));check(repo.id===repositoryId&&repo.full_name===repository&&repo.default_branch===defaultBranch&&!repo.archived&&!repo.disabled,'REPOSITORY');
-  const origin=await reader.json(`actions/runs/${coordinator.runId}`);
-  check(origin.id===coordinator.runId&&origin.run_attempt===coordinator.runAttempt&&origin.repository?.id===repositoryId&&origin.head_repository?.id===repositoryId
-    &&origin.head_branch===defaultBranch&&origin.head_sha===coordinator.controllerSha&&origin.path==='.github/workflows/release.yml'
-    &&['schedule','workflow_dispatch'].includes(origin.event),'COORDINATOR');
-  const known=await store.list(),start=Math.floor(started/1000)-30*24*3600,end=Math.floor(started/1000),candidates=[];
-  for(const file of activeMaintenanceWorkflows) {
-    try {
-      const definition=await maintenanceDefinition(file),workflow=await reader.json(`actions/workflows/${file}`);
-      check(positive(workflow.id)&&workflow.path===`.github/workflows/${file}`,'WORKFLOW_ID');
-      if(workflow.state!=='active'){counts.waiting++;continue;}
-      const runs=await maintenanceRunWindow(reader,workflow.id,defaultBranch,start,end);
-      const ids=new Set(runs.filter(r=>r.status==='completed'&&maintenanceFailed(r.conclusion)&&!isRegistrationRun(r)).map(r=>r.id));
-      for(const r of known)if(r.workflowFile===file){check(r.workflowId===workflow.id,'WORKFLOW_REPLACED');ids.add(r.runId);}
-      for(const runId of ids)candidates.push({workflow,definition,runId,lastObserved:known.find(r=>r.runId===runId)?.observedAt??'1970-01-01T00:00:00.000Z'});
-    }catch{counts.unknown++;errors.add('MAINTENANCE_DISCOVERY_UNAVAILABLE');}
-  }
-  candidates.sort((a,b)=>a.lastObserved.localeCompare(b.lastObserved)||a.runId-b.runId);
-  for(const candidate of candidates) {
-    if(now()>=deadline||requests>=1000){counts.unknown++;errors.add('MAINTENANCE_READ_BUDGET');break;}
-    try {
-      const result=await recoverMaintenanceRun({...candidate,reader,io:bounded,branch:defaultBranch,store,coordinator,now});counts.observed++;
-      if(result.status==='ACCEPTED')counts.recovered++;
-      else if(['EXHAUSTED','EXPIRED'].includes(result.status)){counts.exhausted++;errors.add('MAINTENANCE_RECOVERY_EXHAUSTED');}
-      else if(result.status==='UNKNOWN'){counts.unknown++;errors.add('MAINTENANCE_EVIDENCE_REQUIRED');}
-      else counts.waiting++;
-    }catch{counts.unknown++;errors.add('MAINTENANCE_EVIDENCE_REQUIRED');}
-  }
-  return {counts,errorCodes:[...errors].sort(),requests,elapsedMs:now()-started};
 }
