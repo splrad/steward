@@ -21,18 +21,19 @@ const commit=(value:unknown)=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(val
 const positive=(value:unknown)=>Number.isSafeInteger(value)&&Number(value)>0;
 
 /** The policy digest covers enforcement fields. The caller binds the native ruleset ID separately. */
-export function bootstrapRulePolicyDigest(rule:any,controllerSha?:string):string {
+export function bootstrapRulePolicyDigest(rule:any,validatorSha?:string):string {
   const value=structuredClone(rule.conditions);
   check(value?.repository_name&&Array.isArray(value.repository_name.exclude),'RULE_CONDITIONS');
   value.repository_name.exclude=[];
   const rules=structuredClone(rule.rules);
-  if(controllerSha!==undefined) {
+  if(validatorSha!==undefined) {
     const required=rules.filter((r:any)=>r.type==='workflows');
-    check(commit(controllerSha)&&required.length===1&&Array.isArray(required[0].parameters?.workflows),'CONTROLLER_WORKFLOW');
+    check(commit(validatorSha)&&required.length===1&&Array.isArray(required[0].parameters?.workflows),'CONTROLLER_WORKFLOW');
     const matches=required[0].parameters.workflows.filter((w:any)=>w.repository_id===1296724484&&w.path==='.github/workflows/pr-validation-native.yml');
     check(matches.length===1,'CONTROLLER_WORKFLOW');
     const workflow=matches[0];
-    check(workflow.repository_id===1296724484&&workflow.path==='.github/workflows/pr-validation-native.yml'&&workflow.sha===controllerSha,'CONTROLLER_WORKFLOW');
+    check(workflow.sha===validatorSha&&!Object.hasOwn(workflow,'ref'),'CONTROLLER_WORKFLOW');
+    // The stored bootstrap digest predates independent validator adoption.
     workflow.sha='<controller-sha>';
   }
   return digest({target:rule.target,enforcement:rule.enforcement,bypass_actors:rule.bypass_actors,rules,conditions:value});
@@ -57,6 +58,7 @@ export function bootstrapCommitOrigin(first:any,content:any,record:BootstrapSour
 
 export async function bootstrapRepository(repository:BootstrapRepository,source:BootstrapSource,bindings:readonly BootstrapRule[],
   io:BootstrapIO,services:{requirePrivate?:boolean;verifySource:(source:BootstrapSource)=>Promise<void>;
+    verifyValidator?:(validatorSha:string)=>Promise<void>;
     verifyProtection:(repository:BootstrapRepository)=>Promise<void>;
     archive:(record:BootstrapRecovery,origin:'app'|'external')=>Promise<string>;
     identity:{name:string;email:string;id:number};now:()=>string}) {
@@ -103,8 +105,15 @@ export async function bootstrapRepository(repository:BootstrapRepository,source:
   const rule=async(id:number)=>{
     const binding=bindings.find(b=>b.ruleId===id);check(binding,'UNREGISTERED_RULE');
     const value=await native('GET',`/orgs/splrad/rulesets/${id}`);
-    check(value.id===id&&value.source_type==='Organization'&&value.source==='splrad'&&value.target==='branch'&&value.enforcement==='active'
-      &&bootstrapRulePolicyDigest(value,binding!.controllerWorkflow?source.controllerSha:undefined)===binding!.policyDigest,'RULE_POLICY_CHANGED');
+    check(value.id===id&&value.source_type==='Organization'&&value.source==='splrad'&&value.target==='branch'&&value.enforcement==='active','RULE_POLICY_CHANGED');
+    let validatorSha:string|undefined;
+    if(binding!.controllerWorkflow) {
+      validatorSha=value.rules.find((r:any)=>r.type==='workflows')?.parameters?.workflows?.find((w:any)=>
+        w.repository_id===1296724484&&w.path==='.github/workflows/pr-validation-native.yml')?.sha;
+      check(validatorSha&&commit(validatorSha)&&services.verifyValidator,'CONTROLLER_WORKFLOW');
+      await services.verifyValidator!(validatorSha!);
+    }
+    check(bootstrapRulePolicyDigest(value,validatorSha)===binding!.policyDigest,'RULE_POLICY_CHANGED');
     check(value.conditions.repository_name.exclude.every((name:unknown)=>typeof name==='string')&&value.conditions.ref_name,'RULE_CONDITIONS');return value;
   };
   let recovery:BootstrapRecovery;

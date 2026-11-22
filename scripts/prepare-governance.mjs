@@ -51,7 +51,8 @@ export function prepareGovernance(snapshot) {
   const workflowRows = structuredClone(workflows?.parameters.workflows ?? []);
   const matching = workflowRows.filter(row => row.repository_id === 1296724484 && row.path === '.github/workflows/pr-validation-native.yml');
   if (matching.length > 1) fail('WORKFLOW_COLLISION');
-  const binding = { repository_id: 1296724484, path: '.github/workflows/pr-validation-native.yml', sha: policySha };
+  const binding = { repository_id: 1296724484, path: '.github/workflows/pr-validation-native.yml',
+    sha: digest(matching[0]?.sha)&&!Object.hasOwn(matching[0],'ref')?matching[0].sha:policySha };
   if (matching.length) Object.assign(matching[0], binding); else workflowRows.push(binding);
   if (matching[0]) delete matching[0].ref;
   const foundation = { name: base.name, target: 'branch', enforcement: 'active', conditions: {

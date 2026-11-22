@@ -39,6 +39,7 @@ function fixture() {
   }};
   const services={identity,now:()=>new Date('2026-10-29T00:00:00Z').toISOString(),
     async verifySource(s:any){state.sourceChecks.push(s);if(state.badSource)throw Error('bad source');},
+    async verifyValidator(pin:string){if(![source.controllerSha,state.retainedValidator].includes(pin))throw Error('BOOTSTRAP_VALIDATOR_ANCESTRY');},
     async verifyProtection(){expect(rules[7].conditions.repository_name.exclude).not.toContain('fixture');if(state.badProtection)throw Error('protection');},
     async archive(record:any,origin:any){if(state.badArchive)throw Error('archive');state.archives.push({record,origin});return 'c'.repeat(40);}};
   return {repository,source,rules,bindings,state,io,services,run:()=>bootstrapRepository(repository,source,bindings,io,services)};
@@ -51,11 +52,12 @@ it('creates durable recovery before a narrow exclusion, then Contents first comm
   expect(f.state.writes.filter((w:any)=>w.path.includes('/git/refs'))).toEqual([]);
   expect(await f.run()).toEqual({status:'EXISTING'});expect(f.state.archives).toHaveLength(1);
 });
-it('binds required workflow to the verified controller while retaining every other rule-policy field',async()=>{
+it('binds the retained required workflow independently while retaining every other rule-policy field',async()=>{
   const f=fixture(),rule=f.rules[7];
   rule.rules.push({type:'workflows',parameters:{do_not_enforce_on_create:true,workflows:[{repository_id:1296724484,path:'.github/workflows/pr-validation-native.yml',sha:f.source.controllerSha}]}});
   const policy=bootstrapRulePolicyDigest(rule,f.source.controllerSha);
   Object.assign(f.bindings[0]!,{policyDigest:policy,controllerWorkflow:true});
+  f.state.retainedValidator=f.source.controllerSha;f.source.controllerSha='f'.repeat(40);
   expect((await f.run()).status).toBe('READY');
   const updated=structuredClone(rule);updated.rules[1].parameters.workflows[0].sha='d'.repeat(40);
   expect(bootstrapRulePolicyDigest(updated,'d'.repeat(40))).toBe(policy);
@@ -67,14 +69,14 @@ it('refuses a foreign required workflow pin before recovery or rule writes',asyn
   const f=fixture();f.rules[7].rules.push({type:'workflows',parameters:{workflows:[{repository_id:1296724484,path:'.github/workflows/pr-validation-native.yml',sha:f.source.controllerSha}]}});
   Object.assign(f.bindings[0]!,{policyDigest:bootstrapRulePolicyDigest(f.rules[7],f.source.controllerSha),controllerWorkflow:true});
   f.rules[7].rules[1].parameters.workflows[0].sha='e'.repeat(40);
-  await expect(f.run()).rejects.toThrow('CONTROLLER_WORKFLOW');expect(f.state.writes).toEqual([]);
+  await expect(f.run()).rejects.toThrow('VALIDATOR_ANCESTRY');expect(f.state.writes).toEqual([]);
 });
 it('resumes recorded recovery after controller promotion and a ruleset rename',async()=>{
   const f=fixture();f.rules[7].rules.push({type:'workflows',parameters:{workflows:[{repository_id:1296724484,path:'.github/workflows/pr-validation-native.yml',sha:f.source.controllerSha}]}});
   Object.assign(f.bindings[0]!,{policyDigest:bootstrapRulePolicyDigest(f.rules[7],f.source.controllerSha),controllerWorkflow:true});
   f.state.badArchive=true;await expect(f.run()).rejects.toThrow();expect(f.state.variable).not.toBeNull();
   const oldSource=JSON.parse(f.state.variable).controllerSha;
-  f.source.controllerSha='d'.repeat(40);f.rules[7].rules[1].parameters.workflows[0].sha=f.source.controllerSha;
+  f.state.retainedValidator=f.source.controllerSha;f.source.controllerSha='d'.repeat(40);
   f.rules[7].name='默认分支保护';
   f.state.badArchive=false;expect((await f.run()).status).toBe('READY');
   expect(f.state.sourceChecks.some((s:any)=>s.controllerSha===oldSource)).toBe(true);

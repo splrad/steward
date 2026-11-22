@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { requiredWorkflowBinding } from './required-workflow-binding.mjs';
+import { effectiveValidator, requiredWorkflowBinding, validatorRuleset } from './required-workflow-binding.mjs';
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const same = (a,b) => JSON.stringify(a) === JSON.stringify(b);
 const check = value => { if (!value) throw Error('CONTENT_RECOVERY_ARCHIVE'); };
@@ -15,13 +15,16 @@ export async function restoreContentRecovery(work, cache, grant, { loadDocument,
   check(archived?.input && previous?.facts && previous?.protections && previous.facts.protectionsEvidencePath===protectionPath);
   check(archived.input.candidateId===grant.candidateId && work.input.candidateId===grant.candidateId);
   check(hash([previous.protections.branch,previous.protections.tags])===grant.archiveProtectionDigest);
+  check(facts.protectionsEvidencePath===`generated/protections-${hash([protections.branch,protections.tags])}.json`);
   const oldFacts={...previous.facts},newFacts={...facts};delete oldFacts.protectionsEvidencePath;delete newFacts.protectionsEvidencePath;
   check(same(oldFacts,newFacts));
-  const normalize=(value,controller)=>{
-    const copy=structuredClone(value),workflow=requiredWorkflowBinding({rules:copy.branch},'CONTENT_RECOVERY_ARCHIVE');
-    check(workflow.sha===controller);workflow.sha='approved-controller';return copy;
+  const normalize=value=>{
+    const copy=structuredClone(value);
+    const pin=effectiveValidator(copy.branch,{code:'CONTENT_RECOVERY_ARCHIVE'});
+    const workflow=requiredWorkflowBinding({rules:copy.branch.filter(rule=>rule.ruleset_id===validatorRuleset)},'CONTENT_RECOVERY_ARCHIVE');
+    check(workflow.sha===pin);workflow.sha='effective-validator';return copy;
   };
-  check(same(normalize(previous.protections,archived.input.controllerSha),normalize(protections,work.input.controllerSha)));
+  check(same(normalize(previous.protections),normalize(protections)));
   check(hash([hash(previous.facts),archived.input.configDigest,authorsDigest])===grant.archiveContentDigest);
   check(archived.input.batches.length===1 && work.input.batches.length===1 && work.input.units.length===1);
   const old=archived.input.batches[0],batch=work.input.batches[0];

@@ -165,7 +165,7 @@ it.each([false,true])('uses the protected base repository marker for a fork (pri
       expect(step).toBeDefined();
       expect(step.env?.REPOSITORY_POLICY_TOKEN).toBeUndefined();
       const {main:runFileJob}=await script(name);
-      await expect(runFileJob(fileJobEnv)).resolves.toBeUndefined();
+      await expect(runFileJob(fileJobEnv,()=>S)).resolves.toBeUndefined();
     }
   }finally{vi.unstubAllGlobals();await rm(root,{recursive:true,force:true});}
 },30000);
@@ -196,7 +196,7 @@ it('private dependency entry binds candidate Git input using only its existing G
     await expect(main({GITHUB_ACTIONS:'true',GITHUB_EVENT_NAME:'pull_request',GITHUB_EVENT_PATH:event,
       GITHUB_REPOSITORY_ID:String(repository.id),GITHUB_REPOSITORY:repository.full_name,GH_TOKEN:'workflow-read',
       WORKFLOW_REPOSITORY:'splrad/steward',WORKFLOW_PATH:'.github/workflows/pr-validation-native.yml',
-      WORKFLOW_SHA:S,VALIDATION_WORKSPACE:root,PRIVATE_DEPENDENCY_EVIDENCE:evidence})).rejects.toThrow('fixture stops at first supplier read');
+      WORKFLOW_SHA:S,VALIDATION_WORKSPACE:root,PRIVATE_DEPENDENCY_EVIDENCE:evidence},()=>S)).rejects.toThrow('fixture stops at first supplier read');
     expect(supplier).toHaveBeenCalledOnce();
     expect(JSON.parse(await readFile(join(evidence,'summary.json'),'utf8')).identity).toMatchObject({repositoryId:repository.id,base,head});
   }finally{vi.unstubAllGlobals();await rm(root,{recursive:true,force:true});}

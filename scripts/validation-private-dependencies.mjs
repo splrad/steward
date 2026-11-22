@@ -8,7 +8,7 @@ import {tmpdir} from 'node:os';
 import {pathToFileURL,fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import YAML from 'yaml';
-import {validationFileInputs,git} from './validation-input.mjs';
+import {validationController,validationFileInputs,git} from './validation-input.mjs';
 import {assert,loadPolicy,checkInventory,highFindings,requireOnline,actionFindings,newActions,newPackageFindings,newTools,assertInputScope,assertGovernanceOnlyScope,assertCopierInputs,configurationCallers,licenseFacts} from './private-dependency-policy.mjs';
 import {assertLifecycleScope,assertLifecycleSnapshot,lifecycleMiseVersions,assertLifecycleMissingActionLock} from './private-lifecycle-policy.mjs';
 import {assertActionInputs,reusableActions,verifyReusableLock} from './private-reusable-actions.mjs';
@@ -118,7 +118,7 @@ export async function actionsInventory(text,token){
   }
   assert(entries.length>0,'ACTIONS_EMPTY');return entries;
 }
-export async function main(env=process.env){
+export async function main(env=process.env,resolveController=validationController){
   const out=resolve(env.PRIVATE_DEPENDENCY_EVIDENCE??'private-dependency-evidence');await mkdir(out,{recursive:true});
   const report={identity:null,scanner:null,snapshots:{},newHigh:[],coverage:[],complete:false};
   try{
@@ -127,6 +127,8 @@ export async function main(env=process.env){
     const lifecycle=value.dependencyMode==='private-lifecycle';
     const governanceOnly=value.dependencyMode==='private-governance';
     const managedOnly=governanceOnly||lifecycle;
+    const controller=fileURLToPath(new URL('..',import.meta.url));
+    const approvedController=resolveController(controller,value.input.workflowSha);
     report.identity=value.input;report.scanner=policy.osvImage;
     const item=managedOnly?null:policy.administrators.find(x=>x.repositoryId===value.input.repositoryId);
     const temporary=await mkdtemp(join(tmpdir(),'steward-private-dependencies-'));
@@ -144,20 +146,17 @@ export async function main(env=process.env){
       }));
       assertCopierInputs(files,ref=>{
         // Resolve only a real version tag in the trusted policy checkout, never a target ref.
-        const controller=fileURLToPath(new URL('..',import.meta.url));
         const sha=git(controller,['rev-parse','--verify','refs/tags/'+ref+'^{commit}']).toString('utf8').trim();
         assert(/^[a-f0-9]{40}$/.test(sha),'COPIER_TEMPLATE_SOURCE');
-        git(controller,['merge-base','--is-ancestor',sha,'HEAD']);
+        git(controller,['merge-base','--is-ancestor',sha,approvedController]);
         return new Map(managedPaths.map(path=>[path,git(controller,['show',sha+':templates/repository/'+(path==='CONTRIBUTING.md'?'CONTRIBUTING.md.jinja':path)])]));
       },managedPaths,env.GITHUB_REPOSITORY);
       const control=blob(workspace,entries,'acceptance/bootstrap-target.json',true);
       if(control){assert(control.length<=1024,'CONTROL_SIZE');parseAcceptanceTarget(control.toString('utf8'));}
-      if(lifecycle)snapshot.application=await assertLifecycleSnapshot(new Map(entries.map(e=>[e.path,blob(workspace,entries,e.path)])),{side,controllerSha:env.WORKFLOW_SHA,verifyController:sha=>{
-        const controller=fileURLToPath(new URL('..',import.meta.url));
-        git(controller,['merge-base','--is-ancestor',sha,env.WORKFLOW_SHA]);return true;
+      if(lifecycle)snapshot.application=await assertLifecycleSnapshot(new Map(entries.map(e=>[e.path,blob(workspace,entries,e.path)])),{side,controllerSha:approvedController,verifyController:sha=>{
+        git(controller,['merge-base','--is-ancestor',sha,approvedController]);return true;
       },loadControllerTemplate:(sha,path)=>{
-        const controller=fileURLToPath(new URL('..',import.meta.url));
-        git(controller,['merge-base','--is-ancestor',sha,env.WORKFLOW_SHA]);
+        git(controller,['merge-base','--is-ancestor',sha,approvedController]);
         return git(controller,['show',sha+':'+path]);
       }});
       const input=join(temporary,side),output=join(out,side);await mkdir(input,{recursive:true});await mkdir(output,{recursive:true});
@@ -201,8 +200,7 @@ export async function main(env=process.env){
             if(!reusableSeen.has(job.uses)){
               const nested=await reusableActions(job.uses,{
                 loadSource:sha=>{
-                  const controller=fileURLToPath(new URL('..',import.meta.url));
-                  git(controller,['merge-base','--is-ancestor',sha,env.WORKFLOW_SHA]);
+                  git(controller,['merge-base','--is-ancestor',sha,approvedController]);
                   const sourceEntries=tree(controller,sha);
                   return new Map(sourceEntries.filter(e=>/^\.github\/workflows\/[^/]+\.(?:ya?ml|lock)$/.test(e.path)).map(e=>[e.path,blob(controller,sourceEntries,e.path)]));
                 },

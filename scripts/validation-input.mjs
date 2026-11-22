@@ -16,6 +16,17 @@ export function git(workspace,args) {
   return execFileSync('git',['--no-replace-objects','-c','core.hooksPath=','-c','credential.helper=',...args],
     {cwd:workspace,encoding:'buffer',maxBuffer:128*1024*1024,timeout:60000,windowsHide:true});
 }
+// Code stays at the workflow pin. Read templates and approved product sources
+// only from the separately protected controller lineage present in the policy checkout.
+export function validationController(policy,validator) {
+  check(/^[a-f0-9]{40}$/.test(validator??'')
+    &&git(policy,['rev-parse','--verify','HEAD^{commit}']).toString().trim()===validator,'POLICY_CHECKOUT');
+  const controller=git(policy,['rev-parse','--verify','refs/remotes/origin/steward/validated-controller^{commit}']).toString().trim();
+  check(/^[a-f0-9]{40}$/.test(controller),'CONTROLLER_SOURCE');
+  const common=git(policy,['merge-base',validator,controller]).toString().trim();
+  check(common===validator||common===controller,'CONTROLLER_LINEAGE');
+  return common===validator?controller:validator;
+}
 export async function regular(workspace,path) {
   const root=await realpath(workspace),file=join(root,path),actual=await realpath(file),info=await lstat(file);
   check(actual.startsWith(root+sep)&&info.isFile()&&!info.isSymbolicLink(),'FILE_BOUNDARY');return file;

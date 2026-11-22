@@ -8,9 +8,15 @@ workflow_run 只接收 main 分支事件，job 先筛选中央仓库的成功 ma
 
 采用前设置真实 `NATIVE_VALIDATION_WORKFLOW_ID`、`GOVERNANCE_APP_ID` 和 `steward-automation/GOVERNANCE_APP_PRIVATE_KEY`，完成首次模板标签与组织规则交接，再启用 `STEWARD_GOVERNANCE_PROMOTION`。这些原生登记和部署状态需要分别回读；本地实现不等于线上启用。
 
-提升与 bootstrap 共用 `steward-governance-mutation` 原生 job 并发组。晋级更新中央默认分支规则集 18883080 中 Native Validation 条目的 `sha`。每次写入前复核 main、controller 来源保护与此规则集的非 SHA 字段。模板标签、控制器引用与唤醒步骤使用同一读回校验，确认原保护内容及受信工作流 SHA 后才继续。
+提升与 bootstrap 共用 `steward-governance-mutation` 原生 job 并发组。每笔已通过当前主线验证的晋级都可以推进 `steward/validated-controller`。组织默认分支规则集 18883080 中的 Native Validation 保留既有不可变 SHA，直到可信工作流或其策略源码、执行依赖及工具锁发生变化。比较以规则当前生效的 SHA 为起点，检查 Git 路径、模式与对象，并遍历两端实际调用的本地工作流、Action、脚本和策略输入。目标仓工作区路径、从已批准标签加载的模板快照和 Worker 独立锁属于各自原有的验证链。
 
-其他规则与未知字段来自写前最新完整读取。证据保存完整写前、写后对象。原生 PUT 没有 CAS 保证。写后若出现无法合并的外部修改，任务失败并保留事实。丢失响应时先回读，已采用目标 SHA 即成功，仍为旧值才可重试，第三值重新读取后判断。
+每次写入前复核 main、controller 来源保护与规则集的非 SHA 字段。模板标签、控制器引用与唤醒步骤复读实际生效的验证器 SHA。其中的安全政策模板与私仓产品运行时从另行保护的 controller 祖先读取，验证器代码继续运行在规则所固定的提交。配置审批重跑先读取目标分支生效规则，再确认 GitHub 为该 Run 记录的工作流文件来源及 PR head。
+
+其他规则与未知字段取自写前最新的完整读取。证据保存完整写前、写后对象。原生 PUT 没有 CAS 保证。丢失响应时先回读，已采用目标 SHA 即成功，仍为旧值才可重试，出现第三个 SHA 时停止。
+
+切换 pin 前，治理 App 以独立的 Actions Variables 权限将补验意图写到私有的 `splrad/steward-settings`。切换完成后只盘点受这套规则约束的开放 PR。已有该 pin 的原生 Run 时，按准确 head、工作流来源、Run、attempt 和汇总 job 记录实际状态。缺少 Run 时，现有 Steward App 用仅限目标仓的 PR 权限执行原生关闭和重开，GitHub 据 reopened 事件运行必需工作流。草稿、发行候选、自动合并和合并队列保留待办。补验通过已有 GitHub App 安装完成，使用已登记的 `steward-automation/STEWARD_APP_PRIVATE_KEY`。
+
+补验在私有记录中保存原生状态转换的初始位置。进程中断后只有后继关闭事件仍由同一 App 执行，且没有更新的状态转换时，才恢复重开。人工关闭保留原状。原生 Run 在途、失败或重开仍未看到 Run 时记录对应状态，日程或手工晋级可继续复读原有待办。pin 不变时继续核对现有待办，无需重新盘点所有仓。中央公开产物只含补验状态计数和脱敏错误码，逐项 PR 与 Run 证据位于私仓变量 `STEWARD_VALIDATOR_REVALIDATION`。
 
 模板比较只包含 `copier.yml` 和 `templates/repository`。实际变化从最新已采用 PEP 440 稳定版本生成严格递增标签，标签固定到同一个已验证提交。SDK 单独变化不产生模板版本。标签创建前后核对全部标签快照和目标指向；同名异对象、外部标签漂移和未知响应不执行覆盖。下一次原生 Copier 递送从已发布标签继续。
 
