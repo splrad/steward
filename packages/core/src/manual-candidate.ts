@@ -1,7 +1,7 @@
 import { sha256Hex } from './fingerprint.js';
 import { assertDeliveryPath } from './delivery-config.js';
 export interface ManualCandidate {
-  schemaVersion: 1 | 2; kind: 'validated-manual-candidate'; repositoryId: number; candidateId: string; prNumber: number;
+  schemaVersion: 1 | 2 | 3; kind: 'validated-manual-candidate'; repositoryId: number; candidateId: string; prNumber: number;
   branch: string; headSha: string; sourceSha: string;
   units: { id: string; path: string; version: string; tag: string; notesPath: string; versionPath?: string }[];
   files: { path: string; sha256: string }[]; projection: { preview: string; bodyDigest: string };
@@ -23,13 +23,13 @@ export function manualCandidateBody(v:ManualCandidate) {
 }
 export async function validateManualCandidateRecord(v:any,repositoryId:number,candidateId:string):Promise<void> {
   exact(v,['schemaVersion','kind','repositoryId','candidateId','prNumber','branch','headSha','sourceSha','units','files','projection','producer']);
-  if(![1,2].includes(v.schemaVersion)||v.kind!=='validated-manual-candidate'||!Number.isSafeInteger(repositoryId)||repositoryId<1||v.repositoryId!==repositoryId
+  if(![1,2,3].includes(v.schemaVersion)||v.kind!=='validated-manual-candidate'||!Number.isSafeInteger(repositoryId)||repositoryId<1||v.repositoryId!==repositoryId
     ||v.candidateId!==candidateId||!digest(candidateId)||!Number.isSafeInteger(v.prNumber)||v.prNumber<1||typeof v.branch!=='string'||!v.branch
     ||!sha(v.headSha)||!sha(v.sourceSha)||!Array.isArray(v.units)||v.units.length===0)throw Error('MANUAL_OWNER');
   const paths=['.github/delivery.json','.release-please-manifest.json','release-please-config.json'];
   const ids=new Set<string>(), roots=new Set<string>();
   for(const u of v.units) {
-    exact(u,['id','path','version','tag','notesPath',...(v.schemaVersion===2?['versionPath']:[])]);
+    exact(u,['id','path','version','tag','notesPath',...(v.schemaVersion>=2?['versionPath']:[])]);
     if(typeof u.id!=='string'||!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(u.id)||ids.has(u.id)||
         typeof u.version!=='string'||!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(u.version)||
         typeof u.tag!=='string'||!u.tag)throw Error('MANUAL_UNIT');
@@ -48,7 +48,10 @@ export async function validateManualCandidateRecord(v:any,repositoryId:number,ca
       JSON.stringify(v.files.map((f:any)=>f.path))!==JSON.stringify(expected))throw Error('MANUAL_FILES');
   for(const f of v.files){exact(f,['path','sha256']);if(!digest(f.sha256))throw Error('MANUAL_DIGEST');}
   exact(v.projection,['preview','bodyDigest']);
-  if(v.projection.preview!==manualCandidatePreview(v)||v.projection.bodyDigest!==await sha256Hex(manualCandidateBody(v)))throw Error('MANUAL_PROJECTION');
+  // The native adapter independently reconstructs v3 from the immutable note blobs before projection.
+  if(typeof v.projection.preview!=='string'||!v.projection.preview.length
+    ||(v.schemaVersion!==3&&v.projection.preview!==manualCandidatePreview(v))
+    ||v.projection.bodyDigest!==await sha256Hex(manualCandidateBody(v)))throw Error('MANUAL_PROJECTION');
   exact(v.producer,['repositoryId','runId','attempt','controllerSha','requestKey']);
   if(v.producer.repositoryId!==1296724484||![v.producer.runId,v.producer.attempt].every(n=>Number.isSafeInteger(n)&&n>0)
     ||!sha(v.producer.controllerSha)||!digest(v.producer.requestKey))throw Error('MANUAL_PRODUCER');

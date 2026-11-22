@@ -1,4 +1,5 @@
 import { releaseBodyMatches } from './release-body.js';
+import { channelWorkflow, dispatchWorkflow, encodeRepositoryPath } from '../../core/src/release-workflow.js';
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -40,6 +41,7 @@ export interface ArchivedFile { path: string; commit: string; value: NativeArchi
 export interface RetryLimitFile { path:string; commit:string; value:NativeRetryLimit }
 export interface SourceRejectionFile {path:string;commit:string;value:NativeSourceRejection}
 export interface ReadHistory { complete: boolean; observations: NativeReadObservation[]; retryLimits?:RetryLimitFile[]; sourceRejections?:SourceRejectionFile[];
+  frozenPublicationBuilds?:ReadonlyMap<number,number>;
   channelEvidence?:{path:string;commit:string;value:NativeChannelEvidence|import('../../core/src/native-evidence.js').NativeChannelRead}[]; publication?:{native:NativeAttemptSet;missing:string[];archived?:ArchivedAttempt[]} }
 export function verifyNativeSourceRejection(context:EvidenceContext,file:SourceRejectionFile) {
   const value=decodeNativeSourceRejection(Buffer.from(JSON.stringify(file.value))),request=context.cycle.dispatches.find(request=>request.requestKey===value.requestKey);
@@ -63,7 +65,8 @@ export function nativeEvidenceTransport(token: string | undefined, transport: ty
   const open=async(method:'GET'|'POST',path:string,body?:object)=>{
     const pathname=path.split('?')[0]!;
     let decoded:string;try{decoded=decodeURIComponent(pathname);}catch{throw new Error('NATIVE_EVIDENCE: API path');}
-    check(path.startsWith('/repos/') && !decoded.includes('..') && !decoded.includes('\\')
+    const numericRepository = method === 'GET' && /^\/repositories\/[1-9][0-9]*$/.test(path);
+    check((path.startsWith('/repos/') || numericRepository) && !decoded.includes('..') && !decoded.includes('\\')
       && !/[\x00-\x1f\x7f]/.test(decoded) && !path.includes('#'), 'API path');
     const headers = new Headers(githubHeaders(token ?? ''));
     if (!token) headers.delete('authorization');
@@ -211,9 +214,11 @@ export function nativeRequestIdentity(repositoryId: number, cycle: CycleRecord, 
       &&cycle.requiredChannels.some(channel=>channel.unitId===unitId&&channel.channelId===channelId),'channel identity frozen target');
   }
   const targetKey=JSON.stringify([2,request.workflowId,request.ref,request.executionSha,cycle.sourceSha,request.purpose,mode,targetSet]);
+  const boundTargetKey=request.buildWorkflow===undefined ? targetKey
+    : JSON.stringify([3,request.workflowId,dispatchWorkflow(request),request.ref,request.executionSha,cycle.sourceSha,request.purpose,mode,targetSet]);
   const inputDigest=hash(JSON.stringify([4,cycle.id,cycle.sourceSha,request.executionSha,cycle.controllerSha,cycle.deliveryConfigSha,unitVersions,targetSet,mode]));
-  const operationKey=hash(JSON.stringify([2,repositoryId,cycle.id,request.purpose,targetKey,inputDigest]));
-  return {targetKey,inputDigest,operationKey,requestKey:hash(JSON.stringify([operationKey,request.continuationOfRunId]))};
+  const operationKey=hash(JSON.stringify([2,repositoryId,cycle.id,request.purpose,boundTargetKey,inputDigest]));
+  return {targetKey:boundTargetKey,inputDigest,operationKey,requestKey:hash(JSON.stringify([operationKey,request.continuationOfRunId]))};
 }
 // Read-only verification of archived format 3 keys. New requests always use format 4.
 function legacyRequestIdentity(repositoryId: number, cycle: CycleRecord, request: CycleRecord['dispatches'][number]) {
@@ -243,7 +248,7 @@ export function validateEvidenceContext(input: EvidenceContext): EvidenceContext
     const identity = nativeRequestIdentity(context.repositoryId, context.cycle, request);
     const matches=(value:typeof identity)=>Object.entries(value).every(([key,item])=>request[key as keyof typeof identity]===item);
     if(!matches(identity)) {
-      check(matches(legacyRequestIdentity(context.repositoryId,context.cycle,request)),'request digest');
+      check(request.buildWorkflow===undefined&&matches(legacyRequestIdentity(context.repositoryId,context.cycle,request)),'request digest');
       if(request.purpose!=='build') {
         const targets=JSON.stringify(channelIdentityTargets(request)),prior=legacyTargets.get(request.operationKey);
         check(prior===undefined||prior===targets,'legacy request target conflict');
@@ -257,9 +262,8 @@ export function validateEvidenceContext(input: EvidenceContext): EvidenceContext
   return context;
 }
 export function sourceRun(context: EvidenceContext, request: CycleRecord['dispatches'][number], run: NativeRun) {
-  const path = request.purpose === 'build' ? '.github/workflows/steward-release-publish.yml' : '.github/workflows/steward-release-channels.yml';
   check(run.id === request.canonicalRunId && run.repositoryId === context.repositoryId && run.headRepositoryId === context.repositoryId
-    && run.workflowId === request.workflowId && run.path === path && run.event === 'workflow_dispatch' && run.headSha === request.executionSha
+    && run.workflowId === request.workflowId && run.path === dispatchWorkflow(request) && run.event === 'workflow_dispatch' && run.headSha === request.executionSha
     && run.headBranch === request.ref && run.actorId === context.appBotId && positive(run.triggeringActorId)
     && Date.parse(run.createdAt) >= Math.floor(Date.parse(request.sentAt)/1000)*1000 && run.displayTitle.includes(request.purpose === 'build' ? request.operationKey : request.requestKey), 'run source');
 }
@@ -310,8 +314,8 @@ async function workflowSource(reader: NativeEvidenceReader, run: NativeRun) {
   const read=async(source:NativeEvidenceReader,path:string,commitSha:string):Promise<void>=>{
   const key=JSON.stringify([source.repository,path,commitSha]);if(visited.has(key))return;visited.add(key);
   check(visited.size<=100,'workflow source bound');
-  const blob = await source.json(`contents/${path}?ref=${commitSha}`);
-  check(blob.type === 'file' && blob.encoding === 'base64' && typeof blob.content === 'string' && blob.size <= 512*1024, 'workflow blob');
+  const blob = await source.json(`contents/${encodeRepositoryPath(path)}?ref=${commitSha}`);
+  check(blob.path === path && blob.type === 'file' && blob.encoding === 'base64' && typeof blob.content === 'string' && blob.size <= 512*1024, 'workflow blob');
   const bytes = Buffer.from(blob.content, 'base64');
   check(bytes.length === blob.size && createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex') === blob.sha, 'workflow bytes');
   sourceBlobs.push({repository:source.repository,path,commitSha,blobSha:blob.sha});
@@ -336,7 +340,7 @@ function validateResult(result: NativeResult, archive: NativeArchive, jobId: num
   check(step && step.conclusion !== 'skipped' && step.name.startsWith('business-') && execution.jobId === jobId && execution.repositoryId === archive.repositoryId
     && execution.cycleId === archive.cycleId && execution.workflowId === archive.run.workflowId && execution.runId === archive.run.id
     && execution.runAttempt === archive.run.runAttempt && result.sourceSha === archive.sourceSha && result.executionSha === archive.run.headSha
-    && execution.inputDigest === archive.inputDigest && execution.entry === (archive.run.path.endsWith('steward-release-publish.yml') ? 'build' : 'channel'), 'result identity');
+    && execution.inputDigest === archive.inputDigest && execution.entry === (archive.run.path === channelWorkflow ? 'channel' : 'build'), 'result identity');
   check(execution.invocationKey === hash(JSON.stringify([archive.repositoryId, archive.cycleId, archive.run.workflowId, archive.run.id,
     archive.run.runAttempt, execution.entry, jobId, result.stepNumber, execution.unitId, execution.channelId, execution.inputDigest])), 'invocation identity');
   check(step.startedAt && withinNativeJobWindow(execution.startedAt,step.startedAt,step.completedAt)
@@ -461,7 +465,7 @@ export async function archiveAttempt(archive: NativeArchive, previous: NativeArc
     invocations.set(evidence.invocationKey,{jobId,stepNumber:result.stepNumber,evidence});
   }
   return { repositoryId:archive.repositoryId,cycleId:archive.cycleId,workflowId:archive.run.workflowId,runId:archive.run.id,runAttempt:archive.run.runAttempt,
-    entry:archive.run.path.endsWith('steward-release-publish.yml')?'build':'channel',sourceSha:archive.sourceSha,inputDigest:archive.inputDigest,
+    entry:archive.run.path===channelWorkflow?'channel':'build',sourceSha:archive.sourceSha,inputDigest:archive.inputDigest,
     executorControllerSha:archive.executorControllerSha,actorId:archive.run.actorId,status:archive.run.status,observedAt:archive.observedAt,
     jobsComplete:!archive.missingNativeKeys.length,jobs:executed.map(job=>({id:job.id,steps:job.steps})),invocations:[...invocations.values()],
     sourceUrl:`https://api.github.com/repos/${archive.repository}/actions/runs/${archive.run.id}/attempts/${archive.run.runAttempt}`,evidenceDigest:file.sha256 };
@@ -487,10 +491,23 @@ export async function inspectNativeCycle(input: EvidenceContext, history: Archiv
       else missingNativeKeys.push(`request:${request.requestKey}:canonical-run`);continue;
     }
     const runId=request.canonicalRunId;
+    const frozen=request.purpose==='build'?readHistory.frozenPublicationBuilds?.get(runId):undefined;
+    const runPath='actions/runs/'+runId+(frozen===undefined?'':'/attempts/'+frozen);
+    const runArtifacts=async()=>{
+      const items=await reader.pages('actions/runs/'+runId+'/artifacts','artifacts');
+      // Later delivery uploads are irrelevant to the frozen publication observation.
+      const prefix='steward-result-'+runId+'-';
+      return frozen===undefined?items:items.filter(item=>{
+        const name=typeof item.name==='string'?item.name:'';
+        const attempt=/^([1-9][0-9]*)-/.exec(name.slice(prefix.length));
+        return name.startsWith(prefix)&&Boolean(attempt&&Number(attempt[1])<=frozen);
+      });
+    };
     try {
-      const latest=nativeRunFact(await reader.json(`actions/runs/${runId}`)); sourceRun(context,request,latest);
+      const latest=nativeRunFact(await reader.json(runPath)); sourceRun(context,request,latest);
+      if(frozen!==undefined)check(latest.runAttempt===frozen&&latest.status==='completed'&&latest.conclusion==='success','frozen build attempt');
       const source=await workflowSource(reader,latest);
-      const artifacts=await reader.pages(`actions/runs/${runId}/artifacts`,'artifacts');
+      const artifacts=await runArtifacts();
       for(let attempt=1;attempt<=latest.runAttempt;attempt++) {
         const run=nativeRunFact(await reader.json(`actions/runs/${runId}/attempts/${attempt}`)); sourceRun(context,request,run);check(run.runAttempt===attempt,'attempt identity');
         const jobs=(await reader.pages(`actions/runs/${runId}/attempts/${attempt}/jobs`,'jobs')).map(jobFact);
@@ -573,13 +590,13 @@ export async function inspectNativeCycle(input: EvidenceContext, history: Archiv
         const recorded=existing?.value ?? archive;
         native.attempts.push(await archiveAttempt(recorded, archives)); archives.push(recorded);
       }
-      check(same(latest,nativeRunFact(await reader.json(`actions/runs/${runId}`))) && same(artifacts,await reader.pages(`actions/runs/${runId}/artifacts`,'artifacts')),'run changed');
+      check(same(latest,nativeRunFact(await reader.json(runPath)))&&same(artifacts,await runArtifacts()),'run changed');
       latestRuns.push(latest);
       native.runs.push({runId,workflowId:request.workflowId,entry:request.purpose==='build'?'build':'channel',sourceSha:context.cycle.sourceSha,
         inputDigest:request.inputDigest,actorId:context.appBotId,latestAttempt:latest.runAttempt,availability:'live'});
     } catch(error) {
       // 404 can hide a private repository. Only explicit 410 plus complete protected history is archive fallback.
-      const prior=history.filter(file=>file.value.run.id===runId);
+      const prior=history.filter(file=>file.value.run.id===runId&&(frozen===undefined||file.value.run.runAttempt<=frozen));
       let expired=error instanceof EvidenceReadError && error.status===410;
       if(error instanceof EvidenceReadError && error.status===404 && (prior.length||readHistory.complete)) {
         try {
@@ -587,7 +604,7 @@ export async function inspectNativeCycle(input: EvidenceContext, history: Archiv
           expired=!runs.some(run=>run.id===runId);
         } catch { /* Permission loss or incomplete pagination is not expiration. */ }
       }
-      if(expired && prior.length) {
+      if(expired&&prior.length&&(frozen===undefined||prior.some(file=>file.value.run.runAttempt===frozen&&file.value.run.status==='completed'&&file.value.run.conclusion==='success'))) {
         for(const file of prior) check(/^[a-f0-9]{40}$/.test(file.commit) && archiveFile(file.value).path===file.path,'archive provenance');
         for(const file of prior) {
           check(/^[a-f0-9]{40}$/.test(file.commit) && archiveFile(file.value).path===file.path,'archive provenance');
@@ -695,6 +712,8 @@ export async function recoverNativeCycle(input: EvidenceContext, runId: number, 
   if(attempt.invocations.length && attempt.invocations.every(invocation=>['EFFECT_CONFIRMED','REJECTED_BEFORE_BUSINESS'].includes(invocation.evidence.outcome??''))
     && !results.some(result=>result.reasonCode==='DEPENDENCY_NOT_READY'))
     return {status:'SATISFIED',reason:'EFFECTS_ARCHIVED',observation};
+  if(context.cycle.workflowDelivery&&request.purpose==='build'&&before.conclusion==='success')
+    return {status:'SATISFIED',reason:'NO_NATIVE_RECOVERY_REQUIRED',observation};
   if(expired || before.runAttempt>=51 || Date.parse(observedAt)-Date.parse(chain[0]!.run.createdAt)>30*24*60*60_000)
     return {status:'BLOCKED',reason:'NATIVE_MAINTENANCE_REQUIRED',runId,observation};
   // One automatic native rerun per Run; further failures remain visible for native maintenance.

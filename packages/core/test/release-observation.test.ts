@@ -128,3 +128,12 @@ describe('four-valued completion',()=>{
 });
 
 it('keeps a pending distribution visible without blocking a verified GitHub release',()=>{const {source,facts}=completion();facts.channels=[];facts.consumptions=[];expect(evaluateCompletion(source,facts,now)).toMatchObject({result:'PASS',distributionResult:'WAIT'});});
+it('retains a missing channel obligation after another channel is fully verified',()=>{
+  const {source,facts}=completion();
+  source.requiredChannels.push({...source.requiredChannels[0]!,channelId:'ghcr-assets'});
+  facts.source=structuredClone(source);
+  expect(evaluateCompletion(source,facts,now)).toMatchObject({result:'PASS',distributionResult:'WAIT',reasons:[
+    {key:'unit:app',result:'PASS'},{key:'channel:app:winget',result:'PASS'},
+    {key:'channel:app:ghcr-assets',result:'WAIT',reason:'channel-not-observed'},
+  ]});
+});

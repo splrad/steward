@@ -82,6 +82,7 @@ jobs:
         run: node policy/scripts/validation-input.mjs
         env:
           VALIDATION_EVIDENCE: validation-scope.json
+          REPOSITORY_POLICY_TOKEN: ${{ github.token }}
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: scope
         with:
@@ -277,7 +278,7 @@ jobs:
           WORKFLOW_PATH: ${{ job.workflow_file_path }}
         run: |
           printf 'WORKFLOW_REPOSITORY=%s\nWORKFLOW_SHA=%s\nWORKFLOW_PATH=%s\n' "$WORKFLOW_REPOSITORY" "$WORKFLOW_SHA" "$WORKFLOW_PATH" >> "$GITHUB_ENV"
-      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+      - uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.1
         if: needs.scope.outputs.dependency-mode == 'native'
         with:
           base-ref: ${{ needs.scope.outputs.base }}

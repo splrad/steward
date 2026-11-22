@@ -7,6 +7,7 @@ import {entryGuard} from './bounded-release-entry.mjs';
 import {candidateEvidence,validateNormalCandidateEvent,key,withCandidateProduct,product as legacyProduct} from './bounded-candidate-contract.mjs';
 import {fetchState} from './release-coordinator.mjs';
 import {nativeReleaseCandidate} from './release-candidate.mjs';
+import {releasePolicyGuard} from './release-repository-policy.mjs';
 const central='splrad/steward',centralId=1296724484;
 const botIdentity={name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'};
 const fail=code=>{throw Error(code);};
@@ -48,6 +49,7 @@ export async function main(env=process.env) {
       return nativeReleaseCandidate({directory:state.directory,writeDirectory:join(root,'writes'),remote:state.remote,repository:product.name,
         repositoryId:product.id,defaultBranch:product.defaultBranch,appBotId:app.appBotId,identity:botIdentity},{token,readToken,
         copilotToken:env.STEWARD_COPILOT_TOKEN,controllerSha:env.STEWARD_CONTROLLER_SHA,expectedStateSha:before.evidence.stateCommit,expectedSourceSha:sourceSha,
+        checkRepositoryPolicy:releasePolicyGuard(app,repository),
         reselectUnits:before.selectionChanged,manualCandidateProducer:{repositoryId:centralId,runId:run.id,attempt:run.run_attempt,controllerSha:env.STEWARD_CONTROLLER_SHA,requestKey:env.BOUNDED_REQUEST_KEY}});
     }});
     await writeFile('result.json',JSON.stringify(result)+'\n',{flag:'wx'});return result;

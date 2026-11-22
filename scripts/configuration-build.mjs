@@ -1,6 +1,9 @@
 import {posix} from 'node:path';
 import {isDeepStrictEqual} from 'node:util';
 import YAML from 'yaml';
+import {staticMatrixRows} from '../packages/runner/dist/index.js';
+
+export {staticMatrixRows};
 
 const key = /^[a-z][a-z0-9-]*$/;
 export const hostedRunner = /^(ubuntu-(22\.04|24\.04|latest)|windows-(2022|2025|latest)|macos-(14|15|26|latest)(-intel)?)$/;
@@ -98,26 +101,6 @@ export function observedArchiveTemplate(pattern,name,run) {
     start=boundary+value.length;from=token.index+token[0].length;
   }
   return matchesMatrixName(pattern.slice(from),name.slice(start))?template+name.slice(start):undefined;
-}
-
-export function staticMatrixRows(matrix) {
-  if(!matrix) return [{}];
-  if(typeof matrix!=='object') return null;
-  const axes=Object.entries(matrix).filter(([k])=>k!=='include' && k!=='exclude');
-  if(axes.some(([,options])=>!Array.isArray(options)) || !Array.isArray(matrix.include??[]) || !Array.isArray(matrix.exclude??[])) return null;
-  const combinations=axes.reduce((rows,[k,options])=>rows.flatMap(row=>options.map(v=>({...row,[k]:v}))),axes.length?[{}]:[]);
-  const base=combinations.filter(row=>!(matrix.exclude??[]).some(ex=>Object.entries(ex).every(([k,v])=>row[k]===v)));
-  const rows=base.map(row=>({...row}));
-  for(const extra of matrix.include??[]) {
-    let merged=false;
-    base.forEach((row,i)=>{
-      if(axes.every(([k])=>!Object.hasOwn(extra,k) || extra[k]===row[k])) {
-        Object.assign(rows[i],extra);merged=true;
-      }
-    });
-    if(!merged) rows.push({...extra});
-  }
-  return rows;
 }
 
 // Static matching identifies an existing target. A native run supplies the artifact evidence separately.

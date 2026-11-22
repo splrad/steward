@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { isBuildWorkflow } from '../../core/src/release-workflow.js';
 
 export interface GitSnapshot {
   head(directory: string): Promise<string>;
@@ -9,7 +10,7 @@ export interface GitSnapshot {
 const sha = (value: string) => /^[a-f0-9]{40}$/.test(value);
 function fail(reason: string): never { throw new Error(`GIT_SNAPSHOT: ${reason}`); }
 export function safeGitPath(path: string) {
-  if (!path || path.length > 240 || path.includes('\\') || !/^[A-Za-z0-9._/-]+$/.test(path)
+  if (!path || path.length > 240 || path.includes('\\') || (!/^[A-Za-z0-9._/-]+$/.test(path)&&!isBuildWorkflow(path))
     || path.split('/').some(part => !part || part === '.' || part === '..' || part.toLowerCase() === '.git' || /[. ]$/.test(part)
       || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(part))) fail('unsafe path');
 }

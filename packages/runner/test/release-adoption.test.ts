@@ -16,6 +16,11 @@ const {readReleaseRecords}=await import(pathToFileURL(resolve('scripts/release-r
 vi.setConfig({testTimeout:60_000});
 const roots:string[]=[];
 afterEach(async()=>{for(const path of roots.splice(0))await rm(path,{recursive:true,force:true});});
+it.each([1,2,3])('keeps the original template only for default historical delivery schema %s',schemaVersion=>{
+  const template='.github/release-template.md.mustache';
+  expect(releaseAdoptionPlan({schemaVersion,units:[]}).files.includes(template)).toBe(schemaVersion!==3);
+  expect(releaseAdoptionPlan({schemaVersion,units:[],buildWorkflow:'.github/workflows/product.yaml'}).files).not.toContain(template);
+});
 async function fixture(options?:{channels:{id:string;required:boolean;location:string}[];hasWorkflow:boolean}) {
   const root=await mkdtemp(join(tmpdir(),'adoption-test-'));roots.push(root);registerOfflineFixtureRoot(root);
   const directory=join(root,'source'),remote=join(root,'remote.git');await mkdir(directory);
@@ -155,7 +160,7 @@ it.each(['terminal','missing','in-progress'])('restores original cycle cache onl
       else if(path.includes('/actions/runs/100')&&path.includes('/artifacts'))value={total_count:0,artifacts:[]};
       else if(path.includes('/actions/runs/100'))value=run;
       else if(path.includes('/actions/workflows/10'))value={id:10,path:run.path};
-      else if(path.includes('/contents/.github/workflows/'))value={type:'file',encoding:'base64',content:workflow.toString('base64'),size:workflow.length,sha:createHash('sha1').update(`blob ${workflow.length}\0`).update(workflow).digest('hex')};
+      else if(path.includes('/contents/.github/workflows/'))value={path:path.split('/contents/')[1]!.split('?')[0],type:'file',encoding:'base64',content:workflow.toString('base64'),size:workflow.length,sha:createHash('sha1').update(`blob ${workflow.length}\0`).update(workflow).digest('hex')};
       else return original(method,path);
       expect(method).toBe('GET');return {status:200,bytes:new Uint8Array(Buffer.from(JSON.stringify(value))),headers:new Headers()};
     };

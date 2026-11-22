@@ -15,10 +15,13 @@ it.each([['.','packages/other'],['packages/app','packages/app/child'],['Packages
   input.units.push({...structuredClone(input.units[0]!),id:'other',path:second});
   expect(()=>parseDeliveryConfig(input)).toThrow('DELIVERY_NESTED_UNIT_PATH');
 });
-it.each(['missing', 'empty', 'null', 'wrong-type', 'missing-evidence', 'empty-evidence', 'blank-evidence'])('reports unverified authors at the configuration entry: %s', kind => {
+it('accepts delivery configuration without a legacy author declaration', () => {
+  const { repositoryAuthors, ...input } = config;
+  expect(parseDeliveryConfig(input).repositoryAuthors).toEqual([]);
+  expect(parseDeliveryConfig({ ...input, repositoryAuthors: [] }).repositoryAuthors).toEqual([]);
+});
+it.each(['null', 'wrong-type', 'missing-evidence', 'empty-evidence', 'blank-evidence'])('reports unverified authors at the configuration entry: %s', kind => {
   const input: any = structuredClone(config);
-  if (kind === 'missing') delete input.repositoryAuthors;
-  if (kind === 'empty') input.repositoryAuthors = [];
   if (kind === 'null') input.repositoryAuthors = null;
   if (kind === 'wrong-type') input.repositoryAuthors = 'unverified';
   if (kind === 'missing-evidence') delete input.repositoryAuthors[0].evidence;
@@ -65,4 +68,20 @@ it('keeps legacy GitHub selection while honoring independent version 2 destinati
   expect(configured.assets).toEqual(assets);
   configured.channels.find(channel=>channel.id==='winget')!.artifactIds=['portable'];
   expect(()=>channelFiles(configured,'winget',files)).toThrow('DELIVERY_WINGET_INSTALLER');
+});
+
+it('projects workflow-owned units from Release Please without declaring build artifacts',()=>{
+  const input={schemaVersion:3,repositoryAuthors:config.repositoryAuthors,notes:{'packages/app':'.release-notes/application.md'}};
+  const settings={packages:{'packages/app':{component:'cli'},'packages/helpers':{}}};
+  expect(parseDeliveryConfig({schemaVersion:3},settings).repositoryAuthors).toEqual([]);
+  expect(parseDeliveryConfig(input,settings)).toMatchObject({buildWorkflow:'.github/workflows/steward-release-publish.yml',
+    units:[{id:'cli',path:'packages/app',notesPath:'.release-notes/application.md',assets:[]},
+      {id:'helpers',path:'packages/helpers',notesPath:'.release-notes/helpers.md',assets:[]}]});
+  expect(()=>parseDeliveryConfig({...input,units:[]},settings)).toThrow('DELIVERY_CONFIG_STRUCTURE');
+  expect(()=>parseDeliveryConfig({...input,notes:{other:'notes.md'}},settings)).toThrow('DELIVERY_RELEASE_PLEASE_UNITS');
+  expect(()=>parseDeliveryConfig({...input,notes:{'packages/app':'../notes.md'}},settings)).toThrow('RN_CONFIG_PATH');
+  expect(()=>parseDeliveryConfig({...input,repositoryAuthors:[{id:7,evidence:'https://github.com/fixture-user'}]},settings))
+    .toThrow('AUTHOR_IDENTITY_UNVERIFIED');
+  expect(()=>parseDeliveryConfig(input,{packages:{'packages/app':{component:'cli'},another:{component:'CLI'}}}))
+    .toThrow('DELIVERY_DUPLICATE_IDENTITY');
 });

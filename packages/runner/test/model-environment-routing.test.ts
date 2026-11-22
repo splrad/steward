@@ -3,7 +3,6 @@ import { expect, it } from 'vitest';
 import { parse } from 'yaml';
 
 it.each([
-  ['release.yml', 'release-coordinator', 'steward-release'],
   ['release-candidate-event.yml', 'event', 'steward-release'],
   ['release-cycle-event.yml', 'release-coordinator', 'steward-release'],
   ['quality-language-summary.yml', 'quality-summary', 'steward-release-notes'],
@@ -24,7 +23,7 @@ it.each([
   } else if (file === 'release-candidate-event.yml' || file === 'release-cycle-event.yml') {
     expect(Object.keys(workflow.on)).toEqual(['workflow_dispatch']);
     for (const guard of ["github.repository_id == '1296724484'", "github.ref == 'refs/heads/main'",
-      "vars.STEWARD_EXPECTED_PAUSED_RELEASE == '311600220'", "github.event_name == 'workflow_dispatch'"]) {
+      "github.event_name == 'workflow_dispatch'", 'inputs.policy_sha == github.sha', 'github.workflow_sha == github.sha']) {
       expect(job.if).toContain(guard);
     }
   } else {
@@ -59,5 +58,5 @@ it('only the production and explicitly gated acceptance jobs receive native Copi
   }
   expect(consumers.sort()).toEqual(['ai-identity-acceptance.yml/quality', 'ai-identity-acceptance.yml/release',
     'business-flow-acceptance.yml/acceptance', 'quality-language-summary.yml/quality-summary',
-    'release-candidate-event.yml/event', 'release-cycle-event.yml/release-coordinator', 'release.yml/release-coordinator']);
+    'release-candidate-event.yml/event', 'release-cycle-event.yml/release-coordinator']);
 });

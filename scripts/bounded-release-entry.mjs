@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { nativeReleaseApp, NativeEvidenceReader, nativeEvidenceTransport } from '../packages/runner/dist/index.js';
 import { fetchState } from './release-coordinator.mjs';
 import { nativeReleaseCandidate } from './release-candidate.mjs';
+import {releasePolicyGuard} from './release-repository-policy.mjs';
 import { candidateEvidence, validateCandidateEvent, sameIdentity, sha, key, withCandidateProduct } from './bounded-candidate-contract.mjs';
 const central='splrad/steward',centralId=1296724484;
 const botIdentity={name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'};
@@ -12,7 +13,7 @@ const fail=reason=>{throw Error(reason);};
 export async function entryGuard(env,get,config) {
   if(config.enabled!==true||!sha(config.deploymentSha))fail('BOUNDED_NOT_CONNECTED');
   if(env.GITHUB_REPOSITORY!==central||env.GITHUB_REPOSITORY_ID!==String(centralId)||env.GITHUB_REF!=='refs/heads/main'
-    ||!sha(env.STEWARD_CONTROLLER_SHA)||env.STEWARD_EXPECTED_PAUSED_RELEASE!=='311600220')fail('BOUNDED_PAUSED_OR_SOURCE');
+    ||!sha(env.STEWARD_CONTROLLER_SHA))fail('BOUNDED_ENTRY_SOURCE');
   const workflow={cycle:'.github/workflows/release-cycle-event.yml',pages:'.github/workflows/pages-maintenance-event.yml',observe:'.github/workflows/release-observe.yml',event:'.github/workflows/bounded-release-event.yml',normal:'.github/workflows/release-candidate-event.yml'}[env.BOUNDED_MODE];
   if(!workflow)fail('BOUNDED_MODE');
   const repo=await get(`/repos/${central}`),head=await get(`/repos/${central}/git/ref/heads/main`);
@@ -21,10 +22,9 @@ export async function entryGuard(env,get,config) {
     ||run.id!==Number(env.GITHUB_RUN_ID)||run.run_attempt!==Number(env.GITHUB_RUN_ATTEMPT)||run.repository?.id!==centralId||run.head_repository?.id!==centralId
     ||run.path!==workflow||run.head_sha!==env.STEWARD_CONTROLLER_SHA||run.head_branch!=='main'
     ||run.event!==('workflow_dispatch'))fail('BOUNDED_RUN_SOURCE');
-  const release=await get(`/repos/${central}/actions/workflows/311600220`);
-  if(release.id!==311600220||release.path!=='.github/workflows/release.yml'||release.state!=='disabled_manually')fail('BOUNDED_LEGACY_WRITER_ACTIVE');
   const own=await get(`/repos/${central}/actions/workflows/${workflow.split('/').at(-1)}`);
   if(!Number.isSafeInteger(own.id)||own.id<1||own.path!==workflow||own.state!=='active'||run.workflow_id!==own.id)fail('BOUNDED_ENTRY_DISABLED');
+  if((await get(`/repos/${central}/git/ref/heads/main`))?.object?.sha!==head.object.sha)fail('BOUNDED_RUN_SOURCE');
   return run;
 }
 export function resultOutcome(result) {
@@ -77,7 +77,8 @@ export async function main(env=process.env) {
       if(state.snapshot.head!==before.evidence.stateCommit)fail('BOUNDED_STATE_MOVED');
       const result=await nativeReleaseCandidate({directory:state.directory,writeDirectory:join(root,'writes'),remote:state.remote,repository:product.name,
         repositoryId:product.id,defaultBranch:product.defaultBranch,appBotId:app.appBotId,identity:botIdentity},{token,readToken,controllerSha:env.STEWARD_CONTROLLER_SHA,
-        expectedStateSha:before.evidence.stateCommit,observation:identity});
+        expectedStateSha:before.evidence.stateCommit,observation:identity,
+        checkRepositoryPolicy:releasePolicyGuard(app,repository)});
       const after=await candidateEvidence(get,{product});if(!sameIdentity(identity,after.identity))fail('BOUNDED_EPOCH_MOVED');
       if(after.pull.head.sha!==before.pull.head.sha)fail('BOUNDED_HUMAN_HEAD_MOVED');
       const output={schemaVersion:1,requestKey,identity,repositoryId:centralId,runId:run.id,runAttempt:run.run_attempt,

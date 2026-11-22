@@ -1,7 +1,9 @@
+import { renderCandidateNote, renderCandidateProjection } from '../../core/src/candidate-note.js';
+export { renderCandidateNote };
 import { manualCandidateFacts, type ManualCandidate } from '../../core/src/manual-candidate.js';
 import { createHash } from 'node:crypto';
-import { candidateId, candidateCreationBody, selectReleaseContributors, renderReleaseContributors, type CandidateSnapshot, type ReleaseActor, type RepositoryAuthor } from '../../core/src/release-candidate.js';
-import { assertRepositoryWrite, type RepositoryRecord } from '../../core/src/release-observation.js';
+import { candidateId, candidateCreationBody, selectReleaseContributors, type CandidateSnapshot, type ReleaseActor, type RepositoryAuthor } from '../../core/src/release-candidate.js';
+import { assertRepositoryWrite, type CycleRecord, type RepositoryRecord } from '../../core/src/release-observation.js';
 import { mergeCandidate, prepareCandidateWrite, resumeCandidateWrite, candidateTreeMatches, type PreparedCandidateWrite } from './release-candidate-update.js';
 
 export interface CandidatePullRequest { number: number; head: string; branch: string; base: string; state: 'open' | 'closed'; merged: boolean; editing: boolean; body: string }
@@ -9,16 +11,18 @@ export interface CandidateComment { id: number; authorId: number; body: string }
 export interface CandidateSession {
   manualValidation?: ManualCandidate | null;
   repository: RepositoryRecord; generated: CandidateSnapshot | null; pending: { write: PreparedCandidateWrite; generated: CandidateSnapshot; previousIdentity?: CandidateSession['identity'] } | null;
-  identity: null | { authorsDigest: string; sourceDigest: string; actors: (ReleaseActor | null)[]; contributors: ReturnType<typeof selectReleaseContributors>;
-    units: { id: string; actors: (ReleaseActor | null)[]; contributors: ReturnType<typeof selectReleaseContributors> }[] };
+  identity: null | { authorsDigest: string; sourceDigest: string; noteTemplate?: string; actors: (ReleaseActor | null)[]; contributors: ReturnType<typeof selectReleaseContributors>;
+    units: { id: string; notesPath?: string; actors: (ReleaseActor | null)[]; contributors: ReturnType<typeof selectReleaseContributors> }[] };
   conflict: null | { head: string; generated: CandidateSnapshot; paths: string[] };
   preview: string | null;
   adoption: null | { humanHead: string; generatedBase: string; differences: CandidateSnapshot['files'] };
 }
 export interface CandidateRuntime {
+  activeCycle?: CycleRecord;
   workspace: string; temporaryRoot: string; repository: string; defaultBranch: string; appBotId: number; identity: { name: string; email: string };
   now(): string;
-  source(): Promise<{ baseSha: string; authors: RepositoryAuthor[]; authorsDigest: string }>;
+  source(): Promise<{ baseSha: string; authors: RepositoryAuthor[]; authorsDigest: string; noteTemplate?: string;
+    notesPaths?: Record<string,string>; confirmedHumans?: RepositoryAuthor[] }>;
   pullRequests(branch: string): Promise<CandidatePullRequest[]>;
   legacyCandidate(): Promise<CandidatePullRequest | null>;
   generation(baseSha: string): Promise<{ status: 'READY'; snapshot: CandidateSnapshot; title: string; body: string } | { status: 'UNCHANGED' | 'DRIFT' }>;
@@ -48,13 +52,23 @@ function candidateVersion(units:{id:string;path:string;version:string;tag:string
   const identities=ordered.map(({id,path,version,tag})=>[id,path,version,tag]);
   return 'units-'+digest(identities);
 }
+// The caller resolves this record from the same protected tree as the repository.
+export function candidateCycleIsSeparate(repository: RepositoryRecord, cycle?: CycleRecord) {
+  if (repository.activeCycleId === null) return true;
+  const number = repository.candidate?.prNumber;
+  return !!cycle && !!number && Number.isSafeInteger(number) && number > 0
+    && Number.isSafeInteger(cycle.prNumber) && cycle.prNumber > 0 && cycle.prNumber !== number
+    && /^[a-f0-9]{40}$/.test(cycle.sourceSha) && cycle.id === repository.activeCycleId
+    && cycle.id === `pr-${cycle.prNumber}-${cycle.sourceSha}`;
+}
 /** Stable generation identity; human edits and derived contributor projection do not restart a window. */
-export function candidateObservationIdentity(session: CandidateSession): CandidateObservation {
+export function candidateObservationIdentity(session: CandidateSession, activeCycle?: CycleRecord): CandidateObservation {
   const { repository, generated } = session, candidate = repository.candidate;
+  if (!candidateCycleIsSeparate(repository,activeCycle)) throw Error('CANDIDATE_CYCLE_OWNER');
   if(session.manualValidation) {
     const m=session.manualValidation;
     if(repository.repositoryId!==m.repositoryId||candidate?.id!==m.candidateId||candidate.prNumber!==m.prNumber||candidate.branch!==m.branch
-      ||repository.activeCycleId||session.pending||candidate.pendingWrite)throw Error('MANUAL_OWNER');
+      ||session.pending||candidate.pendingWrite)throw Error('MANUAL_OWNER');
     const factDigest=digest(manualCandidateFacts(m));
     return {repositoryId:m.repositoryId,cycleId:m.candidateId,channel:'candidate',version:candidateVersion(m.units),
       artifactDigest:'sha256:'+factDigest,sourceSha:m.sourceSha,stage:'candidate',
@@ -68,22 +82,20 @@ export function candidateObservationIdentity(session: CandidateSession): Candida
     version: candidateVersion(generated.units), artifactDigest: 'sha256:' + digest(generated), sourceSha: candidate.baseSha,
     stage: 'candidate', epoch: digest([repository.repositoryId, candidate.id, candidate.baseSha, candidate.generatedSnapshotPath, candidate.publishedHead]), upstreamPR: null };
 }
+
 /** Exact existing generated-note projection, with frozen native contributor identities. */
-export function candidateProjectionPreview(session:CandidateSession):string {
+export function candidateProjectionPreview(session:CandidateSession, repository:string):string {
   if(!session.generated||!session.identity)throw Error('CANDIDATE_PROJECTION_CACHE');
-  const notes=session.generated.files.filter(f=>f.path.startsWith('.release-notes/')&&f.content!==null);
-  if(!notes.length)throw Error('CANDIDATE_PROJECTION_NOTES');
-  return notes.map(f=>{
-    const unit=session.identity!.units.find(u=>`.release-notes/${u.id}.md`===f.path)
-      ??(session.identity!.units.length===1?session.identity!.units[0]:undefined);
-    if(!unit)throw Error('CANDIDATE_PROJECTION_UNIT');
-    return `# ${f.path}\n\n${f.content}`+renderReleaseContributors(unit.contributors.contributors);
-  }).join('\n').replace(/\r\n?/g,'\n');
+  return renderCandidateProjection(session.generated, session.identity, repository);
 }
+export function candidateCommentFits(body:string):boolean { return Buffer.byteLength(body)<=48*1024; }
 export function candidateStatusBody(repository:string,candidateId:string,units:{id:string;version:string}[],head:string,preview:string,previewCommit:string):string {
   const header=`<!-- steward:candidate-status:${candidateId} -->\n候选 head: ${head}\n${units.map(u=>`${u.id}: ${u.version}`).join('\n')}\n\n`;
   const body=header+preview;
-  return Buffer.byteLength(body)<=48*1024?body:`${header}[完整预览](https://github.com/${repository}/blob/${previewCommit}/generated/${candidateId}/preview.md)\n`;
+  if(candidateCommentFits(body))return body;
+  const linked=`${header}[完整预览](https://github.com/${repository}/blob/${previewCommit}/generated/${candidateId}/preview.md)\n`;
+  if(!candidateCommentFits(linked))throw Error('CANDIDATE_STATUS_HEADER_TOO_LARGE');
+  return linked;
 }
 export async function advanceReleaseCandidate(session: CandidateSession, io: CandidateRuntime, observation?: CandidateObservation) {
   const repository = session.repository;
@@ -91,12 +103,14 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   if (repository.defaultBranch !== io.defaultBranch) throw new Error('CANDIDATE_DEFAULT_BRANCH_DRIFT');
   const save = async () => { repository.revision++; repository.lastProgressAt = io.now(); return io.save(session); };
   if (observation) {
-    const actual = candidateObservationIdentity(session);
+    const actual = candidateObservationIdentity(session, io.activeCycle);
     if (JSON.stringify(Object.keys(observation).sort()) !== JSON.stringify(Object.keys(actual).sort())
       || Object.entries(actual).some(([key, value]) => observation[key as keyof CandidateObservation] !== value))
       throw new Error('CANDIDATE_OBSERVATION_IDENTITY');
   }
   const source = await io.source();
+  const notePaths = source.notesPaths ? new Set(Object.values(source.notesPaths)) : null;
+  const isNotesPath = (path:string) => notePaths ? notePaths.has(path) : path.startsWith('.release-notes/');
   if (observation && source.baseSha !== observation.sourceSha) return { status: 'WAIT', reason: 'SOURCE_CHANGED' };
   let candidate = repository.candidate;
   if (!candidate) {
@@ -169,8 +183,13 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   if (frozen && generated && generated.baseSha === source.baseSha
     && frozen.sourceDigest === generated.sourceDigest && frozen.authorsDigest === source.authorsDigest
     && JSON.stringify(frozen.units.map(u => u.id).sort()) === JSON.stringify(generated.units.map(u => u.id).sort())) {
-    const projected = { ...frozen, contributors: selectReleaseContributors(frozen.actors, source.authors),
-      units: frozen.units.map(unit => ({ ...unit, contributors: selectReleaseContributors(unit.actors, source.authors) })) };
+    if (frozen.noteTemplate !== source.noteTemplate || frozen.units.some(unit => {
+      const declared = source.notesPaths?.[unit.id];
+      return declared ? (unit.notesPath ?? `.release-notes/${unit.id}.md`) !== declared : unit.notesPath !== undefined;
+    }))
+      throw Error('CANDIDATE_NOTE_TEMPLATE_DRIFT');
+    const projected = { ...frozen, contributors: selectReleaseContributors(frozen.actors, source.authors, source.confirmedHumans),
+      units: frozen.units.map(unit => ({ ...unit, contributors: selectReleaseContributors(unit.actors, source.authors, source.confirmedHumans) })) };
     if (JSON.stringify(projected) !== JSON.stringify(frozen)) { session.identity = projected; await save(); }
   }
   const statusComment = async (body: string, previewHead: string, currentHead: string) => {
@@ -209,7 +228,7 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
       session.conflict = { head: observed.head, generated: session.generated, paths: difference.conflictPaths };
       session.preview = `检测到候选人工修改，已保留当前文件；请在原PR处理冲突。当前 head：${observed.head}。\n`;
       const archive = await save(); await statusComment(session.preview, archive, observed.head);
-      return { status: 'CONFLICT', reason: difference.conflictPaths.some(path => !path.startsWith('.release-notes/')) ? 'SOURCE_CHANGED' : 'HUMAN_EDIT_CONFLICT', paths: difference.conflictPaths };
+      return { status: 'CONFLICT', reason: difference.conflictPaths.every(isNotesPath) ? 'HUMAN_EDIT_CONFLICT' : 'SOURCE_CHANGED', paths: difference.conflictPaths };
     }
   }
   // A fixed observation can only project the frozen identity and protect existing notes.
@@ -225,15 +244,15 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
       if(!now.pr||now.pr.state!=='open'||now.pr.editing||now.head!==observed.head||latest.baseSha!==source.baseSha
         ||latest.authorsDigest!==source.authorsDigest)throw Error('CANDIDATE_OBSERVATION_MOVED');
     };
-    await stable();const preview=candidateProjectionPreview(session);
+    await stable();const preview=candidateProjectionPreview(session,io.repository);
     const changed=session.preview!==preview;session.preview=preview;
     const archive=changed?await save():await io.save(session);
     await stable();const projectionEvidence=await statusComment(preview,archive,observed.head!);
     await stable();if(!projectionEvidence)throw Error('CANDIDATE_PROJECTION_UNKNOWN');
     return { status: 'READY', reason: 'CACHED_OBSERVATION', head: observed.head,projectionEvidence };
   }
-  // Missing author facts block only this repository's new takeover, not implementation or other repositories.
-  selectReleaseContributors([], source.authors);
+  // Check the identity inputs before running upstream generation.
+  selectReleaseContributors([], source.authors, source.confirmedHumans);
   const generation = await io.generation(source.baseSha);
   if (generation.status !== 'READY') return { status: 'WAIT', reason: generation.status };
   candidate.contentGenerationDigest = digest([generation.snapshot.sourceDigest, generation.snapshot.configDigest, source.authorsDigest]); await save();
@@ -242,8 +261,11 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   const N: CandidateSnapshot = { ...generation.snapshot, files: [...generation.snapshot.files, ...content.files] };
   if (JSON.stringify(Object.keys(content.unitActors).sort()) !== JSON.stringify(N.units.map(unit => unit.id).sort())) throw new Error('CANDIDATE_CONTRIBUTOR_UNIT_COVERAGE');
   const previousIdentity = session.identity;
-  session.identity = { authorsDigest: source.authorsDigest, sourceDigest: N.sourceDigest, actors: content.actors, contributors: selectReleaseContributors(content.actors, source.authors),
-    units: N.units.map(unit => ({ id: unit.id, actors: content.unitActors[unit.id]!, contributors: selectReleaseContributors(content.unitActors[unit.id]!, source.authors) })) };
+  session.identity = { authorsDigest: source.authorsDigest, sourceDigest: N.sourceDigest,
+    ...(source.noteTemplate ? { noteTemplate: source.noteTemplate } : {}),
+    actors: content.actors, contributors: selectReleaseContributors(content.actors, source.authors, source.confirmedHumans),
+    units: N.units.map(unit => ({ id: unit.id, ...(source.notesPaths ? {notesPath:source.notesPaths[unit.id]!} : {}),
+      actors: content.unitActors[unit.id]!, contributors: selectReleaseContributors(content.unitActors[unit.id]!, source.authors, source.confirmedHumans) })) };
   const latestSource = await io.source();
   if (latestSource.baseSha !== source.baseSha || latestSource.authorsDigest !== source.authorsDigest) return { status: 'WAIT', reason: 'SOURCE_DRIFT' };
   observed = await current();
@@ -252,7 +274,7 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   const merged = await mergeCandidate(io.workspace, session.generated, observed.retiredHead ? source.baseSha : H ?? source.baseSha, N, io.temporaryRoot);
   if (merged.status === 'CONFLICT') {
     session.conflict = { head: H ?? source.baseSha, generated: N, paths: merged.conflictPaths }; await save();
-    return { status: 'CONFLICT', reason: merged.conflictPaths.some(path => !path.startsWith('.release-notes/')) ? 'SOURCE_CHANGED' : 'HUMAN_EDIT_CONFLICT', paths: merged.conflictPaths };
+    return { status: 'CONFLICT', reason: merged.conflictPaths.every(isNotesPath) ? 'HUMAN_EDIT_CONFLICT' : 'SOURCE_CHANGED', paths: merged.conflictPaths };
   }
   const unchanged = H !== null && await candidateTreeMatches(io.workspace, H, N.baseSha, merged.files, io.temporaryRoot);
   if (!unchanged) {
@@ -284,8 +306,7 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
     if (!observed.pr) return { status: 'WAIT', reason: 'PR_CREATE_UNKNOWN' };
   }
   if (observed.pr.state === 'closed') return { status: 'WAIT', reason: 'CLOSED_PR' };
-  session.preview = merged.files.filter(f => f.path.startsWith('.release-notes/') && f.content !== null)
-    .map(f => `# ${f.path}\n\n${f.content}` + renderReleaseContributors(session.identity!.units.find(u => `.release-notes/${u.id}.md` === f.path)!.contributors.contributors)).join('\n').replace(/\r\n?/g, '\n');
+  session.preview = renderCandidateProjection({ ...N, files: merged.files }, session.identity, io.repository);
   const archive = await save(); await statusComment(session.preview, archive, observed.pr.head);
   return { status: 'READY', prNumber: candidate.prNumber, head: candidate.publishedHead };
 }

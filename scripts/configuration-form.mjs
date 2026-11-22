@@ -2,7 +2,7 @@ import {productCITriggerGap,selectableProductCI,workflowEvent} from './validatio
 import {createHash} from 'node:crypto';
 import {posix} from 'node:path';
 import {matrixValue,staticMatrixRows,supportedArchiveName} from './configuration-build.mjs';
-import {channelWorkflowPath,effectiveChannels,pagesChoices,renderConfiguration} from './configuration-view.mjs';
+import {channelSelection,metadataFiles,channelWorkflowPath,effectiveChannels,pagesChoices,renderConfiguration} from './configuration-view.mjs';
 const key=text=>createHash('sha256').update(text).digest('hex').slice(0,16);
 const display=text=>String(text??'').replace(/[\r\n<>`]/g,' ');
 const token=field=>'<!-- cfg '+field+' -->';
@@ -46,12 +46,6 @@ export function candidates(model,values) {
   return entries;
 }
 
-const metadataFiles=['sbom.spdx.json','release-notes.md','artifact-manifest.json','SHA256SUMS'];
-function channelSelection(delivery,unit,c) {
-  return {ids:c.artifactIds??(!c.required && delivery.schemaVersion===2?[]:unit.assets.filter(a=>c.id!=='winget'||/\.(exe|msi|msix|appx|msixbundle|appxbundle)$/i.test(a.name)).map(a=>a.id)),
-    metadata:c.metadata??(delivery.schemaVersion===1 && c.id!=='winget'?metadataFiles:[])};
-}
-
 function unitDefaults(model,entry,values) {
   const id=entry.id, raw=values[id+'.unit']??'';
   const unit=model.delivery?.units.find(u=>u.id===raw);
@@ -78,7 +72,7 @@ export function configurationForm(model,head,state={}) {
   };
   // Summarize adopted settings as values. Every editable control below has a real operation.
   lines.push(renderConfiguration(model,head).replace(/^- \[x\] /gm,'- ✓ ').replace(/^- \[ \] /gm,'- ○ '),'',
-    '### 调整配置','','在本张 PR 勾选入口，编辑字段后保存。准备入口后可试跑，运行完成后选择归档文件和发布渠道。');
+    '### 调整配置','','在本 PR 勾选入口，编辑字段后保存。准备入口后可试跑，运行完成后选择归档文件和发布渠道。在 **Files changed** 核对修改，合并后生效。');
   for(const workflow of model.workflows) {
     const gap=productCITriggerGap(workflow,model.defaultBranch);
     if(gap) {
@@ -100,7 +94,7 @@ export function configurationForm(model,head,state={}) {
     field(id+'.target','目标 ID');
     field(id+'.path','发行单元目录（相对于仓库根目录）',defaults.path);
     field(id+'.notes','发行单元说明文件',defaults.notes);
-    if(values[id+'.notes'] && !model.files.has(values[id+'.notes'])) field(id+'.notesBody','新说明的 Markdown 正文（概述和更新内容）');
+    if(values[id+'.notes'] && !model.files.has(values[id+'.notes'])) field(id+'.notesBody','按采用模板填写的新 Markdown 说明');
     if(values[id+'.changelog'] && !model.files.has(posix.join(defaults.path,values[id+'.changelog']))) field(id+'.logBody','新变更日志的起始正文');
     const existingUnit=model.delivery?.units.find(u=>u.id===defaults.raw);
     field(id+'.locks','构建锁文件（每行一个仓根相对路径；无锁时输入 []）',existingUnit?.buildLocks?.join('\n')??'');
@@ -167,15 +161,10 @@ export function configurationForm(model,head,state={}) {
     const build=model.pages.jobs?.build, deploy=model.pages.jobs?.deploy;
     if(build) field('site.build','选择构建文档站',site.build??false,'check');
     if(deploy) field('site.deploy','选择允许公开部署（须启用 Pages，运维批准的来源模式须一致，release 模式还须匹配同一非空单元）',site.deploy??false,'check');
-    lines.push('仅构建可直接使用下方来源。公开部署条件未满足时，已启用的构建仍可运行。');
     field('site.source','站点来源（default-branch 或 release）',site.source);
     field('site.unit','正式 Release 来源单元',site.unit);
   }
   const hasReleaseEntry=entries.some(entry=>values[entry.id+'.use']);
-  if(!model.delivery && hasReleaseEntry) {
-    field('author.id','已核实仓库作者的 GitHub 数字 ID');
-    field('author.evidence','作者身份核验依据');
-  }
   if(hasReleaseEntry) field('signing','已确认所选单元签名不适用',false,'check');
   for(const [id,label] of [['configure','准备入口并写入本 PR'],['trial','使用已核验的运行或执行只构建试跑'],['select','将正式文件和各渠道选择写入本 PR'],['approve','批准本 PR 的当前提交']])
     field('operation.'+id,label,false,'check');
@@ -250,7 +239,6 @@ export function planFromForm(model,state,operation) {
   for(const c of channels.values()) units.get(c.unit).channels.push({id:c.id,location:c.location,required:false});
   const settings={targets,channelWorkflow:v['channel.workflow'],units:[...units.values()],signing:v.signing?'not-applicable':null};
   if(operation==='configure' && versions.size) settings.versions=[...versions.values()];
-  if(!model.delivery && entries.length) settings.repositoryAuthors=[{id:Number(v['author.id']),evidence:v['author.evidence']}];
   const edits=[];
   for(const unit of model.delivery?.units??[]) for(const c of effectiveChannels(model.delivery,unit)) {
     const field='channel.'+unit.id+'.'+c.id, enabled=v[field];

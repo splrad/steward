@@ -37,10 +37,13 @@ function fixture() {
     }
     if(p==='')return response(repo);
     if(p==='/git/ref/heads/trunk')return response({ref:'refs/heads/trunk',object:{type:'commit',sha:state.head}});
+    if(p==='/contents/.github/steward-central-policy')return state.legacyPolicy?response({type:'file'}):{...response({}),status:404};
     if(p==='/contents/.github/workflows/pages.yml') {
       const content=state.workflowBytes??bytes;
       return response({type:'file',path:'.github/workflows/pages.yml',encoding:'base64',content:content.toString('base64'),size:content.length,sha:createHash('sha1').update(`blob ${content.length}\0`).update(content).digest('hex')});
     }
+    if(p==='/actions/variables/STEWARD_PAGES_BUILD_ONLY')return state.buildOnly===undefined
+      ? {...response({}),status:404} : response({name:'STEWARD_PAGES_BUILD_ONLY',value:state.buildOnly});
     if(p.startsWith('/actions/variables/'))return response({name:p.split('/').at(-1),value:p.endsWith('/STEWARD_DOCS_UNIT')?(state.unit??''):state.mode});
     if(p==='/actions/workflows/pages.yml')return response(workflow);
     if(p==='/actions/workflows/5/runs') {
@@ -64,7 +67,7 @@ function fixture() {
   const reader=new NativeEvidenceReader(io,repo.full_name),options={reader,repositoryId:10,mode:'default-branch',controllerSha:pin};
   const store={async load(p){return structuredClone(records.get(p)??null);},async save(v,expected){const p=pagesRecordPath(v);assert.deepEqual(records.get(p)??null,expected);decodePagesMaintenance(Buffer.from(JSON.stringify(v)),10,p);if(expected)assertPagesProgress(expected,v);records.set(p,structuredClone(v));state.onSave?.(v);}};
   const coordinator={runId:900,runAttempt:1,controllerSha:pin};
-  const service=completion=>servicePages({io,repository:repo,store,coordinator,appBotId:301115370,completion},{now:()=>state.time,deployment:async()=>state.site});
+  const service=(completion,readPolicy)=>servicePages({io,repository:repo,store,coordinator,appBotId:301115370,completion,readPolicy},{now:()=>state.time,deployment:async()=>state.site});
   const successful=(id=40,sha=S)=>{state.deployments.push({id,environment:'github-pages',sha,created_at:'2026-10-30T00:00:00Z'});state.statuses.set(id,[{id:id+100,state:'success',created_at:'2026-10-30T00:10:00Z',log_url:'https://github.com/fixture/product/actions/runs/12/job/22',environment_url:'https://fixture.github.io/product/'}]);};
   return {repo,source,workflow,run,build,deploy,artifact,state,calls,records,reader,options,store,coordinator,service,successful};
 }
@@ -91,6 +94,35 @@ test('public maintenance requires the approved mode and release unit before disp
   }
 });
 
+test('a repository build-only setting disables public Pages maintenance writes',async()=>{
+  const f=fixture();f.state.buildOnly='true';
+  assert.deepEqual(await f.service(),{status:'BUILD_ONLY'});
+  assert.equal(f.calls.some(call=>call.method==='POST'),false);
+  assert.equal(f.records.size,0);
+});
+
+test('keeps old public Pages policy and skips it for reviewed native source without a legacy marker',async()=>{
+  const fallback=fixture();
+  const paused=async()=>({adoption:'paused'});
+  assert.deepEqual(await fallback.service(undefined,paused),{status:'DISABLED'});
+  assert.equal(fallback.calls.some(call=>call.method==='POST'),false);
+  for(const legacyPolicy of [false,true]) {
+    const f=fixture();
+    f.state.legacyPolicy=legacyPolicy;
+    f.state.workflowBytes=Buffer.from(YAML.stringify({...workflowDoc,env:{...workflowDoc.env,STEWARD_DOCS_SOURCE:'default-branch'}}));
+    let authorityReads=0;
+    const result=await f.service(undefined,async()=>{authorityReads++;return paused();});
+    assert.equal(result.status,legacyPolicy?'DISABLED':'ACCEPTED');
+    assert.equal(authorityReads,legacyPolicy?1:0);
+    assert.equal(f.calls.some(call=>call.method==='POST'),!legacyPolicy);
+  }
+  const old=fixture();
+  await assert.rejects(old.service(undefined,async()=>({adoption:'central',policy:{site:{
+    mode:'build-and-deploy',workflow:'.github/workflows/pages.yml',source:'release',unit:'maps',
+  }}})),/PAGES_REPOSITORY_POLICY_CONFLICT/);
+  assert.equal(old.calls.some(call=>call.method==='POST'),false);
+});
+
 test('native YAML separates source, secret-free build and Pages deployment with same-Run artifacts',()=>{
   assert.equal(pagesDefinition(bytes).controllerSha,pin);
   const d=workflowDoc;assert.deepEqual(d.permissions,{});assert.deepEqual(d.jobs.build.permissions,{contents:'read'});
@@ -109,7 +141,9 @@ test('site build takes its output from the product and public deployment require
   assert.equal(build.steps.find(step=>step.id==='artifact').with.path,'${{ steps.output.outputs.directory }}');
   assert.equal(deploy.if,"needs.select.outputs.ready == 'true' && needs.select.outputs.public_source == 'true'");
   assert.equal(workflowDoc.jobs.select.if,undefined);
-  assert.equal(workflowDoc.jobs.select.outputs.public_source,'${{ steps.authorization.outputs.matches }}');
+  assert.equal(workflowDoc.jobs.select.outputs.public_source,'${{ steps.source.outputs.public_source || steps.authorization.outputs.matches }}');
+  assert.equal(workflowDoc.env.STEWARD_REPOSITORY_POLICY,'true');
+  assert.equal(workflowDoc.env.STEWARD_DOCS_APPROVED_SOURCE,'${{ vars.STEWARD_DOCS_SOURCE }}');
   assert.equal(workflowDoc.jobs.select.steps.find(step=>step.id==='source').env.STEWARD_PAGES_BUILD_ONLY,
     "${{ steps.authorization.outputs.matches != 'true' }}");
   assert.equal(build.if,"needs.select.outputs.ready == 'true'");
@@ -383,12 +417,11 @@ function completionEntry(f) {
   const env={PAGES_REPOSITORY_ID:String(f.repo.id),PAGES_WORKFLOW_ID:String(f.workflow.id),PAGES_RUN_ID:'12',PAGES_ATTEMPT:'1',
     GITHUB_REPOSITORY_ID:String(centralId),GITHUB_REPOSITORY:'splrad/steward',GITHUB_REF:'refs/heads/main',GITHUB_RUN_ID:'99',
     GITHUB_EVENT_NAME:'workflow_dispatch',GITHUB_RUN_ATTEMPT:'1',PAGES_POLICY_SHA:pin,STEWARD_CONTROLLER_SHA:pin,
-    BOUNDED_MODE:'pages',STEWARD_EXPECTED_PAUSED_RELEASE:'311600220'};
+    BOUNDED_MODE:'pages'};
   const run={id:99,run_attempt:1,path:file,event:'workflow_dispatch',head_branch:'main',head_sha:pin,workflow_id:7,
     actor,triggering_actor:actor,repository:{id:centralId},head_repository:{id:centralId}};
   const facts={'':{id:centralId,default_branch:'main'},'/git/ref/heads/main':{object:{sha:pin}},
-    '/actions/runs/99/attempts/1':run,'/actions/workflows/pages-maintenance-event.yml':{path:file,state:'active',id:7},
-    '/actions/workflows/311600220':{id:311600220,path:'.github/workflows/release.yml',state:'disabled_manually'}};
+    '/actions/runs/99/attempts/1':run,'/actions/workflows/pages-maintenance-event.yml':{path:file,state:'active',id:7}};
   const get=async path=>{const key=path.replace('/repos/splrad/steward','');assert.ok(key in facts);return facts[key];};
   const enter=sites=>receiveCompletion(env,sites,get,{enabled:true,deploymentSha:S},async()=>({appBotId:actor.id}),
     ({completion})=>f.service(completion));

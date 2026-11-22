@@ -1,1 +1,15 @@
-{ "name": "@splrad/steward-core", "private": true, "type": "module", "exports": "./src/index.ts" }
+{
+  "name": "@splrad/steward-core",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./candidate-note": "./src/candidate-note.ts"
+  },
+  "dependencies": {
+    "mustache": "4.2.0",
+    "remark-parse": "11.0.0",
+    "unified": "11.0.5",
+    "yaml": "2.9.1"
+  }
+}

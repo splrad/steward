@@ -46,6 +46,230 @@ it('reads real complete Git base/head and detects stale base, wrong checkout and
     git('checkout',head);const payload=JSON.parse(await readFile(event,'utf8'));payload.pull_request.base.sha=S;await writeFile(event,JSON.stringify(payload));await expect(validationInput(root,env)).rejects.toThrow();
   }finally{await rm(root,{recursive:true,force:true});}
 },30000);
+it.each([false,true])('uses the protected base repository marker for a fork (private=%s)',async privateRepository=>{
+  const {main}=await script('validation-input'),root=await mkdtemp(join(tmpdir(),'validation-fork-'));
+  registerOfflineFixtureRoot(root);
+  const git=(...args:string[])=>execFileSync('git',args,{cwd:root,encoding:'utf8'}).trim();
+  try{
+    git('init','--initial-branch=main');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid');
+    await mkdir(join(root,'.github'));
+    git('config','core.autocrlf','false');
+    await writeFile(join(root,'AGENTS.md'),await readFile('templates/repository/AGENTS.md'));
+    const marker='.github/steward-central-policy',bytes=Buffer.from('central\n');
+    await writeFile(join(root,marker),bytes);
+    git('add','.');git('commit','--signoff','--no-gpg-sign','-m','adopt');
+    const base=git('rev-parse','HEAD'),tree=git('rev-parse',base+':.github'),blob=git('rev-parse',base+':'+marker);
+    git('update-ref','refs/remotes/origin/main',base);
+    git('rm',marker);git('commit','--signoff','--no-gpg-sign','-m','remove marker in fork');
+    const repository={id:42,full_name:'splrad/fixture',default_branch:'main',private:privateRepository,has_issues:false,has_pages:false};
+    const event=join(root,'event.json'),output=join(root,'output.txt');
+    await writeFile(event,JSON.stringify({repository,pull_request:{base:{repo:{id:42},ref:'main',sha:base},
+      head:{repo:{id:91,full_name:'contributor/fixture'},sha:git('rev-parse','HEAD')}}}));
+    const responses=new Map<string,unknown>([
+      ['',repository],['branches/main',{name:'main',protected:true,commit:{sha:base}}],
+      ['git/trees/'+base,{truncated:false,tree:[{path:'.github',mode:'040000',type:'tree',sha:tree}]}],
+      ['git/trees/'+tree,{truncated:false,tree:[{path:'steward-central-policy',mode:'100644',type:'blob',sha:blob}]}],
+      ['contents/'+marker+'?ref='+base,{path:marker,type:'file',encoding:'base64',sha:blob,size:bytes.length,content:bytes.toString('base64')}],
+      ['git/matching-refs/heads/steward/governance-state',[]],
+    ]);
+    const origin='https://api.github.com/repos/splrad/fixture';
+    const requests:string[]=[];
+    vi.stubGlobal('fetch',vi.fn(async(url:string,request:RequestInit)=>{
+      expect(url.startsWith(origin)).toBe(true);
+      expect(request.method).toBe('GET');
+      expect(new Headers(request.headers).get('authorization')).toBe('Bearer workflow-read');
+      const path=url.slice(origin.length).replace(/^\//,'');
+      requests.push(path);
+      if(path==='git/ref/heads/steward/governance-state')return new Response(null,{status:404});
+      const value=responses.get(path);
+      expect(value).toBeDefined();
+      return Response.json(value);
+    }));
+    const env={VALIDATION_WORKSPACE:root,GITHUB_OUTPUT:output,GITHUB_EVENT_PATH:event,GITHUB_EVENT_NAME:'pull_request',
+      GITHUB_REPOSITORY_ID:'42',GITHUB_REPOSITORY:repository.full_name,WORKFLOW_REPOSITORY:'splrad/steward',
+      WORKFLOW_PATH:'.github/workflows/pr-validation-native.yml',WORKFLOW_SHA:S,GITHUB_ACTIONS:'true',
+      REPOSITORY_POLICY_TOKEN:'workflow-read'};
+    await expect(main(env)).rejects.toThrow('REPOSITORY_POLICY_PROJECTION_REQUIRED');
+    expect(requests).toContain('git/ref/heads/steward/governance-state');
+    await expect(readFile(output)).rejects.toMatchObject({code:'ENOENT'});
+    responses.set('git/trees/'+tree,{truncated:true,tree:[]});
+    await expect(main(env)).rejects.toThrow('REPOSITORY_POLICY_PROJECTION_UNAVAILABLE');
+    responses.set('git/trees/'+tree,{truncated:false,tree:[]});
+    requests.length=0;
+    expect(await main(env)).toMatchObject({productApplicable:false,workflows:[]});
+    expect(requests.some(path=>path.includes('steward/governance-state'))).toBe(privateRepository);
+    const fileJobEnv:NodeJS.ProcessEnv={...process.env,...env};
+    delete fileJobEnv.REPOSITORY_POLICY_TOKEN;
+    const workflow=(await import('yaml')).parse(await readFile('.github/workflows/pr-validation-native.yml','utf8'));
+    expect(workflow.jobs.scope.steps.find((step:{id?:string})=>step.id==='identity').env.REPOSITORY_POLICY_TOKEN).toBe('${{ github.token }}');
+    for(const [job,name] of [['governance','validation-governance'],['docs','validation-docs']] as const){
+      const definition=workflow.jobs[job];
+      expect(definition.needs).toBe('scope');
+      const step=definition.steps.find((step:{run?:string})=>step.run?.includes('/'+name+'.mjs'));
+      expect(step).toBeDefined();
+      expect(step.env?.REPOSITORY_POLICY_TOKEN).toBeUndefined();
+      const {main:runFileJob}=await script(name);
+      await expect(runFileJob(fileJobEnv)).resolves.toBeUndefined();
+    }
+  }finally{vi.unstubAllGlobals();await rm(root,{recursive:true,force:true});}
+},30000);
+it('private dependency entry binds candidate Git input using only its existing GH_TOKEN',async()=>{
+  const {main}=await script('validation-private-dependencies'),root=await mkdtemp(join(tmpdir(),'validation-private-files-'));
+  registerOfflineFixtureRoot(root);
+  const git=(...args:string[])=>execFileSync('git',args,{cwd:root,encoding:'utf8'}).trim();
+  try{
+    git('init','--initial-branch=main');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid');
+    await writeFile(join(root,'README.md'),'private registry\n');git('add','.');git('commit','--signoff','--no-gpg-sign','-m','seed');
+    const base=git('rev-parse','HEAD');git('update-ref','refs/remotes/origin/main',base);
+    await mkdir(join(root,'.github'));await writeFile(join(root,'.github','steward-central-policy'),'central\n');
+    git('add','.');git('commit','--signoff','--no-gpg-sign','-m','adopt');const head=git('rev-parse','HEAD');
+    const repository={id:1447987054,full_name:'splrad/steward-settings',private:true,default_branch:'main',owner:{id:302208797}};
+    const event=join(root,'event.json'),evidence=join(root,'scan');
+    await writeFile(event,JSON.stringify({repository,pull_request:{base:{repo:{id:repository.id},ref:'main',sha:base},head:{sha:head}}}));
+    const workflow=(await import('yaml')).parse(await readFile('.github/workflows/pr-validation-native.yml','utf8'));
+    const dependency=workflow.jobs.dependency;
+    expect(dependency.needs).toBe('scope');
+    const scan=dependency.steps.find((step:{run?:string})=>step.run?.includes('scripts/validation-private-dependencies.mjs'));
+    expect(scan.env).toMatchObject({GH_TOKEN:'${{ github.token }}'});
+    expect(scan.env.REPOSITORY_POLICY_TOKEN).toBeUndefined();
+    const supplier=vi.fn(async(url:string)=>{
+      expect(url).toBe('https://nodejs.org/dist/index.json');
+      throw Error('fixture stops at first supplier read');
+    });
+    vi.stubGlobal('fetch',supplier);
+    await expect(main({GITHUB_ACTIONS:'true',GITHUB_EVENT_NAME:'pull_request',GITHUB_EVENT_PATH:event,
+      GITHUB_REPOSITORY_ID:String(repository.id),GITHUB_REPOSITORY:repository.full_name,GH_TOKEN:'workflow-read',
+      WORKFLOW_REPOSITORY:'splrad/steward',WORKFLOW_PATH:'.github/workflows/pr-validation-native.yml',
+      WORKFLOW_SHA:S,VALIDATION_WORKSPACE:root,PRIVATE_DEPENDENCY_EVIDENCE:evidence})).rejects.toThrow('fixture stops at first supplier read');
+    expect(supplier).toHaveBeenCalledOnce();
+    expect(JSON.parse(await readFile(join(evidence,'summary.json'),'utf8')).identity).toMatchObject({repositoryId:repository.id,base,head});
+  }finally{vi.unstubAllGlobals();await rm(root,{recursive:true,force:true});}
+},30000);
+it('the private registration PR check rejects an unsupported edit and accepts its correction on the same pull',async()=>{
+  const {main}=await script('validation-input'),root=await mkdtemp(join(tmpdir(),'registry-validation-'));
+  registerOfflineFixtureRoot(root);
+  const git=(...args:string[])=>execFileSync('git',args,{cwd:root,encoding:'utf8'}).trim();
+  try{
+    git('init','--initial-branch=main');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid');
+    await writeFile(join(root,'README.md'),'registry\n');git('add','.');git('commit','--signoff','--no-gpg-sign','-m','base');
+    const base=git('rev-parse','HEAD');git('update-ref','refs/remotes/origin/main',base);
+    const organization={id:302208797,login:'splrad'};
+    const repository={id:1447987054,full_name:'splrad/steward-settings',private:true,default_branch:'main',owner:organization};
+    const product={id:91,full_name:'splrad/fixture',private:false,default_branch:'main',owner:organization};
+    const ci='.github/workflows/product-ci.yml',build='.github/workflows/steward-release-publish.yml';
+    const source='b'.repeat(40),object='c'.repeat(40);
+    const channel={id:'github-release',required:true,location:'https://github.com/splrad/fixture/releases',
+      artifactIds:['bundle','extras'],metadata:['release-notes.md']};
+    const asset=(id:string)=>({id,name:id+'.zip',mediaType:'application/zip'});
+    const productFiles=new Map([
+      ['.github/product-ci.json',JSON.stringify([ci])],[ci,'on: [push, pull_request]\njobs: {build: {}}'],
+      ['release-please-config.json',JSON.stringify({packages:{'.':{}}})],
+      ['.github/delivery.json',JSON.stringify({schemaVersion:2,repositoryAuthors:[{id:1,evidence:'fixture'}],
+        units:[{id:'fixture',path:'.',notesPath:'.release-notes/fixture.md',assets:['bundle','extras'].map(asset),channels:[channel]}]})],
+      [build,'jobs: {build: {strategy: {matrix: {include: [{unit: fixture, target: windows-x64}]}}}}'],
+    ]);
+    let publicReadable=true,scopeDenied=false,rateStatus=0,identityOnly=false;
+    vi.stubGlobal('fetch',vi.fn(async(url:string,request:RequestInit)=>{
+      const path=new URL(url).pathname;
+      const authorization=new Headers(request.headers).get('authorization');
+      if(path==='/repositories/91'){
+        if(rateStatus)return new Response(null,{status:rateStatus,headers:{'x-ratelimit-remaining':'0'}});
+        if(scopeDenied&&authorization)return new Response(null,{status:403});
+        if(publicReadable)expect(authorization).toBe(scopeDenied?null:'Bearer workflow-read');
+        return publicReadable?Response.json(product):new Response(null,{status:404});
+      }
+      if(path.startsWith('/repos/'+repository.full_name)) {
+        const route=path.slice(('/repos/'+repository.full_name).length);
+        if(route==='')return Response.json(repository);
+        if(route==='/branches/main')return Response.json({name:'main',protected:true,commit:{sha:base}});
+        if(route==='/git/trees/'+base)return Response.json({truncated:false,tree:[]});
+        if(route==='/git/ref/heads/steward/governance-state')return new Response(null,{status:404});
+        if(route==='/git/matching-refs/heads/steward/governance-state')return Response.json([]);
+        throw Error(route);
+      }
+      expect(identityOnly).toBe(false);
+      expect(authorization).toBe(scopeDenied?null:'Bearer workflow-read');
+      const prefix='/repos/'+product.full_name;
+      expect(path.startsWith(prefix)).toBe(true);
+      const route=path.slice(prefix.length);
+      if(route==='')return Response.json(product);
+      if(route==='/branches/main')return Response.json({name:'main',protected:true,commit:{sha:source}});
+      if(route==='/git/trees/'+source)return Response.json({truncated:false,tree:[...productFiles.keys()].map(path=>({path,type:'blob',sha:object}))});
+      if(route==='/git/ref/heads/steward/governance-state')return new Response(null,{status:404});
+      if(route==='/git/matching-refs/heads/steward/governance-state')return Response.json([]);
+      const file=route.slice('/contents/'.length),bytes=productFiles.get(file);
+      expect(bytes).toBeDefined();
+      expect(new URL(url).searchParams.get('ref')).toBe(source);
+      return Response.json({path:file,sha:object,type:'file',encoding:'base64',content:Buffer.from(bytes!).toString('base64')});
+    }));
+    const event=join(root,'event.json'),summary=join(root,'summary.md'),output=join(root,'outputs.txt');
+    const env={VALIDATION_WORKSPACE:root,GITHUB_EVENT_PATH:event,GITHUB_EVENT_NAME:'pull_request',
+      GITHUB_REPOSITORY_ID:String(repository.id),GITHUB_REPOSITORY:repository.full_name,GITHUB_ACTIONS:'true',
+      WORKFLOW_REPOSITORY:'splrad/steward',WORKFLOW_PATH:'.github/workflows/pr-validation-native.yml',
+      WORKFLOW_SHA:S,REPOSITORY_POLICY_TOKEN:'workflow-read',GITHUB_STEP_SUMMARY:summary,GITHUB_OUTPUT:output};
+    const update=async(artifactIds:string[],name=product.full_name,adoption?:string)=>{
+      await mkdir(join(root,'repositories'),{recursive:true});
+      await writeFile(join(root,'repositories','91.json'),JSON.stringify({schemaVersion:1,repositoryId:91,
+        repository:name,adoption,productCi:[ci],release:{buildWorkflow:build,units:[{id:'fixture',channels:[{...channel,artifactIds}]}]},site:null}));
+      git('add','repositories/91.json');git('commit','--signoff','--no-gpg-sign','-m','adjust selection');
+      await writeFile(event,JSON.stringify({repository,pull_request:{number:25,base:{repo:{id:repository.id},ref:'main',sha:base},
+        head:{sha:git('rev-parse','HEAD')}}}));
+    };
+    await update(['bundle']);
+    await expect(main(env)).rejects.toThrow('VALIDATION_REGISTRATION_PREVIEW_SELECTION');
+    expect(await readFile(summary,'utf8')).toContain('先让产品声明体现计划发布的范围');
+    await expect(readFile(output)).rejects.toMatchObject({code:'ENOENT'});
+    for(const adoption of [undefined,'central','legacy','paused']){
+      await update(channel.artifactIds,'splrad/misspelled-fixture',adoption);
+      await expect(main(env)).rejects.toThrow('VALIDATION_REGISTRATION_PREVIEW_IDENTITY');
+    }
+    identityOnly=true;
+    for(const adoption of ['legacy','paused']){
+      await update(['bundle'],product.full_name,adoption);
+      await expect(main(env)).resolves.toMatchObject({dependencyMode:'private-administrator'});
+    }
+    identityOnly=false;
+    await rm(summary);
+    await update(channel.artifactIds);
+    await expect(main(env)).resolves.toMatchObject({dependencyMode:'private-administrator'});
+    expect(await readFile(summary,'utf8')).toContain('的声明相符');
+    await update(channel.artifactIds,product.full_name,'central');
+    await expect(main(env)).resolves.toMatchObject({dependencyMode:'private-administrator'});
+    for(const status of [403,429]){
+      rateStatus=status;
+      await expect(main(env)).rejects.toThrow('VALIDATION_REGISTRATION_PREVIEW_RETRY_RATE_LIMIT');
+    }
+    rateStatus=0;scopeDenied=true;
+    await expect(main(env)).resolves.toMatchObject({dependencyMode:'private-administrator'});
+    scopeDenied=false;
+    publicReadable=false;await rm(summary);
+    await main(env);
+    expect(await readFile(summary,'utf8')).toContain('无法读取目标仓的公开声明');
+    expect(await readFile(summary,'utf8')).not.toContain('的声明相符');
+    git('checkout','--detach',base);
+    await update(channel.artifactIds);
+    const unadopted=git('rev-parse','HEAD');
+    git('rm','repositories/91.json');git('commit','--signoff','--no-gpg-sign','-m','remove unadopted registration');
+    git('update-ref','refs/remotes/origin/main',unadopted);
+    await writeFile(event,JSON.stringify({repository,pull_request:{number:25,base:{repo:{id:repository.id},ref:'main',sha:unadopted},
+      head:{sha:git('rev-parse','HEAD')}}}));
+    await expect(main(env)).resolves.toMatchObject({dependencyMode:'private-administrator'});
+    expect(await readFile(summary,'utf8')).toContain('登记历史中没有已采用的中央投影');
+    git('checkout','--detach',unadopted);
+    git('update-ref','refs/remotes/origin/main',base);
+    await update(channel.artifactIds,product.full_name,'central');
+    await update(channel.artifactIds,product.full_name,'legacy');
+    const removalBase=git('rev-parse','HEAD');
+    git('rm','repositories/91.json');git('commit','--signoff','--no-gpg-sign','-m','remove registration');
+    git('update-ref','refs/remotes/origin/main',removalBase);
+    await writeFile(event,JSON.stringify({repository,pull_request:{number:25,base:{repo:{id:repository.id},ref:'main',sha:removalBase},
+      head:{sha:git('rev-parse','HEAD')}}}));
+    await expect(main(env)).rejects.toThrow('VALIDATION_REGISTRATION_PREVIEW_SELECTION');
+    expect(await readFile(summary,'utf8')).toContain('无法确认目标仓的撤回状态');
+    publicReadable=true;
+    await expect(main(env)).resolves.toMatchObject({dependencyMode:'private-administrator'});
+  }finally{vi.unstubAllGlobals();await rm(root,{recursive:true,force:true});}
+},30000);
 it('summary rejects failed, cancelled, missing and unexpectedly skipped required jobs',async()=>{
   const {validationSummary}=await script('validation-summary');
   const jobs=Object.fromEntries(['scope','source','governance','dependency','docs'].map(k=>[k,{result:'success'}])) as any;
@@ -87,7 +311,7 @@ it('uses declared product workflows for all source layouts',async()=>{
     expect(productWorkflows(workflows,[...files,...workflows])).toEqual(workflows);
   }
   expect(documentationOnly(['README.md','.github/CODEOWNERS','.github/ISSUE_TEMPLATE/config.yml',
-    '.github/ISSUE_TEMPLATE/bug.yaml','.github/workflows/pr-title.yml'])).toBe(true);
+    '.github/ISSUE_TEMPLATE/bug.yaml','.github/workflows/pr-title.yml','.github/steward-central-policy'])).toBe(true);
   expect(documentationOnly(['index.html','.github/product-ci.json',...workflows])).toBe(false);
   for(const invalid of [[],[workflows[0],workflows[0]],['../ci.yml'],['.github/workflows/missing.yml']])
     expect(()=>productWorkflows(invalid,workflows)).toThrow();

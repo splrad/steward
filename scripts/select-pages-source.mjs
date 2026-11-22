@@ -6,7 +6,8 @@ import {pathToFileURL} from 'node:url';
 import {Version} from 'release-please/build/src/version.js';
 import {TagName} from 'release-please/build/src/util/tag-name.js';
 import {NativeEvidenceReader,nativeEvidenceTransport,nativeGhCommand,nativeReleaseDownload,NativeGitHubRelease,
-  parseDeliveryConfig,deliveryAssetNames,validateProductManifest} from '../packages/runner/dist/index.js';
+  parseDeliveryConfig,deliveryAssetNames,validateProductManifest,decodeReleaseRecord,EvidenceReadError,verifyContinuationReleases} from '../packages/runner/dist/index.js';
+import {readRepositoryPolicySelection} from './repository-policy-projection.mjs';
 
 const check=(ok,code)=>{if(!ok)throw Error('PAGES_'+code);};
 const positive=n=>Number.isSafeInteger(n)&&n>0;
@@ -70,9 +71,38 @@ export async function verifyPagesRelease({reader,release,bundle,appBotId,unitId}
 }
 function releaseFacts(r){return [r.id,r.author?.id,r.tag_name,r.draft,r.prerelease,r.immutable,r.published_at,r.target_commitish];}
 
+async function cycleForRelease(reader,release) {
+  const path='git/ref/heads/steward/release-state';
+  let ref;
+  try {ref=await reader.json(path);}
+  catch(error) {
+    if(error instanceof EvidenceReadError && error.status === 404)return null;
+    throw error;
+  }
+  const stateSha=ref.object?.sha;
+  check(ref.ref==='refs/heads/steward/release-state'&&ref.object?.type==='commit'&&sha(stateSha),'RELEASE_STATE');
+  const {sha:sourceSha}=await reader.json('commits/'+encodeURIComponent(release.tag_name));
+  check(sha(sourceSha),'RELEASE_SOURCE');
+  const tree=await reader.json('git/trees/'+stateSha+'?recursive=1');
+  check(tree.truncated===false&&Array.isArray(tree.tree),'RELEASE_STATE');
+  const entries=tree.tree.filter(item=>new RegExp(`^cycles/pr-[1-9][0-9]*-${sourceSha}\\.json$`).test(item.path));
+  if(!entries.length)return null;
+  check(entries.length===1&&entries[0].type==='blob'&&entries[0].mode==='100644','RELEASE_STATE');
+  const entry=entries[0],bytes=await pagesContent(reader,entry.path,stateSha);
+  check(createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')===entry.sha,'RELEASE_STATE');
+  const cycle=decodeReleaseRecord('cycle',bytes),matches=cycle.units.filter(unit=>unit.releaseId===release.id);
+  check(entry.path==='cycles/'+cycle.id+'.json'&&cycle.sourceSha===sourceSha,'RELEASE_STATE');
+  check(matches.length<=1,'RELEASE_STATE');
+  const [bound]=matches;
+  const unit=bound??(cycle.workflowDelivery?cycle.units.find(item=>item.tag===release.tag_name):undefined);
+  if(!unit||!cycle.workflowDelivery&&!unit.githubDelivery)return null;
+  check(unit.tag===release.tag_name,'RELEASE_STATE');
+  return {cycle,unit,stateSha};
+}
+
 /** Complete desired-source read. Default mode never asks for VERSION, delivery, tags or releases. */
 export async function desiredPagesSource({reader,repositoryId,mode,unitId='',controllerSha,appBotId,publicOnly=false,buildOnly=false},
-  {readContent=pagesContent,readManifest=manifestForRelease,verifyRelease=verifyPagesRelease}={}) {
+  {readContent=pagesContent,readManifest=manifestForRelease,verifyRelease=verifyPagesRelease,readCycle=cycleForRelease}={}) {
   check(positive(repositoryId)&&repositoryName(reader.repository)&&sha(controllerSha),'CONTEXT');
   if(mode==='')return {status:'DISABLED'};
   check(['default-branch','release'].includes(mode),'MODE');
@@ -89,7 +119,8 @@ export async function desiredPagesSource({reader,repositoryId,mode,unitId='',con
   if(mode==='default-branch')source={...base,sourceSha:branch.object.sha,ref:branch.ref,releaseId:null,unitId:null,manifestDigest:null};
   else {
     check(/^[a-z][a-z0-9-]*$/.test(unitId)&&positive(appBotId),'UNIT');
-    const activeDelivery=parseDeliveryConfig(json(await readContent(reader,'.github/delivery.json',branch.object.sha)));
+    const active=json(await readContent(reader,'.github/delivery.json',branch.object.sha));
+    const activeDelivery=parseDeliveryConfig(active,active.schemaVersion===3?json(await readContent(reader,'release-please-config.json',branch.object.sha)):undefined);
     check(activeDelivery.units.some(u=>u.id===unitId),'UNIT');
     await readContent(reader,pagesWorkflow,branch.object.sha);
     const candidates=[];
@@ -97,32 +128,49 @@ export async function desiredPagesSource({reader,repositoryId,mode,unitId='',con
       if(listed.draft!==false||listed.prerelease!==false||listed.immutable!==true)continue;
       check(positive(listed.id)&&utc(listed.published_at),'RELEASE');
       if(listed.author?.id!==appBotId)continue;
+      const frozen=await readCycle(reader,listed);
+      if(frozen) {
+        if(frozen.unit.id===unitId) {
+          check(frozen.unit.githubDelivery&&frozen.unit.releaseId===listed.id&&frozen.unit.tag===listed.tag_name,'RELEASE_STATE');
+          candidates.push({release:listed,frozen});
+        }
+        continue;
+      }
       const bundle=await readManifest(reader,listed);
-      if(!bundle)continue;
-      const m=bundle.manifest;validateProductManifest(m);
-      check(m.repositoryId===repositoryId&&m.fullName===reader.repository,'MANIFEST_REPOSITORY');
-      if(m.unitId!==unitId)continue;
-      check(m.tag===listed.tag_name,'MANIFEST_TAG');
-      candidates.push({release:listed,bundle});
+      if(bundle) {
+        const m=bundle.manifest;validateProductManifest(m);
+        check(m.repositoryId===repositoryId&&m.fullName===reader.repository,'MANIFEST_REPOSITORY');
+        if(m.unitId!==unitId)continue;
+        check(m.tag===listed.tag_name,'MANIFEST_TAG');
+        candidates.push({release:listed,bundle});
+      }
     }
     if(!candidates.length)return {status:'WAIT',reason:'NO_FORMAL_RELEASE'};
     candidates.sort((a,b)=>Date.parse(b.release.published_at)-Date.parse(a.release.published_at)||b.release.id-a.release.id);
-    const {release,bundle}=candidates[0],m=bundle.manifest;
+    const {release,bundle,frozen}=candidates[0];
+    const m=frozen?{sourceSha:frozen.cycle.sourceSha,version:frozen.unit.version,tag:frozen.unit.tag}:bundle.manifest;
     const actual=await reader.json(`releases/${release.id}`);check(same(releaseFacts(actual),releaseFacts(release)),'RELEASE_CHANGED');
     const deliveryBytes=await readContent(reader,'.github/delivery.json',m.sourceSha);
-    const delivery=parseDeliveryConfig(json(deliveryBytes)),unit=delivery.units.find(u=>u.id===unitId);
-    check(unit&&hash(deliveryBytes)===m.deliverySha256,'SOURCE_DELIVERY');
-    const names=deliveryAssetNames(unit,m.version,m.packageVersion);
-    check(same([...names].sort(),m.artifacts.map(a=>[a.id,a.path]).sort()),'SOURCE_ASSETS');
     const settings=json(await readContent(reader,'release-please-config.json',m.sourceSha));
+    const delivery=parseDeliveryConfig(json(deliveryBytes),settings),unit=delivery.units.find(u=>u.id===unitId);
+    check((delivery.schemaVersion===3)===Boolean(frozen?.cycle.workflowDelivery),'RELEASE_STATE');
+    const deliveryDigest=frozen?createHash('sha1').update(`blob ${deliveryBytes.length}\0`).update(deliveryBytes).digest('hex'):hash(deliveryBytes);
+    check(unit&&deliveryDigest===(frozen?frozen.cycle.deliveryConfigSha:m.deliverySha256),'SOURCE_DELIVERY');
+    if(!frozen) {
+      const names=deliveryAssetNames(unit,m.version,m.packageVersion);
+      check(same([...names].sort(),m.artifacts.map(a=>[a.id,a.path]).sort()),'SOURCE_ASSETS');
+    }
     check(settings.packages&&Object.hasOwn(settings.packages,unit.path),'TAG_CONFIG');
     const options={...settings,...settings.packages[unit.path]},component=options['include-component-in-tag']===false?undefined:options.component;
     check(options['include-component-in-tag']===false||typeof component==='string'&&component.length>0,'TAG_CONFIG');
     check(new TagName(Version.parse(m.version),component,options['tag-separator'],options['include-v-in-tag']).toString()===m.tag,'TAG_CONFIG');
     await readContent(reader,pagesWorkflow,m.sourceSha);
-    await verifyRelease({reader,release:actual,bundle,appBotId,unitId});
+    if(frozen) {
+      await verifyContinuationReleases({repository:reader.repository,repositoryId,appBotId,cycle:frozen.cycle},reader.io,new Set([unitId]));
+      check((await reader.json('git/ref/heads/steward/release-state')).object?.sha===frozen.stateSha,'RELEASE_STATE_CHANGED');
+    } else await verifyRelease({reader,release:actual,bundle,appBotId,unitId});
     check(same(releaseFacts(await reader.json(`releases/${release.id}`)),releaseFacts(actual)),'RELEASE_CHANGED');
-    source={...base,sourceSha:m.sourceSha,ref:`refs/tags/${m.tag}`,releaseId:release.id,unitId,manifestDigest:hash(bundle.bytes)};
+    source={...base,sourceSha:m.sourceSha,ref:`refs/tags/${m.tag}`,releaseId:release.id,unitId,manifestDigest:frozen?frozen.unit.manifestDigest:hash(bundle.bytes)};
   }
   return {status:'READY',source:{...source,inputDigest:pagesInputDigest(source)}};
 }
@@ -152,14 +200,34 @@ export async function selectPagesSource(options,event,ports) {
   const desired=await desiredPagesSource(options,ports);
   return desired.status==='READY'?admitPagesEvent(desired.source,event):desired;
 }
-export async function selectWorkflowPagesSource(reader,env,payload,ports) {
+export async function workflowPagesOptions(reader,env,read,readAdoption) {
   const options={reader,repositoryId:Number(env.GITHUB_REPOSITORY_ID),mode:env.STEWARD_DOCS_SOURCE??'',
     unitId:env.STEWARD_DOCS_UNIT??'',controllerSha:env.STEWARD_CONTROLLER_SHA,
     buildOnly:env.STEWARD_PAGES_BUILD_ONLY==='true'};
+  const approvedSource=env.STEWARD_DOCS_APPROVED_SOURCE??options.mode;
+  const approvedUnit=env.STEWARD_DOCS_APPROVED_UNIT??options.unitId;
+  const isApproved=(mode,unit)=>Boolean(mode&&mode===approvedSource&&
+    (mode!=='release'||unit&&unit===approvedUnit));
+  let publicAllowed=isApproved(options.mode,options.unitId)&&!options.buildOnly;
+  const organizationRepository=reader.repository.startsWith('splrad/');
+  const projection=organizationRepository?await readRepositoryPolicySelection(reader,options.repositoryId,{
+    useOptionalProjection:env.STEWARD_REPOSITORY_POLICY==='true',read,readAdoption
+  }):null;
+  if(projection?.adoption==='central') {
+    const site=projection.site;
+    publicAllowed=Boolean(site&&site.mode==='build-and-deploy'&&!options.buildOnly&&isApproved(site.source,site.unit));
+    options.mode=site?.source??'';
+    options.unitId=site?.unit??'';
+    options.buildOnly=!publicAllowed;
+  }
   if(options.mode==='release') {
     // Same confirmed App bot identity as nativeReleaseApp; the repository transport is deliberately repo-scoped.
     options.appBotId=301115370;
   }
+  return {options,publicAllowed};
+}
+export async function selectWorkflowPagesSource(reader,env,payload,ports={}) {
+  const {options}=ports.context??await workflowPagesOptions(reader,env,ports.readPolicy);
   const event={name:env.GITHUB_EVENT_NAME,repositoryId:options.repositoryId,repository:reader.repository,
     sha:env.GITHUB_SHA,ref:env.GITHUB_REF,payload};
   const {currentPagesSource}=await import('./pages-runtime.mjs');
@@ -170,10 +238,12 @@ export async function selectWorkflowPagesSource(reader,env,payload,ports) {
 async function main() {
   check(process.argv.length===2,'ARGUMENTS');
   const reader=new NativeEvidenceReader(nativeEvidenceTransport(process.env.GH_TOKEN),process.env.GITHUB_REPOSITORY);
-  const result=await selectWorkflowPagesSource(reader,process.env,json(await readFile(process.env.GITHUB_EVENT_PATH)));
+  const context=await workflowPagesOptions(reader,process.env);
+  const result=await selectWorkflowPagesSource(reader,process.env,json(await readFile(process.env.GITHUB_EVENT_PATH)),{context});
   await writeFile('pages-source.json',JSON.stringify(result,null,2)+'\n');
   if(process.env.GITHUB_OUTPUT) {
     const values={ready:String(result.status==='READY'),source:result.source?JSON.stringify(result.source):'',
+      public_source:String(result.status==='READY'&&context.publicAllowed),
       source_sha:result.source?.sourceSha??'',input_digest:result.source?.inputDigest??''};
     await appendFile(process.env.GITHUB_OUTPUT,Object.entries(values).map(([k,v])=>`${k}=${v}\n`).join(''));
   }

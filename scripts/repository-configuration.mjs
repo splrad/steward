@@ -13,6 +13,7 @@ import {ciPath,deliveryPath,inspectRepository,versionsPath} from './configuratio
 const exec=promisify(execFile), lockPath='.github/workflows/actions.lock';
 import {candidates,configurationForm,parseForm,planFromForm} from './configuration-form.mjs';
 import {readBotComment,readSession,writeSession} from './configuration-session.mjs';
+import {mergedRepositoryPolicy} from './repository-policy-read.mjs';
 import {dashboardRequest,requestFromComment} from './configuration-dashboard.mjs';
 const receipt=(run)=>'Configuration request: '+run.id+'/'+run.run_attempt;
 const page='.github/repository-configuration.md';
@@ -25,7 +26,7 @@ async function snapshot(api,ref) {
   const relevant=new Set(['.github/release-template.md.mustache',page,ciPath,deliveryPath,versionsPath,lockPath,'.release-please-manifest.json']);
   for(const path of files.keys()) if(pathsForModel.test(path)||path.startsWith('.github/actions/configuration/')) relevant.add(path);
   for(const path of relevant) if(files.has(path)) files.set(path,await fileText(api,path,ref));
-  const model=inspectRepository(files);
+  const model=inspectRepository(files,{normalizeCompactDelivery:true});
   model.oids=new Map(tree.tree.filter(x=>files.has(x.path)).map(x=>[x.path,x.sha]));
   for(const [path,cfg] of Object.entries(model.versions?.packages??{})) {
     const version=cfg['version-file']??model.versions['version-file'];
@@ -255,32 +256,40 @@ export async function reconcile({repo,base,run,data,api,write,actions,readToken,
   must((await api.rest.pulls.get({...api.target,pull_number:pr.number})).data.head.sha===head,'Configuration PR readback failed');
   return {number:pr.number,head};
 }
-export async function main() {
-  const id=positive(process.env.REPOSITORY_ID);
-  must(process.env.GITHUB_REPOSITORY==='splrad/steward' && process.env.GITHUB_REPOSITORY_ID==='1296724484'
-    && process.env.GITHUB_EVENT_NAME==='workflow_dispatch','Run configuration reconciliation from its central workflow');
-  const app=await nativeReleaseApp(process.env.STEWARD_APP_PRIVATE_KEY);
+export async function main(env=process.env,{openApp=nativeReleaseApp,readPolicy=mergedRepositoryPolicy}={}) {
+  const id=positive(env.REPOSITORY_ID);
+  must(env.GITHUB_REPOSITORY==='splrad/steward' && env.GITHUB_REPOSITORY_ID==='1296724484'
+    && env.GITHUB_EVENT_NAME==='workflow_dispatch','Run configuration reconciliation from its central workflow');
+  const app=await openApp(env.STEWARD_APP_PRIVATE_KEY);
   let repo=(await app.discover()).find(r=>r.id===id);
   must(repo && !repo.archived && !repo.disabled,'Repository not installed or inactive');
   const [owner,name]=repo.full_name.split('/');
   repo={...repo,owner:{login:owner},name};
+  const legacy=async()=> (await readPolicy(app,repo)).adoption==='legacy';
+  if(!await legacy())return;
   await app.forTemplateRepository(id,async(writeToken,readToken)=>{
     const api=client(readToken,repo),write=client(writeToken,repo);
     const base=(await api.rest.repos.getBranch({...api.target,branch:repo.default_branch})).data.commit.sha;
-    const {REQUEST_RUN,REQUEST_ATTEMPT,ISSUE_NUMBER,COMMENT_ID}=process.env;
+    const {REQUEST_RUN,REQUEST_ATTEMPT,ISSUE_NUMBER,COMMENT_ID}=env;
     const native=Boolean(ISSUE_NUMBER || COMMENT_ID);
-    must(native ? !REQUEST_RUN && !REQUEST_ATTEMPT && process.env.GITHUB_ACTOR_ID==='301115370' : REQUEST_RUN && REQUEST_ATTEMPT,'Invalid configuration locator');
+    must(native ? !REQUEST_RUN && !REQUEST_ATTEMPT && env.GITHUB_ACTOR_ID==='301115370' : REQUEST_RUN && REQUEST_ATTEMPT,'Invalid configuration locator');
     const {run,data,dashboard,publicRequests}=native
-      ?await requestFromComment(api,repo,base,ISSUE_NUMBER,COMMENT_ID,process.env.GITHUB_RUN_ID,process.env.GITHUB_RUN_ATTEMPT)
+      ?await requestFromComment(api,repo,base,ISSUE_NUMBER,COMMENT_ID,env.GITHUB_RUN_ID,env.GITHUB_RUN_ATTEMPT)
       :await requestFromRun(api,readToken,repo,REQUEST_RUN,REQUEST_ATTEMPT,base);
-    const apply=options=>app.forRepository(id,async token=>
-      reconcile({repo,base,run,data,api,write,actions:client(token,repo),readToken,...options}),'configuration-actions');
+    const apply=async options=>{
+      if(!await legacy())return;
+      return app.forRepository(id,token=>
+        reconcile({repo,base,run,data,api,write,actions:client(token,repo),readToken,...options}),'configuration-actions');
+    };
     if(!dashboard || run.event==='pull_request_review')return apply();
     const current=(await api.rest.repos.get(api.target)).data;
     must(current.id===id && typeof current.has_issues==='boolean' && current.default_branch===repo.default_branch,'Repository settings changed');
     repo.has_issues=current.has_issues;
-    if(repo.has_issues)return app.forRepository(id,token=>dashboardRequest({repo,base,api,issues:client(token,repo),
-      run,data,publicRequests,load:snapshot,apply}),'configuration-issues');
+    if(repo.has_issues) {
+      if(!await legacy())return;
+      return app.forRepository(id,token=>dashboardRequest({repo,base,api,issues:client(token,repo),
+        run,data,publicRequests,load:snapshot,apply}),'configuration-issues');
+    }
     if(!native && !data.closed && !['schedule','issues'].includes(run.event))return apply();
   },'configuration-read');
 }

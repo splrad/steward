@@ -31,6 +31,9 @@ env:
   # The configuration PR writes the selected source and release unit to these fields.
   STEWARD_DOCS_SOURCE: ${{ vars.STEWARD_DOCS_SOURCE || 'default-branch' }}
   STEWARD_DOCS_UNIT: ${{ vars.STEWARD_DOCS_UNIT }}
+  STEWARD_REPOSITORY_POLICY: 'true'
+  STEWARD_DOCS_APPROVED_SOURCE: ${{ vars.STEWARD_DOCS_SOURCE }}
+  STEWARD_DOCS_APPROVED_UNIT: ${{ vars.STEWARD_DOCS_UNIT }}
 jobs:
   select:
     runs-on: ubuntu-24.04
@@ -41,7 +44,7 @@ jobs:
       attestations: read
     outputs:
       ready: ${{ steps.source.outputs.ready }}
-      public_source: ${{ steps.authorization.outputs.matches }}
+      public_source: ${{ steps.source.outputs.public_source || steps.authorization.outputs.matches }}
       source: ${{ steps.source.outputs.source }}
       source_sha: ${{ steps.source.outputs.source_sha }}
       input_digest: ${{ steps.source.outputs.input_digest }}
