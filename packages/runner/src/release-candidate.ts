@@ -24,7 +24,7 @@ export interface CandidateRuntime {
   workspace: string; temporaryRoot: string; repository: string; defaultBranch: string; appBotId: number; identity: { name: string; email: string };
   now(): string;
   source(): Promise<{ baseSha: string; authors: RepositoryAuthor[]; authorsDigest: string; noteTemplate?: string;
-    notesPaths?: Record<string,string>; contributorMode?: 'github-authors'; noteTemplateController?: {workflow: string; pin: string} }>;
+    notesPaths?: Record<string,string>; contributorMode?: 'github-authors'; noteTemplateController?: {workflow?: string; pin: string} }>;
   readControllerTemplate?(pin: string): Promise<string>;
   pullRequests(branch: string): Promise<CandidatePullRequest[]>;
   legacyCandidate(): Promise<CandidatePullRequest | null>;
@@ -202,11 +202,11 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
     const controller = source.noteTemplateController, readTemplate = io.readControllerTemplate;
     if (!sameBase && reviewedTemplate !== undefined && currentTemplate !== undefined
       && (approvedUpgrade || (controller && policyUpgrade)) && observed.pr && candidate.publishedHead
-      && (!controller || readTemplate)
+      && (!controller?.workflow || readTemplate)
       && !generated.files.some(file => file.path === (controller?.workflow ?? productReleaseTemplatePath))
       && await io.isAncestor(generated.baseSha, source.baseSha)
       && await candidateTemplateAdoption(io.workspace, source.baseSha, generated.baseSha, {
-        template: currentTemplate, ...(controller && readTemplate ? {controller: {...controller, reviewedTemplate, readTemplate}} : {}),
+        template: currentTemplate, ...(controller ? {controller: {...controller, reviewedTemplate, readTemplate}} : {}),
       }, io.temporaryRoot)) {
       templateOnlyAdvance = { generated, identity: frozen };
     }

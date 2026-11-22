@@ -49,23 +49,27 @@ const { readReleaseRecords,writeReleaseRecords,releaseCommand } = await import(p
 const roots: string[] = [];
 afterEach(async () => { vi.unstubAllGlobals();for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-recovery', 'pending-recovery', 'legacy-pending-cancel', 'retained-legacy-manual', 'retained-controller-manual',
-  'compact', 'compact-registered', 'conditional-organization', 'conditional-before-adoption', 'conditional-controller-upgrade', 'conditional-compact', 'conditional-tampered'])('runs the native candidate adapter through protected state, real Git, upstream generation, fake SDK and same-PR editing: %s', async pinCase => {
+  'compact', 'compact-registered', 'conditional-organization', 'conditional-before-adoption', 'conditional-controller-upgrade',
+  'conditional-runtime-upgrade', 'conditional-compact', 'conditional-tampered'])('runs the native candidate adapter through protected state, real Git, upstream generation, fake SDK and same-PR editing: %s', async pinCase => {
   const root = await mkdtemp(join(tmpdir(), 'candidate-native-test-')); roots.push(root); registerOfflineFixtureRoot(root);
   const directory = join(root, 'source'), remote = join(root, 'remote.git'); await mkdir(directory);
   const env = isolatedBuildEnvironment(process.env, root), identity = { name: 'Fixture', email: 'fixture@example.invalid' };
   const git = async (...args: string[]) => (await promisify(execFile)('git', args, { cwd: directory, env, encoding: 'utf8', windowsHide: true })).stdout.trim();
   const conditional = pinCase.startsWith('conditional-');
-  const upgradeController = pinCase === 'conditional-controller-upgrade';
+  const runtimeController = pinCase === 'conditional-runtime-upgrade';
+  const upgradeController = pinCase === 'conditional-controller-upgrade' || runtimeController;
   const olderConditionalLayout = pinCase === 'conditional-before-adoption' || upgradeController;
   const retainedController = pinCase==='retained-controller-manual';
   const retainedManual = pinCase==='retained-legacy-manual'||retainedController;
   await git('init', '--initial-branch=main'); await git('config', 'user.name', identity.name); await git('config', 'user.email', identity.email);
   await mkdir(join(directory, '.github'));
   await mkdir(join(directory,'.github/workflows'));
+  const copierAnswers = '_commit: v0.1.7\n_src_path: https://github.com/splrad/steward.git\nproduct_repository: fixture/product\n';
+  if(runtimeController)await writeFile(join(directory,'.copier-answers.yml'),copierAnswers);
   const compactRegistered=pinCase==='compact-registered'||pinCase==='conditional-compact';
   const compact=pinCase==='compact'||compactRegistered;
   if(compactRegistered)await writeFile(join(directory,'.github/steward-central-policy'),'central\n');
-  const explicitWorkflow=pinCase==='new-source'||retainedController||upgradeController?'.github/workflows/fixture-release.yaml':undefined;
+  const explicitWorkflow=pinCase==='new-source'||retainedController||upgradeController&&!runtimeController?'.github/workflows/fixture-release.yaml':undefined;
   const buildWorkflow=explicitWorkflow??'.github/workflows/steward-release-publish.yml';
   const notesPath=compact?(compactRegistered?'docs/release-current.md':'.release-notes/root.md'):'.release-notes/app.md';
   for(const path of (compact?[buildWorkflow]:[buildWorkflow,'.github/workflows/steward-release-channels.yml','.github/release-template.md.mustache']))
@@ -91,6 +95,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   const delivery=compact?{schemaVersion:3,...(!conditional?{repositoryAuthors}:{}),...(compactRegistered?{notes:{'.':notesPath}}:{})}:{schemaVersion:explicitWorkflow?2:1,buildWorkflow:explicitWorkflow,
     repositoryAuthors,units:[{id:'app',path:'.',notesPath:'.release-notes/app.md',
       assets:[{id:'app',name:'app-${version}.zip',mediaType:'application/zip'}],channels:registeredChannels}]};
+  if (pinCase === 'conditional-compact') expect(Object.hasOwn(delivery, 'buildWorkflow')).toBe(false);
   for (const [path, text] of Object.entries({ 'README.md': '# 应用\n\n公开使用说明。\n', 'VERSION': '0.0.0\n', 'release-please-config.json': JSON.stringify(config),
     '.release-please-manifest.json': '{".":"0.0.0"}', '.github/delivery.json': JSON.stringify(delivery), 'code.txt': '功能实现\n' })) await writeFile(join(directory, path), text);
   if (conditional&&!upgradeController) {
@@ -245,7 +250,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     }
     return {adoption:'legacy',policy:null};
   }):undefined;
-  const options = { token: 'fixture-write', readToken: 'fixture-read', controllerSha: 'f'.repeat(40), fetcher, generator, language, temporaryRoot: root,
+  const options = { token: 'fixture-write', readToken: 'fixture-read', controllerSha: runtimeController ? historicalControllerSha : 'f'.repeat(40), fetcher, generator, language, temporaryRoot: root,
     checkRepositoryPolicy:sourcePolicy,now: () => '2026-10-27T00:00:00Z' };
   if(pinCase==='conditional-tampered') {
     await expect(nativeReleaseCandidate(request,options)).rejects.toThrow('CANDIDATE_ORGANIZATION_TEMPLATE');
@@ -367,12 +372,15 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     expect(comments[0].body).not.toMatch(/committer-only|merge-operator|web-flow|&#x2F;robot|&#x2F;service|&#x2F;unknown|文档更新/);
   }
   if(upgradeController) {
-    const workflow = await readFile(join(directory,buildWorkflow), 'utf8');
-    await writeFile(join(directory,buildWorkflow),workflow.replaceAll(historicalControllerSha,sourceControllerSha));
-    await git('add','--',buildWorkflow); await git('commit','--signoff','-m','chore: update the release controller pin');
+    const adoptedPath = runtimeController ? '.copier-answers.yml' : buildWorkflow;
+    const workflow = await readFile(join(directory,adoptedPath), 'utf8');
+    await writeFile(join(directory,adoptedPath),runtimeController ? workflow.replace('v0.1.7','v0.1.9')
+      : workflow.replaceAll(historicalControllerSha,sourceControllerSha));
+    await git('add','--',adoptedPath); await git('commit','--signoff','-m','chore: update the release template adoption');
     const base=await git('rev-parse','HEAD');
     await git('push','--porcelain',remote,'HEAD:refs/heads/main');
-    expect(await nativeReleaseCandidate({...request,writeDirectory:join(root,'controller-upgrade-writes')},options))
+    expect(await nativeReleaseCandidate({...request,writeDirectory:join(root,'controller-upgrade-writes')},
+      {...options,controllerSha:runtimeController ? sourceControllerSha : options.controllerSha}))
       .toMatchObject({status:'READY',prNumber:9});
     const updated=await head('steward/release-candidate');
     expect(updated).not.toBe(firstHead);

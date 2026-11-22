@@ -112,7 +112,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     if (!pinnedTemplate.has(sha)) {
       const local = delivery.schemaVersion === 3 ? null : await fileAt(sha, productReleaseTemplatePath, true);
       if (local !== null) pinnedTemplate.set(sha, {template:await checkedTemplate(local)});
-      else if (!delivery.buildWorkflow) pinnedTemplate.set(sha, {template:await checkedControllerTemplate(controllerSha)});
+      else if (!delivery.buildWorkflow) pinnedTemplate.set(sha, {template:await checkedControllerTemplate(controllerSha), controller:{pin:controllerSha}});
       else {
         const workflow = delivery.buildWorkflow, pin = releaseTemplateControllerPin(await fileAt(sha, workflow));
         pinnedTemplate.set(sha, {template:await checkedControllerTemplate(pin), controller:{workflow,pin}});

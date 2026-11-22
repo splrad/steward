@@ -271,7 +271,7 @@ export async function candidateTreeMatches(workspace: string, head: string, base
 }
 /** Verify the exact template and the bookkeeping changes from its normal repository delivery. */
 export async function candidateTemplateAdoption(workspace: string, head: string, baseSha: string, source: {
-  template: string; controller?: {workflow: string; pin: string; reviewedTemplate: string; readTemplate: (pin: string) => Promise<string>};
+  template: string; controller?: {workflow?: string; pin: string; reviewedTemplate: string; readTemplate?: ((pin: string) => Promise<string>) | undefined};
 }, temporaryRoot: string) {
   const profile = await mkdtemp(join(temporaryRoot, 'steward-candidate-template-'));
   try {
@@ -279,12 +279,17 @@ export async function candidateTemplateAdoption(workspace: string, head: string,
     const utf8 = new TextDecoder('utf-8', { fatal: true });
     const read = async (oid: string) => utf8.decode(await git(workspace, profile, ['cat-file', 'blob', oid]));
     let oldPin: string | null = null;
-    if (source.controller) {
+    if (source.controller?.workflow) {
       const path = source.controller.workflow, before = expected.get(path), after = actual.get(path);
       if (!before || !after || !['100644','100755'].includes(before.mode) || after.mode !== before.mode) return false;
       oldPin = previousReleaseTemplatePin(await read(before.content), await read(after.content), source.controller.pin);
       if (!oldPin) return false;
       expected.set(path,after);
+    } else if (source.controller) {
+      // A historical candidate without a declared workflow can use the active
+      // controller for preview. Its approved prior bytes are in the protected
+      // candidate archive, and the product must have no local template at either base.
+      if (actual.has(productReleaseTemplatePath) || expected.has(productReleaseTemplatePath)) return false;
     } else {
       const bytes = Buffer.from(source.template);
       const oid = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
@@ -305,8 +310,8 @@ export async function candidateTemplateAdoption(workspace: string, head: string,
         || oldText.match(copierRelease)?.length !== 1 || newText.match(copierRelease)?.length !== 1
         || oldText.replace(copierRelease, '') !== newText.replace(copierRelease, '')) return false;
     }
-    if (!source.controller) return true;
-    if (!oldPin) return false;
+    if (!source.controller?.workflow) return true;
+    if (!oldPin || !source.controller.readTemplate) return false;
     const previousTemplate = await source.controller.readTemplate(oldPin), reviewed = source.controller.reviewedTemplate;
     return previousTemplate === reviewed
       || (previousTemplate === source.template && await reviewedConditionalReleaseTemplate(previousTemplate, reviewed) === reviewed);
