@@ -49,17 +49,51 @@
         ]
       },
       "configVersion": "quality-native-comments-v1",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4658499232",
+        "sourceCommit": "734e82029d182e7b6ea330424479e96bcf94f0a0",
+        "sourceUrl": "https://github.com/splrad/steward/pull/450#discussion_r4658499232",
+        "severity": "原文未说明",
+        "originalIdentifiers": [
+          "<code>same</code>",
+          "<code>scripts/validator-revalidation.mjs</code>",
+          "<code>const same=...</code>",
+          "<code>check</code>",
+          "<code>number</code>",
+          "<code>active</code>",
+          "scripts/validator-revalidation.mjs",
+          "variables/functions/imports",
+          "File/region",
+          "imports/dependencies/methods"
+        ],
+        "segmentIndex": 0,
+        "problemZh": "原文指出存在“Unused variable, import, function or class”问题：未使用变量 `same`。该声明位于 `scripts/validator-revalidation.mjs` 顶层、靠近 `check`、`number`、`active` 等声明处（提到约第 9 行 `const same=...`）。",
+        "impactZh": "原文说明该问题会触发 CodeQL 告警；其他影响原文未说明。",
+        "suggestionZh": "原文建议删除未被引用的 `same` 常量声明（`scripts/validator-revalidation.mjs` 中约第 9 行 `const same=...`），并遵循通用做法：对确实未引用的 `variables/functions/imports` 直接删除。原文同时说明无需新增 `imports/dependencies/methods`，以在不改变逻辑、API、副作用和运行时行为的前提下消除告警。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-22T14:30:05.988Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 3319,
+                "outputTokens": 697
+              }
+            ],
+            "totalNanoAiu": 1556625000,
+            "aiCredits": 1.556625,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-22T14:31:05.988Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     }
   },
   "cursor": 0
