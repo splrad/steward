@@ -38,7 +38,19 @@ function readWorkflowPins(repo, revision, path, archiveReaders) {
   const controllerPins = [];
   for (const [jobId, job] of jobs) {
     const steps = job.steps ?? [];
+    // The managed workflows declare controller entry points directly.
+    if ([job, ...steps].some(entry => typeof entry.uses === 'string' && entry.uses.startsWith('./'))) {
+      throw Error('VALIDATION_CONTROLLER_LOCAL_USES ' + path);
+    }
     for (const [index, step] of steps.entries()) {
+      if (path === publishWorkflow && jobId === 'build' && step['working-directory'] === archiveReaderPath
+        && step.run === 'node scripts/configuration-native-artifact.mjs') {
+        const checkout = steps[index - 2];
+        if (checkout?.with?.path !== archiveReaderPath || !archiveReaders.has(step.if)
+          || archiveReaders.get(step.if) !== checkout.with.ref) {
+          throw Error('VALIDATION_CONTROLLER_ARCHIVE_READER_WIRING');
+        }
+      }
       if (typeof step.uses !== 'string' || !step.uses.toLowerCase().startsWith('actions/checkout@')) continue;
       const repository = step.with?.repository;
       if (typeof repository === 'string' && repository.includes('${{')) {
@@ -72,6 +84,10 @@ function readWorkflowPins(repo, revision, path, archiveReaders) {
   if (!controllerPins.length) throw Error('VALIDATION_CONTROLLER_CHECKOUT_MISSING ' + path);
   const jobValues = jobs.map(([, job]) => job);
   if (path.endsWith('/pages.yml')) {
+    if (!workflow.jobs?.select?.steps?.some(step => step.run === 'node controller/scripts/select-pages-source.mjs')
+      || !workflow.jobs?.deploy?.steps?.some(step => step.run === 'node controller/scripts/pages-runtime.mjs check')) {
+      throw Error('VALIDATION_CONTROLLER_PAGES_RUNTIME_CHECKS');
+    }
     const variable = 'STEWARD_CONTROLLER_SHA';
     controllerPins.push(workflow.env?.[variable]);
     for (const {env} of [...jobValues, ...jobValues.flatMap(job => job.steps ?? [])]) {

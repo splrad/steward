@@ -223,8 +223,8 @@ test('the workflow builds the reviewed source with Pages disabled and refuses a 
   workflow.env.STEWARD_DOCS_UNIT='app';
   const ports={...f.ports,readContent:(reader,path,ref)=>path==='.github/workflows/pages.yml'
     ?Buffer.from(YAML.stringify(workflow)):f.ports.readContent(reader,path,ref)};
-  const select=(event,buildOnly)=>selectWorkflowPagesSource(f.options.reader,{
-    ...workflow.env,STEWARD_PAGES_BUILD_ONLY:String(buildOnly),GITHUB_REPOSITORY_ID:String(f.repo.id),
+  const select=(event,buildOnly,sha=workflow.env.STEWARD_CONTROLLER_SHA)=>selectWorkflowPagesSource(f.options.reader,{
+    ...workflow.env,STEWARD_CONTROLLER_SHA:sha,STEWARD_PAGES_BUILD_ONLY:String(buildOnly),GITHUB_REPOSITORY_ID:String(f.repo.id),
     GITHUB_EVENT_NAME:event.name,GITHUB_SHA:event.sha,GITHUB_REF:event.ref
   },event.payload,ports);
   const push={...f.event,name:'push',sha:R,ref:'refs/heads/trunk',payload:{after:R}};
@@ -234,6 +234,8 @@ test('the workflow builds the reviewed source with Pages disabled and refuses a 
     assert.equal((await select(event,false)).status,'DISABLED');
     const result=await select(event,true);
     assert.equal(result.status,'READY');
+    assert.notEqual(workflow.env.STEWARD_CONTROLLER_SHA, P);
+    await assert.rejects(select(event,true,P),/PAGES_CONTROLLER_PIN/);
     assert.equal(result.source.sourceSha,mode==='release'?S:R);
     assert.equal(result.source.unitId,mode==='release'?'app':null);
     assert.equal((await select(mode==='release'?push:f.event,true)).status,'STALE');

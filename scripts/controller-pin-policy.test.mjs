@@ -29,7 +29,7 @@ function productRepository(t) {
   mkdirSync(workflowDir, {recursive: true});
   function pinFiles(pin, {
     pagePin = pin, reusablePin = pin, pagesJobPin, pagesStepPin, extraCheckout, publishBytes,
-    checkoutPath = 'controller', extraReusablePin,
+    checkoutPath = 'controller', extraReusablePin, localReference, pagesRuntime = true,
   } = {}) {
     for (const name of workflows) {
       const workflow = {jobs: {sample: {steps: [
@@ -39,7 +39,13 @@ function productRepository(t) {
         uses: 'Actions/Checkout@' + '0'.repeat(40),
         with: extraCheckout,
       });
+      if (localReference === 'action') workflow.jobs.sample.steps.push({uses: './.github/actions/prepare'});
+      if (localReference === 'workflow') workflow.jobs.extra = {uses: './.github/workflows/prepare.yml'};
       if (name === 'pages') {
+        if (pagesRuntime) {
+          workflow.jobs.select = {steps: [{run: 'node controller/scripts/select-pages-source.mjs'}]};
+          workflow.jobs.deploy = {steps: [{run: 'node controller/scripts/pages-runtime.mjs check'}]};
+        }
         workflow.env = {STEWARD_CONTROLLER_SHA: pagePin};
         if (pagesJobPin !== undefined) workflow.jobs.sample.env = {STEWARD_CONTROLLER_SHA: pagesJobPin};
         if (pagesStepPin !== undefined) workflow.jobs.sample.steps[0].env = {STEWARD_CONTROLLER_SHA: pagesStepPin};
@@ -85,6 +91,9 @@ test('requires forward promotion and consistent Steward references when LayerSca
   const mixedPagesJob = pinFiles(promoted, {pagesJobPin: older});
   const mixedPagesStep = pinFiles(promoted, {pagesStepPin: unpromoted});
   const consistentPagesEnv = pinFiles(promoted, {pagesJobPin: promoted, pagesStepPin: promoted});
+  const localAction = pinFiles(promoted, {localReference: 'action'});
+  const localWorkflow = pinFiles(promoted, {localReference: 'workflow'});
+  const pagesWithoutChecks = pinFiles(promoted, {pagesRuntime: false});
   const inputs = (base, head) => ({
     repositoryId: 1187527897, base, head, changedPaths: ['.github/workflows/pages.yml'],
   });
@@ -107,6 +116,9 @@ test('requires forward promotion and consistent Steward references when LayerSca
   assert.throws(() => validate(prior, mixedPagesJob), /VALIDATION_CONTROLLER_PIN_MISMATCH/);
   assert.throws(() => validate(prior, mixedPagesStep), /VALIDATION_CONTROLLER_PIN_MISMATCH/);
   assert.doesNotThrow(() => validate(prior, consistentPagesEnv));
+  assert.throws(() => validate(prior, localAction), /VALIDATION_CONTROLLER_LOCAL_USES/);
+  assert.throws(() => validate(prior, localWorkflow), /VALIDATION_CONTROLLER_LOCAL_USES/);
+  assert.throws(() => validate(prior, pagesWithoutChecks), /VALIDATION_CONTROLLER_PAGES_RUNTIME_CHECKS/);
   assert.doesNotThrow(() => verifyLayerScapeControllerPins(
     product.dir, {...inputs(updated, prior), repositoryId: 1296724484}, upstream.dir, promoted,
   ));
@@ -138,6 +150,10 @@ test('checks independently promoted archive reader revisions from the configurat
   const secondReader = commit(second);
   const currentReaders = commit(bothCurrent);
   const invalidWiring = commit(first.replace('Install native archive reader dependencies', 'Install dependencies'));
+  const withoutCheckout = YAML.parse(first);
+  withoutCheckout.jobs.build.steps = withoutCheckout.jobs.build.steps.filter(step =>
+    !['Check out native archive reader', 'Install native archive reader dependencies'].includes(step.name));
+  const orphanedReader = commit(YAML.stringify(withoutCheckout));
 
   const verify = (base, head, current) => verifyLayerScapeControllerPins(product.dir, {
     repositoryId: 1187527897, base, head, changedPaths: [publishPath],
@@ -148,4 +164,5 @@ test('checks independently promoted archive reader revisions from the configurat
   assert.doesNotThrow(() => verify(secondReader, currentReaders, promoted));
   assert.throws(() => verify(currentReaders, secondReader, promoted), /VALIDATION_CONTROLLER_DOWNGRADE/);
   assert.throws(() => verify(base, invalidWiring, older), /VALIDATION_CONTROLLER_ARCHIVE_READER_WIRING/);
+  assert.throws(() => verify(base, orphanedReader, older), /VALIDATION_CONTROLLER_ARCHIVE_READER_WIRING/);
 });
