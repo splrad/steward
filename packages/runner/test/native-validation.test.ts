@@ -47,7 +47,8 @@ it('reads real complete Git base/head and detects stale base, wrong checkout and
     const env={GITHUB_EVENT_PATH:event,GITHUB_EVENT_NAME:'pull_request',GITHUB_REPOSITORY_ID:'1',GITHUB_REPOSITORY:'splrad/fixture',WORKFLOW_REPOSITORY:'splrad/steward',WORKFLOW_PATH:'.github/workflows/pr-validation-native.yml',WORKFLOW_SHA:S};
     expect((await validationInput(root,env)).input.changedPaths).toEqual(['new name.md','old name.md']);
     await expect(validationInput(root,{...env,WORKFLOW_REPOSITORY:'fork/steward'})).rejects.toThrow('TRUSTED_SOURCE');
-    git('update-ref','refs/remotes/origin/main',head);await expect(validationInput(root,env)).rejects.toThrow('BASE_MOVED');
+    git('update-ref','refs/remotes/origin/main',head);
+    await expect(validationInput(root,env)).rejects.toThrow(`VALIDATION_BASE_MOVED eventBase=${base} observedBase=${head}`);
     git('update-ref','refs/remotes/origin/main',base);git('checkout',base);await expect(validationInput(root,env)).rejects.toThrow('CHECKOUT');
     git('checkout',head);const payload=JSON.parse(await readFile(event,'utf8'));payload.pull_request.base.sha=S;await writeFile(event,JSON.stringify(payload));await expect(validationInput(root,env)).rejects.toThrow();
   }finally{await rm(root,{recursive:true,force:true});}
