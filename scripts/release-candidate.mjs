@@ -17,6 +17,7 @@ import { advanceReleaseCandidate, pushPreparedCandidate, collectContentInput, pl
 import { readReleaseRecords, writeReleaseRecords, assertReleaseWriterProtection } from './release-record.mjs';
 import { restoreContentRecovery, selectContentArchive } from './release-content-recovery.mjs';
 import {readControllerReleaseTemplate,releaseTemplateControllerPin} from './release-template-source.mjs';
+import { syncCandidateHomepage } from './candidate-homepage.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const validSha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
@@ -41,7 +42,7 @@ export function mergedContributorIdentity(identity, authors) {
 }
 
 /** Fixed candidate adapter. Credentials never enter archived data or model/RP payloads. */
-export async function nativeReleaseCandidate(request, { token, readToken, copilotToken, controllerSha, controllerDirectory = process.cwd(), now = () => new Date().toISOString(), fetcher = fetch, generator, language, expectedStateSha, expectedSourceSha, temporaryRoot = tmpdir(),verifyHandoff,contentRecovery,observation,manualCandidateProducer,reselectUnits=false,checkRepositoryPolicy } = {}) {
+export async function nativeReleaseCandidate(request, { token, readToken, copilotToken, controllerSha, controllerDirectory = process.cwd(), now = () => new Date().toISOString(), fetcher = fetch, generator, language, expectedStateSha, expectedSourceSha, temporaryRoot = tmpdir(),verifyHandoff,contentRecovery,observation,manualCandidateProducer,reselectUnits=false,checkRepositoryPolicy,homepageEvent } = {}) {
   if (!readToken || readToken === token) return { status: 'WAIT', reason: 'CANDIDATE_SCOPED_READ_CREDENTIAL_REQUIRED' };
   if (!validSha(controllerSha)) return { status: 'WAIT', reason: 'CANDIDATE_CONTROLLER_IDENTITY_REQUIRED' };
   if(expectedStateSha!==undefined&&!validSha(expectedStateSha))fail('CANDIDATE_EXPECTED_STATE_INVALID');
@@ -121,12 +122,17 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     return pinnedTemplate.get(sha);
   };
   const sourceTemplateAt=async (sha,delivery)=>(await templateSourceAt(sha,delivery)).template;
-  const fetchBranch = async branch => {
+  const readBranch = async branch => {
     const ref = await api('GET', `/repos/${request.repository}/git/ref/heads/${branch}`, undefined, true);
     if (!ref) return null;
     if (!validSha(ref.object?.sha) || ref.object.type !== 'commit') fail('CANDIDATE_REF_IDENTITY');
+    return ref.object.sha;
+  };
+  const fetchBranch = async branch => {
+    const sha = await readBranch(branch);
+    if (!sha) return null;
     await git('fetch', '--no-tags', '--no-recurse-submodules', request.remote, `refs/heads/${branch}`);
-    const head = (await git('rev-parse', 'FETCH_HEAD')).toString().trim(); if (head !== ref.object.sha) fail('CANDIDATE_REF_DRIFT');
+    const head = (await git('rev-parse', 'FETCH_HEAD')).toString().trim(); if (head !== sha) fail('CANDIDATE_REF_DRIFT');
     await git('update-ref', `refs/heads/${branch}`, head); return head;
   };
   try {
@@ -154,6 +160,46 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       }
       return decodeCandidateDocument(chunks);
     };
+    if (homepageEvent) {
+      let candidate = state.repository.candidate;
+      const notCurrent = {status:'SKIPPED',reason:'CANDIDATE_HOMEPAGE_NOT_CURRENT'};
+      const notReady = {status:'WAIT',reason:'CANDIDATE_HOMEPAGE_NOT_READY'};
+      if (!candidate) return notCurrent;
+      const pullPath = 'pulls/' + homepageEvent.prNumber;
+      if (candidate.prNumber === null) {
+        const pull = await native(pullPath);
+        return pull.state === 'open' && pull.head?.repo?.id === request.repositoryId && pull.head.ref === candidate.branch
+          && pull.base?.repo?.id === request.repositoryId && pull.base.ref === request.defaultBranch ? notReady : notCurrent;
+      }
+      if (candidate.prNumber !== homepageEvent.prNumber) return notCurrent;
+      if (candidate.statusCommentId === null) {
+        const commentId = homepageEvent.commentId;
+        if (!Number.isSafeInteger(commentId) || commentId < 1) return notReady;
+        const comment = await api('GET', '/repos/' + request.repository + '/issues/comments/' + commentId, undefined, true);
+        if (!comment) return notReady;
+        if (comment.id !== commentId || comment.user?.id !== request.appBotId
+          || comment.issue_url !== 'https://api.github.com/repos/' + request.repository + '/issues/' + candidate.prNumber
+          || typeof comment.body !== 'string' || !comment.body.startsWith('<!-- steward:candidate-status:' + candidate.id + ' -->')) return notCurrent;
+        candidate = {...candidate,statusCommentId:commentId};
+      }
+      const session = await loadDocument('generated/' + candidate.id + '/session.json');
+      if (!session?.generated?.units?.length || !session.identity?.units?.length) return notReady;
+      const units = session.generated.units.map(unit => {
+        const approved = session.identity.units.find(value => value.id === unit.id);
+        if (!approved) fail('CANDIDATE_HOMEPAGE_UNIT');
+        return {id:unit.id,path:unit.path,notesPath:approved.notesPath ?? '.release-notes/' + unit.id + '.md'};
+      });
+      return await syncCandidateHomepage({
+        candidate, units, repository:request.repository, repositoryId:request.repositoryId, defaultBranch:request.defaultBranch,
+        getPull:()=>native(pullPath), readHead:readBranch, fetchHead:async branch=>{
+          try { return await fetchBranch(branch); } catch (error) {
+            if (error.message !== 'CANDIDATE_REF_DRIFT') throw error;
+            return null;
+          }
+        }, stateCurrent:async()=>await readBranch('steward/release-state')===state.head,
+        readFile:fileAt, updateBody:body=>api('PATCH', '/repos/' + request.repository + '/' + pullPath, {body}),
+      });
+    }
     const archive = (kind, candidate, path, value) => {
       const content = JSON.stringify(value), documentDigest = hash(content), parts = splitContentText(content, 120 * 1024);
       return parts.map((part, index) => ({ path: index === 0 ? path : path.replace(/\.json$/, `-${index}.json`),

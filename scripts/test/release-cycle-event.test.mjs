@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises';
 import Handlebars from 'handlebars';
 import YAML from 'yaml';
 import { advanceEvent, validateEvent, publicCycleError, withCycleCleanup } from '../release-cycle-event.mjs';
+import { renderCandidateHomepage, syncCandidateHomepage } from '../candidate-homepage.mjs';
 import { product, sha256 } from '../bounded-candidate-contract.mjs';
 const source='a'.repeat(40), later='b'.repeat(40);
 const push=sourceSha=>({kind:'push',repositoryId:product.id,sourceSha});
@@ -125,6 +126,9 @@ test('retains each native attempt receipt even if the first upload acknowledgeme
   const upload=workflow.jobs['release-coordinator'].steps.find(step=>step.uses?.startsWith('actions/upload-artifact@'));
   assert.equal(upload.with.name,'release-cycle-${{ inputs.request_key }}-${{ github.run_attempt }}');
   assert.equal(upload.with.overwrite,undefined);
+  assert.match(workflow.concurrency.group,/steward-candidate-homepage-\{0\}-\{1\}.*repositoryId.*prNumber/);
+  assert.equal(workflow.concurrency['cancel-in-progress'], false);
+  assert.equal(workflow.concurrency.queue, 'max');
 });
 
 test('a GitHub-only publication checks its receipt and has no external work even while evidence is pending', async()=>{
@@ -240,4 +244,213 @@ test('cleanup runs once and preserves an earlier business failure',async()=>{
   await assert.rejects(withCycleCleanup(async()=>1,cleanup),
     error=>publicCycleError(error)==='CYCLE_EVENT_STOPPED\nstage=CLEANUP category=UNCLASSIFIED');
   assert.equal(calls,2);
+});
+
+
+const candidate = {id:'d'.repeat(64),prNumber:201,branch:'steward/release-candidate',statusCommentId:7015204821};
+const repository = 'splrad/LayerScape', notesPath = '.release-notes/layerscape.md';
+const creation = '当前版本和发布说明见[候选状态](https://github.com/splrad/LayerScape/pull/201#issuecomment-7015204821)。下方是创建 PR 时的变更记录。'
+  + '\n\n<details><summary>1.0.1</summary>\n\n## 1.0.1\n\n* 初始化时的条目\n\n</details>'
+  + '\n\n编辑发布说明文件前，添加 `release:editing` 标签，等正在写入候选分支的作业结束后再修改。'
+  + '\n\n<!-- steward:candidate:' + candidate.id + ' -->';
+
+test('the candidate homepage keeps the complete draft above the original collapsed record and exact links',()=>{
+  const markdown = '## 新功能\n\n- 完整的文稿。\n\n### 维护\n\n- 原格式保留。';
+  const model = {candidate,repository,head:source,notes:[{path:notesPath,unit:'layerscape',version:'1.1.0',markdown}]};
+  const body = renderCandidateHomepage(creation,model);
+  assert.ok(body.startsWith('> **候选预览**'));
+  assert.ok(body.includes('/blob/steward/release-candidate/'+notesPath));
+  assert.ok(body.includes('# 发布说明 · 1.1.0\n\n'+markdown+'\n\n---\n\n## PR 信息'));
+  assert.ok(body.includes('/pull/201#issuecomment-7015204821'));
+  assert.ok(body.includes('/commit/'+source));
+  assert.ok(body.includes('/blob/'+source+'/'+notesPath));
+  assert.ok(body.includes('<details>\n<summary>创建 PR 时的变更记录</summary>'));
+  assert.ok(body.includes('## 1.0.1\n\n* 初始化时的条目'));
+  assert.equal(body.match(/<details>/g).length,1);
+  assert.equal(renderCandidateHomepage(body,model),body);
+  const migrated = renderCandidateHomepage('历史正文\n\n当前文稿的预览见本 PR 的 Steward 状态评论。\n\n<!-- steward:candidate:'+candidate.id+' -->',model);
+  assert.ok(migrated.includes('历史正文'));
+  assert.ok(!migrated.includes('当前文稿的预览见本 PR'));
+});
+
+test('oversized notes keep the full source links, metadata and creation record',()=>{
+  const notes = [{path:notesPath,unit:'layerscape',version:'1.1.0',markdown:'中'.repeat(65536)},
+    {path:'docs/release.md',unit:'docs',version:'1.1.2',markdown:'## Docs'}];
+  const fits = [{...notes[0],markdown:'中'.repeat(24000)},notes[1]];
+  assert.ok(renderCandidateHomepage(creation,{candidate,repository,head:source,notes:fits}).includes(fits[0].markdown));
+  const body = renderCandidateHomepage(creation,{candidate,repository,head:source,notes});
+  assert.match(body,/发布说明超出 PR 正文长度限制/);
+  assert.ok(body.includes('/blob/'+source+'/'+notesPath));
+  assert.ok(body.includes('/blob/'+source+'/docs/release.md'));
+  assert.match(body,/## 1.0.1/);
+});
+
+test('the exact body limit counts a supplementary Unicode character once',()=>{
+  const notes = [{path:notesPath,unit:'layerscape',version:'1.1.0',markdown:'x'}];
+  const model = {candidate,repository,head:source,notes};
+  const fixedLength = Array.from(renderCandidateHomepage(creation,model)).length - 1;
+  notes[0].markdown = '😀'.repeat(65536-fixedLength);
+  const full = renderCandidateHomepage(creation,model);
+  assert.equal(Array.from(full).length,65536);
+  assert.ok(full.includes(notes[0].markdown));
+  notes[0].markdown+='𠮷';
+  const overflow = renderCandidateHomepage(creation,model);
+  assert.match(overflow,/发布说明超出 PR 正文长度限制/);
+  assert.ok(overflow.includes('/blob/'+source+'/'+notesPath));
+});
+
+function candidateHomepageFixture() {
+  const current = {head:source, body:creation};
+  const writes = [], versions = new Map([[source,'1.1.0'],[later,'1.1.1']]);
+  const getPull = async () => ({
+    number:candidate.prNumber,state:'open',merged:false,body:current.body,
+    head:{ref:candidate.branch,sha:current.head,repo:{id:product.id}},
+    base:{ref:'main',repo:{id:product.id}},
+  });
+  const updateBody = async body => { writes.push(body); current.body = body; };
+  return {current,writes,ports:{candidate,units:[{id:'layerscape',path:'.',notesPath}],repository,repositoryId:product.id,defaultBranch:'main',
+    getPull,updateBody,fetchHead:async()=>current.head,readHead:async()=>current.head,stateCurrent:async()=>true,wait:async()=>{},
+    readFile:async(head,path)=>path==='.release-please-manifest.json' ? JSON.stringify({'.':versions.get(head)}) : '发布说明 '+head,
+  }};
+}
+
+test('a delayed event for A reconciles the current head B without writing A',async()=>{
+  const {current,writes,ports} = candidateHomepageFixture();
+  current.head = later;
+  const event = {repositoryId:product.id,kind:'candidate-head',prNumber:201,head:source};
+  const key = sha256([product.id,event.kind,event.prNumber,event.head]);
+  validateEvent(event,key);
+  assert.throws(()=>validateEvent({...event,prNumber:202},key),/CYCLE_EVENT_KEY/);
+  const result = await advanceEvent(event,{homepage:async value=>{
+    assert.deepEqual(value,{prNumber:201});
+    return syncCandidateHomepage(ports);
+  }});
+  assert.deepEqual(result,{status:'READY',reason:'CANDIDATE_HOMEPAGE_UPDATED',head:later});
+  assert.equal(writes.length,1);
+  assert.match(writes[0],/发布说明 · 1.1.1/);
+  assert.equal((await syncCandidateHomepage(ports)).reason,'CANDIDATE_HOMEPAGE_CURRENT');
+  assert.equal(writes.length,1);
+});
+
+test('release:editing pauses branch updates while committed notes still reach the homepage',async()=>{
+  const {current,writes,ports} = candidateHomepageFixture();
+  const getPull = ports.getPull;
+  ports.getPull = async()=>({...await getPull(),labels:[{name:'release:editing'}]});
+  assert.equal((await syncCandidateHomepage(ports)).head,source);
+  current.head = later;
+  assert.equal((await syncCandidateHomepage(ports)).head,later);
+  assert.equal(writes.length,2);
+  assert.ok(current.body.includes('发布说明 '+later));
+  assert.ok(!current.body.includes('发布说明 '+source));
+});
+
+test('a new head before PATCH supersedes the old draft in the same attempt',async()=>{
+  const {current,writes,ports} = candidateHomepageFixture();
+  const original = ports.readFile;
+  ports.readFile = async (head,path) => {
+    if (head===source && path===notesPath) current.head = later;
+    return original(head,path);
+  };
+  assert.equal((await syncCandidateHomepage(ports)).head,later);
+  assert.equal(writes.length,1);
+  assert.match(writes[0],/发布说明 · 1.1.1/);
+});
+
+test('a new head during an uncertain PATCH reconciles immediately from the new commit',async()=>{
+  const {current,writes,ports} = candidateHomepageFixture();
+  const save = ports.updateBody;
+  ports.updateBody = async body => {
+    await save(body);
+    if (writes.length===1) {
+      current.head = later;
+      throw Error('response lost');
+    }
+  };
+  assert.equal((await syncCandidateHomepage(ports)).head,later);
+  assert.equal(writes.length,2);
+  assert.ok(current.body.includes('发布说明 '+later));
+  assert.ok(!current.body.includes('发布说明 '+source));
+});
+
+test('the bot edit wakes reconciliation when PATCH A lands after both head runs finished', async()=>{
+  const {current,writes,ports} = candidateHomepageFixture();
+  const save = ports.updateBody;
+  let delayedBody;
+  ports.updateBody = async body => {
+    if (current.head===source) {
+      delayedBody = body;
+      current.head = later;
+      throw Error('response lost before the accepted PATCH becomes visible');
+    }
+    await save(body);
+  };
+  const a = {repositoryId:product.id,kind:'candidate-head',prNumber:201,head:source};
+  const b = {...a,head:later};
+  const process = event => advanceEvent(event,{homepage:()=>syncCandidateHomepage(ports)});
+  assert.equal((await process(a)).head,later);
+  assert.equal((await process(b)).reason,'CANDIDATE_HOMEPAGE_CURRENT');
+  assert.equal(writes.length,1);
+  current.body = delayedBody;
+  assert.ok(current.body.includes('发布说明 '+source));
+  const edited = {...b,delivery:'35fcb56f-61cf-4a3d-a31a-24d2582253a3'};
+  validateEvent(edited,sha256([product.id,b.kind,b.prNumber,b.head,edited.delivery]));
+  assert.throws(()=>validateEvent(edited,sha256([product.id,b.kind,b.prNumber,b.head])),/CYCLE_EVENT_KEY/);
+  assert.equal((await process(edited)).head,later);
+  assert.ok(current.body.includes('发布说明 '+later));
+  assert.equal(writes.length,2);
+  assert.equal((await process({...edited,delivery:'f7872c8d-a174-49c1-95a0-764ff509b452'})).reason,'CANDIDATE_HOMEPAGE_CURRENT');
+  assert.equal(writes.length,2);
+});
+
+test('candidate status delivery is keyed to the real comment and uses the same preview route', async()=>{
+  const event = {repositoryId:product.id,kind:'candidate-status',prNumber:201,commentId:51};
+  validateEvent(event,sha256([product.id,event.kind,event.prNumber,51]));
+  assert.throws(()=>validateEvent({...event,commentId:52},sha256([product.id,event.kind,event.prNumber,51])),/CYCLE_EVENT_KEY/);
+  assert.equal((await advanceEvent(event,{homepage:async value=>{
+    assert.deepEqual(value,{prNumber:201,commentId:51});
+    return {status:'READY',head:later};
+  }})).head,later);
+});
+
+test('an accepted PATCH with an unavailable response and first readback does not need a second write',async()=>{
+  const {writes,ports} = candidateHomepageFixture();
+  const save = ports.updateBody, pull = ports.getPull;
+  let uncertainRead = false;
+  ports.updateBody = async body => {
+    await save(body);
+    uncertainRead = true;
+    throw Error('response lost');
+  };
+  ports.getPull = async () => {
+    if (uncertainRead) { uncertainRead = false; throw Error('readback unavailable'); }
+    return pull();
+  };
+  assert.equal((await syncCandidateHomepage(ports)).status,'READY');
+  assert.equal(writes.length,1);
+});
+
+test('repeatedly unconfirmed writes time out with a preview failure',async()=>{
+  const {ports} = candidateHomepageFixture();
+  let writes = 0;
+  ports.updateBody = async () => { writes++; throw Error('offline'); };
+  assert.deepEqual(await syncCandidateHomepage(ports),{status:'FAILED',reason:'CANDIDATE_HOMEPAGE_WRITE_UNKNOWN'});
+  assert.equal(writes,4);
+});
+
+test('candidate projection retries unfinished state and records failures outside the release cycle',async()=>{
+  const {ports} = candidateHomepageFixture();
+  let tries = 0;
+  const event = {repositoryId:product.id,kind:'candidate-head',prNumber:201,head:source};
+  const onlyPreview = {
+    waitForPreview:async()=>{},
+    snapshot:()=>assert.fail('release cycle must not be read'),
+    invoke:()=>assert.fail('release commands must not be invoked'),
+  };
+  assert.equal((await advanceEvent(event,{...onlyPreview,homepage:async()=>++tries===1
+    ? {status:'WAIT',reason:'CANDIDATE_HOMEPAGE_NOT_READY'} : syncCandidateHomepage(ports)})).status,'READY');
+  assert.equal(tries,2);
+  assert.deepEqual(await advanceEvent(event,{...onlyPreview,homepage:async()=>({status:'WAIT',reason:'CANDIDATE_HOMEPAGE_NOT_READY'})}),
+    {status:'FAILED',reason:'CANDIDATE_HOMEPAGE_NOT_READY'});
+  assert.deepEqual(await advanceEvent(event,{...onlyPreview,homepage:async()=>{throw Error('internal details');}}),
+    {status:'FAILED',reason:'CANDIDATE_HOMEPAGE_FAILED'});
 });
