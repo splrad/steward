@@ -37,8 +37,10 @@ function snapshot(value: any) {
   for (const unit of value.units) { exact(unit, ['id', 'path', 'version', 'tag']); if (Object.values(unit).some(v => typeof v !== 'string' || !v)) throw new Error('CANDIDATE_UNIT_INVALID'); }
 }
 function candidateIdentity(identity: any) {
+  const conditional = typeof identity?.noteTemplate === 'string' && isConditionalTemplate(identity.noteTemplate);
   exact(identity, ['authorsDigest', 'sourceDigest', 'actors', 'contributors', 'units',
-    ...(typeof identity?.noteTemplate === 'string' && isConditionalTemplate(identity.noteTemplate) ? ['noteTemplate'] : [])]);
+    ...(conditional ? ['noteTemplate'] : []),
+    ...(conditional && identity.contributorMode === 'github-authors' ? ['contributorMode'] : [])]);
   if (!/^[a-f0-9]{64}$/.test(identity.authorsDigest) || !/^[a-f0-9]{64}$/.test(identity.sourceDigest)
     || !Array.isArray(identity.actors) || !Array.isArray(identity.units)) throw new Error('CANDIDATE_IDENTITY_INVALID');
   for (const unit of identity.units) {

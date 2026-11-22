@@ -1,17 +1,19 @@
 import { renderCandidateNote, renderCandidateProjection } from '../../core/src/candidate-note.js';
+import { reviewedConditionalReleaseTemplate } from '../../core/src/conditional-release-notes.js';
 export { renderCandidateNote };
 import { manualCandidateFacts, type ManualCandidate } from '../../core/src/manual-candidate.js';
 import { createHash } from 'node:crypto';
-import { candidateId, candidateCreationBody, selectReleaseContributors, type CandidateSnapshot, type ReleaseActor, type RepositoryAuthor } from '../../core/src/release-candidate.js';
+import { candidateId, candidateCreationBody, replayReleaseContributors, selectReleaseContributors, type CandidateSnapshot, type ReleaseActor, type RepositoryAuthor } from '../../core/src/release-candidate.js';
 import { assertRepositoryWrite, type CycleRecord, type RepositoryRecord } from '../../core/src/release-observation.js';
-import { mergeCandidate, prepareCandidateWrite, resumeCandidateWrite, candidateTreeMatches, type PreparedCandidateWrite } from './release-candidate-update.js';
+import { productReleaseTemplatePath } from '../../core/src/release-template.js';
+import { mergeCandidate, prepareCandidateWrite, resumeCandidateWrite, candidateTreeMatches, candidateTemplateAdoption, type PreparedCandidateWrite } from './release-candidate-update.js';
 
 export interface CandidatePullRequest { number: number; head: string; branch: string; base: string; state: 'open' | 'closed'; merged: boolean; editing: boolean; body: string }
 export interface CandidateComment { id: number; authorId: number; body: string }
 export interface CandidateSession {
   manualValidation?: ManualCandidate | null;
   repository: RepositoryRecord; generated: CandidateSnapshot | null; pending: { write: PreparedCandidateWrite; generated: CandidateSnapshot; previousIdentity?: CandidateSession['identity'] } | null;
-  identity: null | { authorsDigest: string; sourceDigest: string; noteTemplate?: string; actors: (ReleaseActor | null)[]; contributors: ReturnType<typeof selectReleaseContributors>;
+  identity: null | { authorsDigest: string; sourceDigest: string; noteTemplate?: string; contributorMode?: 'github-authors'; actors: (ReleaseActor | null)[]; contributors: ReturnType<typeof selectReleaseContributors>;
     units: { id: string; notesPath?: string; actors: (ReleaseActor | null)[]; contributors: ReturnType<typeof selectReleaseContributors> }[] };
   conflict: null | { head: string; generated: CandidateSnapshot; paths: string[] };
   preview: string | null;
@@ -22,7 +24,8 @@ export interface CandidateRuntime {
   workspace: string; temporaryRoot: string; repository: string; defaultBranch: string; appBotId: number; identity: { name: string; email: string };
   now(): string;
   source(): Promise<{ baseSha: string; authors: RepositoryAuthor[]; authorsDigest: string; noteTemplate?: string;
-    notesPaths?: Record<string,string>; confirmedHumans?: RepositoryAuthor[] }>;
+    notesPaths?: Record<string,string>; contributorMode?: 'github-authors'; noteTemplateController?: {workflow?: string; pin: string} }>;
+  readControllerTemplate?(pin: string): Promise<string>;
   pullRequests(branch: string): Promise<CandidatePullRequest[]>;
   legacyCandidate(): Promise<CandidatePullRequest | null>;
   generation(baseSha: string): Promise<{ status: 'READY'; snapshot: CandidateSnapshot; title: string; body: string } | { status: 'UNCHANGED' | 'DRIFT' }>;
@@ -137,6 +140,13 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
       && prs.some(p => p.state === 'closed' && p.merged && p.base === io.defaultBranch && p.head === head);
     return { pr, head, retiredHead };
   };
+  const openCandidatePullRequest = async (metadata: { title: string; body: string }) => {
+    try {
+      await io.createPullRequest({ branch: candidate.branch, base: io.defaultBranch,
+        title: metadata.title, body: candidateCreationBody(candidate.id, metadata.body) });
+    } catch { /* Creation response is never the identity; all-state native readback is. */ }
+    return current();
+  };
   const finishPending = async () => {
     if (!session.pending) return null;
     const pending = session.pending;
@@ -176,21 +186,45 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   if (observed.pr?.state === 'closed') return { status: 'WAIT', reason: observed.pr.merged ? 'MERGED_SOURCE_HANDOFF' : 'CLOSED_PR' };
   // Refresh derived identity even on protected early returns, without changing its native evidence.
   const frozen = session.identity, generated = session.generated;
+  let retainReviewedGeneration = false;
+  let templateOnlyAdvance: { generated: CandidateSnapshot; identity: NonNullable<CandidateSession['identity']> } | undefined;
   if (observation && (!frozen || !generated || frozen.sourceDigest !== generated.sourceDigest
     || frozen.authorsDigest !== source.authorsDigest
     || JSON.stringify(frozen.units.map(u => u.id).sort()) !== JSON.stringify(generated.units.map(u => u.id).sort())))
     throw new Error('CANDIDATE_OBSERVATION_CACHE_MISMATCH');
-  if (frozen && generated && generated.baseSha === source.baseSha
-    && frozen.sourceDigest === generated.sourceDigest && frozen.authorsDigest === source.authorsDigest
+  if (frozen && generated && frozen.sourceDigest === generated.sourceDigest && frozen.authorsDigest === source.authorsDigest
     && JSON.stringify(frozen.units.map(u => u.id).sort()) === JSON.stringify(generated.units.map(u => u.id).sort())) {
-    if (frozen.noteTemplate !== source.noteTemplate || frozen.units.some(unit => {
-      const declared = source.notesPaths?.[unit.id];
-      return declared ? (unit.notesPath ?? `.release-notes/${unit.id}.md`) !== declared : unit.notesPath !== undefined;
-    }))
-      throw Error('CANDIDATE_NOTE_TEMPLATE_DRIFT');
-    const projected = { ...frozen, contributors: selectReleaseContributors(frozen.actors, source.authors, source.confirmedHumans),
-      units: frozen.units.map(unit => ({ ...unit, contributors: selectReleaseContributors(unit.actors, source.authors, source.confirmedHumans) })) };
-    if (JSON.stringify(projected) !== JSON.stringify(frozen)) { session.identity = projected; await save(); }
+    const sameBase = generated.baseSha === source.baseSha, currentTemplate = source.noteTemplate;
+    const reviewedTemplate = currentTemplate === undefined ? undefined
+      : await reviewedConditionalReleaseTemplate(currentTemplate, frozen.noteTemplate);
+    const approvedUpgrade = reviewedTemplate !== currentTemplate;
+    const policyUpgrade = reviewedTemplate !== undefined && !frozen.contributorMode && source.contributorMode === 'github-authors';
+    const controller = source.noteTemplateController, readTemplate = io.readControllerTemplate;
+    if (!sameBase && reviewedTemplate !== undefined && currentTemplate !== undefined
+      && (approvedUpgrade || (controller && policyUpgrade)) && observed.pr && candidate.publishedHead
+      && (!controller?.workflow || readTemplate)
+      && !generated.files.some(file => file.path === (controller?.workflow ?? productReleaseTemplatePath))
+      && await io.isAncestor(generated.baseSha, source.baseSha)
+      && await candidateTemplateAdoption(io.workspace, source.baseSha, generated.baseSha, {
+        template: currentTemplate, ...(controller ? {controller: {...controller, reviewedTemplate, readTemplate}} : {}),
+      }, io.temporaryRoot)) {
+      templateOnlyAdvance = { generated, identity: frozen };
+    }
+    if (sameBase || templateOnlyAdvance) {
+      if (frozen.noteTemplate !== reviewedTemplate || frozen.units.some(unit => {
+        const declared = source.notesPaths?.[unit.id];
+        return declared ? (unit.notesPath ?? `.release-notes/${unit.id}.md`) !== declared : unit.notesPath !== undefined;
+      }))
+        throw Error('CANDIDATE_NOTE_TEMPLATE_DRIFT');
+      retainReviewedGeneration = approvedUpgrade || policyUpgrade;
+      const mode = frozen.contributorMode ?? (frozen.noteTemplate ? 'recorded' : undefined);
+      const projected = { ...frozen, contributors: replayReleaseContributors(frozen, source.authors, mode),
+        units: frozen.units.map(unit => ({ ...unit, contributors: replayReleaseContributors(unit, source.authors, mode) })) };
+      if (JSON.stringify(projected) !== JSON.stringify(frozen)) {
+        if (retainReviewedGeneration) throw Error('CANDIDATE_OBSERVATION_CACHE_MISMATCH');
+        session.identity = projected; await save();
+      }
+    }
   }
   const statusComment = async (body: string, previewHead: string, currentHead: string) => {
     if (!candidate.prNumber) return;
@@ -231,43 +265,67 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
       return { status: 'CONFLICT', reason: difference.conflictPaths.every(isNotesPath) ? 'HUMAN_EDIT_CONFLICT' : 'SOURCE_CHANGED', paths: difference.conflictPaths };
     }
   }
-  // A fixed observation can only project the frozen identity and protect existing notes.
-  // It never recovers a pending write, regenerates content, or creates another PR.
-  if (observation) {
+  // Reuse the frozen generation when the template or contributor policy is being adopted.
+  if (observation || (retainReviewedGeneration && !templateOnlyAdvance)) {
     // A mergeable tree can still require a write (for example a human revert to B).
     // Observation never performs that write, so only the actual frozen tree can complete.
-    if (!observed.head || !session.generated || !await candidateTreeMatches(io.workspace, observed.head,
-      session.generated.baseSha, session.generated.files, io.temporaryRoot))
-      return { status: 'WAIT', reason: 'GENERATED_FILES_MISMATCH', head: observed.head };
-    const stable=async()=>{
+    const reviewedHead = observed.head, reviewed = session.generated;
+    if (!reviewedHead || !reviewed || !await candidateTreeMatches(io.workspace, reviewedHead,
+      reviewed.baseSha, reviewed.files, io.temporaryRoot))
+      return { status: 'WAIT', reason: 'GENERATED_FILES_MISMATCH', head: reviewedHead };
+    const stable=async(allowMissingPull = false)=>{
       const now=await current(),latest=await io.source();
-      if(!now.pr||now.pr.state!=='open'||now.pr.editing||now.head!==observed.head||latest.baseSha!==source.baseSha
-        ||latest.authorsDigest!==source.authorsDigest)throw Error('CANDIDATE_OBSERVATION_MOVED');
+      if((!now.pr&&!allowMissingPull)||now.pr?.state==='closed'||now.pr?.editing||now.head!==reviewedHead||latest.baseSha!==source.baseSha
+        ||latest.authorsDigest!==source.authorsDigest||latest.noteTemplate!==source.noteTemplate)
+        throw Error('CANDIDATE_OBSERVATION_MOVED');
+      return now;
     };
+    if (!observed.pr && !observation) {
+      if (candidate.publishedHead !== reviewedHead) return { status: 'WAIT', reason: 'GENERATED_FILES_MISMATCH', head: reviewedHead };
+      const metadata = await io.generation(source.baseSha);
+      if (metadata.status !== 'READY') return { status: 'WAIT', reason: metadata.status };
+      if (metadata.snapshot.baseSha !== reviewed.baseSha || metadata.snapshot.configDigest !== reviewed.configDigest
+        || metadata.snapshot.sourceDigest !== reviewed.sourceDigest) return { status: 'WAIT', reason: 'SOURCE_DRIFT' };
+      observed = await stable(true);
+      if (!observed.pr) observed = await openCandidatePullRequest(metadata);
+      if (!observed.pr) return { status: 'WAIT', reason: 'PR_CREATE_UNKNOWN' };
+    }
     await stable();const preview=candidateProjectionPreview(session,io.repository);
     const changed=session.preview!==preview;session.preview=preview;
     const archive=changed?await save():await io.save(session);
     await stable();const projectionEvidence=await statusComment(preview,archive,observed.head!);
     await stable();if(!projectionEvidence)throw Error('CANDIDATE_PROJECTION_UNKNOWN');
-    return { status: 'READY', reason: 'CACHED_OBSERVATION', head: observed.head,projectionEvidence };
+    return observation
+      ? { status: 'READY', reason: 'CACHED_OBSERVATION', head: observed.head, projectionEvidence }
+      : { status: 'READY', prNumber: candidate.prNumber, head: observed.head };
   }
   // Check the identity inputs before running upstream generation.
-  selectReleaseContributors([], source.authors, source.confirmedHumans);
+  selectReleaseContributors([], source.authors, source.contributorMode);
   const generation = await io.generation(source.baseSha);
   if (generation.status !== 'READY') return { status: 'WAIT', reason: generation.status };
-  candidate.contentGenerationDigest = digest([generation.snapshot.sourceDigest, generation.snapshot.configDigest, source.authorsDigest]); await save();
-  const content = await io.content(candidate, generation.snapshot);
-  if (content.status !== 'READY') return { status: 'WAIT', reason: `CONTENT_${content.status}` };
-  const N: CandidateSnapshot = { ...generation.snapshot, files: [...generation.snapshot.files, ...content.files] };
-  if (JSON.stringify(Object.keys(content.unitActors).sort()) !== JSON.stringify(N.units.map(unit => unit.id).sort())) throw new Error('CANDIDATE_CONTRIBUTOR_UNIT_COVERAGE');
   const previousIdentity = session.identity;
-  session.identity = { authorsDigest: source.authorsDigest, sourceDigest: N.sourceDigest,
-    ...(source.noteTemplate ? { noteTemplate: source.noteTemplate } : {}),
-    actors: content.actors, contributors: selectReleaseContributors(content.actors, source.authors, source.confirmedHumans),
-    units: N.units.map(unit => ({ id: unit.id, ...(source.notesPaths ? {notesPath:source.notesPaths[unit.id]!} : {}),
-      actors: content.unitActors[unit.id]!, contributors: selectReleaseContributors(content.unitActors[unit.id]!, source.authors, source.confirmedHumans) })) };
+  let N: CandidateSnapshot;
+  if (templateOnlyAdvance) {
+    const prior = templateOnlyAdvance.generated;
+    if (generation.snapshot.baseSha !== source.baseSha || generation.snapshot.configDigest !== prior.configDigest
+      || digest(generation.snapshot.units) !== digest(prior.units)) return { status: 'WAIT', reason: 'SOURCE_DRIFT' };
+    N = { ...generation.snapshot, files: prior.files };
+  } else {
+    candidate.contentGenerationDigest = digest([generation.snapshot.sourceDigest, generation.snapshot.configDigest, source.authorsDigest]); await save();
+    const content = await io.content(candidate, generation.snapshot);
+    if (content.status !== 'READY') return { status: 'WAIT', reason: `CONTENT_${content.status}` };
+    N = { ...generation.snapshot, files: [...generation.snapshot.files, ...content.files] };
+    if (JSON.stringify(Object.keys(content.unitActors).sort()) !== JSON.stringify(N.units.map(unit => unit.id).sort())) throw new Error('CANDIDATE_CONTRIBUTOR_UNIT_COVERAGE');
+    session.identity = { authorsDigest: source.authorsDigest, sourceDigest: N.sourceDigest,
+      ...(source.noteTemplate ? { noteTemplate: source.noteTemplate } : {}),
+      ...(source.contributorMode ? { contributorMode: source.contributorMode } : {}),
+      actors: content.actors, contributors: selectReleaseContributors(content.actors, source.authors, source.contributorMode),
+      units: N.units.map(unit => ({ id: unit.id, ...(source.notesPaths ? {notesPath:source.notesPaths[unit.id]!} : {}),
+        actors: content.unitActors[unit.id]!, contributors: selectReleaseContributors(content.unitActors[unit.id]!, source.authors, source.contributorMode) })) };
+  }
   const latestSource = await io.source();
-  if (latestSource.baseSha !== source.baseSha || latestSource.authorsDigest !== source.authorsDigest) return { status: 'WAIT', reason: 'SOURCE_DRIFT' };
+  if (latestSource.baseSha !== source.baseSha || latestSource.authorsDigest !== source.authorsDigest
+    || (templateOnlyAdvance && latestSource.noteTemplate !== source.noteTemplate)) return { status: 'WAIT', reason: 'SOURCE_DRIFT' };
   observed = await current();
   if (observed.pr?.editing || observed.pr?.state === 'closed') return { status: 'WAIT', reason: 'PR_CHANGED_DURING_GENERATION' };
   const H = observed.head;
@@ -276,6 +334,7 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
     session.conflict = { head: H ?? source.baseSha, generated: N, paths: merged.conflictPaths }; await save();
     return { status: 'CONFLICT', reason: merged.conflictPaths.every(isNotesPath) ? 'HUMAN_EDIT_CONFLICT' : 'SOURCE_CHANGED', paths: merged.conflictPaths };
   }
+  if (templateOnlyAdvance) session.identity = { ...templateOnlyAdvance.identity, sourceDigest: N.sourceDigest };
   const unchanged = H !== null && await candidateTreeMatches(io.workspace, H, N.baseSha, merged.files, io.temporaryRoot);
   if (!unchanged) {
   const prepared = await prepareCandidateWrite(io.workspace, H, N, merged, io.identity, io.temporaryRoot);
@@ -300,12 +359,11 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   }
   observed = await current();
   if (!observed.pr) {
-    try { await io.createPullRequest({ branch: candidate.branch, base: io.defaultBranch, title: generation.title, body: candidateCreationBody(candidate.id, generation.body) }); }
-    catch { /* Creation response is never the identity; all-state native readback is. */ }
-    observed = await current();
+    observed = await openCandidatePullRequest(generation);
     if (!observed.pr) return { status: 'WAIT', reason: 'PR_CREATE_UNKNOWN' };
   }
   if (observed.pr.state === 'closed') return { status: 'WAIT', reason: 'CLOSED_PR' };
+  if (!session.identity) throw Error('CANDIDATE_PROJECTION_CACHE');
   session.preview = renderCandidateProjection({ ...N, files: merged.files }, session.identity, io.repository);
   const archive = await save(); await statusComment(session.preview, archive, observed.pr.head);
   return { status: 'READY', prNumber: candidate.prNumber, head: candidate.publishedHead };

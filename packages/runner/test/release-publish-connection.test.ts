@@ -65,17 +65,20 @@ it('binds required provenance to each unit and channel selection',()=>{
   expect([...attestations.get('signed')!]).toEqual(['github-release']);
   expect(attestations.has('plain')).toBe(false);
 });
-it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-run','unbound-run','undispatched','foreign-run','foreign-source','formal-after-expiry','retained-manual-formal','retained-controller-formal','private-formal','partial-draft','corrupt-formal','missing-public-asset',
+it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-run','unbound-run','undispatched','foreign-run','foreign-source','formal-after-expiry','retained-manual-formal','retained-controller-formal','retained-conditional-formal','retained-empty-conditional-formal','private-formal','partial-draft','corrupt-formal','missing-public-asset',
   'wrong-contents-path','wrong-contents-blob','missing-v1-template','missing-v2-template','marked-v1','marked-v2'])('prepares publication from exact native objects: %s',async kind=>{
   const retainedController=kind==='retained-controller-formal';
-  const retained=kind==='retained-manual-formal'||retainedController;
+  const reviewedEmpty=kind==='retained-empty-conditional-formal';
+  const retainedConditional=kind==='retained-conditional-formal'||reviewedEmpty;
+  const retained=kind==='retained-manual-formal'||retainedController||retainedConditional;
   const organizationTemplate=retained?await readFile('templates/repository/.github/release-template.md.mustache','utf8'):undefined;
   const f=productPipelineFixture(1,false,kind==='python-freeze'?'requirements-build.txt':'global.json',organizationTemplate);
   const templatePath='.github/release-template.md.mustache';
   const sharedPath='templates/repository/'+templatePath;
   const previousController='8'.repeat(40);
   const historicalWorkflow='.github/workflows/previous-product.yml';
-  const oldTemplate=f.source[templatePath]!;
+  const oldTemplate=retainedConditional
+    ? await readFile('packages/core/test/fixtures/release-template-conditional-v1.mustache','utf8') : f.source[templatePath]!;
   const previousSource: Record<string,string> = retainedController ? {
     '.github/delivery.json':JSON.stringify({...f.delivery,buildWorkflow:historicalWorkflow}),
     [historicalWorkflow]:JSON.stringify({jobs:{build:{steps:[{
@@ -91,7 +94,7 @@ it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-r
   const history: ReturnType<typeof mergedCandidateFixture>[]=[];
   if(retained) {
     f.source['.github/release-template.md.mustache']=organizationTemplate!;
-    f.source['.release-notes/app.md']=['概述','更新内容','兼容性','升级与迁移','安装说明','已知问题','恢复']
+    f.source['.release-notes/app.md']=retainedConditional?'## 概述\n\n原人工确认的文稿。\n':['概述','更新内容','兼容性','升级与迁移','安装说明','已知问题','恢复']
       .map(heading=>`## ${heading}\n\n原人工确认的文稿。\n`).join('\n');
     f.source['CHANGELOG.md']='## [1.0.0](https://github.com/example/product/compare/v0.9.0...v1.0.0)\n\n原版本记录。\n';
     const read=vi.mocked(localGitSnapshot.file).getMockImplementation()!;
@@ -110,12 +113,22 @@ it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-r
     manual.projection.preview=manualCandidatePreview(manual);
     manual.projection.bodyDigest=digest(manualCandidateBody(manual));
     archived.session.manualValidation=manual;
-    archived.legacyNotesTemplate={sourceSha:D,sha256:'e'.repeat(64),
-      ...(retainedController ? {controllerSha:previousController} : {})};
+    if(retainedConditional) {
+      const person={id:902,login:'reviewed-author',profileUrl:'https://github.com/reviewed-author',
+        avatarUrl:'https://avatars.githubusercontent.com/u/902',alt:'reviewed-author'};
+      const actors=reviewedEmpty?[]:[{...person,type:'User'}].map(({alt,...actor})=>actor);
+      const reviewed={actors,contributors:{contributors:reviewedEmpty?[]:[person],unresolved:0}};
+      Object.assign(archived.session.identity,reviewed,{noteTemplate:oldTemplate,units:[{id:'app',...reviewed}]});
+    } else {
+      archived.legacyNotesTemplate={sourceSha:D,sha256:'e'.repeat(64),
+        ...(retainedController ? {controllerSha:previousController} : {})};
+    }
     const save=()=>{entry.value.content=JSON.stringify(archived);entry.value.documentDigest=digest(entry.value.content);};
     save();f.input.state.domainRecords.push(entry);history.push(entry);
-    await expect(pipelineIdentity(f.input,f.environment,f.gh,f.io,controllerIo)).rejects.toThrow('legacy notes template source');
-    archived.legacyNotesTemplate.sha256=digest(oldTemplate);
+    if(!retainedConditional) {
+      await expect(pipelineIdentity(f.input,f.environment,f.gh,f.io,controllerIo)).rejects.toThrow('legacy notes template source');
+      archived.legacyNotesTemplate.sha256=digest(oldTemplate);
+    }
     if (retainedController) {
       const pinnedWorkflow=previousSource[historicalWorkflow]!;
       previousSource[historicalWorkflow]=pinnedWorkflow.replace(previousController,'main');
@@ -138,7 +151,8 @@ it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-r
   const admitted=await pipelineIdentity(f.input,f.environment,f.gh,f.io,controllerIo);
   if(admitted.status!=='ADMITTED')throw Error('fixture admission');
   const record=admitted.record,root=await mkdtemp(join(tmpdir(),'publish-connection-'));roots.push(root);
-  if(retained)expect(record).toMatchObject({legacyNotesTemplateSourceSha:D,templateSha256:digest(oldTemplate),
+  if(retainedConditional) expect(record).toMatchObject({reviewedNotesTemplate:{sourceSha:D,template:oldTemplate},templateSha256:digest(oldTemplate)});
+  else if(retained)expect(record).toMatchObject({legacyNotesTemplateSourceSha:D,templateSha256:digest(oldTemplate),
     ...(retainedController ? {legacyNotesTemplateControllerSha:previousController} : {})});
   if (kind === 'historical-formal'||kind==='missing-v1-template'||kind==='marked-v1') {
     const legacy = JSON.parse(f.source['.github/delivery.json']!);
@@ -161,12 +175,16 @@ it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-r
   await writeFile(join(original,'sbom.spdx.json'),JSON.stringify({spdxVersion:'SPDX-2.3',SPDXID:'SPDXRef-DOCUMENT',packages:[]}));
   const frozenNotes=retained?await pipelineNotes(record,'app',f.input.sourceDirectory,undefined,controllerIo):`1.0.0\n${S}\n${C}\n`;
   if(retained)expect(frozenNotes).toContain('原人工确认的文稿。');
+  if(retainedConditional) {
+    expect(frozenNotes.includes('alt="reviewed-author"')).toBe(!reviewedEmpty);
+    expect(frozenNotes).not.toContain('贡献者 GitHub ID');
+  }
   await writeFile(join(original,'release-notes.md'),frozenNotes);
   const manifest:ProductReleaseManifest={schemaVersion:3,repositoryId:1,fullName:'example/product',cycleId:record.cycleId,requestKey:record.requestKey,
     unitId:'app',version:'1.0.0',packageVersion:'1.0.0',tag:'v1.0.0',sourceSha:S,controllerSha:C,buildRef:record.buildRef,
     deliverySha256:record.deliverySha256,templateSha256:record.templateSha256,runId:100,attempt:1,toolLocks:record.toolLocks,
     producers:[{buildId:'windows-x64',jobId:1000,attempt:1,artifactId:701}],artifacts:[{id:'app',mediaType:'application/octet-stream',...await fileDigest(original,'app-1.0.0.exe')}],evidence:[]};
-  await sealProductArtifacts(original,manifest);
+  await sealProductArtifacts(original,manifest,retainedConditional ? frozenNotes : undefined);
   const names=await readdir(original),unit=f.context.cycle.units[0]!,bound=retained||['historical-formal','formal-after-expiry','private-formal','partial-draft','corrupt-formal','missing-public-asset'].includes(kind);
   if(bound){unit.releaseId=20;unit.manifestDigest=(await fileDigest(original,'artifact-manifest.json')).sha256;}
   if(kind==='foreign-source')unit.manifestDigest='f'.repeat(64);
@@ -206,11 +224,13 @@ it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-r
   const output=join(root,'prepared');await mkdir(output);
   if(kind==='unbound-run')f.request.canonicalRunId=null;
   if(kind==='undispatched')f.context.cycle.dispatches=[];
-  const result=pipelinePreparePublication(f.context,output,f.input.controllerDirectory,'fixture-product-token',async args=>JSON.stringify(args.at(-1)==='repos/example/product'
-    ?{id:1,full_name:'example/product',archived:false,disabled:false,private:kind==='private-formal'}:artifact),io,io,async(_repo,id,destination,anonymous)=>{
+  const formalDownload=vi.fn(async(_repo:string,id:number,destination:string,anonymous:boolean)=>{
     expect(anonymous).toBe(kind!=='private-formal');
     await copyFile(join(original,names[id-300]!),destination);if(kind==='corrupt-formal'&&destination.endsWith('.exe'))await writeFile(destination,'other bytes');
-  },history);
+  });
+  const prepare=(archive=history)=>pipelinePreparePublication(f.context,output,f.input.controllerDirectory,'fixture-product-token',async args=>JSON.stringify(args.at(-1)==='repos/example/product'
+    ?{id:1,full_name:'example/product',archived:false,disabled:false,private:kind==='private-formal'}:artifact),io,io,formalDownload,archive);
+  const result=prepare();
   if(['incomplete-run','failed-run','unbound-run','undispatched'].includes(kind)) { await expect(result).resolves.toMatchObject({status:'WAIT',reason:['unbound-run','undispatched'].includes(kind)?'BUILD_BINDING_REQUIRED':'BUILD_RUN_NOT_READY',publishInvoked:false});expect(download).not.toHaveBeenCalled(); }
   else if(kind==='marked-v1'||kind==='marked-v2') {
     await expect(result).rejects.toThrow('frozen delivery mode');
@@ -232,16 +252,41 @@ it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-r
   if(kind==='formal-after-expiry')expect(download).not.toHaveBeenCalled();
   if(retained) {
     expect(download).not.toHaveBeenCalled();
-    expect(calls).toContain(`/repos/example/product/contents/${templatePath}?ref=${D}`);
+    expect(calls.includes(`/repos/example/product/contents/${templatePath}?ref=${D}`)).toBe(!retainedConditional);
+    if(retainedConditional) {
+      const publication=await result;
+      if(!Array.isArray(publication))throw Error('Expected formal publication record');
+      const recovered=publication[0]!.build!;
+      expect(recovered).toMatchObject({reviewedNotesTemplate:{sourceSha:D,template:oldTemplate},templateSha256:digest(oldTemplate)});
+      expect(await pipelineNotes(recovered,'app',f.input.sourceDirectory)).toBe(frozenNotes);
+      if(!reviewedEmpty) {
+        download.mockClear();
+        formalDownload.mockClear();
+        await expect(prepare([])).rejects.toThrow('frozen candidate identity required');
+        const entry=history[0]!, archived=JSON.parse(entry.value.content);
+        const withIdentity=(identity:unknown)=>{
+          const content=JSON.stringify({...archived,session:{...archived.session,identity}});
+          return [{...entry,value:{...entry.value,content,documentDigest:digest(content)}}];
+        };
+        const identity=archived.session.identity;
+        await expect(prepare(withIdentity({...identity,units:[]}))).rejects.toThrow('frozen contributor identity required');
+        f.source[templatePath]=oldTemplate;
+        await expect(prepare(withIdentity({...identity,noteTemplate:organizationTemplate}))).rejects.toThrow('frozen candidate template');
+        f.source[templatePath]='{{version}}\n';
+        await expect(prepare()).rejects.toThrow('frozen candidate template');
+        expect(download).not.toHaveBeenCalled();
+        expect(formalDownload).not.toHaveBeenCalled();
+      }
+    }
     if(retainedController)expect(calls).toContain(`/repos/splrad/steward/contents/${sharedPath}?ref=${previousController}`);
   }
   if(kind==='freeze'||kind==='python-freeze'||kind==='partial-draft')expect(download).toHaveBeenCalledOnce();
   if(kind==='python-freeze')expect(manifest.toolLocks).toHaveProperty('source/requirements-build.txt',digest(f.source['requirements-build.txt']!));
 });
 
-it.each(['legacy','conditional'])('prepares a native Node delivery with the %s notes template and reuses the original attempt',async layout=>{
+it.each(['legacy','conditional','reviewed-conditional'])('prepares a native Node delivery with the %s notes template and reuses the original attempt',async layout=>{
   const f=productPipelineFixture(2,false,[]),{context,source}=f;
-  const conditional=layout==='conditional';
+  const conditional=layout!=='legacy', retainedConditional=layout==='reviewed-conditional';
   const notesPath=conditional?'docs/release-current.md':'.release-notes/app.md';
   permitOfflineScript(resolve('scripts/inspect-python-release.py'));
   f.input.controllerDirectory=process.cwd();
@@ -253,7 +298,6 @@ it.each(['legacy','conditional'])('prepares a native Node delivery with the %s n
   source[notesPath]=['概述','更新内容','兼容性','升级与迁移','安装说明','已知问题','恢复'].map(label=>'## '+label+'\n\n已审文稿。').join('\n\n');
   if(conditional) {
     source[notesPath]='## 获取与使用\n\n**安装命令**。从[本版附件](<https://github.com/example/product/releases/download/v1.0.0/fixture-cli.tgz>)获取 CLI。\n\n```sh\nnpm install -g ./fixture-cli.tgz\n```\n';
-    source['.github/release-contributors.json']=JSON.stringify([{id:902,evidence:'Offline confirmation'}]);
   }
   function adoptedWorkflow(files:string[]) {
     return JSON.stringify({'run-name':'为 GitHub 打包 ${{ inputs.operation_key }}',on:{workflow_dispatch:{
@@ -266,6 +310,7 @@ it.each(['legacy','conditional'])('prepares a native Node delivery with the %s n
   }
   const initial=['fixture-cli.tgz'];
   const sharedTemplate=conditional ? await readFile('templates/repository/.github/release-template.md.mustache','utf8') : source['.github/release-template.md.mustache']!;
+  const protectedTemplate=retainedConditional?await readFile('packages/core/test/fixtures/release-template-conditional-v1.mustache','utf8'):sharedTemplate;
   source['.github/release-template.md.mustache']='disallowed product override';
   source[workflow]=adoptedWorkflow(['dist/fixture-cli.tgz','dist/fixture-cli-*.sha256']);
   source['.github/delivery.json']=JSON.stringify(conditional?{schemaVersion:3,notes:{'.':notesPath}}:{schemaVersion:3,repositoryAuthors:f.delivery.repositoryAuthors});
@@ -275,7 +320,7 @@ it.each(['legacy','conditional'])('prepares a native Node delivery with the %s n
       {content:string;documentDigest:string};
     const session=JSON.parse(chunk.content);
     session.identity.authorsDigest=digest('[]');
-    session.identity.noteTemplate=sharedTemplate;
+    session.identity.noteTemplate=protectedTemplate;
     session.identity.units[0].notesPath=notesPath;
     chunk.content=JSON.stringify(session);
     chunk.documentDigest=digest(chunk.content);
@@ -310,7 +355,8 @@ it.each(['legacy','conditional'])('prepares a native Node delivery with the %s n
     const document=JSON.parse(chunk.content);
     const actor={id:902,login:'verified-contributor',type:'User',profileUrl:'https://github.com/verified-contributor',avatarUrl:'https://avatars.githubusercontent.com/u/902'};
     const projection={actors:[actor],contributors:{contributors:[{id:actor.id,login:actor.login,profileUrl:actor.profileUrl,avatarUrl:actor.avatarUrl,alt:actor.login}],unresolved:0}};
-    Object.assign(document.session.identity,projection,{authorsDigest:digest('[]'),noteTemplate:sharedTemplate,units:[{id:'app',notesPath,...projection}]});
+    Object.assign(document.session.identity,projection,{authorsDigest:digest('[]'),noteTemplate:protectedTemplate,
+      ...(!retainedConditional ? {contributorMode:'github-authors'} : {}),units:[{id:'app',notesPath,...projection}]});
     chunk.content=JSON.stringify(document);
     chunk.documentDigest=digest(chunk.content);
   }
@@ -327,6 +373,7 @@ it.each(['legacy','conditional'])('prepares a native Node delivery with the %s n
       if(file===notesPath&&notesStatus!==200)return f.response({},notesStatus);
       if(file.endsWith('/release-template.md.mustache'))
         expect(path).toBe('/repos/splrad/steward/contents/templates/repository/.github/release-template.md.mustache?ref='+C);
+      expect(file).not.toBe('.github/release-contributors.json');
       const value=path.startsWith('/repos/splrad/steward/')?sharedTemplate:source[file];
       if(value===undefined)return f.response({},404);
       const bytes=Buffer.from(value);
@@ -406,6 +453,7 @@ it.each(['legacy','conditional'])('prepares a native Node delivery with the %s n
     const body=target.publicBody;
     expect(body).toContain('~~~sh\nnpm install -g ./fixture-cli.tgz\n~~~');
     expect(body).toContain('alt="verified-contributor" width="48"');
+    expect(body.includes('贡献者 GitHub ID')).toBe(!retainedConditional);
     expect(body).toContain('## 版本记录');
     const before=source[notesPath]!;
     source[notesPath]=before.replace('/fixture-cli.tgz>)','/internal.tgz>)');
