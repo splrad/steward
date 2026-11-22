@@ -6,7 +6,7 @@ export const controllerTagPrefix = 'refs/tags/controller-v';
 const repo = '/repos/splrad/steward';
 const integrityRule = 27857927;
 const writerRule = 27857928;
-const scope = {repository_id: {repository_ids: [1296724484]}, ref_name: {include: [controllerTagPrefix + '*'], exclude: []}};
+const scope = {repository_id: {repository_ids: [1296724484]}, ref_name: {include: [controllerTagPrefix + '*', controllerTagPrefix + '*/**/*'], exclude: []}};
 const sha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 const check = (ok, code) => { if (!ok) throw Error('CONTROLLER_VERSION_' + code); };
 

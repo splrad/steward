@@ -448,8 +448,11 @@ it.each(['before tag write','after tag write'])('checks the adopted default-bran
     shaBinding(f.current).sha=T;
     return {status:201,value:tagRef};
   }};
-  await expect(publishPromotedSources(io,plan,M,123,verifyCurrent,f.record))
+  let versionReads=0;
+  const readVersionRefs=async()=>{versionReads++;return '';};
+  await expect(publishPromotedSources(io,plan,M,123,verifyCurrent,f.record,readVersionRefs))
     .rejects.toThrow(when==='before tag write'?'TARGET_PROTECTION_CHANGED':'TARGET_READBACK');
+  expect(versionReads).toBe(0);
   expect(writes).toEqual(when==='before tag write'?[]:['/repos/splrad/steward/git/refs']);
   expect(f.records.some(record=>['controller-source-result','template-wake'].includes(record.kind))).toBe(false);
 });

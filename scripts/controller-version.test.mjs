@@ -12,7 +12,7 @@ function fixture({versions = 999, target = 1000, loseResponse = false} = {}) {
   const tags = new Map(Array.from({length: versions}, (_, index) => [ref(index + 1), sha(index + 1)]));
   const history = [];
   const source = {target};
-  const conditions = {repository_id: {repository_ids: [1296724484]}, ref_name: {include: ['refs/tags/controller-v*'], exclude: []}};
+  const conditions = {repository_id: {repository_ids: [1296724484]}, ref_name: {include: ['refs/tags/controller-v*', 'refs/tags/controller-v*/**/*'], exclude: []}};
   const baseRule = {source: 'splrad', source_type: 'Organization', target: 'tag', enforcement: 'active', conditions};
   const rules = {
     27857927: {...baseRule, id: 27857927, bypass_actors: [], rules: [
@@ -75,6 +75,10 @@ test('refuses to number a moved source, a downgrade, or a namespace with widened
   await assert.rejects(publish(1001), /CONTROLLER_VERSION_SOURCE_MOVED/);
   data.source.target = 998;
   await assert.rejects(publish(998), /CONTROLLER_VERSION_NOT_DESCENDANT/);
+  data.rules[27857928].conditions = structuredClone(data.rules[27857928].conditions);
+  data.rules[27857928].conditions.ref_name.include.pop();
+  await assert.rejects(publish(998), /CONTROLLER_VERSION_RULE_SCOPE/);
+  data.rules[27857928].conditions.ref_name.include.push('refs/tags/controller-v*/**/*');
   data.rules[27857927].bypass_actors.push({actor_id: appId, actor_type: 'Integration', bypass_mode: 'always'});
   await assert.rejects(publish(998), /CONTROLLER_VERSION_RULE_SCOPE/);
   assert.equal(data.history.length, 0);
