@@ -40,6 +40,45 @@ describe('release cycle relay',()=>{
   expect(releaseHint('workflow_run',{...p,workflow_run:{...build,head_branch:'main'}},'7')).toBeUndefined();
   run.display_title='Channels observe '+'f'.repeat(64);expect(releaseHint('workflow_run',p,'7')).toBeUndefined();Object.assign(run,{conclusion:'success'});expect(releaseHint('workflow_run',p,'7')?.kind).toBe('run');
  });
+ it('routes only a same-repository candidate synchronize event with its exact new head',()=>{
+  const pull = {number:201,state:'open',merged:false,base:{ref:'main',repo:{id:TARGET.id}},
+    head:{ref:'steward/release-candidate',repo:{id:TARGET.id},sha:pin}};
+  const p = {...payload,action:'synchronize',number:201,pull_request:pull};
+  expect(releaseHint('pull_request',p,'7')).toEqual({repositoryId:TARGET.id,kind:'candidate-head',prNumber:201,head:pin});
+  expect(releaseHint('pull_request',{...p,pull_request:{...pull,merged:null}},'7')?.kind).toBe('candidate-head');
+  const {after, ...creation} = p;
+  expect(releaseHint('pull_request',{...creation,action:'opened'},'7')).toEqual(releaseHint('pull_request',p,'7'));
+  expect(releaseHint('pull_request',{...p,action:'edited'},'7')).toBeUndefined();
+  expect(releaseHint('pull_request',{...p,after:deployment},'7')).toBeUndefined();
+  expect(releaseHint('pull_request',{...p,pull_request:{...pull,head:{...pull.head,ref:'topic'}}},'7')).toBeUndefined();
+  expect(releaseHint('pull_request',{...p,pull_request:{...pull,head:{...pull.head,repo:{id:99}}}},'7')).toBeUndefined();
+ });
+
+ it('rewakes on each trusted bot body edit independently of the head delivery',()=>{
+  const body='<!-- steward:candidate-homepage:'+'a'.repeat(64)+' -->';
+  const pull={number:201,state:'open',merged:false,body,base:{ref:'main',repo:{id:TARGET.id}},
+    head:{ref:'steward/release-candidate',repo:{id:TARGET.id},sha:pin}};
+  const edit={...payload,action:'edited',number:201,pull_request:pull,sender:{id:301115370},changes:{body:{from:'Previous body'}}};
+  const delivery = '35fcb56f-61cf-4a3d-a31a-24d2582253a3';
+  const hint=releaseHint('pull_request',edit,'7',undefined,delivery)!;
+  expect(hint).toEqual({repositoryId:TARGET.id,kind:'candidate-head',prNumber:201,head:pin,delivery});
+  const head = releaseHint('pull_request',{...edit,action:'synchronize'},'7')!;
+  expect(relayKey(hint)).not.toBe(relayKey(head));
+  expect(relayKey(releaseHint('pull_request',edit,'7',undefined,delivery)!)).toBe(relayKey(hint));
+  const next = releaseHint('pull_request',edit,'7',undefined,'f7872c8d-a174-49c1-95a0-764ff509b452')!;
+  expect(relayKey(next)).not.toBe(relayKey(hint));
+  expect(releaseHint('pull_request',edit,'7')).toBeUndefined();
+  expect(releaseHint('pull_request',{...edit,sender:{id:42}},'7',undefined,delivery)).toBeUndefined();
+  expect(releaseHint('pull_request',{...edit,changes:{title:{from:'Old'}}},'7',undefined,delivery)).toBeUndefined();
+ });
+ it('routes only the app bot creation of a status comment on an open pull request',()=>{
+  const event={...payload,action:'created',sender:{id:301115370},issue:{number:201,state:'open',pull_request:{}},comment:{
+    id:51,user:{id:301115370},body:'<!-- steward:candidate-status:'+'a'.repeat(64)+' -->\nStatus'}};
+  expect(releaseHint('issue_comment',event,'7')).toEqual({repositoryId:TARGET.id,kind:'candidate-status',prNumber:201,commentId:51});
+  expect(releaseHint('issue_comment',{...event,action:'edited'},'7')).toBeUndefined();
+  expect(releaseHint('issue_comment',{...event,issue:{number:201,state:'open'}},'7')).toBeUndefined();
+  expect(releaseHint('issue_comment',{...event,comment:{...event.comment,user:{id:42}}},'7')).toBeUndefined();
+ });
  it('retains its original object across promotion lag, response loss and duplicate registration',async()=>{
   const f=fixture();await f.relay.register(hint);await f.tick();expect(f.state.posts).toBe(0);
   f.state.promoted=pin;await f.tick();expect(f.state.posts).toBe(1);
