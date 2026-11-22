@@ -10,14 +10,15 @@ export function releasePolicyGuard(app, repository, readPolicy=mergedRepositoryP
     const selection=await readPolicy(app,repository);
     if(selection.adoption==='paused')throw Error('CANDIDATE_REPOSITORY_POLICY_DISABLED');
     if(selection.adoption!=='central')return;
-    if(!selection.policy.release)throw Error('CANDIDATE_REPOSITORY_POLICY_DISABLED');
+    // A compact entry uses its reviewed source and can still honor the registered pause.
     if(nativeEntry)return;
+    if(!selection.policy.release)throw Error('CANDIDATE_REPOSITORY_POLICY_DISABLED');
     const [delivery,workflow,versions]=await Promise.all([read(deliveryPath),read(buildWorkflow),read(versionsPath)]);
     // Registration retains the legacy publisher field. Compare its choices using the reviewed workflow.
     const files=new Map([[deliveryPath,delivery],[publishPath,workflow],[versionsPath,versions]]);
     const pending=[];
-    const current=releaseRegistration(inspectRepository(files),pending);
-    if(pending.length||!isDeepStrictEqual(selection.policy.release,current))
+    const {release,nativeReleaseUnits}=releaseRegistration(inspectRepository(files),pending);
+    if(nativeReleaseUnits||pending.length||!isDeepStrictEqual(selection.policy.release,release))
       throw Error('CANDIDATE_REPOSITORY_POLICY_CONFLICT');
     const latest=await readPolicy(app,repository);
     if(latest.adoption!==selection.adoption||latest.policy?.repositoryId!==selection.policy.repositoryId||

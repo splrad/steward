@@ -8,6 +8,7 @@ export const registrationPath = /^repositories\/([1-9][0-9]*)\.json$/;
 export const registrationWorkflow = '.github/workflows/repository-registration.yml';
 export const centralRegistrationWorkflow = '.github/workflows/sync-managed.yml';
 export const registrationRunName = 'SPLRAD Steward / Repository Registration';
+export const nativeReleaseConflict = '正式文件和渠道由产品工作流管理。请保留已批准登记中的发行字段。';
 const validate = new Ajv2020().compile(schema);
 const uniqueIds = values => new Set(values.map(({ id }) => id)).size === values.length;
 const metadataFiles = ['sbom.spdx.json', 'release-notes.md', 'artifact-manifest.json', 'SHA256SUMS'];
@@ -24,12 +25,14 @@ export function parseRegistration(bytes,id) {
   return checkedRegistration(decodeBuildJson(typeof bytes==='string'?Buffer.from(bytes):bytes),id);
 }
 
-export function configurationConflicts(selected,{policy:observed,productCiApplicable,releaseIncomplete}) {
+export function configurationConflicts(selected,{policy:observed,productCiApplicable,releaseIncomplete,nativeReleaseUnits},
+  approvedRelease=null) {
   const conflicts=[];
   const requiresCi=productCiApplicable||observed.productCi.length>0;
   if((requiresCi&&!selected.productCi.length)||selected.productCi.some(path=>!observed.productCi.includes(path)))
     conflicts.push('PRODUCT_CI');
-  if(selected.release&&(releaseIncomplete||!isDeepStrictEqual(selected.release,observed.release)))
+  if(nativeReleaseUnits ? !isDeepStrictEqual(selected.release,approvedRelease)
+    : selected.release&&(releaseIncomplete||!isDeepStrictEqual(selected.release,observed.release)))
     conflicts.push('RELEASE');
   return conflicts;
 }
@@ -37,7 +40,8 @@ export function configurationConflicts(selected,{policy:observed,productCiApplic
 export function releaseRegistration(model, pending) {
   let release = null;
   if (model.delivery) {
-    const delivery = parseDeliveryConfig(model.delivery);
+    const delivery = parseDeliveryConfig(model.delivery,model.versions);
+    if (delivery.schemaVersion===3) return {release:null,nativeReleaseUnits:delivery.units.map(unit=>unit.id)};
     const matrix = model.publish?.jobs?.build?.strategy?.matrix?.include;
     const units = [];
     for (const unit of delivery.units) {
@@ -64,5 +68,5 @@ export function releaseRegistration(model, pending) {
     }
     if (units.length) release = { buildWorkflow: publishPath, units };
   }
-  return release;
+  return {release};
 }

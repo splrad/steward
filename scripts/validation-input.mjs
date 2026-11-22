@@ -38,6 +38,23 @@ export function requiresProductCI(files,dependency,administrator) {
   return files.some(path=>!documentationOnly([path])&&!managed.has(path)&&!registrationPath.test(path)
     &&!/^\.mise\/locks\/npm\/\d+\.\d+\.\d+\/(?:aube-lock\.yaml|package\.json)$/.test(path));
 }
+function nativeOnlyChange(workspace,input,event,type) {
+  const {base,head,changedPaths}=input;
+  if(!changedPaths.length)return false;
+  const steward=event.repository.id===1296724484&&event.repository.full_name==='splrad/steward';
+  // Generic product docs can be build inputs. Only exempt Steward guides and
+  // the organization SECURITY.md that the required governance job verifies.
+  const prose=steward
+    ? changedPaths.every(path=>path==='README.md'||/^docs\/[a-z][a-z0-9-]*\.md$/.test(path))
+    : event.repository.full_name.startsWith('splrad/')&&changedPaths.every(path=>path==='SECURITY.md');
+  if(!prose)return false;
+  if(type==='push'&&git(workspace,['rev-list','--parents','-n1',head]).toString().trim()!==head+' '+base)return false;
+  try {git(workspace,['merge-base','--is-ancestor',base,head]);}
+  catch(error){if(error.status===1)return false;throw error;}
+  const raw=git(workspace,['diff','--raw','--no-ext-diff','--no-renames','-z',base,head]).toString().split('\0');
+  return raw.length===changedPaths.length*2+1&&changedPaths.every((path,index)=>
+    /^:100644 100644 [a-f0-9]+ [a-f0-9]+ M$/.test(raw[index*2])&&raw[index*2+1]===path);
+}
 export function productWorkflows(value,files) {
   check(Array.isArray(value)&&value.length>0&&new Set(value).size===value.length,'PRODUCT_CI_DECLARATION');
   for(const path of value)check(typeof path==='string'&&/^\.github\/workflows\/[a-zA-Z0-9_.-]+\.ya?ml$/.test(path)
@@ -135,17 +152,22 @@ export async function validationInput(workspace,env=process.env) {
   const {event,input,files,dependencyMode:dependency,administrator}=await validationFileInputs(workspace,env);
   const {repositoryId}=input;
   const declaration='.github/product-ci.json';
-  const productApplicable=files.includes(declaration)||requiresProductCI(files,dependency,administrator);
+  // Inventory still determines whether the repository must register valid CI.
+  // The exact change determines whether this gate awaits its execution.
+  const declarationChanged=input.changedPaths.includes(declaration);
+  const registrationRequired=declarationChanged||files.includes(declaration)||requiresProductCI(files,dependency,administrator);
   const available=files.includes(declaration)
     ? productWorkflows(JSON.parse(await readFile(await regular(workspace,declaration),'utf8')),files) : [];
   const organizationRepository=event.repository.full_name.startsWith('splrad/');
   const useOptionalProjection=event.repository.private!==false;
-  if((!organizationRepository||!useOptionalProjection)&&productApplicable)check(available.length>0,'PRODUCT_CI_NOT_CONFIGURED');
+  if((!organizationRepository||!useOptionalProjection)&&registrationRequired)check(available.length>0,'PRODUCT_CI_NOT_CONFIGURED');
   if(organizationRepository&&env.GITHUB_ACTIONS==='true')check(env.REPOSITORY_POLICY_TOKEN,'REPOSITORY_POLICY_TOKEN');
   const policyReader=env.REPOSITORY_POLICY_TOKEN&&organizationRepository
     ? new NativeEvidenceReader(nativeEvidenceTransport(env.REPOSITORY_POLICY_TOKEN),event.repository.full_name) : null;
   const selection=policyReader?await readRepositoryPolicySelection(policyReader,repositoryId,{useOptionalProjection}):null;
-  const workflows=selectedProductWorkflows(selection,available,productApplicable);
+  const workflows=selectedProductWorkflows(selection,available,registrationRequired);
+  const requested=workflows.length>0||declarationChanged||requiresProductCI(input.changedPaths,dependency,administrator);
+  const productApplicable=registrationRequired&&requested&&!nativeOnlyChange(workspace,input,event,env.GITHUB_EVENT_NAME);
   const boundNames=[];
   for(const path of workflows){
     const workflow=YAML.parse(await readFile(await regular(workspace,path),'utf8'));

@@ -1,6 +1,7 @@
 import YAML from 'yaml';
 import {hostedRunner} from './configuration-build.mjs';
 import {posix} from 'node:path';
+import {parseDeliveryConfig} from '../packages/runner/dist/index.js';
 
 export const deliveryPath='.github/delivery.json', versionsPath='release-please-config.json';
 export const publishPath='.github/workflows/steward-release-publish.yml', pagesPath='.github/workflows/pages.yml';
@@ -13,10 +14,11 @@ const locked=(text,reason)=>'- 🔒 '+text+' · '+reason;
 const platforms=[['Windows','windows'],['Linux','ubuntu'],['macOS','macos']];
 const channels=new Map([['github-release','GitHub Release'],['ghcr-assets','GHCR 文件制品'],['winget','WinGet'],['npm','npm'],['nuget','NuGet'],['pypi','PyPI'],['oci','OCI 容器镜像分发'],['helm','Helm chart 分发']]);
 
-export function inspectRepository(files) {
+export function inspectRepository(files, {normalizeCompactDelivery=false}={}) {
   const json=path=>files.has(path)?JSON.parse(files.get(path)):null;
   const yaml=path=>files.has(path)?YAML.parse(files.get(path)):null;
-  const delivery=json(deliveryPath), versions=json(versionsPath), publish=yaml(publishPath), pages=yaml(pagesPath);
+  const rawDelivery=json(deliveryPath), versions=json(versionsPath), publish=yaml(publishPath), pages=yaml(pagesPath);
+  const delivery=normalizeCompactDelivery && rawDelivery?.schemaVersion===3 ? parseDeliveryConfig(rawDelivery,versions) : rawDelivery;
   const workflows=[];
   for(const [path,bytes] of files) if(/^\.github\/workflows\/[^/]+\.ya?ml$/.test(path) && !path.includes('repository-configuration')) {
     const doc=YAML.parse(bytes);
