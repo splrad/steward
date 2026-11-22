@@ -136,6 +136,13 @@ class LockContractTest(unittest.TestCase):
                 self.assertEqual(classify(policy_source, mixed), "full")
 
             governance = "scripts/governance-promotion.mjs"
+            owned_paths = {
+                governance, "packages/runner/test/governance-promotion.test.ts",
+                "scripts/controller-source.mjs", "scripts/controller-source.test.mjs",
+                "scripts/validator-revalidation.mjs", "scripts/validator-revalidation.test.mjs",
+                "scripts/validator-source.mjs", "tools/template/promotion.py", "tools/template/test_promotion.py",
+            }
+            self.assertEqual(candidate["rules"].GOVERNANCE_PROMOTION, owned_paths)
             created = commit(governance, "initial promotion")
             updated = commit(governance, "updated promotion")
             with patch.dict(os.environ, {"GITHUB_EVENT_NAME": "push"}):
@@ -146,8 +153,7 @@ class LockContractTest(unittest.TestCase):
                 self.assertEqual(classify(created, updated), "governance")
                 self.assertEqual(classify(created, shared), "full")
                 self.assertEqual(classify(shared, updated), "full")
-                for path in ("scripts/validator-source.mjs", "tools/template/promotion.py",
-                             "tools/template/test_promotion.py", "scripts/validator-revalidation.test.mjs"):
+                for path in sorted(owned_paths - {governance}):
                     initial = commit(path, "initial")
                     revised = commit(path, "revised")
                     with self.subTest(path=path):
