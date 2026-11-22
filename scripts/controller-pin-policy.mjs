@@ -59,6 +59,7 @@ function readWorkflowPins(repo, revision, path, archiveReaders) {
   const workflow = document.toJS();
   const jobs = Object.entries(workflow?.jobs ?? {});
   const controllerPins = [];
+  const primaryCheckoutJobs = new Set();
   const pin = (sha, location) => {
     const comment = document.getIn(location, true)?.comment?.trim();
     controllerPins.push({sha, version: comment?.startsWith('controller-v') ? comment : null});
@@ -118,12 +119,16 @@ function readWorkflowPins(repo, revision, path, archiveReaders) {
         archiveReaders.set(key, step.with.ref);
       } else {
         jobController = step.with.ref;
+        primaryCheckoutJobs.add(jobId);
         pin(jobController, ['jobs', jobId, 'steps', index, 'with', 'ref']);
       }
     }
   }
-  if (!controllerPins.length) throw Error('VALIDATION_CONTROLLER_CHECKOUT_MISSING ' + path);
+  if (!primaryCheckoutJobs.size) throw Error('VALIDATION_CONTROLLER_CHECKOUT_MISSING ' + path);
   if (path.endsWith('/pages.yml')) {
+    if (!['select', 'build', 'deploy'].every(job => primaryCheckoutJobs.has(job))) {
+      throw Error('VALIDATION_CONTROLLER_CHECKOUT_MISSING ' + path);
+    }
     if (!workflow.jobs?.select?.steps?.some(step => step.run === 'node controller/scripts/select-pages-source.mjs')
       || !workflow.jobs?.deploy?.steps?.some(step => step.run === 'node controller/scripts/pages-runtime.mjs check')) {
       throw Error('VALIDATION_CONTROLLER_PAGES_RUNTIME_CHECKS');
