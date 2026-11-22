@@ -14,12 +14,19 @@ function readWorkflowPins(repo, revision, path) {
   const value = git(repo, ['cat-file', 'blob', revision + ':' + path]).toString('utf8');
   const workflow = YAML.parse(value);
   const jobs = Object.values(workflow?.jobs ?? {});
-  const checkouts = jobs.flatMap(job => job.steps ?? []).filter(step =>
+  const steps = jobs.flatMap(job => job.steps ?? []);
+  const checkouts = steps.filter(step =>
     typeof step.with?.repository === 'string' && step.with.repository.toLowerCase() === controllerRepository
-    && typeof step.uses === 'string' && step.uses.startsWith('actions/checkout@'));
+    && typeof step.uses === 'string' && step.uses.toLowerCase().startsWith('actions/checkout@'));
   if (!checkouts.length) throw Error('VALIDATION_CONTROLLER_CHECKOUT_MISSING ' + path);
   const pins = checkouts.map(step => step.with.ref);
-  if (path.endsWith('/pages.yml')) pins.push(workflow.env?.STEWARD_CONTROLLER_SHA);
+  if (path.endsWith('/pages.yml')) {
+    const variable = 'STEWARD_CONTROLLER_SHA';
+    pins.push(workflow.env?.[variable]);
+    for (const {env} of [...jobs, ...steps]) {
+      if (env && Object.hasOwn(env, variable)) pins.push(env[variable]);
+    }
+  }
   if (path.endsWith('/steward-release-publish.yml')) {
     const prefix = controllerRepository + '/.github/workflows/product-release.yml@';
     const builds = jobs.filter(job => typeof job.uses === 'string' && job.uses.toLowerCase().startsWith(prefix));
