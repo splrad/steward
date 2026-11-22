@@ -5,6 +5,7 @@ import {controllerTagPrefix,controllerVersionNumber} from './controller-version.
 
 const layerScapeId = 1187527897;
 const controllerRepository = 'splrad/steward';
+const controllerWorkflowPrefix = controllerRepository + '/.github/workflows/';
 const publishWorkflow = '.github/workflows/steward-release-publish.yml';
 const controllerPath = 'controller';
 const archiveReaderPath = 'configuration-controller';
@@ -111,12 +112,13 @@ function readWorkflowPins(repo, revision, path, archiveReaders) {
       }
     }
   }
-  if (path === publishWorkflow) {
-    const prefix = controllerRepository + '/.github/workflows/product-release.yml@';
-    const builds = jobs.filter(([, job]) => typeof job.uses === 'string' && job.uses.toLowerCase().startsWith(prefix));
-    if (!builds.length) throw Error('VALIDATION_CONTROLLER_REUSABLE_WORKFLOW_MISSING ' + path);
-    for (const [jobId, job] of builds) pin(job.uses.slice(prefix.length), ['jobs', jobId, 'uses']);
+  const reusable = jobs.filter(([, job]) => typeof job.uses === 'string'
+    && job.uses.toLowerCase().startsWith(controllerWorkflowPrefix));
+  if (path === publishWorkflow && !reusable.some(([, job]) =>
+    job.uses.toLowerCase().startsWith(controllerWorkflowPrefix + 'product-release.yml@'))) {
+    throw Error('VALIDATION_CONTROLLER_REUSABLE_WORKFLOW_MISSING ' + path);
   }
+  for (const [jobId, job] of reusable) pin(job.uses.slice(job.uses.lastIndexOf('@') + 1), ['jobs', jobId, 'uses']);
   if (!controllerPins.every(({sha}) => isPin(sha))) throw Error('VALIDATION_CONTROLLER_PIN_INVALID ' + path);
   return controllerPins;
 }
