@@ -6,9 +6,9 @@ const variables=`/repos/${journalRepository.name}/actions/variables`;
 const key=`${variables}/${name}`;
 const check=(ok,reason)=>{if(!ok)throw Error('VALIDATOR_REVALIDATION_'+reason);};
 const number=value=>Number.isSafeInteger(value)&&value>0;
-const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
 const active=new Set(['queued','waiting','prepared','reopened','in_progress']);
 const actorId=301115370;
+const synchronizeGrace=2*60*1000;
 
 async function get(io,path) {
   const result=await io.request('GET',path);
@@ -50,6 +50,7 @@ export function validatorJournal(io) {
         &&number(entry.number)&&validatorCommit(entry.head)&&number(entry.headRepo)&&typeof entry.headRef==='string'
         &&typeof entry.base==='string'&&['queued','waiting','prepared','reopened','in_progress','success','failure',
           'superseded','manual'].includes(entry.status)
+        &&(entry.notBefore===undefined||number(entry.notBefore))
         &&(entry.status!=='prepared'||Number.isSafeInteger(entry.marker)&&entry.marker>=0),'JOURNAL_ENTRY');
       return state;
     },
@@ -75,7 +76,8 @@ const scope=(io,repo,base)=>pages(io,`${prefix(repo)}/rules/branches/${encodeURI
 const exactPull=(pr,entry)=>pr.number===entry.number&&pr.base?.ref===entry.base&&pr.base?.repo?.id===entry.repoId
   &&pr.head?.sha===entry.head&&pr.head?.repo?.id===entry.headRepo&&pr.head?.ref===entry.headRef;
 const ownedRelease=pr=>pr.head?.repo?.id===pr.base?.repo?.id
-  &&(pr.head.ref==='steward/release-candidate'||pr.labels?.some(label=>label.name.startsWith('release:')));
+  &&(pr.head.ref==='steward/release-candidate'||pr.labels?.some(label=>label.name==='autorelease: pending'||label.name.startsWith('release:'))
+    ||/<!-- steward:candidate:[a-f0-9]{64} -->/.test(pr.body??''));
 
 export async function discoverPulls(app,ioFor,state) {
   const entries=[];
@@ -143,7 +145,7 @@ async function mergeManaged(io,pr) {
   return pull.isInMergeQueue||pull.autoMergeRequest!=null;
 }
 
-export async function reconcilePull(io,state,entry,save,guard,record,{draining=false}={}) {
+export async function reconcilePull(io,state,entry,save,guard,record,{draining=false,now=Date.now}={}) {
   const root=prefix(entry.repo),path=`${root}/pulls/${entry.number}`,events=`${root}/issues/${entry.number}/events`;
   const observed=async()=>get(io,path);
   const change=async(status,more={})=>{
@@ -152,12 +154,28 @@ export async function reconcilePull(io,state,entry,save,guard,record,{draining=f
     await save();
     await record({kind:'validator-pull',validator:state.validator,status});
   };
+  const supersede=async pr=>{
+    // A synchronize event normally schedules the new head itself. Keep the old
+    // evidence and watch the exact successor before considering a missing Run.
+    if(!draining&&pr.state==='open'&&!pr.merged&&pr.number===entry.number&&pr.base?.repo?.id===entry.repoId
+      &&pr.base?.ref===entry.base&&pr.head?.repo?.id===entry.headRepo&&pr.head?.ref===entry.headRef
+      &&pr.head.sha!==entry.head&&validatorCommit(pr.head.sha)
+      &&!state.pulls.some(other=>active.has(other.status)&&other.repoId===entry.repoId
+        &&other.number===entry.number&&other.head===pr.head.sha)){
+      const reopened=state.pulls.some(other=>other.repoId===entry.repoId&&other.number===entry.number
+        &&other.head===pr.head.sha&&other.reopenEvent);
+      state.pulls.push({repoId:entry.repoId,repo:entry.repo,number:entry.number,base:entry.base,
+        head:pr.head.sha,headRepo:entry.headRepo,headRef:entry.headRef,
+        status:reopened?'reopened':'waiting',reason:'synchronize',notBefore:now()+synchronizeGrace});
+    }
+    return change('superseded');
+  };
   const observeRun=run=>change(run.status!=='completed'||run.evidence==='pending'?'in_progress':run.conclusion==='success'?'success':'failure',{run});
   // A PREPARED write is a durable intent, including the last native state transition.
   // Only this App's later close authorizes a reopen. No fresh work starts while draining.
   if(entry.status==='prepared') {
     const pr=await observed(),last=await lastTransition(io,events);
-    if(pr.merged||last?.event==='merged')return change('superseded');
+    if(pr.merged||last?.event==='merged')return supersede(pr);
     if(pr.state==='closed') {
       if(last?.id>entry.marker&&last.event==='closed'&&last.actor?.id===actorId){
         await guard();
@@ -167,24 +185,30 @@ export async function reconcilePull(io,state,entry,save,guard,record,{draining=f
         const reopened=await observed(),after=await lastTransition(io,events);
         if(reopened.state!=='open'||after?.event!=='reopened'||after.actor?.id!==actorId||after.id<=last.id)
           return record({kind:'validator-reopen-pending',response});
-        return change(exactPull(reopened,entry)?'reopened':'superseded',{reopenEvent:after.id});
+        entry.reopenEvent=after.id;
+        return exactPull(reopened,entry)?change('reopened'):supersede(reopened);
       }
       if(last?.id>entry.marker)return change('manual');
       return record({kind:'validator-close-evidence-pending'});
     }
-    if(last?.id>entry.marker)return change(last.event==='reopened'&&last.actor?.id===actorId&&exactPull(pr,entry)
-      ?'reopened':'manual',{reopenEvent:last.id});
-    if(draining||!exactPull(pr,entry)||pr.draft||ownedRelease(pr))return change('superseded');
+    if(last?.id>entry.marker){
+      if(last.event!=='reopened'||last.actor?.id!==actorId)return change('manual');
+      entry.reopenEvent=last.id;
+      return exactPull(pr,entry)?change('reopened'):supersede(pr);
+    }
+    if(draining||!exactPull(pr,entry))return supersede(pr);
+    if(pr.draft||ownedRelease(pr))return change('waiting',{reason:pr.draft?'draft':'release-managed'});
   }else if(draining)return;
 
   const pr=await observed();
-  if(pr.state!=='open'||!exactPull(pr,entry))return change('superseded');
+  if(pr.state!=='open'||!exactPull(pr,entry))return supersede(pr);
   const binding=effectiveValidator(await scope(io,entry.repo,entry.base));
   check(binding===state.validator,'PULL_PIN_MOVED');
   const run=await matchingRun(io,pr,state.validator);
   if(run)return observeRun(run);
   if(entry.status==='in_progress')return record({kind:'validator-run-readback-pending'});
   if(entry.status==='reopened')return record({kind:'validator-native-run-pending'});
+  if(entry.notBefore>now())return record({kind:'validator-synchronize-run-pending'});
   if(ownedRelease(pr))return change('waiting',{reason:'release-managed'});
   if(pr.draft||await mergeManaged(io,pr))return change('waiting',{reason:pr.draft?'draft':'merge-management'});
   if(entry.status!=='prepared'){
@@ -202,10 +226,10 @@ export async function reconcilePull(io,state,entry,save,guard,record,{draining=f
   const response=await mutate(io,path,'closed');
   await record({kind:'validator-close-request',response});
   // Re-enter once when the close is visible. A delayed close stays prepared for recovery.
-  if((await observed()).state==='closed')await reconcilePull(io,state,entry,save,guard,record,{draining:true});
+  if((await observed()).state==='closed')await reconcilePull(io,state,entry,save,guard,record,{draining,now});
 }
 
-export async function reconcileValidators(state,app,ioFor,journal,guard,record,{draining=false}={}) {
+export async function reconcileValidators(state,app,ioFor,journal,guard,record,{draining=false,now=Date.now}={}) {
   if(state.phase==='discover'&&!draining){
     await guard();
     await discoverPulls(app,ioFor,state);
@@ -214,7 +238,7 @@ export async function reconcileValidators(state,app,ioFor,journal,guard,record,{
   let errors=0;
   for(const entry of state.pulls) {
     if(!active.has(entry.status)||draining&&entry.status!=='prepared')continue;
-    try {await ioFor(entry.repoId,io=>reconcilePull(io,state,entry,()=>journal.save(state),guard,record,{draining}));}
+    try {await ioFor(entry.repoId,io=>reconcilePull(io,state,entry,()=>journal.save(state),guard,record,{draining,now}));}
     catch(error) {
       errors++;
       const code=/^(?:PROMOTION|CONTROLLER_SOURCE|VALIDATOR(?:_REVALIDATION)?)_[A-Z0-9_]+$/.test(error?.message??'')?error.message:'VALIDATOR_REVALIDATION_UNAVAILABLE';

@@ -120,7 +120,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   const requests: { method: string; path: string; body: any }[] = [], comments: any[] = [], pulls: any[] = [];
   const merges=new Map<number,{sha:string;at:string}>();
   let pr: any = null, modelCalls = 0;
-  let policySha='e'.repeat(40);
+  const validatorSha='e'.repeat(40);
   const head = async (branch: string) => { try { return await git('-C', remote, 'rev-parse', '--verify', `refs/heads/${branch}`); } catch { return null; } };
   let interruptPending = pinCase === 'pending-recovery' || pinCase === 'legacy-pending-cancel';
   const fetcher = (async (input, init) => {
@@ -157,7 +157,8 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     else if(path.endsWith('/collaborators/axiomoth/permission'))value={user:{id:7,login:'axiomoth'}};
     else if (path.includes('/git/ref/heads/')) { const branch = path.split('/git/ref/heads/')[1]!, sha = await head(branch); if (!sha) return new Response('{}', { status: 404 }); value = { ref: `refs/heads/${branch}`, object: { sha, type: 'commit' } }; }
     else if (path.endsWith('/rules/branches/main')) value = [{ type: 'non_fast_forward' }, { type: 'deletion' },
-      ...(pinCase==='content-recovery'?[{type:'workflows',parameters:{workflows:[{repository_id:1296724484,path:'.github/workflows/pr-validation-native.yml',sha:policySha}]}}]:[])];
+      ...(pinCase==='content-recovery'?[{type:'workflows',ruleset_id:18883080,ruleset_source:'splrad',ruleset_source_type:'Organization',
+        parameters:{do_not_enforce_on_create:true,workflows:[{repository_id:1296724484,path:'.github/workflows/pr-validation-native.yml',sha:validatorSha}]}}]:[])];
     else if (releaseProtectionFixture(path)) value = releaseProtectionFixture(path);
     else if (path.endsWith('/rulesets/6')) value = { id: 6, target: 'tag', enforcement: 'active', conditions: { ref_name: { include: ['~ALL'], exclude: [] } }, rules: [{ type: 'deletion' }, { type: 'non_fast_forward' }] };
     else if (path.endsWith('/rulesets')) value = [{ id: 6, target: 'tag', enforcement: 'active' }];
@@ -274,21 +275,28 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   if(pinCase==='content-recovery') {
     const hash=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
     const rejected={...language,call:async()=>{modelCalls++;return {text:'{"bad":"字段"}',model:'offline',usage:null};}};
-    expect(await nativeReleaseCandidate(request,{...options,controllerSha:policySha,language:rejected})).toMatchObject({status:'WAIT',reason:'CONTENT_FAILED'});
+    expect(await nativeReleaseCandidate(request,{...options,controllerSha:validatorSha,language:rejected})).toMatchObject({status:'WAIT',reason:'CONTENT_FAILED'});
     await refresh();const failed=await readReleaseRecords({directory,targetRef:'steward/release-state',repositoryId:1});
     const candidate=failed.repository.candidate,rootPath=`content/${candidate.id}/${candidate.contentGenerationDigest}/`,manifestPath=rootPath+'manifest.json';
     const original=await git('show',`steward/release-state:${manifestPath}`),manifest=await decodeCandidateDocument([JSON.parse(original)]);
     const protectionPath=(await git('ls-tree','-r','--name-only','steward/release-state')).split('\n').find(p=>p.startsWith('generated/protections-'))!;
+    const originalProtection=await git('show',`steward/release-state:${protectionPath}`);
+    expect(manifest.input.controllerSha).toBe(validatorSha);
+    expect(options.controllerSha).not.toBe(validatorSha);
     const grant={candidateId:candidate.id,batchId:manifest.input.batches[0].id,previousAttemptSha256:hash(manifest.input.batches[0].attempts[0]),authorizationId:hash('approved'),outputContractSha256:hash(CONTENT_OUTPUT_SCHEMA),archiveContentDigest:candidate.contentGenerationDigest,archiveProtectionDigest:protectionPath.slice('generated/protections-'.length,-5)};
-    policySha=options.controllerSha;
     expect(await nativeReleaseCandidate({...request,writeDirectory:join(root,'recovery-writes')},{...options,contentRecovery:grant})).toMatchObject({status:'READY',prNumber:9});
     expect(modelCalls).toBe(2);await refresh();expect(await git('show',`steward/release-state:${manifestPath}`)).toBe(original);
+    expect(await git('show',`steward/release-state:${protectionPath}`)).toBe(originalProtection);
     const recovered=await readReleaseRecords({directory,targetRef:'steward/release-state',repositoryId:1});
     expect(recovered.repository.candidate.contentGenerationDigest).not.toBe(candidate.contentGenerationDigest);
     const nextPath=`content/${candidate.id}/${recovered.repository.candidate.contentGenerationDigest}/manifest.json`;
     const next=await decodeCandidateDocument([JSON.parse(await git('show',`steward/release-state:${nextPath}`))]);
     expect(next.input.batches[0].attempts.map((a:{ordinal:number})=>a.ordinal)).toEqual([1,2]);expect(next.input.batches[0].attempts[0]).toEqual(manifest.input.batches[0].attempts[0]);
     expect(next.input.batches[0].attempts[1].recovery.archiveContentDigest).toBe(candidate.contentGenerationDigest);
+    expect(await nativeReleaseCandidate({...request,writeDirectory:join(root,'ordinary-after-recovery')},options)).toMatchObject({status:'READY',prNumber:9});
+    await refresh();
+    const ordinary=await readReleaseRecords({directory,targetRef:'steward/release-state',repositoryId:1});
+    expect(ordinary.repository.candidate.contentGenerationDigest).toBe(recovered.repository.candidate.contentGenerationDigest);
     await expect(nativeReleaseCandidate({...request,writeDirectory:join(root,'duplicate-recovery-writes')},{...options,contentRecovery:grant})).rejects.toThrow('CONTENT_RECOVERY_ARCHIVE_EXISTS');
     expect(modelCalls).toBe(2);return;
   }

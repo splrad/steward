@@ -15,7 +15,7 @@ import { advanceReleaseCandidate, pushPreparedCandidate, collectContentInput, pl
   defaultBuildWorkflow, productReleaseTemplatePath, readLegacyReleaseTemplate,
   isAdoptedOrganizationReleaseTemplate, isConditionalTemplate, confirmedReleaseContributors, confirmedReleaseContributorsPath } from '../packages/runner/dist/index.js';
 import { readReleaseRecords, writeReleaseRecords, assertReleaseWriterProtection } from './release-record.mjs';
-import { restoreContentRecovery } from './release-content-recovery.mjs';
+import { restoreContentRecovery, selectContentArchive } from './release-content-recovery.mjs';
 import {readControllerReleaseTemplate,releaseTemplateControllerPin} from './release-template-source.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -290,6 +290,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         await source();
         return JSON.stringify(frozen) === JSON.stringify(lastFacts) && lastFacts.baseSha === B ? result : { status: 'DRIFT' };
       },
+      contentArchive:(candidate,digest)=>selectContentArchive(candidate,digest,{loadDocument,controllerSha,grant:contentRecovery}),
       content: async (candidate, snapshot) => {
         if(observation)fail('CANDIDATE_OBSERVATION_CONTENT_FORBIDDEN');
         const path = `content/${candidate.id}/${candidate.contentGenerationDigest}/manifest.json`, cachePath = `content/${candidate.id}/cache.json`;

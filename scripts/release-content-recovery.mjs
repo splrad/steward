@@ -5,6 +5,18 @@ const same = (a,b) => JSON.stringify(a) === JSON.stringify(b);
 const check = value => { if (!value) throw Error('CONTENT_RECOVERY_ARCHIVE'); };
 const sha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 
+/** Keep the original digest address usable when a retained validator makes both generations identical. */
+export async function selectContentArchive(candidate, generatedDigest, {loadDocument, controllerSha, grant}) {
+  const extra=(source,controller)=>hash(['content-archive-transfer/v1',source,controller]);
+  if(grant?.archiveContentDigest===generatedDigest)return extra(generatedDigest,controllerSha);
+  const prior=candidate.contentGenerationDigest;
+  if(prior===generatedDigest)return prior;
+  const saved=await loadDocument(`content/${candidate.id}/${prior}/manifest.json`);
+  if(saved?.input?.candidateId===candidate.id&&sha(saved.input.controllerSha)&&prior===extra(generatedDigest,saved.input.controllerSha)
+    &&saved.input.batches.some(batch=>batch.attempts.some(attempt=>attempt.recovery?.archiveContentDigest===generatedDigest)))return prior;
+  return generatedDigest;
+}
+
 // Reattach a specifically authorized archived receipt only after reproducing its full input identity.
 export async function restoreContentRecovery(work, cache, grant, { loadDocument, facts, protections, authorsDigest }) {
   check(grant && [grant.archiveContentDigest,grant.archiveProtectionDigest].every(v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v)));
@@ -33,7 +45,8 @@ export async function restoreContentRecovery(work, cache, grant, { loadDocument,
     && old.attempts[0].status==='REJECTED' && old.attempts[0].errorCode==='CONTENT_OUTPUT_SCHEMA' && !old.attempts[0].recovery
     && hash(old.attempts[0])===grant.previousAttemptSha256);
   const inputIdentity=value=>{const copy=structuredClone(value);delete copy.batches;delete copy.controllerSha;delete copy.sourceManifestDigest;return copy;};
-  check(sha(archived.input.controllerSha) && sha(work.input.controllerSha) && same(inputIdentity(archived.input),inputIdentity(work.input)));
+  check(sha(archived.input.controllerSha) && sha(work.input.controllerSha) && archived.input.controllerSha!==work.input.controllerSha
+    && same(inputIdentity(archived.input),inputIdentity(work.input)));
   check(['id','stage','unitIds','sourceIds','inputDigest'].every(k=>same(old[k],batch[k])));
   check(archived.payloadPaths[old.id]===root+`batches/${old.id}.json` && archived.evidencePath===root+'source-manifest.json');
   const payload=await loadDocument(archived.payloadPaths[old.id]),evidence=await loadDocument(archived.evidencePath);

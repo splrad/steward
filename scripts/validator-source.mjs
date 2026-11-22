@@ -5,8 +5,10 @@ import {init,parse} from 'es-module-lexer';
 import YAML from 'yaml';
 import {validatorPath} from './required-workflow-binding.mjs';
 
-const roots=['package.json','package-lock.json','mise.toml','mise.lock','.mise/'];
+const roots=['package.json','package-lock.json','npm-shrinkwrap.json','.npmrc',
+  'mise.toml','mise.lock','.mise/','.github/jactionlint.yaml'];
 const policyPaths=/(?:^|[\s"'(])(?:\.\/)?policy\/([\w./-]+)/g;
+const actionPaths=/\$\{\{\s*github\.action_path\s*\}\}\/([\w./-]+)/g;
 const commandPaths=/(?:^|[\s;&|])(?:node|python3?|pwsh|bash|cat|source|\.)\s+(?:\.\/)?((?:scripts|tools|config|schema|templates|packages|\.mise)\/[\w./-]+)/g;
 const localUrls=/new URL\(([^\n]+?),\s*import\.meta\.url\)/g;
 const trustedAssets={
@@ -39,7 +41,11 @@ export async function validatorSource(directory,sha) {
   const selected=new Map(),queue=[];
   const add=(path,required=false)=>{
     if(inventory.has(path)){
-      if(!selected.has(path)){selected.set(path,inventory.get(path));queue.push(path);}
+      if(!selected.has(path)){
+        selected.set(path,inventory.get(path));queue.push(path);
+        // The opaque ncc entry can load its emitted runtime assets without explicit imports.
+        if(path==='packages/runner/dist/index.js')add('packages/runner/dist/');
+      }
       return;
     }
     const prefix=path.endsWith('/')?path:path+'/';
@@ -63,22 +69,23 @@ export async function validatorSource(directory,sha) {
     }
     check(/@[a-f0-9]{40}$/.test(value),'UNPINNED_ACTION');
   };
-  const runInputs=(text,directory)=>{
+  const runInputs=(text,directory,action)=>{
     for(const line of text.split('\n').filter(line=>!line.trimStart().startsWith('#'))) {
       for(const [,path] of line.matchAll(policyPaths))add(path,true);
       if(directory==='policy')for(const [,path] of line.matchAll(commandPaths))add(path,true);
+      if(action)for(const [,path] of line.matchAll(actionPaths))add(resolve(action,'./'+path),true);
     }
   };
   const yaml=(text,path)=>{
     const document=YAML.parse(text);
-    const step=(step,directory)=>{
+    const step=(step,directory,action)=>{
       if(step.uses)uses(step.uses);
-      if(typeof step.run==='string')runInputs(step.run,step['working-directory']??directory);
+      if(typeof step.run==='string')runInputs(step.run,step['working-directory']??directory,action);
     };
     if(path.startsWith('.github/workflows/'))for(const job of Object.values(document.jobs??{})){
       if(job.uses)uses(job.uses);
       for(const item of job.steps??[])step(item,job.defaults?.run?.['working-directory']??document.defaults?.run?.['working-directory']);
-    }else for(const item of document.runs?.steps??[])step(item);
+    }else for(const item of document.runs?.steps??[])step(item,undefined,path);
     if(document.runs?.main)add(resolve(path,'./'+document.runs.main),true);
     if(document.runs?.pre)add(resolve(path,'./'+document.runs.pre),true);
     if(document.runs?.post)add(resolve(path,'./'+document.runs.post),true);
