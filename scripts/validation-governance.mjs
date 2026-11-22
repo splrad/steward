@@ -3,9 +3,9 @@ import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import YAML from 'yaml';
 import {verify as verifySecurityPolicy, securityPolicyController} from './security-policy.mjs';
-import {validationFileInputs,git,regular} from './validation-input.mjs';
+import {validationController,validationFileInputs,git,regular} from './validation-input.mjs';
 import {assertRepositoryInstructions,discoverWorkflowFiles,scanWorkflows} from '../packages/runner/dist/index.js';
-export async function main(env=process.env) {
+export async function main(env=process.env,resolveController=validationController) {
   const workspace=resolve(env.VALIDATION_WORKSPACE??'target');
   const {input,files}=await validationFileInputs(workspace,env);
   git(workspace,['-c','core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol','diff','--check',input.base,input.head]);
@@ -16,7 +16,7 @@ export async function main(env=process.env) {
   const legacy=JSON.parse(await readFile(new URL('../config/review/legacy-instructions.json',import.meta.url),'utf8'));
   await assertRepositoryInstructions(workspace,await readFile(new URL('../templates/repository/AGENTS.md',import.meta.url)),
     {repositoryId:input.repositoryId,legacy,templateSource:env.GITHUB_REPOSITORY===env.WORKFLOW_REPOSITORY,head:input.head});
-  verifySecurityPolicy(workspace,input.base,input.head,securityPolicyController,input.workflowSha,
+  verifySecurityPolicy(workspace,input.base,input.head,securityPolicyController,resolveController(securityPolicyController,input.workflowSha),
     env.GITHUB_HEAD_REF === 'steward/managed-sync',env.GITHUB_REPOSITORY === env.WORKFLOW_REPOSITORY);
   console.log(JSON.stringify(await scanWorkflows(workspace,await discoverWorkflowFiles(workspace,true),undefined,input.repositoryId),null,2));
 }

@@ -222,6 +222,12 @@ export async function main(transport=fetch) {
     try {
       const scope=await get(c.io,'/installation/repositories');check(scope.total_count===1&&scope.repositories[0]?.id===repository.id,'TOKEN_SCOPE');
       const result=await bootstrapRepository(repository,source,config.rules,c.io,{requirePrivate:single,identity,now:()=>new Date().toISOString(),verifySource,
+        verifyValidator:async validator=>{
+          if(validator===source.controllerSha)return;
+          const comparison=await get(central,`/repos/splrad/steward/compare/${validator}...${source.controllerSha}`);
+          check(comparison.status==='ahead'&&comparison.base_commit?.sha===validator
+            &&comparison.merge_base_commit?.sha===validator,'VALIDATOR_ANCESTRY');
+        },
         verifyProtection:async r=>{const rules=await pages(c.io,`/repos/${r.full_name}/rules/branches/${encodeURIComponent(r.default_branch)}`);
           check(rules.some(rule=>rule.type==='pull_request')&&rules.some(rule=>rule.type==='required_status_checks'),'DEFAULT_PROTECTION');},
         archive:(record,origin)=>archiveBootstrap({root,repository,token:c.token,appId,identity:{name:identity.name,email:identity.email},record,origin,io:c.io,originCorrection:origin==='app'})});

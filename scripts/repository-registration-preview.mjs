@@ -3,7 +3,7 @@ import {EvidenceReadError,NativeEvidenceReader,nativeEvidenceTransport} from '..
 import {git,regular} from './validation-input.mjs';
 import {readRepositoryPolicySelection} from './repository-policy-projection.mjs';
 import {configurationConflicts,nativeReleaseConflict,parseRegistration,registrationPath} from './repository-registration-policy.mjs';
-import {registrationProductPaths,registrationProposal} from './repository-registration.mjs';
+import {registrationProductPaths,registrationProposal} from './repository-registration-proposal.mjs';
 
 function previewTransport(token) {
   const github=nativeEvidenceTransport(token);
