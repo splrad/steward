@@ -4,7 +4,7 @@
 
 中央维护分支按原 Run 保存恢复请求。首条真实维护记录在核实仓库身份、完整分支保护和原生 ref 缺席后创建分支。每次写入核对完整当前树和所需历史。
 
-原全仓协调器写入的健康摘要保存在 `steward/automation-health` 的 `health.json` 和 Git 历史中，供追溯原扫描及错误。现役维护结果通过原生 Actions Run 和 `maintenance/<runId>.json` 查询。
+原全仓协调器写入的健康摘要及 `steward/automation-health` 的 Git 历史已离线归档。需要追溯原扫描及错误时，使用归档中的 `health.json`。现役维护结果通过原生 Actions Run 和 `maintenance/<runId>.json` 查询。
 
 App 安装可见性不等于发行参与资格。协调器按准确默认分支读取 `.github/delivery.json`、Release Please 配置/版本清单与既存状态；确认无上述配置且无产品状态、候选/构建 ref 或原生发行线索的仓库，发行判为 `NOT_APPLICABLE`，Pages 与维护仍独立。已有发行义务但配置删除、配置残缺、读取失败或状态漂移均保留错误；有效产品缺少初始化状态仍报 `RELEASE_BOOTSTRAP_REQUIRED`，不自动创建产品接管记录。
 

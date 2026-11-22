@@ -17,9 +17,9 @@ export function mergedCandidateFixture(input:ProductBuildInput) {
   return {path:'generated/'+chunk.candidateId+'/cycles/'+cycle.id+'.json',commit:input.state.head,
     value:{...chunk,schemaVersion:1,repositoryId:input.state.repository.repositoryId,index:0,count:1,documentKind:'merged-candidate',content,documentDigest:digest(content)}};
 }
-export function productPipelineFixture(attempts = 1, twoUnits = false, buildLock: string | string[] | null = 'global.json') {
+export function productPipelineFixture(attempts = 1, twoUnits = false, buildLock: string | string[] | null = 'global.json', controllerTemplate?:string) {
   const f = evidenceFixture(attempts), candidateId = 'd'.repeat(64);
-  const sharedTemplate=readFileSync('templates/repository/.github/release-template.md.mustache','utf8');
+  const sharedTemplate=readFileSync('packages/core/test/fixtures/release-template-compact.mustache','utf8');
   const delivery = { schemaVersion: 2, repositoryAuthors: [{ id: 44151430, evidence: 'User confirmed axiomoth; native ID verified.' }],
     units: [{ id: 'app', path: '.', ...(buildLock === null ? {} : {buildLocks: Array.isArray(buildLock) ? buildLock : [buildLock]}), notesPath: '.release-notes/app.md', assets: [{ id: 'app', name: 'app-${version}.exe', inspection: 'pe', mediaType: 'application/octet-stream' }], channels: [{ id: 'github-release', required: true, location: 'github', metadata: ['sbom.spdx.json','release-notes.md','artifact-manifest.json','SHA256SUMS'] }] }] };
   const workflow = { 'run-name': 'Build ${{ inputs.operation_key }}', on: { workflow_dispatch: { inputs: Object.fromEntries(['cycle_id', 'operation_key', 'source_sha', 'controller_sha'].map(key => [key, { type: 'string', required: true }])) } },
@@ -79,7 +79,8 @@ export function productPipelineFixture(attempts = 1, twoUnits = false, buildLock
   vi.spyOn(localGitSnapshot, 'head').mockImplementation(async directory => directory === 'source' ? S : C);
   vi.spyOn(localGitSnapshot, 'file').mockImplementation(async (directory, sha, path) => {
     if (sha !== (directory === 'source' ? S : C)) throw new Error('wrong source SHA');
-    const value = directory === 'source' ? source[path] : path === 'mise.lock' ? 'locked tools' : path === 'templates/repository/.github/release-template.md.mustache' ? sharedTemplate : undefined;
+    const value = directory === 'source' ? source[path] : path === 'mise.lock' ? 'locked tools' : path === 'templates/repository/.github/release-template.md.mustache'
+      ? controllerTemplate ?? sharedTemplate : undefined;
     return value === undefined ? null : Buffer.from(value);
   });
   return { ...f, input, environment, gh, source, delivery, nativeCalls: calls };

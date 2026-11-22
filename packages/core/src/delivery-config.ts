@@ -86,11 +86,12 @@ export function channelFiles(unit: DeliveryUnit, channelId: string, files: reado
 export function parseDeliveryConfig(input: unknown, releasePlease?:{packages?:Record<string,{component?:unknown}>}): DeliveryConfig {
   if (input && typeof input === 'object' && !Array.isArray(input) && [1,2,3].includes((input as { schemaVersion?: number }).schemaVersion ?? 0)) {
     const authors = (input as { repositoryAuthors?: unknown }).repositoryAuthors;
-    if (!Array.isArray(authors) || !authors.length || authors.some(author => author && typeof author === 'object'
-      && (typeof author.evidence !== 'string' || !author.evidence.trim()))) throw new Error('AUTHOR_IDENTITY_UNVERIFIED');
+    if (authors !== undefined && (!Array.isArray(authors) || authors.some(author => author && typeof author === 'object'
+      && (typeof author.evidence !== 'string' || !author.evidence.trim())))) throw new Error('AUTHOR_IDENTITY_UNVERIFIED');
   }
   if (!validateDelivery(input)) throw new Error('DELIVERY_CONFIG_STRUCTURE');
   const value = structuredClone(input) as unknown as DeliveryConfig & {notes?:Record<string,string>};
+  value.repositoryAuthors ??= [];
   if (value.buildWorkflow !== undefined && !isBuildWorkflow(value.buildWorkflow)) throw new Error('DELIVERY_BUILD_WORKFLOW');
   if(value.schemaVersion===3) {
     const packages=releasePlease?.packages;

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
 import { renderFrozenReleaseNotes, projectFrozenReleaseDownloads, previewUnitNotes, nestReleaseMarkdown, type FrozenReleaseNotes } from '../src/release-template.js';
 import { renderReleaseContributors } from '../src/release-candidate.js';
-const template = readFileSync('templates/repository/.github/release-template.md.mustache', 'utf8');
+const template = readFileSync('packages/core/test/fixtures/release-template-compact.mustache', 'utf8');
 const data: FrozenReleaseNotes = {
   repository: 'splrad/LayerScape', unitId: 'layerscape', displayName: 'LayerScape', version: '9.2.2', tag: 'v9.2.2', sourceSha: 'a'.repeat(40), controllerSha: 'b'.repeat(40),
   notes: ['概述', '更新内容', '兼容性', '升级与迁移', '安装说明', '已知问题', '恢复'].map((label, i) => `## ${label}\n\n保留事实 ${i}。\n\n### 子标题 ${i}\n\n细节。\n\n#### 更深 ${i}\n\n更多细节。`).join('\n\n'),

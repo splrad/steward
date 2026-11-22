@@ -161,7 +161,7 @@ export async function inspectReleaseArtifacts(unit: ReleaseUnit, directory: stri
   const manifest = { ...structuredClone(input), schemaVersion: 2 as const, artifacts: artifacts.sort((a, b) => a.path.localeCompare(b.path)), evidence: [] };
   validateReleaseManifest(manifest); return manifest;
 }
-async function sealFiles<T extends ReleaseManifest | ProductReleaseManifest>(directory: string, manifest: T): Promise<T> {
+async function sealFiles<T extends ReleaseManifest | ProductReleaseManifest>(directory: string, manifest: T, expectedNotes?: string): Promise<T> {
   if (manifest.schemaVersion === 3) validateProductManifest(manifest); else validateReleaseManifest(manifest);
   if (manifest.evidence.length) fail('already sealed');
   for (const artifact of manifest.artifacts) {
@@ -172,8 +172,11 @@ async function sealFiles<T extends ReleaseManifest | ProductReleaseManifest>(dir
   if (JSON.stringify((await readdir(directory)).sort()) !== JSON.stringify(expected)) fail('evidence set mismatch');
   const sbom = JSON.parse(await readFile(join(directory, names[0]!), 'utf8'));
   if (!/^SPDX-2\.[0-9]+$/.test(sbom.spdxVersion) || sbom.SPDXID !== 'SPDXRef-DOCUMENT' || !Array.isArray(sbom.packages)) fail('invalid SBOM');
-  const notes = await readFile(join(directory, names[1]!), 'utf8');
-  if (!notes.includes(manifest.version) || !notes.includes(manifest.sourceSha) || manifest.schemaVersion === 2 && !notes.includes(manifest.policySha)) fail('notes identity');
+  const notesBytes = await readFile(join(directory, names[1]!));
+  const notes = notesBytes.toString('utf8');
+  if (expectedNotes !== undefined ? !notesBytes.equals(Buffer.from(expectedNotes))
+    : !notes.includes(manifest.version) || !notes.includes(manifest.sourceSha) || manifest.schemaVersion === 2 && !notes.includes(manifest.policySha))
+    fail('notes identity');
   const sealed = { ...manifest, evidence: await Promise.all(names.map(name => fileDigest(directory, name))) };
   await writeFile(join(directory, 'artifact-manifest.json'), JSON.stringify(sealed, null, 2) + '\n', { flag: 'wx' });
   const checksums = [...sealed.artifacts, ...sealed.evidence, await fileDigest(directory, 'artifact-manifest.json')]
@@ -182,7 +185,9 @@ async function sealFiles<T extends ReleaseManifest | ProductReleaseManifest>(dir
   return sealed;
 }
 export async function sealReleaseArtifacts(directory: string, manifest: ReleaseManifest): Promise<ReleaseManifest> { return sealFiles(directory, manifest); }
-export async function sealProductArtifacts(directory: string, manifest: ProductReleaseManifest): Promise<ProductReleaseManifest> { return sealFiles(directory, manifest); }
+export async function sealProductArtifacts(directory: string, manifest: ProductReleaseManifest, expectedNotes?: string): Promise<ProductReleaseManifest> {
+  return sealFiles(directory, manifest, expectedNotes);
+}
 export async function verifySealedArtifacts(directory: string, expected: ReleaseManifest | ProductReleaseManifest): Promise<void> {
   if (expected.schemaVersion === 3) validateProductManifest(expected); else validateReleaseManifest(expected);
   const manifest = JSON.parse(await readFile(join(directory, 'artifact-manifest.json'), 'utf8'));

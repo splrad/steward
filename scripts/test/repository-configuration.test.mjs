@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
+import {createHash} from 'node:crypto';
 import {mkdtemp,mkdir,readFile,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {dirname,join,resolve} from 'node:path';
@@ -8,6 +9,7 @@ import {pathToFileURL} from 'node:url';
 import YAML from 'yaml';
 import {candidates,configurationForm,parseForm,planFromForm} from '../configuration-form.mjs';
 import {applySelection} from '../configuration-selection.mjs';
+import {readControllerReleaseTemplate} from '../release-template-source.mjs';
 import {inspectRepository,pagesPath,publishPath,renderConfiguration} from '../configuration-view.mjs';
 import {dynamicBuildInputs,findEvidence,trialInventory} from '../configuration-native.mjs';
 import {stageNativeProducer} from '../configuration-native-artifact.mjs';
@@ -69,7 +71,7 @@ for(const mode of ['reviewed scripts','native container, service and dynamic mat
   for(const path of ['tools/route/CHANGELOG.md','maps/data/CHANGELOG.md','.release-notes/route.md','.release-notes/maps.md']) await put(path,['概述','更新内容','兼容性','升级与迁移','安装说明','已知问题','恢复'].map(h=>'## '+h+'\n\nFixture notes.\n').join('\n'));
   await put('.github/workflows/steward-release-publish.yml',await readFile('templates/release/steward-release-publish.yml'));
   await put(reviewedChannel,channelFixture);
-  await put('.github/release-template.md.mustache','{{{upgradeNotices}}}');
+  await put('.github/release-template.md.mustache',await readFile('templates/repository/.github/release-template.md.mustache'));
   git('add','-A');git('-c','commit.gpgsign=false','commit','-m','Adopt protected trial and declare product documentation');
   const base=git('rev-parse','HEAD'),repo={id:15,name:'map-tools',full_name:'splrad/map-tools',owner:{login:'splrad'},default_branch:'trunk'};
   const load=async(api,ref)=>{
@@ -180,7 +182,7 @@ for(const mode of ['reviewed scripts','native container, service and dynamic mat
     for(const [k,v] of Object.entries({unit,target:'hosted',path,notes:'.release-notes/'+unit+'.md',version:'VERSION',changelog:'CHANGELOG.md',locks:'[]'})) first[id+'.'+k]=v;
   }
   await edit({...first,'s1.entry':'pack.py','s1.runner':'ubuntu-24.04','s1.shell':'bash','s1.directory':'maps/data',
-    's1.prepare':'','s1.command':'python pack.py','s1.output':'out','author.id':'12','author.evidence':'Confirmed fixture maintainer','signing':true,'operation.configure':true});
+    's1.prepare':'','s1.command':'python pack.py','s1.output':'out','signing':true,'operation.configure':true});
   const preparedHead=ref;
   assert.match(git('diff','--name-only',base,ref),/\.github\/actions\/configuration\/maps\/hosted\/run.mjs/);
   if(complex)productRun(preparedHead,pr.head.ref);
@@ -204,6 +206,7 @@ for(const mode of ['reviewed scripts','native container, service and dynamic mat
   assert.equal(pr.number,9);assert.notEqual(ref,preparedHead);
   assert.equal(git('show',ref+':.github/workflows/steward-release-channels.yml'),channelFixture.trim());
   const selected=parseDeliveryConfig(JSON.parse(git('show',ref+':.github/delivery.json')));
+  assert.deepEqual(selected.repositoryAuthors,[]);
   assert.deepEqual(selected.units.map(u=>u.assets.map(a=>a.id)),[['cli'],['stations']]);
   assert.equal(selected.units[0].channels.find(c=>c.id==='github-release').required,true);
   const workflow=YAML.parse(git('show',ref+':.github/workflows/steward-release-publish.yml'));
@@ -231,6 +234,12 @@ for(const mode of ['reviewed scripts','native container, service and dynamic mat
       return evidence.get(preparedHead+'/'+target.unit).files;
     }};
   const partial=await applySelection(adopted,'select',scenario,options);
+  const legacyFiles=new Map(adopted.files);
+  legacyFiles.delete('.github/delivery.json');
+  legacyFiles.set('.github/release-template.md.mustache','{{{upgradeNotices}}}');
+  await assert.rejects(applySelection(inspectRepository(legacyFiles),'select',scenario,options),/先采用组织发行说明模板/);
+  legacyFiles.set('.github/release-template.md.mustache',adopted.files.get('.github/release-template.md.mustache').replace('width="48"','width="12"'));
+  await assert.rejects(applySelection(inspectRepository(legacyFiles),'select',scenario,options),/先采用组织发行说明模板/);
   const result=JSON.parse(partial.get('.github/delivery.json'));
   assert.equal(result.units[0].assets[0].description,'Reviewed CLI package');
   assert.deepEqual(result.units[1],adopted.delivery.units[1]);
@@ -283,6 +292,46 @@ test('routes compact delivery file changes to the reviewed workflow while preser
   assert.deepEqual(await applySelection(model,'trial',{channels:[{unit:'desktop',id:'github-release'}]},{}),new Map());
 });
 
+test('validates a compact repository’s first notes with the release workflow’s pinned template',async()=>{
+  const pin='a'.repeat(40), workflow='.github/workflows/build-release.yml';
+  const templatePath='templates/repository/.github/release-template.md.mustache';
+  const body='## ⚡ 改进\n\n**更清晰的输出**。显示实际文件名。';
+  const notesPath='docs/release-current.md';
+  const files=new Map([
+    ['.github/delivery.json',JSON.stringify({schemaVersion:3,buildWorkflow:workflow,notes:{'.':notesPath}})],
+    ['release-please-config.json',JSON.stringify({packages:{'.':{component:'desktop'}}})],
+    [workflow,YAML.stringify({jobs:{publish:{steps:[{with:{repository:'splrad/steward',path:'controller',ref:pin}}]}}})],
+    ['VERSION','1.0.0\n'],['CHANGELOG.md','# Change history\n'],
+  ]);
+  const plan={units:[{id:'desktop',path:'.',notesPath,notesBody:body}],
+    versions:[{path:'.',versionFile:'VERSION',changelog:'CHANGELOG.md'}]};
+  let template=await readFile(templatePath);
+  const requests=[];
+  const context={readControllerTemplate:ref=>readControllerReleaseTemplate(ref,async (url,options)=>{
+    requests.push(url);
+    assert.equal(options.method,'GET');
+    const sha=createHash('sha1').update(`blob ${template.length}\0`).update(template).digest('hex');
+    return Response.json({type:'file',path:templatePath,encoding:'base64',size:template.length,content:template.toString('base64'),sha});
+  })};
+  const model=inspectRepository(files,{normalizeCompactDelivery:true});
+  assert.equal(model.delivery.units[0].notesPath,notesPath);
+  const form=configurationForm(model,'b'.repeat(40),{values:{'s1.use':true,'s1.unit':'desktop','s1.notes':notesPath}});
+  assert.match(form.body,/按采用模板填写的新 Markdown 说明/);
+  const saved=await applySelection(model,'configure',plan,context);
+  assert.equal(saved.get(notesPath),body+'\n');
+  assert.deepEqual(requests,[`https://api.github.com/repos/splrad/steward/contents/${templatePath}?ref=${pin}`]);
+  const unrelated={...plan,units:[{...plan.units[0],notesPath:'docs/other.md'}]};
+  await assert.rejects(applySelection(model,'configure',unrelated,context),/交付配置中为此单元声明的说明路径/);
+  assert.equal(requests.length,1);
+
+  template=await readFile('packages/core/test/fixtures/release-template-compact.mustache');
+  files.set('.github/release-template.md.mustache',await readFile(templatePath,'utf8'));
+  await assert.rejects(applySelection(inspectRepository(files,{normalizeCompactDelivery:true}),'configure',plan,context),/RELEASE_TEMPLATE/);
+  files.set(workflow,files.get(workflow).replace(pin,'main'));
+  await assert.rejects(applySelection(inspectRepository(files,{normalizeCompactDelivery:true}),'configure',plan,context),/CANDIDATE_CONTROLLER_PIN_REQUIRED/);
+  assert.equal(requests.length,2);
+});
+
 test('reports only declared product platforms and keeps operational Pages conditions out of selections',async()=>{
   const unit={id:'cli',path:'.',assets:[],channels:[]};
   const pages={env:{STEWARD_DOCS_SOURCE:'${{ vars.STEWARD_DOCS_SOURCE }}',STEWARD_DOCS_UNIT:'${{ vars.STEWARD_DOCS_UNIT }}'},jobs:{
@@ -315,11 +364,10 @@ test('reports only declared product platforms and keeps operational Pages condit
   assert.match(native,/\[x\] macOS 构建/);assert.doesNotMatch(native,/\[x\] Linux 构建/);
 });
 
-test('CI-only and Pages-only settings keep release author fields out of the form',()=>{
+test('repository configuration can select a release entry without author fields',()=>{
   const model=inspectRepository(new Map());
-  for(const values of [{'ci.example':true},{'site.build':true},{'site.deploy':true}]) {
+  for(const values of [{'ci.example':true},{'site.build':true},{'site.deploy':true},{'s1.use':true}]) {
     const form=configurationForm(model,'a'.repeat(40),{values});
     assert.ok(!form.items.some(item=>item.id.startsWith('author.')));
   }
-  assert.ok(configurationForm(model,'a'.repeat(40),{values:{'s1.use':true}}).items.some(item=>item.id==='author.id'));
 });

@@ -4,7 +4,9 @@ LayerScape 的产品入口是 [steward-release-publish.yml](https://github.com/s
 
 ## 公开产品的 GitHub 发行入口
 
-产品可在一张普通 PR 中补齐 Release Please 配置和版本 manifest、经审查的工作流，以及 [`.github/delivery.json` v3](../schema/delivery.schema.json)。精简配置只需 `schemaVersion: 3` 和有仓库作者证据的 `repositoryAuthors`。`buildWorkflow` 引用非默认入口，默认路径为 `.github/workflows/steward-release-publish.yml`。`notes` 可按 Release Please package 路径覆盖说明文件位置，缺省为 `.release-notes/<unit-id>.md`。候选按 Release Please 文件取得单位、版本和 CHANGELOG，按核验的控制器提交读取公共发行模板。 首次候选可使用空 manifest，尚未发版的包可以缺少历史版本。进入已合并周期的单位必须能从冻结的 manifest 核对其版本。
+首次通过仓库配置 PR 保存发行配置时，产品先采用组织发行说明模板。已按旧模板运行的仓库继续使用各自已审查的交付配置。
+
+产品可在一张普通 PR 中补齐 Release Please 配置和版本 manifest、经审查的工作流，以及 [`.github/delivery.json` v3](../schema/delivery.schema.json)。采用新发行说明模板时，精简配置只填 `schemaVersion: 3`。`buildWorkflow` 引用非默认入口，默认路径为 `.github/workflows/steward-release-publish.yml`。`notes` 可按 Release Please package 路径覆盖说明文件位置，缺省为 `.release-notes/<unit-id>.md`。候选按 Release Please 文件取得单位、版本和 CHANGELOG，按核验的控制器提交读取公共发行模板。首次候选可使用空 manifest，尚未发版的包可以缺少历史版本。进入已合并周期的单位必须能从冻结的 manifest 核对其版本。
 
 用产品自己的脚本构建，并在同一 Run 中对每个发行单位交付一次。工作流声明 `workflow_dispatch`，接收 `cycle_id`、`source_sha`、`operation_key`、`controller_sha`。运行名称包含 operation key，以便派发响应丢失时恢复。固定中央控制器提交，使用 `release-pipeline identity` 核验来源。交付 job 的原生名称为 `delivery/<unit-id>`。其中一步使用固定提交的 `actions/upload-artifact`，ID 为 `upload-github-release`，步骤名称为 `Upload GitHub release delivery`。制品名称格式为 `delivery-github-release-<repository-id>-<unit-id>-<source-sha>-<run-id>-<attempt>`。
 
