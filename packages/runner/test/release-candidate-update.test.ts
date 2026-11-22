@@ -8,6 +8,7 @@ import { registerOfflineFixtureRoot } from './offline-fixtures.js';
 import { isolatedBuildEnvironment } from '../src/build-environment.js';
 import { mergeCandidate, prepareCandidateWrite, resumeCandidateWrite, pushPreparedCandidate, type CandidateWritePort, type PreparedCandidateWrite } from '../src/release-candidate-update.js';
 import type { CandidateSnapshot } from '../../core/src/release-candidate.js';
+import { productReleaseTemplatePath } from '../../core/src/release-template.js';
 import { advanceReleaseCandidate, candidateObservationIdentity, type CandidateSession, type CandidateRuntime, type CandidatePullRequest } from '../src/release-candidate.js';
 
 vi.setConfig({ testTimeout: 60_000 });
@@ -369,16 +370,26 @@ async function observationFixture() {
   f.io.createPullRequest=async()=>{throw Error('CREATE_PR_MUST_NOT_RUN');};
   return f;
 }
-it.each(['refresh', 'observation', 'editing', 'policy-first', 'creation-retry', 'creation-race', 'unapproved'])(
+it.each(['refresh', 'observation', 'editing', 'policy-first', 'creation-retry', 'creation-race', 'template-commit', 'product-change', 'unapproved'])(
   'protects a reviewed conditional candidate during a template upgrade: %s', async kind => {
     const f = await controllerFixture();
     const originalTemplate = await readFile('packages/core/test/fixtures/release-template-conditional-v1.mustache', 'utf8');
     const upgradedTemplate = await readFile('templates/repository/.github/release-template.md.mustache', 'utf8');
     const notes = '## 概述\n\n已审核的发行说明。\n';
+    const baseAdvances = kind === 'template-commit' || kind === 'product-change';
+    const answers = '_commit: v0.1.7\n_src_path: https://github.com/splrad/steward.git\nproduct_repository: fixture/product\n';
+    const instructions = '# Repository instructions\n';
+    if (baseAdvances) {
+      await mkdir(join(f.repo, '.github'));
+      await f.commit('.copier-answers.yml', answers);
+      await f.commit('AGENTS.md', instructions);
+    }
+    const priorBase = baseAdvances ? await f.commit(productReleaseTemplatePath, originalTemplate, 'adopt initial template') : f.B;
     const head = await f.commit('.release-notes/app.md', notes, 'freeze reviewed draft');
     f.pr.head = head;
     f.session.repository.candidate!.publishedHead = head;
-    f.session.generated = f.snapshot(f.B, notes);
+    f.session.repository.candidate!.baseSha = priorBase;
+    f.session.generated = f.snapshot(priorBase, notes);
     const actor = (id: number, login: string) => ({ id, login, type: 'User',
       profileUrl: `https://github.com/${login}`, avatarUrl: `https://avatars.githubusercontent.com/u/${id}` });
     const reviewed = actor(44, 'reviewed-author');
@@ -393,8 +404,25 @@ it.each(['refresh', 'observation', 'editing', 'policy-first', 'creation-retry', 
     const recoveringCreation = kind === 'creation-retry' || kind === 'creation-race';
     const noteTemplate = kind === 'policy-first' || recoveringCreation ? originalTemplate
       : kind === 'unapproved' ? upgradedTemplate + '\n' : upgradedTemplate;
-    f.io.source = async () => ({ ...await originalSource(), contributorMode: 'github-authors', noteTemplate });
+    let base = priorBase;
+    if (baseAdvances) {
+      await f.git('push', '--porcelain', join(f.root, 'remote.git'), 'HEAD:refs/heads/steward/release-candidate');
+      await f.git('switch', '--detach', priorBase);
+      await f.commit(productReleaseTemplatePath, upgradedTemplate, 'adopt updated template');
+      await f.commit('.copier-answers.yml', answers.replace('v0.1.7','v0.1.9'));
+      base = await f.commit('AGENTS.md', instructions + '\n<!-- BEGIN SPLRAD REPOSITORY REVIEW RULES -->\n\n<!-- END SPLRAD REPOSITORY REVIEW RULES -->\n');
+      if (kind === 'product-change') base = await f.commit('code.txt', 'product changed\n');
+      const originalIsAncestor = f.io.isAncestor;
+      f.io.isAncestor = async (ancestor, descendant) => {
+        if (ancestor !== priorBase || descendant !== base) return originalIsAncestor(ancestor, descendant);
+        await f.git('merge-base', '--is-ancestor', ancestor, descendant); return true;
+      };
+      f.setSnapshot({ ...f.snapshot(base, '## 概述\n\n新一轮生成的文稿。\n'), sourceDigest: 'e'.repeat(64) });
+    }
+    f.io.source = async () => ({ ...await originalSource(), baseSha: base, contributorMode: 'github-authors', noteTemplate });
     f.io.content = async () => { throw Error('must use the reviewed archive'); };
+    if (kind === 'product-change')
+      f.io.content = async () => ({status:'READY', files:[], actors, unitActors:{app:actors}});
     f.pr.editing = kind === 'editing';
     const binding = kind === 'observation' ? candidateObservationIdentity(f.session) : undefined;
     let creationAttempts = 0;
@@ -409,6 +437,30 @@ it.each(['refresh', 'observation', 'editing', 'policy-first', 'creation-retry', 
       };
     }
 
+    if (baseAdvances) {
+      await expect(advanceReleaseCandidate(f.session, f.io)).resolves.toMatchObject({status:'READY', prNumber:9});
+      expect(f.session.generated?.baseSha).toBe(base);
+      expect(f.session.identity?.sourceDigest).toBe('e'.repeat(64));
+      expect(await f.git('rev-parse', `${f.pr.head}^2`)).toBe(base);
+      expect(await f.git('show', `${f.pr.head}:${productReleaseTemplatePath}`)).toBe(upgradedTemplate.trim());
+      if (kind === 'template-commit') {
+        expect(f.session.identity).toEqual({...before, sourceDigest:'e'.repeat(64)});
+        expect(await f.git('show', `${f.pr.head}:.release-notes/app.md`)).toBe(notes.trim());
+        expect(f.session.preview).toContain('alt="reviewed-author"');
+        expect(f.session.preview).not.toMatch(/unreviewed-account|贡献者 GitHub ID/);
+        const rebasedHead = f.pr.head;
+        await expect(advanceReleaseCandidate(f.session, f.io)).resolves.toMatchObject({status:'READY', head:rebasedHead});
+        expect(f.session.identity).toEqual({...before, sourceDigest:'e'.repeat(64)});
+      } else {
+        expect(f.session.identity?.contributorMode).toBe('github-authors');
+        expect(f.session.preview).toContain('新一轮生成的文稿。');
+        expect(f.session.preview).toContain('alt="unreviewed-account"');
+        expect(f.session.preview).toContain('贡献者 GitHub ID');
+      }
+      expect(f.pushes()).toBe(1);
+      expect(f.generations()).toBe(1);
+      return;
+    }
     if (kind === 'creation-race') {
       const originalGeneration = f.io.generation;
       f.io.generation = async base => {
