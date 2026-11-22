@@ -373,14 +373,14 @@ it('binds all workflow and matrix results to this repository, PR pair, commit an
   const event={repository:{id:1,full_name:'org/product'},pull_request:pr};
   const run={id:51,run_attempt:2,path:paths[0],repository:{id:1},head_repository:{id:2},head_sha:pr.head.sha,
     event:'pull_request',pull_requests:[pr],status:'completed',conclusion:'success'};
-  const job={run_id:51,run_attempt:2,head_sha:run.head_sha,status:'completed',conclusion:'success',steps:[{status:'completed',conclusion:'success'}]};
+  const job={id:58,name:'product CI',run_id:51,run_attempt:2,head_sha:run.head_sha,status:'completed',conclusion:'success',steps:[{status:'completed',conclusion:'success'}]};
   const check=(runs:any[],jobs:any[]=[job],source=run.head_sha)=>evidence(paths,runs.map(r=>({...r,node_id:r.path})),event,'pull_request',async()=>jobs,[],
     async(path:string)=>({path,repositoryFileUrl:`https://github.com/org/product/blob/${source}/${path}`}),new Set(),{wait:async()=>{}});
   await expect(check([run],[job],S)).rejects.toThrow('workflow source');
   expect(await check([run])).toHaveLength(1);
-  expect(await check([run],[job,{...job,conclusion:'skipped'}])).toHaveLength(1);
+  expect(await check([run],[job,{...job,id:59,name:'optional',conclusion:'skipped'}])).toHaveLength(1);
   const caller={...job,name:'call product CI',steps:[]};
-  const called={...job,name:'call product CI / build'};
+  const called={...job,id:59,name:'call product CI / build'};
   expect(await check([run],[caller,called])).toHaveLength(1);
   await expect(check([run],[caller,{...called,run_id:52}])).rejects.toThrow('incomplete job evidence');
   expect(await check([run,{...run,path:paths[1]}])).toHaveLength(2);
@@ -409,12 +409,13 @@ it('re-reads only the chosen completed run attempt while its jobs reach a termin
   const wait=vi.fn(async()=>{}),readRun=vi.fn(async()=>run);
   const file=async()=>({path,repositoryFileUrl:`https://github.com/splrad/steward/blob/${head}/${path}`});
   const check=(loadJobs:any,options={wait,readRun},value=run)=>evidence([path],[value],event,'pull_request',loadJobs,[],file,new Set(),options);
-  const lagged=vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([linux,{...windows,status:'in_progress',conclusion:null}])
-    .mockResolvedValueOnce([linux,windows]);
+  const lagged=vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([linux])
+    .mockResolvedValueOnce([linux,{...windows,status:'in_progress',conclusion:null}])
+    .mockResolvedValueOnce([linux,windows]).mockResolvedValueOnce([windows,linux]);
   await expect(check(lagged)).resolves.toEqual([{workflow:path,id:run.id,attempt:1,jobs:[
-    {id:linux.id,name:linux.name,conclusion:'success'},{id:windows.id,name:windows.name,conclusion:'success'}]}]);
-  expect(lagged.mock.calls).toEqual([[run],[run],[run]]);
-  expect(wait.mock.calls).toEqual([[1000],[2000]]);
+    {id:windows.id,name:windows.name,conclusion:'success'},{id:linux.id,name:linux.name,conclusion:'success'}]}]);
+  expect(lagged.mock.calls).toEqual([[run],[run],[run],[run],[run]]);
+  expect(wait.mock.calls).toEqual([[1000],[2000],[4000],[8000]]);
   expect(readRun).toHaveBeenCalledExactlyOnceWith(run.id);
   for(const bad of [{...windows,run_id:run.id+1},{...windows,run_attempt:2},{...windows,head_sha:S},{...windows,conclusion:'failure'}]){
     const load=vi.fn(async()=>[linux,bad]);
@@ -424,6 +425,10 @@ it('re-reads only the chosen completed run attempt while its jobs reach a termin
   const missing=vi.fn(async()=>[]);
   await expect(check(missing)).rejects.toThrow('incomplete job evidence');
   expect(missing).toHaveBeenCalledTimes(5);
+  const shrinking=vi.fn().mockResolvedValue([linux])
+    .mockResolvedValueOnce([linux,{...windows,status:'in_progress',conclusion:null}]);
+  await expect(check(shrinking)).rejects.toThrow('incomplete job evidence');
+  await expect(check(async()=>[linux,linux])).rejects.toThrow('incomplete job evidence');
   await expect(check(async()=>[linux,windows],{wait,readRun:vi.fn(async()=>({...run,run_attempt:2}))})).rejects.toThrow('changed while reading');
   const noRead=vi.fn();
   await expect(check(noRead,{wait,readRun},{...run,conclusion:'failure'})).rejects.toThrow('concluded failure');

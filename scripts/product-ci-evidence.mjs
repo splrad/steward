@@ -36,18 +36,29 @@ class IncompleteJobsSnapshot extends Error {}
 
 async function readAttemptJobs(run,loadJobs,{deadline=Infinity,wait=delay}={}) {
   const problem=()=>Error(run.path+' run '+run.id+' attempt '+run.run_attempt+' has incomplete job evidence');
+  const observedIds=new Set();
+  let previous;
   for(let pause=1000;;pause*=2){
     let jobs;
     try {jobs=await loadJobs(run);}
     catch(error){if(!(error instanceof IncompleteJobsSnapshot))throw error;}
+    let snapshot;
     if(jobs){
-      if(jobs.some(job=>job.run_id!==run.id||job.head_sha!==run.head_sha||job.run_attempt!==run.run_attempt
+      if(new Set(jobs.map(job=>job.id)).size!==jobs.length||jobs.some(job=>
+        !Number.isSafeInteger(job.id)||job.id<=0||typeof job.name!=='string'||!job.name||
+        job.run_id!==run.id||job.head_sha!==run.head_sha||job.run_attempt!==run.run_attempt
         ||job.status==='completed'&&job.conclusion!=null&&!['success','skipped'].includes(job.conclusion)))throw problem();
+      for(const job of jobs)observedIds.add(job.id);
       const complete=jobs.every(job=>job.status==='completed'&&['success','skipped'].includes(job.conclusion));
-      if(complete&&jobs.some(job=>job.conclusion==='success'
-        &&job.steps?.some(step=>step.status==='completed'&&step.conclusion==='success')))return jobs;
-      if(jobs.length&&complete&&jobs.every(job=>job.conclusion==='skipped'))throw problem();
+      if(complete&&jobs.length===observedIds.size&&jobs.some(job=>job.conclusion==='success'
+        &&job.steps?.some(step=>step.status==='completed'&&step.conclusion==='success'))){
+        snapshot=JSON.stringify(jobs.map(job=>[job.id,job.name,job.conclusion]).sort((a,b)=>a[0]-b[0]));
+        if(snapshot===previous)return jobs;
+      }
     }
+    // A locally consistent page can still omit jobs during propagation. Keep
+    // every seen ID and require consecutive matching terminal inventories.
+    previous=snapshot;
     if(pause>8000||Date.now()+pause>=deadline)throw problem();
     await wait(pause);
   }
@@ -119,17 +130,20 @@ async function main(){
   }
   async function list(route,key){
     const rows=[];
+    let total;
+    const incomplete=()=>key==='jobs'
+      ?new IncompleteJobsSnapshot('Product CI incomplete jobs'):Error('Product CI incomplete '+key);
     for(let page=1;;page++){
       const url=new URL(root+route);
       url.searchParams.set('page',page);url.searchParams.set('per_page','100');
       const data=await read(url);
       if(!Array.isArray(data[key]))throw Error('Product CI response missing '+key);
+      if(!Number.isSafeInteger(data.total_count)||data.total_count<0)throw Error('Product CI invalid count '+key);
+      if(total!==undefined&&total!==data.total_count)throw incomplete();
+      total=data.total_count;
       rows.push(...data[key]);
-      if(rows.length===data.total_count)return rows;
-      if(data[key].length<100||rows.length>data.total_count){
-        if(key==='jobs')throw new IncompleteJobsSnapshot('Product CI incomplete jobs');
-        throw Error('Product CI incomplete '+key);
-      }
+      if(rows.length===total)return rows;
+      if(data[key].length<100||rows.length>total)throw incomplete();
     }
   }
   const boundNames=JSON.parse(process.env.BOUND_NAMES);
