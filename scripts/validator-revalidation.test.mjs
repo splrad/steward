@@ -45,7 +45,7 @@ function fixture() {
   const pr={id:320,node_id:'PR_fixture',number:32,state:'open',draft:false,merged:false,title:'Existing policy PR',
     base:{ref:'main',repo},head:{ref:'author/policy-change',repo,sha:head},body:'User content'};
   const actor={id:bot};
-  let value=null,runtime={mergeQueue:false,crashAfterClose:false,crashAfterReopen:false};
+  let value=null,mergeQueueReads=0,runtime={mergeQueue:false,crashAfterClose:false,crashAfterReopen:false};
   const io={async request(method,url,body){
     const u=new URL(url,'https://api.github.com'),route=u.pathname;
     if(route.includes('/actions/variables')) {
@@ -80,7 +80,8 @@ function fixture() {
     throw Error('Unexpected fixture path '+route);
   },async graphql(query,{id}){
     if(query.includes('WorkflowRun'))return {node:{file:files[id]}};
-    return {node:{id,number:pr.number,headRefOid:pr.head.sha,isInMergeQueue:runtime.mergeQueue}};
+    const isInMergeQueue=runtime.mergeQueue||++mergeQueueReads>=(runtime.queueOnRead??Infinity);
+    return {node:{id,number:pr.number,headRefOid:pr.head.sha,isInMergeQueue}};
   }};
   const journal=validatorJournal(io),app={discover:async()=>[repo]},ioFor=async(id,op)=>{
     assert.equal(id,repo.id);return op(io);
@@ -196,6 +197,14 @@ test('never cycles a PR with an exact pending or failed Run, a draft, merge mana
   }
 });
 
+test('keeps the PR open when merge management appears immediately before the close',async()=>{
+  const f=fixture();f.runtime.queueOnRead=3;
+  const state=await f.run();
+  assert.equal(state.pulls[0].status,'waiting');
+  assert.equal(state.pulls[0].reason,'merge-management');
+  assert.deepEqual(f.changes,[]);
+});
+
 test('validator compares the exact local execution graph in both trees and accepts a newer protected data source',async t=>{
   const directory=await mkdtemp(join(tmpdir(),'steward-validator-'));
   t.after(()=>rm(directory,{recursive:true,force:true}));
@@ -204,8 +213,11 @@ test('validator compares the exact local execution graph in both trees and accep
   const commit=()=>{git('add','-A');git('commit','-qm','fixture');return git('rev-parse','HEAD');};
   git('init','-q','-b','main');git('config','user.name','Fixture');git('config','user.email','fixture@example.test');git('config','commit.gpgsign','false');
   await file(validatorPath,'name: Native\njobs:\n  test:\n    steps:\n      - run: node policy/scripts/a.mjs\n      - run: node target/scripts/irrelevant.mjs\n');
-  await file('scripts/a.mjs',"import './b.mjs';\nexport const text='scripts/irrelevant.mjs';\n");
+  await file('scripts/a.mjs',"import './b.mjs';\nimport './security-policy.mjs';\nexport const text='scripts/irrelevant.mjs';\n");
   await file('scripts/b.mjs',"new URL('../config/policy.json', import.meta.url);\n");
+  await file('scripts/security-policy.mjs','export const taggedPolicy=true;\n');
+  await file('config/review/security-common.md','original\n');
+  await file('copier.yml','_subdirectory: templates\n');
   await file('config/policy.json','{}\n');
   await file('scripts/irrelevant.mjs','0\n');
   await file('.npmrc','engine-strict=true\n');
@@ -222,7 +234,10 @@ test('validator compares the exact local execution graph in both trees and accep
   const graph=commit();
   assert.deepEqual((await compareValidatorSources(directory,script,graph)).files,['config/policy.json','scripts/b.mjs','scripts/c.mjs']);
   await file('.npmrc','engine-strict=false\n');
-  assert.deepEqual((await compareValidatorSources(directory,graph,commit())).files,['.npmrc']);
+  const npmPolicy=commit();
+  assert.deepEqual((await compareValidatorSources(directory,graph,npmPolicy)).files,['.npmrc']);
+  await file('config/review/security-common.md','updated\n');
+  assert.deepEqual((await compareValidatorSources(directory,npmPolicy,commit())).files,['config/review/security-common.md']);
   git('update-ref','refs/remotes/origin/steward/validated-controller',graph);
   git('checkout','--detach','-q',script);
   assert.equal(validationController(directory,script),graph);

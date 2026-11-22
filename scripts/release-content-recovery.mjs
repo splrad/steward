@@ -7,14 +7,16 @@ const sha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 
 /** Keep the original digest address usable when a retained validator makes both generations identical. */
 export async function selectContentArchive(candidate, generatedDigest, {loadDocument, controllerSha, grant}) {
-  const extra=(source,controller)=>hash(['content-archive-transfer/v1',source,controller]);
-  if(grant?.archiveContentDigest===generatedDigest)return extra(generatedDigest,controllerSha);
+  const transferDigest=controller=>hash(['content-archive-transfer/v1',generatedDigest,controller]);
+  const transfer=()=>({digest:transferDigest(controllerSha),transferBaseDigest:generatedDigest});
+  if(grant?.archiveContentDigest===generatedDigest)return transfer();
   const prior=candidate.contentGenerationDigest;
-  if(prior===generatedDigest)return prior;
-  const saved=await loadDocument(`content/${candidate.id}/${prior}/manifest.json`);
-  if(saved?.input?.candidateId===candidate.id&&sha(saved.input.controllerSha)&&prior===extra(generatedDigest,saved.input.controllerSha)
-    &&saved.input.batches.some(batch=>batch.attempts.some(attempt=>attempt.recovery?.archiveContentDigest===generatedDigest)))return prior;
-  return generatedDigest;
+  if(prior!==generatedDigest) {
+    const saved=await loadDocument(`content/${candidate.id}/${prior}/manifest.json`);
+    if(saved?.input?.candidateId===candidate.id&&sha(saved.input.controllerSha)&&prior===transferDigest(saved.input.controllerSha)
+      &&saved.input.batches.some(batch=>batch.attempts.some(attempt=>attempt.recovery?.archiveContentDigest===generatedDigest)))return transfer();
+  }
+  return {digest:generatedDigest,transferBaseDigest:null};
 }
 
 // Reattach a specifically authorized archived receipt only after reproducing its full input identity.

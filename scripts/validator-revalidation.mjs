@@ -222,7 +222,8 @@ export async function reconcilePull(io,state,entry,save,guard,record,{draining=f
   const native=await matchingRun(io,fresh,state.validator);
   if(native)return observeRun(native);
   const beforeClose=await observed();
-  if(beforeClose.state!=='open'||!exactPull(beforeClose,entry)||beforeClose.draft||ownedRelease(beforeClose)||beforeClose.auto_merge)return;
+  if(beforeClose.state!=='open'||!exactPull(beforeClose,entry)||beforeClose.draft||ownedRelease(beforeClose))return;
+  if(await mergeManaged(io,beforeClose))return change('waiting',{reason:'merge-management'});
   const response=await mutate(io,path,'closed');
   await record({kind:'validator-close-request',response});
   // Re-enter once when the close is visible. A delayed close stays prepared for recovery.

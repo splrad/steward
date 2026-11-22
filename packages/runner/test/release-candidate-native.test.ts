@@ -290,7 +290,8 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     const recovered=await readReleaseRecords({directory,targetRef:'steward/release-state',repositoryId:1});
     expect(recovered.repository.candidate.contentGenerationDigest).not.toBe(candidate.contentGenerationDigest);
     const nextPath=`content/${candidate.id}/${recovered.repository.candidate.contentGenerationDigest}/manifest.json`;
-    const next=await decodeCandidateDocument([JSON.parse(await git('show',`steward/release-state:${nextPath}`))]);
+    const nextBytes=await git('show',`steward/release-state:${nextPath}`);
+    const next=await decodeCandidateDocument([JSON.parse(nextBytes)]);
     expect(next.input.batches[0].attempts.map((a:{ordinal:number})=>a.ordinal)).toEqual([1,2]);expect(next.input.batches[0].attempts[0]).toEqual(manifest.input.batches[0].attempts[0]);
     expect(next.input.batches[0].attempts[1].recovery.archiveContentDigest).toBe(candidate.contentGenerationDigest);
     expect(await nativeReleaseCandidate({...request,writeDirectory:join(root,'ordinary-after-recovery')},options)).toMatchObject({status:'READY',prNumber:9});
@@ -298,6 +299,17 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     const ordinary=await readReleaseRecords({directory,targetRef:'steward/release-state',repositoryId:1});
     expect(ordinary.repository.candidate.contentGenerationDigest).toBe(recovered.repository.candidate.contentGenerationDigest);
     await expect(nativeReleaseCandidate({...request,writeDirectory:join(root,'duplicate-recovery-writes')},{...options,contentRecovery:grant})).rejects.toThrow('CONTENT_RECOVERY_ARCHIVE_EXISTS');
+    const newerController='a'.repeat(40);
+    expect(await nativeReleaseCandidate({...request,writeDirectory:join(root,'ordinary-new-controller')},
+      {...options,controllerSha:newerController})).toMatchObject({status:'READY',prNumber:9});
+    await refresh();
+    const advanced=await readReleaseRecords({directory,targetRef:'steward/release-state',repositoryId:1});
+    expect(advanced.repository.candidate.contentGenerationDigest).not.toBe(recovered.repository.candidate.contentGenerationDigest);
+    const advancedPath=`content/${candidate.id}/${advanced.repository.candidate.contentGenerationDigest}/manifest.json`;
+    const advancedManifest=await decodeCandidateDocument([JSON.parse(await git('show',`steward/release-state:${advancedPath}`))]);
+    expect(advancedManifest.input.controllerSha).toBe(newerController);
+    expect(advancedManifest.input.batches[0].attempts).toEqual(next.input.batches[0].attempts);
+    expect(await git('show',`steward/release-state:${nextPath}`)).toBe(nextBytes);
     expect(modelCalls).toBe(2);return;
   }
   if (interruptPending) {

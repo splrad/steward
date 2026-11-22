@@ -12,6 +12,7 @@ const actionPaths=/\$\{\{\s*github\.action_path\s*\}\}\/([\w./-]+)/g;
 const commandPaths=/(?:^|[\s;&|])(?:node|python3?|pwsh|bash|cat|source|\.)\s+(?:\.\/)?((?:scripts|tools|config|schema|templates|packages|\.mise)\/[\w./-]+)/g;
 const localUrls=/new URL\(([^\n]+?),\s*import\.meta\.url\)/g;
 const trustedAssets={
+  'scripts/security-policy.mjs':['config/review/security-common.md','copier.yml'],
   'scripts/private-lifecycle-policy.mjs':[
     'config/private-lifecycle/dependabot.yml','config/private-lifecycle/renovate.json','config/private-lifecycle/history/',
     'templates/lifecycle-sample/','templates/release/steward-release-publish.yml','templates/release/steward-release-channels.yml'

@@ -142,6 +142,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     for (const path of state.currentPaths.filter(path => path.startsWith('cycles/')))
       persisted.set(path, await fileAt(state.head, path));
     let expectedHead = state.head, writes = 0, lastFacts = null, lastProtections = null, delivery = null, conditional = false, confirmedHumans, notesPaths;
+    let transferBaseDigest=null;
     const loadDocument = async path => {
       const text = loaded.get(path); if (text === undefined) return null;
       const first = JSON.parse(text), chunks = [first];
@@ -290,12 +291,18 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         await source();
         return JSON.stringify(frozen) === JSON.stringify(lastFacts) && lastFacts.baseSha === B ? result : { status: 'DRIFT' };
       },
-      contentArchive:(candidate,digest)=>selectContentArchive(candidate,digest,{loadDocument,controllerSha,grant:contentRecovery}),
+      contentArchive:async(candidate,digest)=>{
+        const selected=await selectContentArchive(candidate,digest,{loadDocument,controllerSha,grant:contentRecovery});
+        transferBaseDigest=selected.transferBaseDigest;
+        return selected.digest;
+      },
       content: async (candidate, snapshot) => {
         if(observation)fail('CANDIDATE_OBSERVATION_CONTENT_FORBIDDEN');
         const path = `content/${candidate.id}/${candidate.contentGenerationDigest}/manifest.json`, cachePath = `content/${candidate.id}/cache.json`;
         const stored = await loadDocument(path), cacheIndex = await loadDocument(cachePath), cache = {};
         if (contentRecovery?.archiveContentDigest && stored) fail('CONTENT_RECOVERY_ARCHIVE_EXISTS');
+        if(transferBaseDigest&&stored&&stored.input?.controllerSha!==controllerSha)
+          fail('CONTENT_ARCHIVE_CONTRACT');
         let work = null;
         for (const entry of cacheIndex?.entries ?? []) {
           const value = await loadDocument(entry.path); if (hash(JSON.stringify(value)) !== entry.digest || hash(JSON.stringify([value.inputDigest, value.configDigest])) !== entry.key) fail('CONTENT_CACHE_DIGEST');
@@ -339,6 +346,14 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         }
         if (contentRecovery?.archiveContentDigest) await restoreContentRecovery(work,cache,contentRecovery,
           {loadDocument,facts:lastFacts,protections:lastProtections,authorsDigest:hash(JSON.stringify(delivery.repositoryAuthors))});
+        // A later controller may archive a confirmed cached result. A missing
+        // cache entry cannot turn the prior explicit recovery into a new call.
+        if(transferBaseDigest&&!stored&&!contentRecovery?.archiveContentDigest)for(const batch of work.input.batches) {
+          const entry=cache[hash(JSON.stringify([batch.inputDigest,work.input.configDigest]))];
+          if(!entry?.result||!entry.attempts.some(attempt=>attempt.recovery?.archiveContentDigest===transferBaseDigest))
+            fail('CONTENT_ARCHIVE_CONTRACT');
+          batch.attempts=structuredClone(entry.attempts);
+        }
         const save = async (work, cache) => {
           const results = [], payloadPaths = {}, evidencePath = path.replace(/manifest\.json$/, 'source-manifest.json');
           for (const batch of work.input.batches) {
