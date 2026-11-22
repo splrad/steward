@@ -536,10 +536,15 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
       await expect(pipelineNotes({...build,legacyNotesTemplateControllerSha:sourceControllerSha},'app',directory))
         .rejects.toThrow('legacy notes template source');
     const altered=JSON.parse(chunks[0].content);
+    const decode=()=>{
+      const content=JSON.stringify(altered);
+      return decodeCandidateDocument([{...chunks[0],content,documentDigest:createHash('sha256').update(content).digest('hex')}]);
+    };
     altered.legacyNotesTemplate.sourceSha=S;
-    const content=JSON.stringify(altered);
-    await expect(decodeCandidateDocument([{...chunks[0],content,documentDigest:createHash('sha256').update(content).digest('hex')}]))
-      .rejects.toThrow('MERGED_CANDIDATE_LEGACY_TEMPLATE');
+    await expect(decode()).rejects.toThrow('MERGED_CANDIDATE_LEGACY_TEMPLATE');
+    altered.legacyNotesTemplate.sourceSha=B;
+    altered.session.identity.noteTemplate=await readFile('templates/repository/.github/release-template.md.mustache','utf8');
+    await expect(decode()).rejects.toThrow('MERGED_CANDIDATE_LEGACY_TEMPLATE');
   }
   if (conditional && !compact) {
     const { tag, version } = merged.cycles[0].value.units[0];
