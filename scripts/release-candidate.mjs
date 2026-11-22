@@ -1,4 +1,4 @@
-import {validateManualCandidate,projectManualCandidate,manualManagedEntryMatches} from './manual-candidate.mjs';
+import {validateManualCandidate,projectManualCandidate,manualManagedEntryMatches,retainedManualNotesTemplate} from './manual-candidate.mjs';
 import apiVersion from "../config/github-api.json" with { type: "json" };
 import { createHash } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
@@ -12,7 +12,7 @@ import { parseDocument } from 'yaml';
 import { advanceReleaseCandidate, pushPreparedCandidate, collectContentInput, planContentBatches,
   resumeContentBatches, assembleUnitNotes, copilotReleaseClient, decodeCandidateDocument, splitContentText, selectReleaseContributors, releaseAffectedUnitIds, isolatedBuildEnvironment,
   candidateObservationIdentity, parseDeliveryConfig, parseSupplementalNotes, assertDeliveryPath, assertProductDelivery, mergedBuildCycle, assertRepositoryWrite, completeMergedPull,
-  defaultBuildWorkflow, productReleaseTemplatePath,
+  defaultBuildWorkflow, productReleaseTemplatePath, readLegacyReleaseTemplate,
   isAdoptedOrganizationReleaseTemplate, isConditionalTemplate, confirmedReleaseContributors, confirmedReleaseContributorsPath } from '../packages/runner/dist/index.js';
 import { readReleaseRecords, writeReleaseRecords, assertReleaseWriterProtection } from './release-record.mjs';
 import { restoreContentRecovery } from './release-content-recovery.mjs';
@@ -420,6 +420,13 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     };
     const manualBlobs=new Map(),manualFetched=new Set();
     const manualIO={activeCycle,readTemplate:sourceTemplateAt,confirmedHumans:confirmedHumansAt,
+      readLegacyTemplate:async sha=>{
+        const prior=await readLegacyReleaseTemplate(sha,async(commit,path)=>{
+          const text=await fileAt(commit,path,true);
+          return text===null?null:Buffer.from(text);
+        },async pin=>Buffer.from(await readControllerReleaseTemplate(pin,fetcher)));
+        return prior?{template:prior.bytes.toString('utf8'),controllerSha:prior.controllerSha}:null;
+      },
       product:{id:request.repositoryId,name:request.repository,defaultBranch:request.defaultBranch},
       pull:()=>native(`pulls/${session.repository.candidate.prNumber}`),
       changedPaths:async(base,head)=>{
@@ -548,14 +555,22 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         if(!validSha(cycleControllerSha))fail('CANDIDATE_CONTROLLER_PIN_INVALID');
         if (checkouts.some(step => !/^actions\/checkout@[a-f0-9]{40}$/.test(step.uses ?? '')
           || step.with.repository !== 'splrad/steward' || step.with.ref !== cycleControllerSha)) fail('CANDIDATE_CONTROLLER_PIN_CONFLICT');
-        const template=await templateAt(sourceSha,cycleControllerSha,delivery);
+        const currentTemplate=await templateAt(sourceSha,cycleControllerSha,delivery);
+        const manual=data.manualValidation;
+        const retained=delivery.schemaVersion!==3&&isConditionalTemplate(currentTemplate)&&manual&&manual.schemaVersion!==3
+          &&manual.headSha===pull.head.sha&&await runtime.isAncestor(manual.sourceSha,sourceSha)
+          ?await retainedManualNotesTemplate(data,currentTemplate,manual,manualIO):null;
+        const template=retained?.template??currentTemplate;
         const conditional = isConditionalTemplate(template);
         if(data.identity.noteTemplate!==(conditional?template:undefined))fail('MERGED_CANDIDATE_TEMPLATE_DRIFT');
         const confirmedHumans = conditional ? await confirmedHumansAt(sourceSha) : undefined;
         for (const unit of delivery.units.filter(unit => data.generated.units.some(generated => generated.id === unit.id))) {
           const frozen=data.identity.units.find(value=>value.id===unit.id);
           if((conditional||delivery.schemaVersion===3)&&(frozen?.notesPath??`.release-notes/${unit.id}.md`)!==unit.notesPath)fail('MERGED_CANDIDATE_NOTE_PATH');
-          parseSupplementalNotes(await fileAt(sourceSha,unit.notesPath),template);
+          const notes=await fileAt(sourceSha,unit.notesPath);
+          if(retained&&(!data.generated.files.some(file=>file.path===unit.notesPath&&file.content!==null)
+            ||manual.files.find(file=>file.path===unit.notesPath)?.sha256!==hash(notes)))fail('MERGED_CANDIDATE_MANUAL_NOTES_DRIFT');
+          parseSupplementalNotes(notes,template);
         }
         const deliveryBlobSha = (await git('rev-parse', `${sourceSha}:.github/delivery.json`)).toString().trim();
         const cycle=mergedBuildCycle({prNumber:pull.number,sourceSha,controllerSha:cycleControllerSha,sourceTree,reviewedTree,
@@ -566,6 +581,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
           schemaVersion: 1, cycleId: cycle.id, sourceSha, stateCommit, candidate,
           session: {...archivedSession, identity:mergedContributorIdentity(archivedSession.identity,delivery.repositoryAuthors,confirmedHumans)}, pull: { number: pull.number, head: pull.head.sha, branch: pull.head.ref,
             base: pull.base.ref, repositoryId: request.repositoryId, mergedAt: pull.merged_at, mergeCommitSha: sourceSha }, documents,
+          ...(retained?{legacyNotesTemplate:retained.lock}:{}),
         });
         // Validate the assembled snapshot before the atomic cycle handoff.
         await decodeCandidateDocument(mergedArchive.map(file => JSON.parse(file.content)));

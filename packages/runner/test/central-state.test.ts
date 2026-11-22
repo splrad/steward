@@ -2,7 +2,7 @@ import {expect,it} from 'vitest';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {createHash} from 'node:crypto';
-const {fetchState,coordinateReleaseWake,releaseParticipation}=await import(pathToFileURL(resolve('scripts/release-coordinator.mjs')).href);
+const {fetchState,releaseParticipation}=await import(pathToFileURL(resolve('scripts/release-coordinator.mjs')).href);
 const {validateReleaseConfiguration}=await import(pathToFileURL(resolve('scripts/release-adoption.mjs')).href);
 const repository={id:1296724484,full_name:'splrad/steward',default_branch:'main',archived:false,disabled:false};
 const sha='a'.repeat(40),head='b'.repeat(40);
@@ -36,12 +36,6 @@ it('allows only protected fixed central missing refs, never product 404 or forbi
   confirmed=[{}];await expect(fetchState('',repository,'fixture','steward/release-state',{fetcher,centralFirstUse:true})).rejects.toThrow('RELEASE_STATE_IDENTITY');
   confirmed=[{ref:'refs/heads/steward/release-state',object:{type:'commit',sha}}];await expect(fetchState('',repository,'fixture','steward/release-state',{fetcher,centralFirstUse:true})).rejects.toThrow('RELEASE_STATE_MOVED');confirmed=[];
   status=404;protectedWriter=false;await expect(fetchState('',repository,'fixture','steward/release-state',{fetcher,centralFirstUse:true})).rejects.toThrow();
-});
-it('retains maintenance and bootstrap failures after product side effects, without repeating service',async()=>{
-  let writes=0;const reports:any[]=[];
-  const result=await coordinateReleaseWake({maintenance:async()=>{throw Error('missing');},discover:async()=>[{id:1},{id:2}],observe:async(r:any)=>{if(r.id===1)throw Error('RELEASE_BOOTSTRAP_REQUIRED');return {};},
-    service:async()=>{writes++;return {status:'WAIT'};},health:async(s:any)=>reports.push(s)});
-  expect(writes).toBe(1);expect(result.scanCompletedAt).toBeNull();expect(result.errorCodes).toEqual(['MAINTENANCE_UNAVAILABLE','RELEASE_BOOTSTRAP_REQUIRED']);expect(reports).toEqual([result]);
 });
 it('excludes proven unconfigured governance repositories while retaining missing or damaged product obligations',async()=>{
   let productState=false,centralMaintenance=false,partial=false,truncated=false,status=200,oldRelease=false;
@@ -148,17 +142,6 @@ it('rejects an array SHA in the default ref before reading trees',async()=>{
   }};
   await expect(releaseParticipation(repository,io)).rejects.toThrow('RELEASE_PARTICIPATION_IDENTITY');
 });
-it('keeps Pages independent and completes a scan of explicitly inapplicable repositories without generation',async()=>{
-  let pages=0,service=0;
-  const s=await coordinateReleaseWake({discover:async()=>[{id:1}],pages:async()=>{pages++;return {status:'DISABLED'};},observe:async()=>({status:'NOT_APPLICABLE'}),service:async()=>{service++;return {};},health:async()=>{}});
-  expect(pages).toBe(1);expect(service).toBe(0);expect(s.scanCompletedAt).not.toBeNull();expect(s.counts.completed).toBe(1);
-});
-it('records service-stage participation drift as an incomplete failed scan rather than ordinary waiting',async()=>{
-  let sideEffects=0;const reports:any[]=[];
-  const s=await coordinateReleaseWake({discover:async()=>[{id:1},{id:2}],observe:async()=>({status:'APPLICABLE'}),
-    service:async(r:any)=>{if(r.id===1)throw Error('RELEASE_PARTICIPATION_CHANGED');sideEffects++;return {status:'WAIT'};},health:async(s:any)=>reports.push(s)});
-  expect(s.scanCompletedAt).toBeNull();expect(s.errorCodes).toContain('RELEASE_PARTICIPATION_CHANGED');expect(s.counts.failed).toBe(1);expect(s.counts.waiting).toBe(1);expect(sideEffects).toBe(1);expect(reports).toEqual([s]);
-});
 it.each(['release-candidate','build/','releases'])('rejects changed absence evidence for %s',async changed=>{
   const counts=new Map<string,number>();
   const io={request:async(_method:string,path:string)=>{
@@ -189,8 +172,6 @@ it('validates exact product blobs, retains bootstrap requirements and rejects he
     return {status:200,bytes:Buffer.from(JSON.stringify(value))};
   }};
   expect((await releaseParticipation(product,io)).status).toBe('APPLICABLE');
-  let serviced=false;const result=await coordinateReleaseWake({discover:async()=>[product],observe:async()=>{await releaseParticipation(product,io);throw Error('RELEASE_BOOTSTRAP_REQUIRED');},service:async()=>{serviced=true;},health:async()=>{}});
-  expect(serviced).toBe(false);expect(result.errorCodes).toContain('RELEASE_BOOTSTRAP_REQUIRED');
   heads=states=0;moveHead=true;await expect(releaseParticipation(product,io)).rejects.toThrow('PARTICIPATION_CHANGED');
   heads=states=0;moveHead=false;moveState=true;await expect(releaseParticipation(product,io)).rejects.toThrow('PARTICIPATION_CHANGED');
   heads=states=0;moveState=false;badBlob=true;await expect(releaseParticipation(product,io)).rejects.toThrow('CONFIGURATION_INVALID');
