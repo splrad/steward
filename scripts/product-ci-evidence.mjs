@@ -34,28 +34,40 @@ export function workflowSource(file,path,event,head){
 
 class IncompleteJobsSnapshot extends Error {}
 
-function corroboratesAttempt(run,jobs,checks,attemptHistory) {
-  const prior=new Set();
+async function readSnapshot(read,run) {
+  try {return await read(run);}
+  catch(error){if(!(error instanceof IncompleteJobsSnapshot))throw error;}
+}
+
+function rememberAttempt(observed,id,attempt) {
+  if(observed.has(id)&&observed.get(id)!==attempt)throw Error('Product CI job attempt history mismatch');
+  observed.set(id,attempt);
+}
+
+function corroboratesAttempt(run,jobs,checks,attemptHistory,observedAttempts,observedChecks) {
   for(const job of attemptHistory){
     if(job.run_id!==run.id||job.head_sha!==run.head_sha||!Number.isSafeInteger(job.id)||job.id<=0
       ||!Number.isSafeInteger(job.run_attempt)||job.run_attempt<1||job.run_attempt>run.run_attempt)
       throw Error('Product CI job attempt history mismatch');
-    if(job.run_attempt<run.run_attempt)prior.add(job.id);
+    rememberAttempt(observedAttempts,job.id,job.run_attempt);
   }
-  const expected=new Map();
+  const listed=new Map();
   for(const check of checks){
     if(check.app?.id!==15368)continue;
     const detail=`https://github.com/${run.repository.full_name}/actions/runs/${run.id}/job/${check.id}`;
     if(check.check_suite?.id!==run.check_suite_id||check.head_sha!==run.head_sha||check.details_url!==detail
       ||!Number.isSafeInteger(check.id)||check.id<=0)throw Error('Product CI check suite source mismatch');
-    // The suite spans retries. The Actions history assigns attempts to Check
-    // Run IDs, including carried jobs whose start time predates this retry.
-    if(prior.has(check.id))continue;
-    if(expected.has(check.id))throw Error('Product CI duplicate check run');
-    expected.set(check.id,check);
+    if(listed.has(check.id))throw Error('Product CI duplicate check run');
+    listed.set(check.id,check);
+    observedChecks.add(check.id);
+    if(run.run_attempt===1)rememberAttempt(observedAttempts,check.id,1);
   }
-  return jobs.length===expected.size&&jobs.every(job=>{
-    const check=expected.get(job.id);
+  // After a rerun, the suite can list a Check before Actions classifies it.
+  // Keep it pending until its attribution is known, even if a later page omits it.
+  if([...observedChecks].some(id=>!observedAttempts.has(id)))return false;
+  const expectedCount=[...observedAttempts.values()].filter(attempt=>attempt===run.run_attempt).length;
+  return jobs.length===expectedCount&&jobs.every(job=>{
+    const check=listed.get(job.id);
     return check?.name===job.name&&check.status===job.status&&check.conclusion===job.conclusion;
   });
 }
@@ -65,28 +77,25 @@ async function readAttemptJobs(run,loadJobs,{deadline=Infinity,wait=delay,loadCh
   if(!Number.isSafeInteger(run.check_suite_id)||run.check_suite_id<=0
     ||!Number.isSafeInteger(run.run_attempt)||run.run_attempt<1||typeof loadChecks!=='function'
     ||run.run_attempt>1&&typeof loadAttemptHistory!=='function')throw problem();
-  const observedIds=new Set();
+  const observedAttempts=new Map(),observedChecks=new Set();
   let previous;
   for(let pause=1000;;pause*=2){
-    let jobs;
-    try {jobs=await loadJobs(run);}
-    catch(error){if(!(error instanceof IncompleteJobsSnapshot))throw error;}
+    const jobs=await readSnapshot(loadJobs,run);
     let snapshot;
     if(jobs){
       if(new Set(jobs.map(job=>job.id)).size!==jobs.length||jobs.some(job=>
         !Number.isSafeInteger(job.id)||job.id<=0||typeof job.name!=='string'||!job.name||
         job.run_id!==run.id||job.head_sha!==run.head_sha||job.run_attempt!==run.run_attempt
         ||job.status==='completed'&&job.conclusion!=null&&!['success','skipped'].includes(job.conclusion)))throw problem();
-      for(const job of jobs)observedIds.add(job.id);
+      for(const job of jobs)rememberAttempt(observedAttempts,job.id,job.run_attempt);
       const complete=jobs.every(job=>job.status==='completed'&&['success','skipped'].includes(job.conclusion));
-      if(complete&&jobs.length===observedIds.size&&jobs.some(job=>job.conclusion==='success'
+      if(complete&&jobs.some(job=>job.conclusion==='success'
         &&job.steps?.some(step=>step.status==='completed'&&step.conclusion==='success'))){
-        let checks,attemptHistory;
-        try {
-          [checks,attemptHistory]=await Promise.all([loadChecks(run),run.run_attempt>1?loadAttemptHistory(run):[]]);
-        }
-        catch(error){if(!(error instanceof IncompleteJobsSnapshot))throw error;}
-        if(checks&&corroboratesAttempt(run,jobs,checks,attemptHistory)){
+        const [checks,attemptHistory]=await Promise.all([
+          readSnapshot(loadChecks,run),run.run_attempt>1?readSnapshot(loadAttemptHistory,run):[]
+        ]);
+        const corroborated=corroboratesAttempt(run,jobs,checks??[],attemptHistory??[],observedAttempts,observedChecks);
+        if(checks&&attemptHistory&&corroborated){
           snapshot=JSON.stringify(jobs.map(job=>[job.id,job.name,job.conclusion]).sort((a,b)=>a[0]-b[0]));
           if(snapshot===previous)return jobs;
         }

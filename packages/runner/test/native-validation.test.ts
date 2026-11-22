@@ -443,6 +443,10 @@ it('re-reads only the chosen completed run attempt while its jobs reach a termin
   const consistentlyPartial=vi.fn(async()=>[linux]);
   await expect(check(consistentlyPartial)).rejects.toThrow('incomplete job evidence');
   expect(consistentlyPartial).toHaveBeenCalledTimes(5);
+  const shrinkingChecks=vi.fn(async()=>checkRunsFor(run,[linux]))
+    .mockResolvedValueOnce(checkRunsFor(run,[linux,windows]));
+  await expect(check(async()=>[linux],{loadChecks:shrinkingChecks})).rejects.toThrow('incomplete job evidence');
+  expect(shrinkingChecks).toHaveBeenCalledTimes(5);
   const wrongSuite=vi.fn(async()=>checkRunsFor({...run,check_suite_id:run.check_suite_id+1},[linux,windows]));
   await expect(check(async()=>[linux,windows],{loadChecks:wrongSuite})).rejects.toThrow('check suite source mismatch');
   const rerun={...run,run_attempt:2,run_started_at:'2026-11-21T21:30:00Z'};
@@ -452,6 +456,18 @@ it('re-reads only the chosen completed run attempt while its jobs reach a termin
   const loadAttemptHistory=async()=>[linux,windows,rerunJob];
   await expect(check(async()=>[rerunJob],{loadChecks:bothAttempts,loadAttemptHistory,readRun:vi.fn(async()=>rerun)},rerun))
     .resolves.toMatchObject([{id:run.id,attempt:2,jobs:[{id:rerunJob.id}]}]);
+  const incompleteHistory=vi.fn(async()=>[rerunJob]).mockResolvedValueOnce([
+    rerunJob,{...linux,id:136985249962,run_attempt:2}
+  ]);
+  const latestChecks=vi.fn(async()=>inheritedWithPriorStart);
+  await expect(check(async()=>[rerunJob],{loadChecks:latestChecks,loadAttemptHistory:incompleteHistory},rerun))
+    .rejects.toThrow('incomplete job evidence');
+  const lateHistory=vi.fn(loadAttemptHistory).mockResolvedValueOnce([rerunJob]);
+  const disappearingOldChecks=vi.fn(async()=>inheritedWithPriorStart)
+    .mockResolvedValueOnce([...checkRunsFor(run,[linux,windows]),...inheritedWithPriorStart]);
+  await expect(check(async()=>[rerunJob],{loadChecks:disappearingOldChecks,loadAttemptHistory:lateHistory,
+    readRun:vi.fn(async()=>rerun)},rerun)).resolves.toMatchObject([{attempt:2,jobs:[{id:rerunJob.id}]}]);
+  expect(lateHistory).toHaveBeenCalledTimes(3);
   await expect(check(async()=>[linux,linux])).rejects.toThrow('incomplete job evidence');
   await expect(check(async()=>[linux,windows],{readRun:vi.fn(async()=>({...run,run_attempt:2}))})).rejects.toThrow('changed while reading');
   const noRead=vi.fn();
