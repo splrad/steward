@@ -1,9 +1,23 @@
 import { createHash } from 'node:crypto';
-import { requiredWorkflowBinding } from './required-workflow-binding.mjs';
+import { effectiveValidator, requiredWorkflowBinding, validatorRuleset } from './required-workflow-binding.mjs';
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const same = (a,b) => JSON.stringify(a) === JSON.stringify(b);
 const check = value => { if (!value) throw Error('CONTENT_RECOVERY_ARCHIVE'); };
 const sha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
+
+/** Keep the original digest address usable when a retained validator makes both generations identical. */
+export async function selectContentArchive(candidate, generatedDigest, {loadDocument, controllerSha, grant}) {
+  const transferDigest=controller=>hash(['content-archive-transfer/v1',generatedDigest,controller]);
+  const transfer=()=>({digest:transferDigest(controllerSha),transferBaseDigest:generatedDigest});
+  if(grant?.archiveContentDigest===generatedDigest)return transfer();
+  const prior=candidate.contentGenerationDigest;
+  if(prior!==generatedDigest) {
+    const saved=await loadDocument(`content/${candidate.id}/${prior}/manifest.json`);
+    if(saved?.input?.candidateId===candidate.id&&sha(saved.input.controllerSha)&&prior===transferDigest(saved.input.controllerSha)
+      &&saved.input.batches.some(batch=>batch.attempts.some(attempt=>attempt.recovery?.archiveContentDigest===generatedDigest)))return transfer();
+  }
+  return {digest:generatedDigest,transferBaseDigest:null};
+}
 
 // Reattach a specifically authorized archived receipt only after reproducing its full input identity.
 export async function restoreContentRecovery(work, cache, grant, { loadDocument, facts, protections, authorsDigest }) {
@@ -15,13 +29,16 @@ export async function restoreContentRecovery(work, cache, grant, { loadDocument,
   check(archived?.input && previous?.facts && previous?.protections && previous.facts.protectionsEvidencePath===protectionPath);
   check(archived.input.candidateId===grant.candidateId && work.input.candidateId===grant.candidateId);
   check(hash([previous.protections.branch,previous.protections.tags])===grant.archiveProtectionDigest);
+  check(facts.protectionsEvidencePath===`generated/protections-${hash([protections.branch,protections.tags])}.json`);
   const oldFacts={...previous.facts},newFacts={...facts};delete oldFacts.protectionsEvidencePath;delete newFacts.protectionsEvidencePath;
   check(same(oldFacts,newFacts));
-  const normalize=(value,controller)=>{
-    const copy=structuredClone(value),workflow=requiredWorkflowBinding({rules:copy.branch},'CONTENT_RECOVERY_ARCHIVE');
-    check(workflow.sha===controller);workflow.sha='approved-controller';return copy;
+  const normalize=value=>{
+    const copy=structuredClone(value);
+    const pin=effectiveValidator(copy.branch,{code:'CONTENT_RECOVERY_ARCHIVE'});
+    const workflow=requiredWorkflowBinding({rules:copy.branch.filter(rule=>rule.ruleset_id===validatorRuleset)},'CONTENT_RECOVERY_ARCHIVE');
+    check(workflow.sha===pin);workflow.sha='effective-validator';return copy;
   };
-  check(same(normalize(previous.protections,archived.input.controllerSha),normalize(protections,work.input.controllerSha)));
+  check(same(normalize(previous.protections),normalize(protections)));
   check(hash([hash(previous.facts),archived.input.configDigest,authorsDigest])===grant.archiveContentDigest);
   check(archived.input.batches.length===1 && work.input.batches.length===1 && work.input.units.length===1);
   const old=archived.input.batches[0],batch=work.input.batches[0];
@@ -30,7 +47,8 @@ export async function restoreContentRecovery(work, cache, grant, { loadDocument,
     && old.attempts[0].status==='REJECTED' && old.attempts[0].errorCode==='CONTENT_OUTPUT_SCHEMA' && !old.attempts[0].recovery
     && hash(old.attempts[0])===grant.previousAttemptSha256);
   const inputIdentity=value=>{const copy=structuredClone(value);delete copy.batches;delete copy.controllerSha;delete copy.sourceManifestDigest;return copy;};
-  check(sha(archived.input.controllerSha) && sha(work.input.controllerSha) && same(inputIdentity(archived.input),inputIdentity(work.input)));
+  check(sha(archived.input.controllerSha) && sha(work.input.controllerSha) && archived.input.controllerSha!==work.input.controllerSha
+    && same(inputIdentity(archived.input),inputIdentity(work.input)));
   check(['id','stage','unitIds','sourceIds','inputDigest'].every(k=>same(old[k],batch[k])));
   check(archived.payloadPaths[old.id]===root+`batches/${old.id}.json` && archived.evidencePath===root+'source-manifest.json');
   const payload=await loadDocument(archived.payloadPaths[old.id]),evidence=await loadDocument(archived.evidencePath);

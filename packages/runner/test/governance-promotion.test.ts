@@ -86,16 +86,38 @@ function rulesFixture(mode='success'){
     return {status:200};
   }};
 }
-it.each(['success','lost','unchanged','third'])('promotes only registered workflow SHA with native reconciliation: %s',async mode=>{
-  const f=rulesFixture(mode),assertCurrent=vi.fn();const result=await (await module()).promoteRequiredWorkflow(f,M,assertCurrent,f.record);
-  expect(result).toMatchObject({status:'ADOPTED',sha:M,targets:[{rulesetId:18883080,status:'ADOPTED',sha:M}]});expect(f.writes).toBe(['unchanged','third'].includes(mode)?2:1);
+const compare={compare:async(before:string,after:string)=>({changed:before!==after})};
+it.each(['success','lost','unchanged'])('promotes only registered workflow SHA with native reconciliation: %s',async mode=>{
+  const f=rulesFixture(mode),assertCurrent=vi.fn(),beforeWrite=vi.fn(async()=>expect(f.writes).toBe(0));
+  const result=await (await module()).promoteRequiredWorkflow(f,M,assertCurrent,f.record,{...compare,beforeWrite});
+  expect(beforeWrite).toHaveBeenCalledWith(P,M,expect.any(Function));
+  expect(result).toMatchObject({status:'ADOPTED',sha:M,controllerSha:M,targets:[{rulesetId:18883080,status:'ADOPTED',sha:M}]});expect(f.writes).toBe(mode==='unchanged'?2:1);
   expect(f.current.rules[1]).toEqual(rule().rules[1]);expect(f.current.rules[2]!.parameters!.workflows![1]).toEqual(rule().rules[2]!.parameters!.workflows![1]);
   expect(f.records.some(r=>r.kind==='rules-after')).toBe(true);
 });
+it('retains the effective workflow for an unchanged closure and never overwrites a third pin',async()=>{
+  const {promoteRequiredWorkflow}=await module();
+  const f=rulesFixture(),beforeWrite=vi.fn();
+  const state=await promoteRequiredWorkflow(f,M,async()=>{},f.record,{compare:async(before:string,after:string)=>{
+    expect([before,after]).toEqual([P,M]);return {changed:false};},beforeWrite});
+  expect(state).toMatchObject({status:'UNCHANGED',sha:P,controllerSha:M});
+  await state.verifyCurrent();
+  expect(f.writes).toBe(0);expect(beforeWrite).not.toHaveBeenCalled();
+  const drift=rulesFixture('third');
+  await expect(promoteRequiredWorkflow(drift,M,async()=>{},drift.record,compare)).rejects.toThrow('VALIDATOR_PIN_MOVED');
+  expect(drift.writes).toBe(1);expect(shaBinding(drift.current).sha).toBe(T);
+});
+it('leaves a validator rotation deferred during unresolved PR recovery and verifies the independent controller path',async()=>{
+  const {promoteRequiredWorkflow}=await module(),f=rulesFixture();
+  const result=await promoteRequiredWorkflow(f,M,async()=>{},f.record,{...compare,beforeWrite:async()=>false});
+  expect(result).toMatchObject({status:'DEFERRED',sha:P,controllerSha:M});
+  await result.verifyCurrent();
+  expect(f.writes).toBe(0);
+});
 it('unmergeable concurrent rule change records before/after and stops; moved main cannot write',async()=>{
   const {promoteRequiredWorkflow}=await module(),f=rulesFixture('external');
-  await expect(promoteRequiredWorkflow(f,M,async()=>{},f.record)).rejects.toThrow('EXTERNAL_RULE_CHANGE');expect(f.writes).toBe(1);
-  const other=rulesFixture();await expect(promoteRequiredWorkflow(other,M,async()=>{throw Error('MAIN_MOVED');},other.record)).rejects.toThrow('MAIN_MOVED');expect(other.writes).toBe(0);
+  await expect(promoteRequiredWorkflow(f,M,async()=>{},f.record,compare)).rejects.toThrow('EXTERNAL_RULE_CHANGE');expect(f.writes).toBe(1);
+  const other=rulesFixture();await expect(promoteRequiredWorkflow(other,M,async()=>{throw Error('MAIN_MOVED');},other.record,compare)).rejects.toThrow('MAIN_MOVED');expect(other.writes).toBe(0);
 });
 it('already adopted source is a read-only NOP',async()=>{
   const f=rulesFixture();shaBinding(f.current).sha=M;expect(await (await module()).promoteRequiredWorkflow(f,M,async()=>{},f.record)).toMatchObject({status:'ALREADY_ADOPTED',sha:M});expect(f.writes).toBe(0);
@@ -144,6 +166,12 @@ it('uses the independent Governance App, one repository, exact permissions and r
 it('wires trusted native validation and serialized promotion without upstream artifacts or caches',async()=>{
   const {validationJobNames}=await module(),native=YAML.parse(await readFile('.github/workflows/pr-validation-native.yml','utf8'));
   expect(validationJobNames(native)).toEqual(['Validation scope','Product CI evidence','Governance scans','Dependency review','Documentation links','SPLRAD Validation']);expect(JSON.stringify(native)).not.toMatch(/PRIVATE_KEY|environment|secrets\./);
+  for(const [jobName,consumer] of [['governance','validation-governance.mjs'],['dependency','validation-private-dependencies.mjs']]){
+    const steps=native.jobs[jobName!].steps;
+    const checkout=steps.find((step:any)=>step.with?.path==='policy');
+    expect(checkout.with).toMatchObject({repository:'${{ job.workflow_repository }}',ref:'${{ job.workflow_sha }}','fetch-depth':0});
+    expect(steps.findIndex((step:any)=>step.run?.includes(consumer))).toBeGreaterThan(steps.indexOf(checkout));
+  }
   const promote=YAML.parse(await readFile('.github/workflows/governance-promotion.yml','utf8')),bootstrap=YAML.parse(await readFile('.github/workflows/sync-managed.yml','utf8'));
   expect(promote.on.workflow_run).toEqual({workflows:['SPLRAD Steward / Native Validation'],types:['completed'],branches:['main']});
   expect(promote.on.schedule).toEqual([{cron:'37 1 * * *'}]);expect(promote.jobs.promote.concurrency).toEqual(bootstrap.jobs.bootstrap.concurrency);
@@ -207,13 +235,13 @@ it('does not include arbitrary exception content in failure evidence',async()=>{
 
 it('stops before writing when the default-branch protection changes',async()=>{
   const f=rulesFixture('pre-change');
-  await expect((await module()).promoteRequiredWorkflow(f,M,async()=>{},f.record)).rejects.toThrow('TARGET_PROTECTION_CHANGED');
+  await expect((await module()).promoteRequiredWorkflow(f,M,async()=>{},f.record,compare)).rejects.toThrow('TARGET_PROTECTION_CHANGED');
   expect(f.writes).toBe(0);
 });
 it.each(['before tag write','after tag write'])('checks the adopted default-branch protection during publication: %s',async when=>{
   const {promoteRequiredWorkflow,publishPromotedSources}=await module();
   const f=rulesFixture();
-  const {verifyCurrent}=await promoteRequiredWorkflow(f,M,async()=>{},f.record);
+  const {verifyCurrent}=await promoteRequiredWorkflow(f,M,async()=>{},f.record,compare);
   const plan={status:'CREATE',commit:M,tag:'v1.0.1',tags:{}};
   const tagRef={ref:'refs/tags/v1.0.1',object:{type:'commit',sha:M}};
   const writes:string[]=[];
@@ -241,6 +269,6 @@ it.each(['sha','protection'])('rejects default-branch drift during final evidenc
     if(kind==='sha')shaBinding(f.current).sha=T;
     else f.current.name='concurrent final edit';
   };
-  await expect((await module()).promoteRequiredWorkflow(f,M,async()=>{},record))
+  await expect((await module()).promoteRequiredWorkflow(f,M,async()=>{},record,compare))
     .rejects.toThrow(kind==='sha'?'TARGET_READBACK':'TARGET_PROTECTION_CHANGED');
 });

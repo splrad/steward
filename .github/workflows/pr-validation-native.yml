@@ -1,4 +1,5 @@
 name: SPLRAD Steward / Native Validation
+run-name: ${{ github.event_name == 'pull_request' && format('Native validation PR {0} / {1} / {2}', github.event.pull_request.number, github.event.pull_request.head.sha, github.event.pull_request.base.ref) || format('Native validation {0}', github.ref) }}
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -19,7 +20,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
-      source: ${{ steps.identity.outputs.workflows != '[]' && 'true' || steps.identity.outputs.productApplicable == 'false' && 'false' || steps.scope.outputs.source }}
+      source: ${{ steps.identity.outputs.productApplicable }}
       dependency: ${{ startsWith(steps.identity.outputs.dependencyMode, 'private-') && 'true' || steps.scope.outputs.dependency }}
       dependency-mode: ${{ steps.identity.outputs.dependencyMode }}
       docs: ${{ steps.scope.outputs.docs }}
@@ -129,6 +130,7 @@ jobs:
     timeout-minutes: 65
     permissions:
       actions: read
+      checks: read
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -278,7 +280,7 @@ jobs:
           WORKFLOW_PATH: ${{ job.workflow_file_path }}
         run: |
           printf 'WORKFLOW_REPOSITORY=%s\nWORKFLOW_SHA=%s\nWORKFLOW_PATH=%s\n' "$WORKFLOW_REPOSITORY" "$WORKFLOW_SHA" "$WORKFLOW_PATH" >> "$GITHUB_ENV"
-      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+      - uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.1
         if: needs.scope.outputs.dependency-mode == 'native'
         with:
           base-ref: ${{ needs.scope.outputs.base }}

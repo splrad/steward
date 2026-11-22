@@ -10,6 +10,7 @@ import {downloadArtifactArchive} from '../packages/runner/dist/index.js';
 import {authorized,configurationAccess,fileText,requestPath} from './configuration-authorization.mjs';
 import {matchesMatrixName,observedArchiveTemplate,runArchiveName,staticMatrixRows} from './configuration-build.mjs';
 import {channelUploadSteps,prepareTarget,trialKey} from './configuration-selection.mjs';
+import {effectiveValidator,matchesValidationPull,sameValidationHead,validatorRunSource} from './required-workflow-binding.mjs';
 
 export const must=(value,message)=>{if(!value) throw Error(message);};
 export const positive=value=>{must(/^[1-9][0-9]*$/.test(String(value))&&Number.isSafeInteger(Number(value)),'Invalid numeric identity');return Number(value);};
@@ -321,20 +322,35 @@ export async function dispatchTrial(api,actions,repo,base,head,target,recipe) {
     inputs:{head,unit:target.unit,target:target.target,key,runner:recipe.runner,output:recipe.output,tools:JSON.stringify(recipe.tools)}});
 }
 export async function rerunValidation(api,actions,pr,granted=true,wait=delay) {
+  const readPin=async()=>effectiveValidator(await api.paginate(api.rest.repos.getBranchRules,
+    {...api.target,branch:pr.base.ref,per_page:100}));
+  const pin=await readPin();
   const runs=await api.paginate(api.rest.actions.listWorkflowRunsForRepo,{...api.target,head_sha:pr.head.sha,event:'pull_request',per_page:100});
-  for(let run of runs.filter(r=>r.path.endsWith('/pr-validation-native.yml'))) {
-    if(run.pull_requests?.length && !run.pull_requests.some(p=>p.number===pr.number))continue;
+  let legacy;
+  for(let run of runs.filter(run=>sameValidationHead(run,pr)).sort((a,b)=>b.id-a.id)) {
+    if(await validatorRunSource(api.graphql.bind(api),run)!==pin)continue;
+    if(!matchesValidationPull(run,pr)) {
+      // A retained, older validator may have no native PR association or structured title.
+      if(run.pull_requests?.length||run.display_title!==pr.title||!pr.created_at||run.created_at<pr.created_at)continue;
+      legacy??=await api.paginate(api.rest.pulls.list,{...api.target,state:'all',head:`${pr.head.repo.owner.login}:${pr.head.ref}`,per_page:100});
+      const owners=legacy.filter(p=>p.head.sha===pr.head.sha&&p.head.repo?.id===pr.head.repo.id
+        &&p.head.ref===pr.head.ref&&p.created_at<=run.created_at&&(p.state==='open'||p.closed_at>=run.created_at));
+      if(owners.length!==1||owners[0].number!==pr.number)continue;
+    }
     // A running scope may have observed the preceding approval. GitHub permits job reruns after completion.
     while(run.status!=='completed') {
       await wait(10000);
       const current=(await api.rest.pulls.get({...api.target,pull_number:pr.number})).data;
-      if(current.state!=='open' || current.head.sha!==pr.head.sha)return;
-      run=(await api.rest.actions.getWorkflowRun({...api.target,run_id:run.id})).data;
+      if(current.state!=='open'||current.head.sha!==pr.head.sha||current.base.ref!==pr.base.ref||await readPin()!==pin)return;
+      const before=run;
+      run=(await api.rest.actions.getWorkflowRun({...api.target,run_id:before.id})).data;
+      if(run.id!==before.id||run.node_id!==before.node_id||!sameValidationHead(run,pr))return;
     }
     const jobs=await api.paginate(api.rest.actions.listJobsForWorkflowRunAttempt,{...api.target,run_id:run.id,attempt_number:run.run_attempt,per_page:100});
     const previous=granted?'failure':'success';
     const scope=jobs.find(job=>job.name==='Validation scope' && job.steps?.some(step=>step.name==='Authorize repository configuration' && step.conclusion===previous));
-    if(scope)await actions.rest.actions.reRunJobForWorkflowRun({...api.target,job_id:scope.id});
+    if(scope&&await readPin()===pin)await actions.rest.actions.reRunJobForWorkflowRun({...api.target,job_id:scope.id});
+    return;
   }
 }
 

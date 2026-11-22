@@ -3,11 +3,18 @@ import { decodeBuildJson } from './build-manifest.js';
 import { sha256Hex } from './fingerprint.js';
 import { validateCandidateFiles } from './release-candidate.js';
 import { verifyContentAttemptReceipts, retryableContentRejection, validateContentInput, validateContentResult } from './release-content.js';
+import { isConditionalTemplate } from './conditional-release-notes.js';
+import { assertDeliveryPath } from './delivery-config.js';
 
 export interface CandidateArchiveChunk {
   schemaVersion: 1; repositoryId: number; candidateId: string;
   documentKind: 'session' | 'content' | 'cache' | 'generated' | 'adoption' | 'native-input' | 'content-result' | 'content-payload' | 'content-evidence' | 'cache-entry' | 'merged-candidate' | 'repair-decision';
   documentDigest: string; index: number; count: number; content: string;
+}
+export interface LegacyNotesTemplate {
+  sourceSha: string;
+  sha256: string;
+  controllerSha?: string;
 }
 const exact = (value: any, keys: string[]) => { if (!value || typeof value !== 'object' || Array.isArray(value)
   || Object.keys(value).sort().join(',') !== [...keys].sort().join(',')) throw new Error('CANDIDATE_RECORD_FIELDS'); };
@@ -30,10 +37,18 @@ function snapshot(value: any) {
   for (const unit of value.units) { exact(unit, ['id', 'path', 'version', 'tag']); if (Object.values(unit).some(v => typeof v !== 'string' || !v)) throw new Error('CANDIDATE_UNIT_INVALID'); }
 }
 function candidateIdentity(identity: any) {
-  exact(identity, ['authorsDigest', 'sourceDigest', 'actors', 'contributors', 'units']);
+  const conditional = typeof identity?.noteTemplate === 'string' && isConditionalTemplate(identity.noteTemplate);
+  exact(identity, ['authorsDigest', 'sourceDigest', 'actors', 'contributors', 'units',
+    ...(conditional ? ['noteTemplate'] : []),
+    ...(conditional && identity.contributorMode === 'github-authors' ? ['contributorMode'] : [])]);
   if (!/^[a-f0-9]{64}$/.test(identity.authorsDigest) || !/^[a-f0-9]{64}$/.test(identity.sourceDigest)
     || !Array.isArray(identity.actors) || !Array.isArray(identity.units)) throw new Error('CANDIDATE_IDENTITY_INVALID');
-  for (const unit of identity.units) { exact(unit, ['id', 'actors', 'contributors']); if (!Array.isArray(unit.actors)) throw new Error('CANDIDATE_IDENTITY_INVALID'); }
+  for (const unit of identity.units) {
+    const hasNotesPath = typeof unit?.notesPath === 'string';
+    exact(unit, ['id', 'actors', 'contributors', ...(hasNotesPath ? ['notesPath'] : [])]);
+    if (!Array.isArray(unit.actors)) throw new Error('CANDIDATE_IDENTITY_INVALID');
+    if (hasNotesPath) assertDeliveryPath(unit.notesPath);
+  }
 }
 export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[]): Promise<any> {
   if (!chunks.length) throw new Error('CANDIDATE_ARCHIVE_MISSING');
@@ -45,15 +60,15 @@ export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[]): 
   const value = JSON.parse(text);
   if (first.documentKind === 'generated') snapshot(value);
   else if (first.documentKind === 'content') {
-    exact(value, ['input', 'payloadPaths', 'evidencePath']); validateContentInput(value.input);
+    exact(value, ['input', 'payloadPaths', 'evidencePath', ...(value.conditional === true ? ['conditional'] : [])]); validateContentInput(value.input);
     if (value.input.repositoryId !== first.repositoryId || value.input.candidateId !== first.candidateId) throw new Error('CONTENT_ARCHIVE_IDENTITY');
     for (const batch of value.input.batches) {
-      await verifyContentAttemptReceipts(batch.attempts);
+      await verifyContentAttemptReceipts(batch.attempts, value.conditional === true);
       if (typeof value.payloadPaths[batch.id] !== 'string' || !value.payloadPaths[batch.id].startsWith(`content/${first.candidateId}/`)) throw new Error('CONTENT_PAYLOAD_PATH');
     }
     if (typeof value.evidencePath !== 'string' || !value.evidencePath.startsWith(`content/${first.candidateId}/`)) throw new Error('CONTENT_EVIDENCE_PATH');
   } else if (first.documentKind === 'content-payload') {
-    exact(value, ['stage', 'unitIds', 'units', 'sources', 'items', 'background']);
+    exact(value, ['stage', 'unitIds', 'units', 'sources', 'items', 'background', ...(value.conditional === true ? ['conditional'] : [])]);
     if (!['DRAFT', 'CONTEXT', 'DIFF', 'COMPOSE'].includes(value.stage) || !Array.isArray(value.sources) || !Array.isArray(value.items) || !Array.isArray(value.background)) throw new Error('CONTENT_PAYLOAD_INVALID');
   } else if (first.documentKind === 'content-evidence') {
     exact(value, ['manifests', 'gaps']);
@@ -67,12 +82,13 @@ export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[]): 
     }
   } else if (first.documentKind === 'cache-entry') {
       const entry = value;
-      exact(entry, ['inputDigest', 'configDigest', 'attempts', 'result', ...('split' in entry ? ['split'] : [])]);
+      exact(entry, ['inputDigest', 'configDigest', 'attempts', 'result', ...('split' in entry ? ['split'] : []),
+        ...(entry.conditional === true ? ['conditional'] : [])]);
       if (!/^[a-f0-9]{64}$/.test(entry.inputDigest) || !/^[a-f0-9]{64}$/.test(entry.configDigest)
         || !Array.isArray(entry.attempts)
         || entry.attempts.length > 3 && entry.attempts.slice(0, -1).some((attempt: any) => !attempt || !retryableContentRejection(attempt))
         || 'split' in entry && typeof entry.split !== 'boolean') throw new Error('CONTENT_CACHE_INVALID');
-    await verifyContentAttemptReceipts(entry.attempts);
+    await verifyContentAttemptReceipts(entry.attempts, entry.conditional === true);
   } else if (first.documentKind === 'session') {
     exact(value, ['generated', 'pending', 'identity', 'conflict', 'preview', 'adoption', ...('manualValidation' in value ? ['manualValidation'] : [])]);
     if(value.manualValidation!==undefined&&value.manualValidation!==null) {
@@ -98,11 +114,13 @@ export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[]): 
     if (value.preview !== null && typeof value.preview !== 'string') throw new Error('CANDIDATE_PREVIEW_INVALID');
     if (value.adoption) exact(value.adoption, ['humanHead', 'generatedBase', 'differences']);
   } else if (first.documentKind === 'content-result') {
-    exact(value, ['stage', 'sourceIds', 'result']);
+    exact(value, ['stage', 'sourceIds', 'result', ...(value.conditional === true ? ['conditional'] : [])]);
     if (!['DRAFT', 'CONTEXT', 'DIFF', 'COMPOSE'].includes(value.stage) || !Array.isArray(value.sourceIds)) throw new Error('CONTENT_RESULT_INVALID');
-    validateContentResult(value.stage, JSON.stringify(value.result), value.sourceIds);
+    validateContentResult(value.stage, JSON.stringify(value.result), value.sourceIds, [], undefined, value.conditional === true);
   } else if (first.documentKind === 'merged-candidate') {
-    exact(value, ['schemaVersion', 'cycleId', 'sourceSha', 'stateCommit', 'candidate', 'session', 'pull', 'documents']);
+    const hasLegacyTemplate = value && Object.hasOwn(value, 'legacyNotesTemplate');
+    exact(value, ['schemaVersion', 'cycleId', 'sourceSha', 'stateCommit', 'candidate', 'session', 'pull', 'documents',
+      ...(hasLegacyTemplate ? ['legacyNotesTemplate'] : [])]);
     exact(value.pull, ['number', 'head', 'branch', 'base', 'repositoryId', 'mergedAt', 'mergeCommitSha']);
     exact(value.candidate, ['id', 'prNumber', 'branch', 'baseSha', 'generatedSnapshotPath', 'publishedHead', ...('editingAckHead' in value.candidate ? ['editingAckHead'] : []), 'statusCommentId',
       'contentGenerationDigest', 'adoptionOverride', 'observedLabelEventIds', 'pendingWrite']);
@@ -115,6 +133,19 @@ export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[]): 
       || !Array.isArray(value.documents) || !value.documents.length) throw new Error('MERGED_CANDIDATE_IDENTITY');
     const sessionText = JSON.stringify(value.session);
     await decodeCandidateDocument([{ ...first, documentKind: 'session', index: 0, count: 1, content: sessionText, documentDigest: await sha256Hex(sessionText) }]);
+    if (hasLegacyTemplate) {
+      const template = value.legacyNotesTemplate, manual = value.session.manualValidation;
+      const pinnedController = typeof template === 'object' && template !== null && Object.hasOwn(template, 'controllerSha');
+      exact(template, ['sourceSha', 'sha256', ...(pinnedController ? ['controllerSha'] : [])]);
+      if (pinnedController && (typeof template.controllerSha !== 'string' || !/^[a-f0-9]{40}$/.test(template.controllerSha)))
+        throw new Error('MERGED_CANDIDATE_LEGACY_TEMPLATE');
+      if (!manual || manual.schemaVersion === 3 || manual.headSha !== value.pull.head
+        || manual.prNumber !== value.pull.number || manual.branch !== value.pull.branch || value.session.identity.noteTemplate !== undefined
+        || value.session.identity.sourceDigest !== value.session.generated.sourceDigest
+        || template.sourceSha !== value.session.generated.baseSha || template.sourceSha !== value.candidate.baseSha
+        || template.sourceSha === manual.sourceSha || template.sourceSha === value.sourceSha || !/^[a-f0-9]{64}$/.test(template.sha256))
+        throw new Error('MERGED_CANDIDATE_LEGACY_TEMPLATE');
+    }
     const paths = new Set<string>();
     for (const document of value.documents) {
       exact(document, ['path', 'sha256']);

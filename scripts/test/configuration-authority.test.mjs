@@ -18,6 +18,14 @@ import YAML from 'yaml';
 const A='a'.repeat(40),B='b'.repeat(40),C='c'.repeat(40),actor={id:12,login:'maintainer',type:'User'};
 const repo={id:21,full_name:'splrad/sample',default_branch:'trunk',owner:{login:'splrad'}};
 const response=data=>({data});
+const validationPath='.github/workflows/pr-validation-native.yml';
+const pull={number:1,changed_files:1,head:{sha:A,ref:'configured',repo},base:{ref:'trunk',repo},state:'open'};
+const rule=pin=>({type:'workflows',ruleset_id:18883080,ruleset_source:'splrad',ruleset_source_type:'Organization',
+  parameters:{workflows:[{repository_id:1296724484,path:validationPath,sha:pin}]}});
+const validationRun=(id=88)=>({id,node_id:String(id),path:validationPath,event:'pull_request',repository:repo,
+  head_repository:repo,head_branch:pull.head.ref,head_sha:A,display_title:`Native validation PR 1 / ${A} / trunk`,
+  pull_requests:[],status:'completed',run_attempt:1});
+const validationFile=pin=>({node:{file:{path:validationPath,repositoryFileUrl:`https://github.com/splrad/steward/blob/${pin}/${validationPath}`}}});
 function fake(contents) {
   const getTree=async({tree_sha})=>{
     const [ref,...parts]=tree_sha.split('/'),prefix=[ref,...parts,''].join('/');
@@ -32,8 +40,8 @@ function fake(contents) {
     const value=contents.get(ref+'/'+path);
     if(value===undefined) throw Object.assign(Error('Missing'),{status:404});
     return response({type:'file',encoding:'base64',content:Buffer.from(value).toString('base64')});
-  },getBranch:async()=>response({commit:{sha:B}}),getCollaboratorPermissionLevel:async()=>response({permission:'admin',user:actor})},
-  pulls:{get:async()=>response({number:1,changed_files:1,head:{sha:A},base:{ref:'trunk'},state:'open'}),listFiles:()=>{},listReviews:()=>{}},
+  },getBranch:async()=>response({commit:{sha:B}}),getCollaboratorPermissionLevel:async()=>response({permission:'admin',user:actor}),getBranchRules:()=>{}},
+  pulls:{get:async()=>response(structuredClone(pull)),listFiles:()=>{},listReviews:()=>{}},
   issues:{listComments:()=>{}},actions:{getWorkflowRun:async()=>{},listWorkflowRuns:()=>{},listJobsForWorkflowRunAttempt:()=>{}}}};
 }
 test('manual run and rerun both require live administrator or delegated identity before any mutation',async()=>{
@@ -212,10 +220,12 @@ test('re-evaluates the required scope on approved, dismissed, and edited reviews
   api.paginate=async method=>{
     if(method===api.rest.pulls.listFiles)return [{filename:ci}];
     if(method===api.rest.pulls.listReviews)return [review];
-    if(method===runs)return [{id:88,path:'.github/workflows/pr-validation-native.yml',status:'completed',run_attempt:1}];
+    if(method===api.rest.repos.getBranchRules)return [rule(B)];
+    if(method===runs)return [validationRun()];
     if(method===api.rest.actions.listJobsForWorkflowRunAttempt)return [{id:5,name:'Validation scope',steps:[{name:'Authorize repository configuration',conclusion:scopeConclusion}]}];
     return [];
   };
+  api.graphql=async()=>validationFile(B);
   const actions={rest:{actions:{reRunJobForWorkflowRun:async({job_id})=>{
     assert.equal(job_id,5);rechecked++;
     try {await authorizePull(api,1,A,'trunk');scopeConclusion='success';}
@@ -228,7 +238,8 @@ test('re-evaluates the required scope on approved, dismissed, and edited reviews
   review.state='APPROVED';await reconcileReview();
   assert.equal(rechecked,2);assert.equal(scopeConclusion,'success');
   review.state='COMMENTED';review.body='';review.node_id='review';
-  api.graphql=async()=>({node:{author:{login:actor.login},editor:{login:actor.login},body:review.body,lastEditedAt:'2026-11-20T00:00:00Z'}});
+  api.graphql=async query=>query.includes('WorkflowRun')?validationFile(B):
+    {node:{author:{login:actor.login},editor:{login:actor.login},body:review.body,lastEditedAt:'2026-11-20T00:00:00Z'}};
   await reconcileReview();
   assert.equal(rechecked,3);assert.equal(scopeConclusion,'failure');
   review.body='/steward approve-configuration';await reconcileReview();
@@ -240,10 +251,15 @@ test('re-evaluates the required scope on approved, dismissed, and edited reviews
 test('retries only the configuration authorization step failure',async()=>{
   const api=fake(new Map()),retry=[];
   api.rest.actions.listWorkflowRunsForRepo=()=>{};
-  api.paginate=async method=>method===api.rest.actions.listWorkflowRunsForRepo?[{id:3,path:'.github/workflows/pr-validation-native.yml',conclusion:'failure',status:'completed',run_attempt:1}]:
-    [{id:5,name:'Validation scope',conclusion:'failure',steps:[{name:'Install dependencies',conclusion:'failure'}]},
+  api.graphql=async(_,variables)=>validationFile(variables.id==='4'?C:B);
+  api.paginate=async(method,args)=>{
+    if(method===api.rest.repos.getBranchRules)return [rule(B)];
+    if(method===api.rest.actions.listWorkflowRunsForRepo)return [validationRun(4),validationRun(3)];
+    assert.equal(args.run_id,3);
+    return [{id:5,name:'Validation scope',conclusion:'failure',steps:[{name:'Install dependencies',conclusion:'failure'}]},
       {id:6,name:'Validation scope',conclusion:'failure',steps:[{name:'Authorize repository configuration',conclusion:'failure'}]}];
-  await rerunValidation(api,{rest:{actions:{reRunJobForWorkflowRun:async args=>retry.push(args.job_id)}}},{head:{sha:A}});
+  };
+  await rerunValidation(api,{rest:{actions:{reRunJobForWorkflowRun:async args=>retry.push(args.job_id)}}},pull);
   assert.deepEqual(retry,[6]);
 });
 test('an existing container job with a service can provide bound native evidence without translating its commands',async()=>{

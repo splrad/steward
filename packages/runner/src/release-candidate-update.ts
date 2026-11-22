@@ -12,6 +12,9 @@ import { buildStrategy } from 'release-please/build/src/factory.js';
 import type { Scm } from 'release-please/build/src/scm.js';
 import { isolatedBuildEnvironment } from './build-environment.js';
 import { validateCandidateFiles, type CandidateFile, type CandidateSnapshot } from '../../core/src/release-candidate.js';
+import { productReleaseTemplatePath } from '../../core/src/release-template.js';
+import { reviewedConditionalReleaseTemplate } from '../../core/src/conditional-release-notes.js';
+import { previousReleaseTemplatePin } from './release-template-source.js';
 
 const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 const sha = (value: string) => { if (!/^[a-f0-9]{40}$/.test(value)) throw new Error('CANDIDATE_SHA_INVALID'); return value; };
@@ -264,6 +267,54 @@ export async function candidateTreeMatches(workspace: string, head: string, base
       }
     }
     return actual.size === expected.size && [...expected].every(([path, value]) => JSON.stringify(actual.get(path)) === JSON.stringify(value));
+  } finally { await rm(profile, { recursive: true, force: true }); }
+}
+/** Verify the exact template and the bookkeeping changes from its normal repository delivery. */
+export async function candidateTemplateAdoption(workspace: string, head: string, baseSha: string, source: {
+  template: string; controller?: {workflow?: string; pin: string; reviewedTemplate: string; readTemplate?: ((pin: string) => Promise<string>) | undefined};
+}, temporaryRoot: string) {
+  const profile = await mkdtemp(join(temporaryRoot, 'steward-candidate-template-'));
+  try {
+    const actual = await tree(workspace, profile, head), expected = await tree(workspace, profile, baseSha);
+    const utf8 = new TextDecoder('utf-8', { fatal: true });
+    const read = async (oid: string) => utf8.decode(await git(workspace, profile, ['cat-file', 'blob', oid]));
+    let oldPin: string | null = null;
+    if (source.controller?.workflow) {
+      const path = source.controller.workflow, before = expected.get(path), after = actual.get(path);
+      if (!before || !after || !['100644','100755'].includes(before.mode) || after.mode !== before.mode) return false;
+      oldPin = previousReleaseTemplatePin(await read(before.content), await read(after.content), source.controller.pin);
+      if (!oldPin) return false;
+      expected.set(path,after);
+    } else if (source.controller) {
+      // A historical candidate without a declared workflow can use the active
+      // controller for preview. Its approved prior bytes are in the protected
+      // candidate archive, and the product must have no local template at either base.
+      if (actual.has(productReleaseTemplatePath) || expected.has(productReleaseTemplatePath)) return false;
+    } else {
+      const bytes = Buffer.from(source.template);
+      const oid = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+      expected.set(productReleaseTemplatePath, { path: productReleaseTemplatePath, mode:'100644', content:oid });
+    }
+    if (actual.size !== expected.size) return false;
+    const copierRelease = /^_commit: v\d+\.\d+\.\d+$/gm;
+    const repositoryRules = '\n<!-- BEGIN SPLRAD REPOSITORY REVIEW RULES -->\n\n<!-- END SPLRAD REPOSITORY REVIEW RULES -->\n';
+    for (const [path, before] of expected) {
+      const after = actual.get(path);
+      if (after?.content === before.content && after.mode === before.mode) continue;
+      if (!after || before.mode !== '100644' || after.mode !== '100644'
+        || (path !== '.copier-answers.yml' && path !== 'AGENTS.md')) return false;
+      const oldText = await read(before.content), newText = await read(after.content);
+      if (path === 'AGENTS.md') {
+        if (newText !== oldText + repositoryRules) return false;
+      } else if (!oldText.includes('_src_path: https://github.com/splrad/steward.git\n')
+        || oldText.match(copierRelease)?.length !== 1 || newText.match(copierRelease)?.length !== 1
+        || oldText.replace(copierRelease, '') !== newText.replace(copierRelease, '')) return false;
+    }
+    if (!source.controller?.workflow) return true;
+    if (!oldPin || !source.controller.readTemplate) return false;
+    const previousTemplate = await source.controller.readTemplate(oldPin), reviewed = source.controller.reviewedTemplate;
+    return previousTemplate === reviewed
+      || (previousTemplate === source.template && await reviewedConditionalReleaseTemplate(previousTemplate, reviewed) === reviewed);
   } finally { await rm(profile, { recursive: true, force: true }); }
 }
 /** Restore exact archived objects in an isolated repository, then normal fast-forward push only. */

@@ -52,7 +52,7 @@ test('protection removed after an unconfirmed pin write blocks its retry',async(
   }};
   const guard=createSourceGuard(io,app,async()=>{}),records=[];
   await guard();
-  await assert.rejects(promoteRequiredWorkflow(io,target,guard,async r=>records.push(r)),/RULE_IDENTITY/);
+  await assert.rejects(promoteRequiredWorkflow(io,target,guard,async r=>records.push(r),{compare:async()=>({changed:true})}),/RULE_IDENTITY/);
   assert.equal(writes,1);assert.ok(records.some(r=>r.kind==='rules-after'));
 });
 

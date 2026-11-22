@@ -11,6 +11,11 @@ export interface CandidateSnapshot {
 }
 export interface RepositoryAuthor { id: number; evidence: string }
 export interface ReleaseActor extends GitHubActor { profileUrl: string; avatarUrl: string }
+type ReleaseContributorPolicy = readonly Pick<RepositoryAuthor, 'id'>[] | 'github-authors';
+
+function isServiceLogin(login: string): boolean {
+  return /^(?:bot|automation|service|svc|ci)(?:-|$)|-(?:bot|automation|service|svc)$/i.test(login);
+}
 import type {ReleaseContributor} from './candidate-note.js';
 export type {ReleaseContributor} from './candidate-note.js';
 export function validateCandidateFiles(files: readonly CandidateFile[]) {
@@ -25,15 +30,20 @@ export function validateCandidateFiles(files: readonly CandidateFile[]) {
   }
 }
 /** Native numeric identities, never name/email heuristics or maintainer inference. */
-export function selectReleaseContributors(actors: readonly (ReleaseActor | null)[], authors: readonly RepositoryAuthor[]) {
-  if (!authors.length || authors.some(a => !Number.isSafeInteger(a.id) || a.id <= 0 || !a.evidence.trim())
-    || new Set(authors.map(a => a.id)).size !== authors.length) throw new Error('AUTHOR_IDENTITY_UNVERIFIED');
-  const excluded = new Set(authors.map(a => a.id)), selected = new Map<number, ReleaseContributor>();
+export function selectReleaseContributors(actors: readonly (ReleaseActor | null)[], authors: readonly RepositoryAuthor[],
+  policy?: ReleaseContributorPolicy) {
+  if (!policy && (!authors.length || authors.some(a => !Number.isSafeInteger(a.id) || a.id <= 0 || !a.evidence.trim())
+    || new Set(authors.map(a => a.id)).size !== authors.length)) throw new Error('AUTHOR_IDENTITY_UNVERIFIED');
+  const excluded = new Set(policy ? [] : authors.map(a => a.id));
+  const selected = new Map<number, ReleaseContributor>();
+  const automatic = policy === 'github-authors';
+  const confirmed = !automatic && policy ? new Set(policy.map(person => person.id)) : undefined;
   let unresolved = 0;
   for (const actor of actors) {
-    if (actor && isBotActor(actor)) continue;
+    if (actor && (isBotActor(actor) || (automatic && isServiceLogin(actor.login)))) continue;
     if (!actor || !isHumanActor(actor)) { unresolved++; continue; }
     if (excluded.has(actor.id)) continue;
+    if (confirmed && !confirmed.has(actor.id)) { unresolved++; continue; }
     const profile = new URL(actor.profileUrl), avatar = new URL(actor.avatarUrl);
     if (profile.protocol !== 'https:' || profile.hostname !== 'github.com' || profile.pathname !== '/' + actor.login
       || profile.search || profile.hash || profile.username || profile.password || profile.port
@@ -45,6 +55,16 @@ export function selectReleaseContributors(actors: readonly (ReleaseActor | null)
   }
   return { contributors: [...selected.values()].sort((a, b) => a.id - b.id), unresolved };
 }
+/** Verify the frozen projection against the recorded GitHub actors. Historical
+ * conditional records already contain their reviewed contributor IDs. */
+export function replayReleaseContributors(
+  record: { actors: readonly (ReleaseActor | null)[]; contributors: ReturnType<typeof selectReleaseContributors> },
+  authors: readonly RepositoryAuthor[],
+  mode?: 'github-authors' | 'recorded',
+) {
+  return selectReleaseContributors(record.actors, authors, mode === 'recorded' ? record.contributors.contributors : mode);
+}
+
 export async function candidateId(repositoryId: number, branch: string, baseSha: string, lastCompletedCycleId: string | null) {
   if (!Number.isSafeInteger(repositoryId) || repositoryId <= 0 || !/^[a-f0-9]{40}$/.test(baseSha) || !branch)
     throw new Error('CANDIDATE_IDENTITY_INVALID');

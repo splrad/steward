@@ -7,6 +7,7 @@ import { parsePipelineRecord, pipelineSource } from '../src/release-pipeline-rec
 import { productPipelineFixture } from './product-pipeline-fixture.js';
 import { nativeRequestIdentity } from '../src/native-release-evidence.js';
 import { defaultBuildWorkflow } from '../../core/src/release-workflow.js';
+import { projectFrozenReleaseDownloads } from '../../core/src/release-template.js';
 import YAML from 'yaml';
 afterEach(() => vi.restoreAllMocks());
 it.each(['ghcr','unknown'])('rejects an external channel with no fixed implementation: %s',id=>{
@@ -84,7 +85,44 @@ it('requires the product template for a legacy cycle without an explicit native 
   delete f.source['.github/release-template.md.mustache'];
   await expect(pipelineIdentity(f.input,f.environment,f.gh,f.io)).rejects.toThrow('missing source input: .github/release-template.md.mustache');
 });
-it.each(['valid', 'unit', 'template', 'version', 'compare'])('renders reviewed notes at S without a catalog reader: %s', async kind => {
+it('keeps the previously adopted legacy template with an organization-template controller', async () => {
+  const released=await (await import('node:fs/promises')).readFile('templates/repository/.github/release-template.md.mustache','utf8');
+  const f=productPipelineFixture(1,false,'global.json',released);
+  expect(await pipelineIdentity(f.input,f.environment,f.gh,f.io)).toMatchObject({status:'ADMITTED'});
+  f.source['.github/release-template.md.mustache']+='changed';
+  await expect(pipelineIdentity(f.input,f.environment,f.gh,f.io)).rejects.toThrow('adopted notes template');
+});
+it('binds conditional notes in the build admission to the reviewed delivery path', async () => {
+  const template=await (await import('node:fs/promises')).readFile('templates/repository/.github/release-template.md.mustache','utf8');
+  const f=productPipelineFixture(1,false,'global.json',template);
+  f.source['.github/release-template.md.mustache']=template;
+  const chunk=f.input.state.domainRecords[0]!.value as {content:string;documentDigest:string};
+  const session=JSON.parse(chunk.content);
+  session.identity.noteTemplate=template;
+  const updatePath=(path:string)=>{
+    session.identity.units[0].notesPath=path;
+    chunk.content=JSON.stringify(session);
+    chunk.documentDigest=createHash('sha256').update(chunk.content).digest('hex');
+  };
+  updatePath(f.delivery.units[0]!.notesPath);
+  await expect(pipelineIdentity(f.input,f.environment,f.gh,f.io)).resolves.toMatchObject({status:'ADMITTED'});
+  updatePath('docs/other-release.md');
+  await expect(pipelineIdentity(f.input,f.environment,f.gh,f.io)).rejects.toThrow('reviewed release notes path');
+});
+it('rejects a static artifact identity before admitting a sealed legacy GitHub handoff', async () => {
+  const f=productPipelineFixture(), workflow=YAML.parse(f.source[defaultBuildWorkflow]!);
+  const upload='actions/upload-artifact@'+'a'.repeat(40);
+  workflow.jobs.freeze={name:'freeze/app',steps:[
+    {name:'business-freeze',uses:upload,with:{name:'final-fixture'}},
+    {id:'upload-github-release',name:'Upload GitHub release delivery',uses:upload,with:{name:'delivery-github-release-static'}},
+  ]};
+  f.source[defaultBuildWorkflow]=YAML.stringify(workflow);
+  await expect(pipelineIdentity(f.input,f.environment,f.gh,f.io)).rejects.toThrow('GitHub delivery workflow step');
+  workflow.jobs.freeze.steps[1].with.name='delivery-github-release-${{ github.repository_id }}-app-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}';
+  f.source[defaultBuildWorkflow]=YAML.stringify(workflow);
+  await expect(pipelineIdentity(f.input,f.environment,f.gh,f.io)).resolves.toMatchObject({status:'ADMITTED'});
+});
+it.each(['valid', 'unit', 'template', 'version', 'compare', 'historical-subset'])('renders reviewed notes at S without a catalog reader: %s', async kind => {
   const f = productPipelineFixture(), result = await pipelineIdentity(f.input, f.environment, f.gh, f.io);
   if (result.status !== 'ADMITTED') throw new Error('fixture admission');
   f.source['.release-notes/app.md'] = ['概述', '更新内容', '兼容性', '升级与迁移', '安装说明', '已知问题', '恢复'].map(label => `## ${label}\n\n已审事实。`).join('\n\n');
@@ -97,14 +135,41 @@ it.each(['valid', 'unit', 'template', 'version', 'compare'])('renders reviewed n
     const body = await pipelineNotes(result.record, 'app', 'source');
     expect(body).toContain('已审事实。'); expect(body).toContain('v0.9.0...'+result.record.sourceSha);
     expect(body).not.toContain('Original English evidence retained');
+  } else if(kind==='historical-subset') {
+    const delivery=result.record.delivery.units[0]!,unit=result.record.units[0]!;
+    delivery.assets.push({id:'fonts',name:'Fonts.zip',mediaType:'application/zip'},{id:'internal',name:'Internal.zip',mediaType:'application/zip'});
+    unit.assets.push({id:'fonts',name:'Fonts.zip',build:'windows-x64'},{id:'internal',name:'Internal.zip',build:'windows-x64'});
+    delivery.channels[0]!.artifactIds=['app','fonts'];
+    const body=await pipelineNotes(result.record,'app','source');
+    expect(body).toContain('app-1.0.0.exe');
+    expect(body).toContain('Fonts.zip');
+    expect(body).not.toContain('Internal.zip');
+    const projected=projectFrozenReleaseDownloads(f.source['.github/release-template.md.mustache']!,body,
+      {assets:unit.assets.slice(0,2),repository:result.record.fullName,tag:unit.tag},new Set(['Fonts.zip']));
+    expect(projected).toContain('已审事实。');
+    expect(projected).toContain('Fonts.zip');
+    expect(projected).not.toMatch(/Internal\.zip|app-1\.0\.0\.exe/);
   } else await expect(pipelineNotes(result.record, kind === 'unit' ? 'missing' : 'app', 'source')).rejects.toThrow();
   expect(JSON.stringify(f.source)).toBe(before);
+});
+it('checks conditional text against the workflow subset and preserves approved body bytes', async () => {
+  const template=await (await import('node:fs/promises')).readFile('templates/repository/.github/release-template.md.mustache','utf8');
+  const repository='example/product',tag='v1.0.0',asset='Fonts.zip';
+  const body=`## 获取与使用\n\n[字体](<https://github.com/${repository}/releases/download/${tag}/${asset}>)。\n`;
+  const native={repository,tag,assets:[{id:'app',name:'Internal.zip',build:'windows-x64'},{id:'fonts',name:asset,build:'windows-x64'}]};
+  expect(projectFrozenReleaseDownloads(template,body,native,new Set([asset]))).toBe(body);
+  expect(()=>projectFrozenReleaseDownloads(template,body,native,new Set(['Internal.zip']))).toThrow('outside GitHub delivery');
 });
 it('keeps two unit asset sets separate and requires every frozen Release ID in publish input', async () => {
   const f = productPipelineFixture(1,true), result = await pipelineIdentity(f.input, f.environment, f.gh, f.io);
   if (result.status !== 'ADMITTED') throw new Error('fixture admission');
   const build = result.record;
   expect(parsePipelineRecord(build)).toEqual(build);
+  const missingAuthors={...build,delivery:{...build.delivery,repositoryAuthors:[]}};
+  expect(()=>parsePipelineRecord(missingAuthors)).toThrow('AUTHOR_IDENTITY_UNVERIFIED');
+  const conditional={...missingAuthors,noteFormat:'conditional'} as const;
+  expect(parsePipelineRecord(conditional)).toMatchObject({noteFormat:'conditional'});
+  await expect(pipelineNotes(conditional,'app','source')).rejects.toThrow('notes template format');
   const duplicate=structuredClone(build);duplicate.delivery.units[1]!.assets[0]!.name=duplicate.delivery.units[0]!.assets[0]!.name;
   duplicate.units[1]!.assets[0]!.name=duplicate.units[0]!.assets[0]!.name;
   expect(()=>parsePipelineRecord(duplicate)).toThrow('duplicate product asset');

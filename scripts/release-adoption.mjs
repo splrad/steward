@@ -8,7 +8,7 @@ import {pathToFileURL,fileURLToPath} from 'node:url';
 import {TagName} from 'release-please/build/src/util/tag-name.js';
 import {Version} from 'release-please/build/src/version.js';
 import {isolatedBuildEnvironment,parseDeliveryConfig,NativeEvidenceReader,nativeEvidenceTransport,
-  inspectNativeCycle,inspectPublications,decodeReleaseRecord,assertRepositoryWrite,readNativeUnitVersion,defaultBuildWorkflow,productReleaseTemplatePath} from '../packages/runner/dist/index.js';
+  inspectNativeCycle,inspectPublications,decodeReleaseRecord,assertRepositoryWrite,readNativeUnitVersion,defaultBuildWorkflow,productReleaseTemplatePath,applyWorkflowDelivery,assertRegisteredAdapters} from '../packages/runner/dist/index.js';
 
 const fail=reason=>{throw new Error('RELEASE_ADOPTION: '+reason);};
 const sha=value=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
@@ -35,7 +35,7 @@ export function validateReleaseConfiguration(delivery,settings,versions) {
 // materialize from reviewed product sources; it never selects a product template.
 export function releaseAdoptionPlan(delivery) {
   const files=[delivery.buildWorkflow??defaultBuildWorkflow];
-  if(delivery.buildWorkflow===undefined)files.push(productReleaseTemplatePath);
+  if(delivery.schemaVersion!==3&&delivery.buildWorkflow===undefined)files.push(productReleaseTemplatePath);
   const externalTargets=delivery.units.flatMap(unit=>unit.channels
     .filter(channel=>channel.required && channel.id!=='github-release')
     .map(channel=>({unitId:unit.id,channelId:channel.id,location:channel.location})));
@@ -74,8 +74,12 @@ export async function withReleaseAdoption(request,adoption,io,operation) {
     const file=async(commit,path)=>(await fileBytes(commit,path)).toString('utf8').trim();
     const settings=JSON.parse(await file(adoption.sourceSha,'release-please-config.json'));
     const manifest=JSON.parse(await file(adoption.sourceSha,'.release-please-manifest.json'));
-    const delivery=parseDeliveryConfig(JSON.parse(await file(adoption.sourceSha,'.github/delivery.json')));
+    const delivery=parseDeliveryConfig(JSON.parse(await file(adoption.sourceSha,'.github/delivery.json')),settings);
     validateReleaseConfiguration(delivery,settings,manifest);
+    if(delivery.schemaVersion===3) {
+      applyWorkflowDelivery(delivery,await fileBytes(adoption.sourceSha,delivery.buildWorkflow));
+      assertRegisteredAdapters(request.repositoryId,request.repository,delivery);
+    }
     for(const path of releaseAdoptionPlan(delivery).files)await file(adoption.sourceSha,path);
     if(request.repositoryId===1187527897) {
       if(request.repository!=='splrad/LayerScape'||Object.keys(manifest).length||settings.packages?.['.']?.['initial-version']!=='1.0.0'
@@ -86,7 +90,7 @@ export async function withReleaseAdoption(request,adoption,io,operation) {
     const verifySource=async(pr,cycle)=>{
       const S=pr.merge_commit_sha;
       const config=JSON.parse(await file(S,'release-please-config.json')),versions=JSON.parse(await file(S,'.release-please-manifest.json'));
-      const sourceDelivery=parseDeliveryConfig(JSON.parse(await file(S,'.github/delivery.json')));
+      const sourceDelivery=parseDeliveryConfig(JSON.parse(await file(S,'.github/delivery.json')),config);
       // Historical recovery verifies the obligations frozen at S. Current product
       // onboarding requirements are enforced before admitting a new candidate.
       if(!cycle||cycle.sourceSha!==S||cycle.prNumber!==pr.number)fail('original cycle required');
@@ -122,6 +126,7 @@ async function verifyCurrentEvidence(request,snapshot,io,centralIo,now) {
 /** Restore original cache bytes only. No empty state, new cycle or completion fact can be invented here. */
 export async function recoverReleaseCaches(request,snapshot,{token,io=nativeEvidenceTransport(token),centralIo,now=()=>new Date().toISOString()}={}) {
   const missing=!snapshot.repository || snapshot.history.some(record=>record.status!=='DECODED')
+    || request.cycleId && !snapshot.cycles.some(record=>record.value.id===request.cycleId)
     || snapshot.repository.activeCycleId && !snapshot.cycles.some(record=>record.value.id===snapshot.repository.activeCycleId)
     || snapshot.repository.lastCompletedCycleId && !snapshot.cycles.some(record=>record.value.id===snapshot.repository.lastCompletedCycleId);
   if(missing) {

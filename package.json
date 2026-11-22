@@ -13,7 +13,7 @@
     "test": "uv sync --project tools/template --frozen --only-group release-inspection --inexact --no-build && npm run test:pages && npm run test:private-dependencies && npm run test:settings-events && npm run test:controller-source && npm run test:bounded-release && npm run test:configuration && vitest run",
     "test:configuration": "node --test scripts/test/configuration-authority.test.mjs scripts/test/configuration-dashboard.test.mjs scripts/test/repository-configuration.test.mjs scripts/test/repository-registration.test.mjs scripts/test/security-policy.test.mjs",
     "test:bounded-release": "node --test scripts/test/bounded-release-entry.test.mjs scripts/test/manual-candidate.test.mjs scripts/test/release-cycle-event.test.mjs",
-    "test:controller-source": "node --test scripts/controller-source.test.mjs",
+    "test:controller-source": "node --test scripts/controller-source.test.mjs scripts/validator-revalidation.test.mjs",
     "test:pages": "node --test scripts/test/select-pages-source.test.mjs scripts/test/pages-wiring.test.mjs scripts/test/pages-completion-native.test.mjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.runtime.json --noEmit && node scripts/verify-source-boundaries.mjs",
     "verify:config": "node scripts/verify-config.mjs",
@@ -29,7 +29,7 @@
     "@octokit/rest": "22.0.1",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
-    "minimatch": "10.2.6",
+    "minimatch": "11.0.9",
     "mustache": "4.2.0",
     "parse5": "8.1.1",
     "parse5-sax-parser": "8.0.1",
@@ -40,10 +40,11 @@
   },
   "devDependencies": {
     "@types/mustache": "4.2.6",
-    "@types/node": "26.6.5",
+    "@types/node": "26.6.6",
     "@vercel/ncc": "0.45.0",
+    "es-module-lexer": "2.3.2",
     "release-please": "17.11.2",
     "typescript": "7.0.2",
-    "vitest": "5.0.3"
+    "vitest": "5.1.0"
   }
 }

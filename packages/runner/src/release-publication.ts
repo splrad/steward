@@ -21,16 +21,19 @@ function centralPublicationSource(run:NativePublication['centralRun']) {
     ? run.event === 'workflow_dispatch' && run.actorId === 301115370 && run.headBranch === 'main'
     : run.path === '.github/workflows/release.yml' && ['schedule','workflow_dispatch'].includes(run.event);
 }
-function targets(context:EvidenceContext) {
-  return githubUnits(context.cycle).map(unit=>{
+function targets(context:EvidenceContext,unitIds?:ReadonlySet<string>) {
+  const units=githubUnits(context.cycle).filter(unit=>!unitIds||unitIds.has(unit.id));
+  check(!unitIds||units.length===unitIds.size&&units.length>0,'publication target scope');
+  return units.map(unit=>{
     check(unit.manifestDigest&&unit.notesDigest&&unit.assets.length,'frozen publication input required');
     return {unitId:unit.id,tag:unit.tag,manifestDigest:unit.manifestDigest,bodyDigest:unit.notesDigest};
   }).sort((a,b)=>a.unitId.localeCompare(b.unitId));
 }
 function validate(context:EvidenceContext,file:PublicationFile) {
   const value=decodeNativePublication(Buffer.from(JSON.stringify(file.value)));
+  const selected=context.cycle.workflowDelivery?new Set(value.targets.map(target=>target.unitId)):undefined;
   check(/^[a-f0-9]{40}$/.test(file.commit)&&publicationFile(value).path===file.path&&value.repositoryId===context.repositoryId
-    &&value.cycleId===context.cycle.id&&value.sourceSha===context.cycle.sourceSha&&same(value.targets,targets(context))
+    &&value.cycleId===context.cycle.id&&value.sourceSha===context.cycle.sourceSha&&same(value.targets,targets(context,selected))
     &&value.targetsDigest===hash(JSON.stringify(value.targets)),'protected publication provenance');
   check(value.centralRun.repositoryId===centralId&&value.centralRun.headRepositoryId===centralId
     &&centralPublicationSource(value.centralRun),'central source');
@@ -47,9 +50,9 @@ async function centralAttempt(io:EvidenceTransport,id:number,attempt:number,expe
   check(jobs.every(job=>job.runId===id&&job.runAttempt===attempt&&job.headSha===run.headSha),'central jobs');
   return {run,jobs,reader};
 }
-async function objects(context:EvidenceContext,io:EvidenceTransport):Promise<NativePublication['objects']> {
+async function objects(context:EvidenceContext,io:EvidenceTransport,selected:ReadonlySet<string>):Promise<NativePublication['objects']> {
   const reader=new NativeEvidenceReader(io,context.repository),result:NativePublication['objects']=[];
-  for(const unit of githubUnits(context.cycle)) {
+  for(const unit of githubUnits(context.cycle).filter(unit=>selected.has(unit.id))) {
     let path=unit.releaseId===null?`releases/tags/${encodeURIComponent(unit.tag)}`:`releases/${unit.releaseId}`;
     const proof:NativePublication['objects'][number]={unitId:unit.id,releaseId:null,status:'UNKNOWN',digest:null,sourceUrl:`https://api.github.com${reader.path(path)}`};
     try {
@@ -139,7 +142,8 @@ export async function inspectPublications(context:EvidenceContext,history:Public
           const job=actual.jobs.find(job=>job.id===start.job.id),step=job?.steps.find(step=>step.number===start.stepNumber);
           check(job&&step&&same([actual.run.headSha,actual.run.workflowId,actual.run.createdAt],[start.centralRun.headSha,start.centralRun.workflowId,start.centralRun.createdAt])
             &&step.name===start.job.steps.find(step=>step.number===start.stepNumber)?.name,'publication native step');
-          const proofs=await objects(context,productIo),result=outcome(proofs,actual.run.status==='completed');
+          const proofs=await objects(context,productIo,new Set(start.targets.map(target=>target.unitId)));
+          const result=outcome(proofs,actual.run.status==='completed');
           const value:NativePublication={...start,observedAt,centralRun:actual.run,job,objects:proofs,attempts:actuals,startEvidencePath:file.path,
             execution:{...start.execution,outcome:result,completedAt:actual.run.status==='completed'?step.completedAt:null,observedAt}};
           const archived=publicationFile(value);files.push(archived);
@@ -161,13 +165,14 @@ export async function inspectPublications(context:EvidenceContext,history:Public
 }
 /** Fixed E06 publisher boundary: adopted private start and readback precede the first business API write. */
 export async function invokePublication(context:EvidenceContext,current:CentralInvocation,history:PublicationFile[],store:EvidenceStore,
-  productIo:EvidenceTransport,centralIo:EvidenceTransport,publish:()=>Promise<void>,observedAt:string,clock=()=>new Date().toISOString()) {
+  productIo:EvidenceTransport,centralIo:EvidenceTransport,publish:()=>Promise<void>,observedAt:string,clock=()=>new Date().toISOString(),
+  unitIds?:ReadonlySet<string>) {
   if(history.some(file=>validate(context,file).centralRun.id===current.runId&&file.value.centralRun.runAttempt===current.runAttempt))
     return {status:'WAIT',reason:'PUBLICATION_ALREADY_INVOKED',publishInvoked:false};
   const actual=await centralAttempt(centralIo,current.runId,current.runAttempt,current),jobs=actual.jobs.filter(job=>job.name==='release-coordinator');
   check(jobs.length===1&&actual.run.status==='in_progress','current central invocation');
   const job=jobs[0]!,steps=job.steps.filter(step=>step.name==='business-release-coordinator'&&step.startedAt!==null&&step.completedAt===null);
-  check(steps.length===1,'current business step');const step=steps[0]!,set=targets(context),targetsDigest=hash(JSON.stringify(set));
+  check(steps.length===1,'current business step');const step=steps[0]!,set=targets(context,context.cycle.workflowDelivery?unitIds:undefined),targetsDigest=hash(JSON.stringify(set));
   const inputDigest=hash(JSON.stringify([context.repositoryId,context.cycle.id,context.cycle.sourceSha,targetsDigest]));
   const start:NativePublication={schemaVersion:1,repositoryId:context.repositoryId,cycleId:context.cycle.id,sourceSha:context.cycle.sourceSha,observedAt,
     centralRun:actual.run,job,stepNumber:step.number,startEvidencePath:null,targets:set,targetsDigest,objects:[],attempts:[],execution:{repositoryId:context.repositoryId,

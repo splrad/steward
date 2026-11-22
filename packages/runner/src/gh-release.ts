@@ -7,7 +7,7 @@ import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { fileDigest, verifySealedArtifacts, validateReleaseManifest, validateProductManifest, type ReleaseManifest, type ProductReleaseManifest } from './release-artifacts.js';
+import { fileDigest, verifyPublicationFiles, publicationManifestDigest, validateReleaseManifest, validateProductManifest, validateWorkflowManifest, type PublicationManifest } from './release-artifacts.js';
 import { nativeEvidenceTransport } from './native-release-evidence.js';
 import { isolatedGitHubEnvironment } from './build-environment.js';
 
@@ -35,7 +35,7 @@ export async function nativeGhCommand(args: readonly string[], token: string | u
 }
 export interface ReleaseObject { id: number; tag_name: string; draft: boolean; immutable: boolean; body: string; html_url: string; upload_url: string; target_commitish: string }
 interface Asset { id: number; name: string; size: number; digest: string | null; state: string; label?: string; uploader?: { id: number } }
-export interface ReleaseTarget { delivery?: DeliveryUnit; manifest: ReleaseManifest | ProductReleaseManifest; releaseId: number; directory: string; appBotId: number }
+export interface ReleaseTarget { delivery?: DeliveryUnit; publicBody?: string; manifest: PublicationManifest; releaseId: number; directory: string; appBotId: number }
 export type ReleaseIntent = Omit<ReleaseTarget, 'releaseId'> & { releaseId: number | null };
 export type ReleaseDownload = (repository: string, assetId: number, destination: string, anonymous: boolean) => Promise<void>;
 export async function releaseReadIsAnonymous(gh:GhCommand,repository:string,repositoryId:number):Promise<boolean> {
@@ -67,7 +67,9 @@ export class NativeGitHubRelease {
   }
   private async repository(target: ReleaseIntent) {
     const m = target.manifest;
-    if (m.schemaVersion === 3) validateProductManifest(m); else validateReleaseManifest(m);
+    if(m.schemaVersion===4)validateWorkflowManifest(m);
+    else if(m.schemaVersion===3)validateProductManifest(m);
+    else validateReleaseManifest(m);
     if (!Number.isSafeInteger(target.appBotId) || target.appBotId < 1) reject('App identity');
     const repository = await this.json(['api', `repos/${m.fullName}`]);
     if (repository.id !== m.repositoryId || repository.full_name !== m.fullName || repository.archived !== false || repository.disabled !== false
@@ -102,7 +104,7 @@ export class NativeGitHubRelease {
     if (!await this.tagSource(target)) { if (failure) throw failure; reject('tag not observed'); }
   }
   private async intentMarker(target: ReleaseIntent) {
-    const m = target.manifest, digest = (await fileDigest(target.directory, 'artifact-manifest.json')).sha256;
+    const m = target.manifest, digest = await publicationManifestDigest(target.directory,m);
     return `<!-- steward-release:${createHash('sha256').update(JSON.stringify([m.repositoryId, m.unitId, m.tag, m.sourceSha, digest])).digest('hex')} -->`;
   }
   private async list(path: string): Promise<any[]> {
@@ -128,7 +130,7 @@ export class NativeGitHubRelease {
     for (const release of releases) {
       const actual = await this.read({ ...target, releaseId: release.id });
       if (actual.draft && (actual.target_commitish !== m.sourceSha
-        || actual.body !== marker && actual.body !== await readFile(join(target.directory, 'release-notes.md'), 'utf8'))) reject('draft contains unproven data');
+        || actual.body !== marker && actual.body !== await this.notes(target))) reject('draft contains unproven data');
     }
     if (releases.length > 1) {
       for (const release of releases) if (!release.draft || release.body !== marker || release.target_commitish !== m.sourceSha
@@ -174,15 +176,19 @@ export class NativeGitHubRelease {
     } finally { await rm(directory, { recursive: true, force: true }); }
   }
   names(target: ReleaseIntent) {
+    if(target.manifest.schemaVersion===4)return target.manifest.artifacts.map(file=>file.path).sort();
     if (target.delivery) return channelFiles(target.delivery, 'github-release', target.manifest.artifacts);
     return [...target.manifest.artifacts.map(asset => asset.path), 'sbom.spdx.json', 'release-notes.md', 'artifact-manifest.json', 'SHA256SUMS'].sort();
+  }
+  private notes(target: ReleaseIntent) {
+    return target.publicBody ?? readFile(join(target.directory,'release-notes.md'),'utf8');
   }
   async verifyAttestation(target: ReleaseIntent, file: string) {
   const m = target.manifest;
   const attestation = await this.json(['attestation', 'verify', file, '--repo', target.manifest.fullName,
-    '--signer-workflow', m.schemaVersion === 3 ? `${m.fullName}/${m.buildWorkflow ?? defaultBuildWorkflow}` : 'splrad/steward/.github/workflows/product-release.yml',
-    '--signer-digest', m.schemaVersion === 3 ? m.sourceSha : m.policySha,
-    '--source-digest', m.sourceSha, '--source-ref', m.schemaVersion === 3 ? m.buildRef : `refs/tags/${m.tag}`, '--deny-self-hosted-runners', '--format', 'json']);
+    '--signer-workflow', m.schemaVersion !== 2 ? `${m.fullName}/${m.buildWorkflow ?? defaultBuildWorkflow}` : 'splrad/steward/.github/workflows/product-release.yml',
+    '--signer-digest', m.schemaVersion !== 2 ? m.sourceSha : m.policySha,
+    '--source-digest', m.sourceSha, '--source-ref', m.schemaVersion !== 2 ? m.buildRef : `refs/tags/${m.tag}`, '--deny-self-hosted-runners', '--format', 'json']);
   if (!Array.isArray(attestation) || !attestation.length) reject('missing native attestation result');
   const invocation = `https://github.com/${target.manifest.fullName}/actions/runs/${target.manifest.runId}/attempts/`;
   if (!attestation.some(result => {
@@ -190,30 +196,35 @@ export class NativeGitHubRelease {
     const uri = certificate?.runInvocationURI;
     if (typeof uri !== 'string' || !uri.startsWith(invocation)) return false;
     const attempt = uri.slice(invocation.length);
-    return /^[1-9][0-9]*$/.test(attempt) && Number.isSafeInteger(Number(attempt)) && Number(attempt) >= target.manifest.attempt
-      && certificate.sourceRepositoryIdentifier === String(target.manifest.repositoryId) && certificate.buildTrigger === 'workflow_dispatch';
+    return /^[1-9][0-9]*$/.test(attempt) && Number.isSafeInteger(Number(attempt))
+      && (m.schemaVersion===4?Number(attempt)===m.delivery.attempt:Number(attempt)>=m.attempt)
+      && certificate.sourceRepositoryIdentifier === String(m.repositoryId) && certificate.buildTrigger === 'workflow_dispatch';
   })) reject('attestation run identity');
     return attestation;
   }
   async freezeProof(target: ReleaseIntent) {
-    if (target.manifest.schemaVersion !== 3) reject('historical manifest is read-only');
+    if (target.manifest.schemaVersion === 2) reject('historical manifest is read-only');
     const m = target.manifest;
-    await verifySealedArtifacts(target.directory, m);
-    const run = await this.json(['api', `repos/${m.fullName}/actions/runs/${m.runId}`]);
+    await verifyPublicationFiles(target.directory, m);
+    const runPath = 'repos/'+m.fullName+'/actions/runs/'+m.runId;
+    const run = await this.json(['api', m.schemaVersion===4?runPath+'/attempts/'+m.attempt:runPath]);
     if (run.id !== m.runId || run.repository?.id !== m.repositoryId || run.head_repository?.id !== m.repositoryId
       || run.head_sha !== m.sourceSha || run.head_branch !== m.buildRef.slice('refs/heads/'.length)
       || run.event !== 'workflow_dispatch' || run.path !== (m.buildWorkflow ?? defaultBuildWorkflow)
-      || run.actor?.id !== target.appBotId || run.status !== 'completed' || run.conclusion !== 'success' || run.run_attempt < m.attempt) reject('completed product Run required');
-    for (const name of this.names(target)) await this.verifyAttestation(target, resolve(target.directory, name));
+      || m.schemaVersion===4&&run.workflow_id!==m.workflowId
+      || run.actor?.id !== target.appBotId || run.status !== 'completed' || run.conclusion !== 'success'
+      || (m.schemaVersion===4?run.run_attempt!==m.attempt:run.run_attempt<m.attempt)) reject('completed product Run required');
+    if(m.schemaVersion!==4||m.attested)
+      for (const name of this.names(target)) await this.verifyAttestation(target, resolve(target.directory, name));
     return run;
   }
   async verify(target: ReleaseTarget) {
-    await verifySealedArtifacts(target.directory, target.manifest);
+    await verifyPublicationFiles(target.directory, target.manifest);
     const release = await this.read(target);
     if (release.draft || release.immutable !== true) reject('release not immutable and published');
     const m = target.manifest;
     if (!await releaseBodyMatches({ repository: m.fullName, repositoryId: m.repositoryId, releaseId: release.id, sourceSha: m.sourceSha,
-      tag: release.tag_name, frozenDigest: (await fileDigest(target.directory, 'release-notes.md')).sha256 }, release.body,
+      tag: release.tag_name, frozenDigest: createHash('sha256').update(await this.notes(target)).digest('hex') }, release.body,
       path => this.json(['api', `repos/${m.fullName}${path ? '/' + path : ''}`]))) reject('published body drift');
     const assets = await this.assets(target);
     if (JSON.stringify(assets.map(asset => asset.name).sort()) !== JSON.stringify(this.names(target))) reject('published asset set');
@@ -224,14 +235,14 @@ export class NativeGitHubRelease {
       await this.compareAsset(target, asset, anonymous);
       const file = resolve(target.directory, asset.name);
       nativeEvidence.push(await this.json(['release', 'verify-asset', target.manifest.tag, file, '--repo', target.manifest.fullName, '--format', 'json']));
-      nativeEvidence.push(await this.verifyAttestation(target, file));
+      if(m.schemaVersion!==4||m.attested)nativeEvidence.push(await this.verifyAttestation(target, file));
     }
     if (JSON.stringify(await this.read(target)) !== JSON.stringify(release) || JSON.stringify(await this.assets(target)) !== JSON.stringify(assets)) reject('published object changed during read');
     return { releaseId: release.id, url: release.html_url, mode: 'verified' as const, nativeEvidence };
   }
   async publish(target: ReleaseTarget) {
     if (!this.names(target).length) reject('GitHub channel disabled');
-    await verifySealedArtifacts(target.directory, target.manifest);
+    await verifyPublicationFiles(target.directory, target.manifest);
     if (!(await this.read(target)).draft) return this.verify(target);
     const names = this.names(target);
     await this.freezeProof(target);
@@ -245,7 +256,7 @@ export class NativeGitHubRelease {
     const guard = async () => {
       await this.repository(target);
       if (!(await this.read(target)).draft) reject('draft changed before write');
-      await verifySealedArtifacts(target.directory, target.manifest);
+      await verifyPublicationFiles(target.directory, target.manifest);
     };
     for (const name of names) {
       const assets = await this.assets(target);
@@ -293,7 +304,7 @@ export class NativeGitHubRelease {
       if (asset.label !== asset.name) reject('unexpected public asset label');
       await this.compareAsset(target, asset);
     }
-    const notes = await readFile(join(target.directory, 'release-notes.md'), 'utf8');
+    const notes = await this.notes(target);
     if ((await this.read(target)).body !== notes) {
       await guard();
       let editError: unknown;

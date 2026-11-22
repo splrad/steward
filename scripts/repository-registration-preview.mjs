@@ -2,8 +2,8 @@ import {appendFile,readFile} from 'node:fs/promises';
 import {EvidenceReadError,NativeEvidenceReader,nativeEvidenceTransport} from '../packages/runner/dist/index.js';
 import {git,regular} from './validation-input.mjs';
 import {readRepositoryPolicySelection} from './repository-policy-projection.mjs';
-import {configurationConflicts,parseRegistration,registrationPath} from './repository-registration-policy.mjs';
-import {registrationProductPaths,registrationProposal} from './repository-registration.mjs';
+import {configurationConflicts,nativeReleaseConflict,parseRegistration,registrationPath} from './repository-registration-policy.mjs';
+import {registrationProductPaths,registrationProposal} from './repository-registration-proposal.mjs';
 
 function previewTransport(token) {
   const github=nativeEvidenceTransport(token);
@@ -123,9 +123,12 @@ export async function validateRegistrationPreview(workspace,{input,files},env) {
       summary.push('- '+path+'：目标仓身份相符。');
       continue;
     }
-    const conflicts=configurationConflicts(selection,observed.proposal);
+    const native=observed.proposal.nativeReleaseUnits;
+    const previous=native&&git(workspace,['ls-tree',input.base,'--',path]).length
+      ?parseRegistration(git(workspace,['show',input.base+':'+path]),id):null;
+    const conflicts=configurationConflicts(selection,observed.proposal,previous?.release);
     if(conflicts.length) {
-      for(const field of conflicts)report(path,messages[field],true);
+      for(const field of conflicts)report(path,native&&field==='RELEASE'?nativeReleaseConflict:messages[field],true);
     } else summary.push(`- \`${path}\`：与产品默认分支 \`${observed.source}\` 的声明相符。`);
   }
   if(summary.length&&env.GITHUB_STEP_SUMMARY)await appendFile(env.GITHUB_STEP_SUMMARY,'### 逐仓配置复核\n\n'+summary.join('\n')+'\n\n');

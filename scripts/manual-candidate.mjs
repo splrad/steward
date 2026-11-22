@@ -2,7 +2,8 @@ import {createHash} from 'node:crypto';
 import {TagName} from 'release-please/build/src/util/tag-name.js';
 import {Version} from 'release-please/build/src/version.js';
 import {candidateCycleIsSeparate,parseDeliveryConfig,assertProductDelivery,renderCandidateNote,parseSupplementalNotes,assertDeliveryPath,manualCandidateFacts,manualCandidatePreview,
-  candidateCommentFits,candidateStatusBody,manualCandidateBody,validateManualCandidateRecord} from '../packages/runner/dist/index.js';
+  candidateCommentFits,candidateStatusBody,manualCandidateBody,validateManualCandidateRecord,isAdoptedOrganizationReleaseTemplate,isConditionalTemplate,
+  isPreviouslyAdoptedReleaseTemplate,productReleaseTemplatePath,reviewedConditionalReleaseTemplate,replayReleaseContributors} from '../packages/runner/dist/index.js';
 const hash=v=>createHash('sha256').update(typeof v==='string'?v:JSON.stringify(v)).digest('hex');
 const fail=code=>{throw Error(code);};
 export function matchesFrozenUnits(session,snapshot=session.generated) {
@@ -13,6 +14,19 @@ export function manualManagedEntryMatches(file,entry) {
   if(file.content===null)return entry==='';
   return ['100644','100755'].includes(file.mode)&&entry.startsWith(file.mode+' blob ')
     &&/^100(?:644|755) blob [a-f0-9]{40}\t/.test(entry)&&entry.slice(entry.indexOf('\t')+1)===file.path+'\0';
+}
+export async function retainedManualNotesTemplate(session,currentTemplate,{sourceSha,headSha},io) {
+  const generated=session.generated,candidate=session.repository.candidate;
+  if(!generated||!session.identity||session.identity.noteTemplate!==undefined||!candidate?.publishedHead
+    ||candidate.baseSha!==generated.baseSha||generated.baseSha===sourceSha
+    ||generated.sourceDigest!==session.identity.sourceDigest||!await isAdoptedOrganizationReleaseTemplate(currentTemplate)
+    ||!await io.isAncestor(generated.baseSha,sourceSha)||!await io.isAncestor(candidate.publishedHead,headSha))return null;
+  const historical=io.readLegacyTemplate
+    ?await io.readLegacyTemplate(generated.baseSha)
+    :{template:await io.read(generated.baseSha,productReleaseTemplatePath)};
+  if(typeof historical?.template!=='string'||!await isPreviouslyAdoptedReleaseTemplate(historical.template))return null;
+  const {template,controllerSha}=historical;
+  return {template,lock:{sourceSha:generated.baseSha,sha256:hash(template),...(controllerSha?{controllerSha}:{})}};
 }
 /** Read-only proof of an existing manual candidate. No generation or write port is accepted. */
 export async function validateManualCandidate(session,producer,io) {
@@ -34,16 +48,31 @@ export async function validateManualCandidate(session,producer,io) {
   const files=new Map();
   const read=async path=>{const text=await io.read(before.headSha,path);if(typeof text!=='string')fail('MANUAL_FILE');files.set(path,hash(text));return text;};
   const settings=JSON.parse(await read('release-please-config.json')),manifest=JSON.parse(await read('.release-please-manifest.json'));
-  const delivery=parseDeliveryConfig(JSON.parse(await read('.github/delivery.json')));assertProductDelivery(delivery);
+  const delivery=parseDeliveryConfig(JSON.parse(await read('.github/delivery.json')),settings);assertProductDelivery(delivery);
   const paths=delivery.units.map(unit=>unit.path).sort();
   if(JSON.stringify(Object.keys(settings.packages??{}).sort())!==JSON.stringify(paths)||
      !manifest||typeof manifest!=='object'||Array.isArray(manifest)||Object.keys(manifest).some(path=>!paths.includes(path)))fail('MANUAL_UNIT_COVERAGE');
   if(!matchesFrozenUnits(session))fail('MANUAL_UNIT_COVERAGE');
-  const template=io.readTemplate?await io.readTemplate(before.headSha,delivery):await io.read(before.headSha,'.github/release-template.md.mustache');
+  const currentTemplate=io.readTemplate?await io.readTemplate(before.headSha,delivery):await io.read(before.headSha,productReleaseTemplatePath);
+  const retained=delivery.schemaVersion!==3&&isConditionalTemplate(currentTemplate)
+    ?await retainedManualNotesTemplate(session,currentTemplate,before,io):null;
+  const template=retained?.template??await reviewedConditionalReleaseTemplate(currentTemplate,session.identity.noteTemplate);
+  const conditional=isConditionalTemplate(template);
+  if(session.identity.noteTemplate!==(conditional?template:undefined))fail('MANUAL_NOTE_TEMPLATE');
+  if(retained&&session.identity.authorsDigest!==hash(delivery.repositoryAuthors))fail('MANUAL_CONTRIBUTOR_POLICY');
+  if(conditional) {
+    const mode=session.identity.contributorMode??'recorded';
+    if(session.identity.authorsDigest!==hash(delivery.repositoryAuthors)
+      || session.identity.units.some(unit=>JSON.stringify(replayReleaseContributors(unit,delivery.repositoryAuthors,mode))!==JSON.stringify(unit.contributors)))
+      fail('MANUAL_CONTRIBUTOR_POLICY');
+  }
   const units=[],notes=new Set(),noteContents=[];
   for(const generated of session.generated.units) {
     const unit=delivery.units.find(unit=>unit.id===generated.id&&unit.path===generated.path);
     if(!unit||manifest[unit.path]!==generated.version)fail('MANUAL_UNIT_COVERAGE');
+    const frozen=session.identity.units.find(value=>value.id===unit.id);
+    if((conditional||delivery.schemaVersion===3)&&(frozen?.notesPath??`.release-notes/${unit.id}.md`)!==unit.notesPath)fail('MANUAL_NOTE_PATH');
+    if(retained&&!session.generated.files.some(file=>file.path===unit.notesPath&&file.content!==null))fail('MANUAL_NOTE_PATH');
     const options={...settings,...settings.packages[unit.path]};
     if(options['release-type']!=='simple'||typeof options['version-file']!=='string')fail('MANUAL_VERSION_ADAPTER');
     assertDeliveryPath(options['version-file']);
@@ -73,7 +102,8 @@ export async function validateManualCandidate(session,producer,io) {
     fail('MANUAL_MANAGED_STRUCTURE');
   const result={schemaVersion:sameBase?3:legacy?1:2,kind:'validated-manual-candidate',repositoryId:product.id,candidateId:c.id,prNumber:c.prNumber,
     branch:c.branch,...before,units,files:[...files].sort(([a],[b])=>a<b?-1:a>b?1:0).map(([path,sha256])=>({path,sha256})),
-    projection:sameBase?{preview:units.map((unit,i)=>renderCandidateNote(unit.notesPath,noteContents[i],session.identity.units.find(u=>u.id===unit.id).contributors.contributors)).join('\n').replace(/\r\n?/g,'\n'),bodyDigest:''}:{preview:manualCandidatePreview(before),bodyDigest:''},producer};
+    projection:sameBase?{preview:units.map((unit,i)=>renderCandidateNote(unit.notesPath,noteContents[i],session.identity.units.find(u=>u.id===unit.id).contributors.contributors,
+      conditional?{template,repository:product.name,sourceSha:before.sourceSha,tag:unit.tag}:undefined)).join('\n').replace(/\r\n?/g,'\n'),bodyDigest:''}:{preview:manualCandidatePreview(before),bodyDigest:''},producer};
   result.projection.bodyDigest=hash(manualCandidateBody(result));
   await validateManualCandidateRecord(result,product.id,c.id);
   if(JSON.stringify(await inspect())!==JSON.stringify(before))fail('MANUAL_NATIVE_MOVED');
