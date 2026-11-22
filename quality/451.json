@@ -54,17 +54,47 @@
         ]
       },
       "configVersion": "quality-native-comments-v1",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4659355014",
+        "sourceCommit": "4a9304f0653ad14607eb355e7174c53bedd54ada",
+        "sourceUrl": "https://github.com/splrad/steward/pull/451#discussion_r4659355014",
+        "severity": "原文未说明",
+        "originalIdentifiers": [
+          "<code>scripts/candidate-homepage.mjs</code>",
+          "<code>fitsPullBody</code>",
+          "<code>for (const character of body)</code>",
+          "<code>for (const _ of body)</code>",
+          "<code>maxBodyCharacters</code>",
+          "scripts/candidate-homepage.mjs"
+        ],
+        "segmentIndex": 0,
+        "problemZh": "原文指出存在“Unused loop iteration variable”：在 `scripts/candidate-homepage.mjs` 的 `fitsPullBody` 中，循环写法 `for (const character of body)` 里迭代变量 `character` 未在循环体中使用。",
+        "impactZh": "原文认为这会触发静态分析/代码质量告警（未使用绑定），影响代码整洁性与检查通过情况；并强调应在不改变语义的前提下处理。",
+        "suggestionZh": "原文建议将 `for (const character of body)` 改为 `for (const _ of body)`（或等效写法），用占位符表达“有意丢弃变量”，同时保持按 Unicode code points 迭代及超过 `maxBodyCharacters` 时的提前返回逻辑不变；不需要新增 imports、methods 或 dependencies。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-22T18:34:24.492Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 3612,
+                "outputTokens": 838
+              }
+            ],
+            "totalNanoAiu": 1805300000,
+            "aiCredits": 1.8053,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-22T18:35:24.492Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     },
     "67ce46f3a19f130bac47d64fc02fee3f4236a7f1f0825cfb80cbcb6d18811cdc": {
       "key": "67ce46f3a19f130bac47d64fc02fee3f4236a7f1f0825cfb80cbcb6d18811cdc",
@@ -85,17 +115,47 @@
         ]
       },
       "configVersion": "quality-native-comments-v1",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4659355022",
+        "sourceCommit": "4a9304f0653ad14607eb355e7174c53bedd54ada",
+        "sourceUrl": "https://github.com/splrad/steward/pull/451#discussion_r4659355022",
+        "severity": "原文未说明",
+        "originalIdentifiers": [
+          "<code>scripts/candidate-homepage.mjs</code>",
+          "<code>fitsPullBody</code>",
+          "<code>for (const character of body) { ... }</code>",
+          "<code>for (const _ of body) { ... }</code>",
+          "<code>_</code>",
+          "scripts/candidate-homepage.mjs"
+        ],
+        "segmentIndex": 0,
+        "problemZh": "原文指出“Unused variable, import, function or class”，具体为未使用变量 `character`：在 `fitsPullBody` 中 `for (const character of body) { ... }` 的循环变量未被使用。",
+        "impactZh": "原文表示该未使用绑定会产生静态分析告警；并指出修复应保持现有功能不变，包括继续通过字符串迭代统计 Unicode code points。",
+        "suggestionZh": "原文建议在 `scripts/candidate-homepage.mjs` 的 `fitsPullBody` 中，将 `for (const character of body) { ... }` 替换为 `for (const _ of body) { ... }`，以 `_` 作为有意未使用绑定的占位符，满足常见静态检查且保持行为与性能特征不变；无需新增 imports、helper methods 或其他 definitions。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-22T18:34:24.492Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 3612,
+                "outputTokens": 838
+              }
+            ],
+            "totalNanoAiu": 1805300000,
+            "aiCredits": 1.8053,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-22T18:35:24.492Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     }
   },
   "cursor": 0
