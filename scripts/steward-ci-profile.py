@@ -9,6 +9,7 @@ PINS = re.compile(rb"(?m)^        uses: amannn/action-semantic-pull-request@([0-
 ROOT_TITLE = ".github/workflows/pr-title.yml"
 TEMPLATE_TITLE = "templates/repository/" + ROOT_TITLE
 ACTION_LOCK = ".github/workflows/actions.lock"
+SECURITY_POLICY = {"SECURITY.md", "config/review/security-common.md"}
 # Single-file tools with a native version command on both supported runners.
 COMMANDS = {
     "aqua:anchore/syft": ("syft", "version"),
@@ -76,7 +77,8 @@ def tool_changes(before, after):
 
 
 def changed_paths(base, head):
-    return set(git("diff", "--name-only", "--no-renames", "-z", base, head).decode().split("\0")) - {""}
+    return set(git("diff", "--name-only", "--no-ext-diff", "--no-textconv", "--no-renames", "-z", base, head)
+               .decode().split("\0")) - {""}
 
 
 def title_lock_update(before, after, old_pin, new_pin):
@@ -110,16 +112,20 @@ def classify(base, head):
     if subprocess.run(["git", "-C", "target", "merge-base", "--is-ancestor", base, head]).returncode:
         return "full"
     paths = changed_paths(base, head)
-    # Ordinary authored guides form a subset of Native Validation's Markdown scope.
-    # Release inputs, policy instructions, templates and additions/deletions stay full.
-    docs = bool(paths) and all(re.fullmatch(r"docs/[a-z][a-z0-9-]*\.md", path) for path in paths)
-    if not docs and paths not in ({"mise.lock"}, {TEMPLATE_TITLE}, {ROOT_TITLE, ACTION_LOCK}):
+    # The narrow profiles cover reviewed file roles with a matching validator.
+    # Mixed source changes and additions/deletions keep the full suite.
+    docs = bool(paths) and all(path == "README.md" or re.fullmatch(r"docs/[a-z][a-z0-9-]*\.md", path)
+                               for path in paths)
+    policy = bool(paths) and paths <= SECURITY_POLICY
+    if not (docs or policy) and paths not in ({"mise.lock"}, {TEMPLATE_TITLE}, {ROOT_TITLE, ACTION_LOCK}):
         return "full"
     for path in paths:
         if not all(git("ls-tree", ref, "--", path).startswith(b"100644 blob ") for ref in (base, head)):
             return "full"
     if docs:
         return "docs"
+    if policy:
+        return "policy"
     if paths == {"mise.lock"}:
         return "tool" if tool_changes(blob(base, "mise.lock"), blob(head, "mise.lock")) else "full"
     if paths not in ({TEMPLATE_TITLE}, {ROOT_TITLE, ACTION_LOCK}):

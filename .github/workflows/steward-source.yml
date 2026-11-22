@@ -40,7 +40,7 @@ jobs:
             profile=$(python policy/scripts/steward-ci-profile.py "$BASE" "$HEAD")
           fi
           case "$profile" in
-            full|title|docs) runners='["ubuntu-24.04"]' ;;
+            full|title|docs|policy) runners='["ubuntu-24.04"]' ;;
             tool) runners='["ubuntu-24.04","windows-2025"]' ;;
             *) exit 1 ;;
           esac
@@ -70,6 +70,10 @@ jobs:
           path: target
           fetch-depth: 0
           persist-credentials: false
+      - name: Install trusted policy test dependencies
+        if: needs.plan.outputs.profile == 'policy'
+        working-directory: policy
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Verify candidate against the trusted base contract
         shell: bash
         env:
@@ -173,6 +177,6 @@ jobs:
           CANDIDATE: ${{ needs.candidate.result }}
         run: |
           case "$PLAN/$PROFILE/$FULL/$CANDIDATE" in
-            success/full/success/skipped|success/title/skipped/success|success/docs/skipped/success|success/tool/skipped/success) exit 0 ;;
+            success/full/success/skipped|success/title/skipped/success|success/docs/skipped/success|success/policy/skipped/success|success/tool/skipped/success) exit 0 ;;
             *) exit 1 ;;
           esac

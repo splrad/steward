@@ -285,5 +285,8 @@ if __name__ == "__main__":
     elif profile == "title":
         with tempfile.TemporaryDirectory() as directory:
             title(base, head, Path(directory))
+    elif profile == "policy":
+        subprocess.run(["node", "policy/scripts/security-policy.mjs", "source", "target"], check=True)
+        subprocess.run(["node", "--test", "policy/scripts/test/security-policy.test.mjs"], check=True)
     else:
         raise ValueError("Unknown candidate profile")
