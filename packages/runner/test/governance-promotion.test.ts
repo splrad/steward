@@ -107,6 +107,13 @@ it('retains the effective workflow for an unchanged closure and never overwrites
   await expect(promoteRequiredWorkflow(drift,M,async()=>{},drift.record,compare)).rejects.toThrow('VALIDATOR_PIN_MOVED');
   expect(drift.writes).toBe(1);expect(shaBinding(drift.current).sha).toBe(T);
 });
+it('leaves a validator rotation deferred during unresolved PR recovery and verifies the independent controller path',async()=>{
+  const {promoteRequiredWorkflow}=await module(),f=rulesFixture();
+  const result=await promoteRequiredWorkflow(f,M,async()=>{},f.record,{...compare,beforeWrite:async()=>false});
+  expect(result).toMatchObject({status:'DEFERRED',sha:P,controllerSha:M});
+  await result.verifyCurrent();
+  expect(f.writes).toBe(0);
+});
 it('unmergeable concurrent rule change records before/after and stops; moved main cannot write',async()=>{
   const {promoteRequiredWorkflow}=await module(),f=rulesFixture('external');
   await expect(promoteRequiredWorkflow(f,M,async()=>{},f.record,compare)).rejects.toThrow('EXTERNAL_RULE_CHANGE');expect(f.writes).toBe(1);
@@ -159,6 +166,12 @@ it('uses the independent Governance App, one repository, exact permissions and r
 it('wires trusted native validation and serialized promotion without upstream artifacts or caches',async()=>{
   const {validationJobNames}=await module(),native=YAML.parse(await readFile('.github/workflows/pr-validation-native.yml','utf8'));
   expect(validationJobNames(native)).toEqual(['Validation scope','Product CI evidence','Governance scans','Dependency review','Documentation links','SPLRAD Validation']);expect(JSON.stringify(native)).not.toMatch(/PRIVATE_KEY|environment|secrets\./);
+  for(const [jobName,consumer] of [['governance','validation-governance.mjs'],['dependency','validation-private-dependencies.mjs']]){
+    const steps=native.jobs[jobName!].steps;
+    const checkout=steps.find((step:any)=>step.with?.path==='policy');
+    expect(checkout.with).toMatchObject({repository:'${{ job.workflow_repository }}',ref:'${{ job.workflow_sha }}','fetch-depth':0});
+    expect(steps.findIndex((step:any)=>step.run?.includes(consumer))).toBeGreaterThan(steps.indexOf(checkout));
+  }
   const promote=YAML.parse(await readFile('.github/workflows/governance-promotion.yml','utf8')),bootstrap=YAML.parse(await readFile('.github/workflows/sync-managed.yml','utf8'));
   expect(promote.on.workflow_run).toEqual({workflows:['SPLRAD Steward / Native Validation'],types:['completed'],branches:['main']});
   expect(promote.on.schedule).toEqual([{cron:'37 1 * * *'}]);expect(promote.jobs.promote.concurrency).toEqual(bootstrap.jobs.bootstrap.concurrency);

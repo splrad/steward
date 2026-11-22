@@ -57,6 +57,7 @@ function fixture() {
       assert.equal(route,path+'/pulls/32');
       assert.deepEqual(Object.keys(body),['state']);
       assert.notEqual(pr.state,body.state);
+      if(body.state==='closed'&&runtime.loseClose)throw Error('close response not observed');
       changes.push(body.state);pr.state=body.state;
       events.push({id:events.length+1,event:pr.state==='closed'?'closed':'reopened',actor});
       return {status:200,value:clone(pr)};
@@ -86,9 +87,9 @@ function fixture() {
   const journal=validatorJournal(io),app={discover:async()=>[repo]},ioFor=async(id,op)=>{
     assert.equal(id,repo.id);return op(io);
   };
-  const run=async()=>{
+  const run=async({draining=false}={})=>{
     const restored=await journal.load();
-    await reconcileValidators(restored??state,app,ioFor,journal,async()=>{},async row=>records.push(row),{now:()=>runtime.now??Date.now()});
+    await reconcileValidators(restored??state,app,ioFor,journal,async()=>{},async row=>records.push(row),{draining,now:()=>runtime.now??Date.now()});
     return journal.load();
   };
   const addRun=(id,source,status,conclusion,title,attempt=1)=>{
@@ -149,6 +150,20 @@ test('a later human close never authorizes an App reopen',async()=>{
   assert.equal((await f.run()).pulls[0].status,'manual');
   assert.deepEqual(f.changes,['closed']);
   assert.equal(f.pr.state,'closed');
+});
+
+test('retains an unconfirmed close during rotation and restores it after its native event appears',async()=>{
+  const f=fixture();f.runtime.loseClose=true;
+  let state=await f.run();
+  assert.equal(f.pr.state,'open');
+  assert.equal(state.pulls[0].closeRequest,'unknown');
+  state=await f.run({draining:true});
+  assert.equal(state.pulls[0].status,'prepared');
+  assert.deepEqual(f.changes,[]);
+  f.pr.state='closed';f.events.push({id:1,event:'closed',actor:{id:bot}});
+  state=await f.run({draining:true});
+  assert.equal(state.pulls[0].status,'reopened');
+  assert.deepEqual(f.changes,['open']);
 });
 
 test('an advancing head retains its predecessor evidence and reconciles the native Run for the new head',async()=>{
@@ -249,6 +264,9 @@ test('validator compares the exact local execution graph in both trees and accep
   await file('.github/actions/check/inspect.sh','false\n');
   const actionUpdate=commit();
   assert.deepEqual((await compareValidatorSources(directory,action,actionUpdate)).files,['.github/actions/check/inspect.sh']);
+  await file(validatorPath,'name: Native\njobs:\n  test:\n    steps:\n      - working-directory: policy\n        run: npm run verify-local\n');
+  const indirect=commit();
+  await assert.rejects(compareValidatorSources(directory,actionUpdate,indirect),/INDIRECT_PACKAGE_COMMAND/);
   git('checkout','--detach','-q',graph);
   await file('scripts/c.mjs',"await import(process.env.LOCAL_MODULE);\n");
   const unresolved=commit();

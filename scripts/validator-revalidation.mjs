@@ -51,6 +51,7 @@ export function validatorJournal(io) {
         &&typeof entry.base==='string'&&['queued','waiting','prepared','reopened','in_progress','success','failure',
           'superseded','manual'].includes(entry.status)
         &&(entry.notBefore===undefined||number(entry.notBefore))
+        &&(entry.closeRequest===undefined||['pending','accepted','rejected','unknown'].includes(entry.closeRequest))
         &&(entry.status!=='prepared'||Number.isSafeInteger(entry.marker)&&entry.marker>=0),'JOURNAL_ENTRY');
       return state;
     },
@@ -196,6 +197,9 @@ export async function reconcilePull(io,state,entry,save,guard,record,{draining=f
       entry.reopenEvent=last.id;
       return exactPull(pr,entry)?change('reopened'):supersede(pr);
     }
+    // An open snapshot cannot rule out a delayed close after transport loss.
+    // Keep its original marker until a native transition proves what happened.
+    if(entry.closeRequest&&entry.closeRequest!=='rejected')return record({kind:'validator-close-unconfirmed'});
     if(draining||!exactPull(pr,entry))return supersede(pr);
     if(pr.draft||ownedRelease(pr))return change('waiting',{reason:pr.draft?'draft':'release-managed'});
   }else if(draining)return;
@@ -221,10 +225,17 @@ export async function reconcilePull(io,state,entry,save,guard,record,{draining=f
   if(await mergeManaged(io,fresh))return change('waiting',{reason:'merge-management'});
   const native=await matchingRun(io,fresh,state.validator);
   if(native)return observeRun(native);
+  await change('prepared',{closeRequest:'pending'});
   const beforeClose=await observed();
-  if(beforeClose.state!=='open'||!exactPull(beforeClose,entry)||beforeClose.draft||ownedRelease(beforeClose))return;
-  if(await mergeManaged(io,beforeClose))return change('waiting',{reason:'merge-management'});
+  if(beforeClose.state!=='open'||!exactPull(beforeClose,entry)){
+    return change('prepared',{closeRequest:'rejected'});
+  }
+  if(beforeClose.draft||ownedRelease(beforeClose)||await mergeManaged(io,beforeClose))
+    return change('waiting',{reason:beforeClose.draft?'draft':ownedRelease(beforeClose)?'release-managed':'merge-management',closeRequest:'rejected'});
   const response=await mutate(io,path,'closed');
+  const closeRequest=response>=200&&response<300?'accepted'
+    :[400,401,403,404,409,410,422,429].includes(response)?'rejected':'unknown';
+  await change('prepared',{closeRequest});
   await record({kind:'validator-close-request',response});
   // Re-enter once when the close is visible. A delayed close stays prepared for recovery.
   if((await observed()).state==='closed')await reconcilePull(io,state,entry,save,guard,record,{draining,now});

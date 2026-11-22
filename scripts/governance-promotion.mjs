@@ -145,7 +145,8 @@ export async function promoteRequiredWorkflow(io,controllerSha,assertCurrent,rec
   const {rule,body}=await readRule(io);
   const old=binding(body).sha;
   const difference=await compare(old,controllerSha);
-  const target=difference.changed?controllerSha:old;
+  const planned=difference.changed?controllerSha:old;
+  let target=planned;
   const protection=withoutSha(body);
   await record({kind:'workflow-target-before',rulesetId,target,controllerSha,difference,before:rule});
   const checkProtection=body=>check(same(withoutSha(body),protection),'TARGET_PROTECTION_CHANGED');
@@ -168,10 +169,13 @@ export async function promoteRequiredWorkflow(io,controllerSha,assertCurrent,rec
   };
 
   await guard();
-  if(difference.changed){await beforeWrite(old,target,guard);await guard();}
-  const result=difference.changed
+  if(difference.changed){
+    if(await beforeWrite(old,planned,guard)===false)target=old;
+    await guard();
+  }
+  const result=target!==old
     ?await writeRequiredWorkflow(io,old,target,guard,event=>record({...event,rulesetId}))
-    :{status:old===controllerSha?'ALREADY_ADOPTED':'UNCHANGED',sha:old};
+    :{status:difference.changed?'DEFERRED':old===controllerSha?'ALREADY_ADOPTED':'UNCHANGED',sha:old};
   await record({kind:'workflow-target-result',rulesetId,...result});
   await assertCurrent();
   const observed=await verifyTarget();
@@ -305,7 +309,7 @@ export async function main(env=process.env,transport=fetch) {
   await execute(uv,['run','--project','tools/template','--frozen','--no-sync','python','tools/template/promotion.py','--central',process.cwd(),'--commit',source.sha,'--output',planPath],{env:clean,windowsHide:true,timeout:120000});
   const plan=JSON.parse(await readFile(planPath,'utf8'));await record({kind:'template-plan',...plan});
   await assertCurrent();
-  await withGovernanceCredential(env,async(io,withJournal)=>{
+  const outcome=await withGovernanceCredential(env,async(io,withJournal)=>{
     // The source namespace must be protected before any promotion write occurs.
     const appId=Number(env.GOVERNANCE_APP_ID);
     const guard=createSourceGuard(io,appId,assertCurrent);
@@ -321,7 +325,10 @@ export async function main(env=process.env,transport=fetch) {
       if(pending?.previous===previous&&pending.validator===validator)return;
       if(pending?.pulls.some(entry=>entry.status==='prepared')){
         await reconcile(pending,journal,verify,true);
-        check(!pending.pulls.some(entry=>entry.status==='prepared'),'VALIDATOR_CLOSE_RECOVERY_PENDING');
+        if(pending.pulls.some(entry=>entry.status==='prepared')){
+          await record({kind:'validator-epoch-deferred',active:previous,proposed:validator});
+          return false;
+        }
       }
       await journal.save(epoch(previous,validator));
       await record({kind:'validator-epoch-prepared',previous,validator});
@@ -334,8 +341,9 @@ export async function main(env=process.env,transport=fetch) {
       if(pending?.validator===adopted.sha&&hasPendingValidators(pending))await reconcile(pending,journal,verifyCurrent);
       else if(pending?.pulls.some(entry=>entry.status==='prepared'))await reconcile(pending,journal,verifyCurrent,true);
     });
+    return adopted.status;
   },transport);
-  process.stdout.write('Promotion: adopted and reconciled\n');
+  process.stdout.write(`Promotion: controller reconciled, validator ${outcome}\n`);
   }catch(error){
     await recordPromotionFailure(error,record);
   }

@@ -16,7 +16,7 @@ workflow_run 只接收 main 分支事件，job 先筛选中央仓库的成功 ma
 
 切换 pin 前，治理 App 以独立的 Actions Variables 权限将补验意图写到私有的 `splrad/steward-settings`。切换完成后只盘点受这套规则约束的开放 PR。已有该 pin 的原生 Run 时，按准确 head、工作流来源、Run、attempt 和汇总 job 记录实际状态。缺少 Run 时，现有 Steward App 用仅限目标仓的 PR 权限执行原生关闭和重开，GitHub 据 reopened 事件运行必需工作流。草稿、发行候选、自动合并和合并队列保留待办。补验通过已有 GitHub App 安装完成，使用已登记的 `steward-automation/STEWARD_APP_PRIVATE_KEY`。
 
-补验在私有记录中保存原生状态转换的初始位置。进程中断后只有后继关闭事件仍由同一 App 执行，且没有更新的状态转换时，才恢复重开。人工关闭保留原状。待办的 PR head 前进时，保留前一 head 的证据，并为新 head 先等待自然 synchronize 所产生的原生 Run。原生 Run 在途、失败或重开仍未看到 Run 时记录对应状态，日程或手工晋级可继续复读原有待办。pin 不变时继续核对现有待办，无需重新盘点所有仓。中央公开产物只含补验状态计数和脱敏错误码，逐项 PR 与 Run 证据位于私仓变量 `STEWARD_VALIDATOR_REVALIDATION`。
+补验在私有记录中保存原生状态转换的初始位置，并在发送关闭请求前保存请求意图。如果请求结果不明，待办保留到原生事件可确认。组织 pin 的下一次切换在未确认的关闭处理完成后继续，控制器仍可以晋级。进程中断后只有后继关闭事件仍由同一 App 执行，且没有更新的状态转换时，才恢复重开。人工关闭保留原状。待办的 PR head 前进时，保留前一 head 的证据，并为新 head 先等待自然 synchronize 所产生的原生 Run。原生 Run 在途、失败或重开仍未看到 Run 时记录对应状态，日程或手工晋级可继续复读原有待办。pin 不变时继续核对现有待办，无需重新盘点所有仓。中央公开产物只含补验状态计数和脱敏错误码，逐项 PR 与 Run 证据位于私仓变量 `STEWARD_VALIDATOR_REVALIDATION`。
 
 模板比较只包含 `copier.yml` 和 `templates/repository`。实际变化从最新已采用 PEP 440 稳定版本生成严格递增标签，标签固定到同一个已验证提交。SDK 单独变化不产生模板版本。标签创建前后核对全部标签快照和目标指向；同名异对象、外部标签漂移和未知响应不执行覆盖。下一次原生 Copier 递送从已发布标签继续。
 

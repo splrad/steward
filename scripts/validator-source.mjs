@@ -10,6 +10,7 @@ const roots=['package.json','package-lock.json','npm-shrinkwrap.json','.npmrc',
 const policyPaths=/(?:^|[\s"'(])(?:\.\/)?policy\/([\w./-]+)/g;
 const actionPaths=/\$\{\{\s*github\.action_path\s*\}\}\/([\w./-]+)/g;
 const commandPaths=/(?:^|[\s;&|])(?:node|python3?|pwsh|bash|cat|source|\.)\s+(?:\.\/)?((?:scripts|tools|config|schema|templates|packages|\.mise)\/[\w./-]+)/g;
+const packageCommands=/\b(npm|npx|pnpm|yarn|bunx)\s+([^;&|)]+)/g;
 const localUrls=/new URL\(([^\n]+?),\s*import\.meta\.url\)/g;
 const trustedAssets={
   'scripts/security-policy.mjs':['config/review/security-common.md','copier.yml'],
@@ -72,6 +73,11 @@ export async function validatorSource(directory,sha) {
   };
   const runInputs=(text,directory,action)=>{
     for(const line of text.split('\n').filter(line=>!line.trimStart().startsWith('#'))) {
+      for(const [,tool,args] of line.matchAll(packageCommands)){
+        // npm ci has no local hooks here. Other launch modes need a traceable
+        // entry point before allowing a future policy version to adopt them.
+        check(tool==='npm'&&/^ci\s/.test(args)&&/(?:^|\s)--ignore-scripts(?:\s|$)/.test(args),'INDIRECT_PACKAGE_COMMAND');
+      }
       for(const [,path] of line.matchAll(policyPaths))add(path,true);
       if(directory==='policy')for(const [,path] of line.matchAll(commandPaths))add(path,true);
       if(action)for(const [,path] of line.matchAll(actionPaths))add(resolve(action,'./'+path),true);
