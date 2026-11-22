@@ -10,6 +10,13 @@ ROOT_TITLE = ".github/workflows/pr-title.yml"
 TEMPLATE_TITLE = "templates/repository/" + ROOT_TITLE
 ACTION_LOCK = ".github/workflows/actions.lock"
 SECURITY_POLICY = {"SECURITY.md", "config/review/security-common.md"}
+# These entry points and their direct tests belong to the promotion workflow.
+# Shared runner code, dependencies and workflow wiring keep both full suites.
+GOVERNANCE_PROMOTION = {
+    "scripts/controller-source.mjs", "scripts/controller-source.test.mjs",
+    "scripts/validator-revalidation.mjs", "scripts/validator-revalidation.test.mjs",
+    "scripts/governance-promotion.mjs", "packages/runner/test/governance-promotion.test.ts",
+}
 # Single-file tools with a native version command on both supported runners.
 COMMANDS = {
     "aqua:anchore/syft": ("syft", "version"),
@@ -117,7 +124,9 @@ def classify(base, head):
     docs = bool(paths) and all(path == "README.md" or re.fullmatch(r"docs/[a-z][a-z0-9-]*\.md", path)
                                for path in paths)
     policy = bool(paths) and paths <= SECURITY_POLICY
-    if not (docs or policy) and paths not in ({"mise.lock"}, {TEMPLATE_TITLE}, {ROOT_TITLE, ACTION_LOCK}):
+    governance = (os.environ.get("GITHUB_EVENT_NAME") == "pull_request"
+                  and bool(paths) and paths <= GOVERNANCE_PROMOTION)
+    if not (docs or policy or governance) and paths not in ({"mise.lock"}, {TEMPLATE_TITLE}, {ROOT_TITLE, ACTION_LOCK}):
         return "full"
     for path in paths:
         if not all(git("ls-tree", ref, "--", path).startswith(b"100644 blob ") for ref in (base, head)):
@@ -126,6 +135,8 @@ def classify(base, head):
         return "docs"
     if policy:
         return "policy"
+    if governance:
+        return "governance"
     if paths == {"mise.lock"}:
         return "tool" if tool_changes(blob(base, "mise.lock"), blob(head, "mise.lock")) else "full"
     if paths not in ({TEMPLATE_TITLE}, {ROOT_TITLE, ACTION_LOCK}):

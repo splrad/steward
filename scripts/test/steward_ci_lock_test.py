@@ -96,7 +96,7 @@ class LockContractTest(unittest.TestCase):
 
         self.assertFalse(matches(shared(before, old_pin[0]), shared(after, new_pin[0]), old_pin, new_pin))
 
-    def test_docs_and_push_parent(self):
+    def test_changed_paths_and_push_parent(self):
         with tempfile.TemporaryDirectory() as directory, chdir(directory):
             repo = Path("target")
             subprocess.run(["git", "init", "-q", repo], check=True)
@@ -134,6 +134,18 @@ class LockContractTest(unittest.TestCase):
                 self.assertEqual(classify(first, source), "full")
                 self.assertEqual(classify(policy_source, revised), "policy")
                 self.assertEqual(classify(policy_source, mixed), "full")
+
+            governance = "scripts/governance-promotion.mjs"
+            created = commit(governance, "initial promotion")
+            updated = commit(governance, "updated promotion")
+            with patch.dict(os.environ, {"GITHUB_EVENT_NAME": "push"}):
+                self.assertEqual(classify(created, updated), "full")
+            shared = commit("packages/runner/dist/index.js", "updated shared runtime")
+            with patch.dict(os.environ, {"GITHUB_EVENT_NAME": "pull_request"}):
+                self.assertEqual(classify(mixed, created), "full")
+                self.assertEqual(classify(created, updated), "governance")
+                self.assertEqual(classify(created, shared), "full")
+                self.assertEqual(classify(shared, updated), "full")
 
     def test_base_absent_from_fork(self):
         with tempfile.TemporaryDirectory() as directory:

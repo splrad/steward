@@ -40,7 +40,7 @@ jobs:
             profile=$(python policy/scripts/steward-ci-profile.py "$BASE" "$HEAD")
           fi
           case "$profile" in
-            full|title|docs|policy) runners='["ubuntu-24.04"]' ;;
+            full|governance|title|docs|policy) runners='["ubuntu-24.04"]' ;;
             tool) runners='["ubuntu-24.04","windows-2025"]' ;;
             *) exit 1 ;;
           esac
@@ -49,7 +49,7 @@ jobs:
           echo "Selected Steward profile: $profile"
   candidate:
     needs: plan
-    if: needs.plan.outputs.profile != 'full'
+    if: needs.plan.outputs.profile != 'full' && needs.plan.outputs.profile != 'governance'
     strategy:
       fail-fast: false
       matrix:
@@ -83,7 +83,7 @@ jobs:
         run: python policy/scripts/steward-ci-candidate.py "$PROFILE" "$BASE" "$HEAD"
   test:
     needs: plan
-    if: needs.plan.outputs.profile == 'full'
+    if: needs.plan.outputs.profile == 'full' || needs.plan.outputs.profile == 'governance'
     strategy:
       fail-fast: false
       matrix:
@@ -134,19 +134,32 @@ jobs:
           if [[ -f policy/scripts/steward-ci-candidate.py ]]; then
             python policy/scripts/steward-ci-candidate.py full-lock "$BASE" "$HEAD"
           fi
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: target
+      - name: Windows governance promotion checks
+        if: runner.os == 'Windows' && needs.plan.outputs.profile == 'governance'
+        working-directory: target
+        shell: bash
+        env:
+          STEWARD_TEST_TOOLCHAIN_ROOT: ${{ github.workspace }}/policy
+        run: |
+          npm run test:controller-source
+          npm exec --offline -- vitest run packages/runner/test/{governance-promotion,build-environment,git-snapshot}.test.ts
+          uv run --project tools/template --frozen python -m unittest discover -s tools/template -p test_promotion.py
       - name: Node tests and configuration
+        if: runner.os != 'Windows' || needs.plan.outputs.profile == 'full'
         env:
           STEWARD_TEST_TOOLCHAIN_ROOT: ${{ github.workspace }}/policy
         working-directory: target
         shell: bash
         run: |
-          npm ci --ignore-scripts --no-audit --no-fund
           python scripts/test/steward_ci_lock_test.py
           npm test
           npm run typecheck
           npm run verify:config -- --toolchain-root "$GITHUB_WORKSPACE/policy"
           npm run verify:dist
       - name: Verify production Worker source
+        if: runner.os != 'Windows' || needs.plan.outputs.profile == 'full'
         working-directory: target/workers/steward
         shell: bash
         run: |
@@ -177,6 +190,6 @@ jobs:
           CANDIDATE: ${{ needs.candidate.result }}
         run: |
           case "$PLAN/$PROFILE/$FULL/$CANDIDATE" in
-            success/full/success/skipped|success/title/skipped/success|success/docs/skipped/success|success/policy/skipped/success|success/tool/skipped/success) exit 0 ;;
+            success/full/success/skipped|success/governance/success/skipped|success/title/skipped/success|success/docs/skipped/success|success/policy/skipped/success|success/tool/skipped/success) exit 0 ;;
             *) exit 1 ;;
           esac
