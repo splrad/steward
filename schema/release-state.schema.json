@@ -406,6 +406,11 @@
           "type": "string",
           "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
         },
+        "buildWorkflow": {
+          "type": "string",
+          "pattern": "^\\.github/workflows/[^/\\\\:\\u0000-\\u001f\\u007f-\\u009f*!?{}()[\\]<>|\"]{1,192}\\.ya?ml$(?![\\s\\S])"
+        },
+        "workflowDelivery": { "const": true },
         "units": {
           "type": "array",
           "items": {
@@ -473,6 +478,39 @@
                     "sha256": {
                       "type": "string",
                       "pattern": "^[a-f0-9]{64}$(?![\\s\\S])"
+                    }
+                  }
+                }
+              },
+              "githubDelivery": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["runId", "attempt", "artifactId", "digest"],
+                "properties": {
+                  "runId": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+                  "attempt": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+                  "buildAttempt": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+                  "artifactId": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+                  "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$(?![\\s\\S])" }
+                }
+              },
+              "githubDisabled": { "const": true },
+              "channelDeliveries": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 2,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["channelId", "delivery", "assets"],
+                  "properties": {
+                    "channelId": { "enum": ["ghcr-assets", "winget"] },
+                    "delivery": { "$ref": "#/$defs/cycle/properties/units/items/properties/githubDelivery" },
+                    "assets": {
+                      "allOf": [
+                        { "$ref": "#/$defs/cycle/properties/units/items/properties/assets" },
+                        { "type": "array", "minItems": 1 }
+                      ]
                     }
                   }
                 }
@@ -566,6 +604,10 @@
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 9007199254740991
+              },
+              "buildWorkflow": {
+                "type": "string",
+                "pattern": "^\\.github/workflows/[^/\\\\:\\u0000-\\u001f\\u007f-\\u009f*!?{}()[\\]<>|\"]{1,192}\\.ya?ml$(?![\\s\\S])"
               },
               "ref": {
                 "type": "string",
@@ -1075,6 +1117,7 @@
           }
         },
         "freezeCompletedAt": {"type":"string","format":"date-time"},
+        "freezeBuildAttempt": {"type":"integer","minimum":1,"maximum":9007199254740991},
         "freezeOnly": {
           "type": "array", "minItems": 1,
           "items": {

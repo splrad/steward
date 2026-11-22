@@ -31,9 +31,11 @@ export function assertDeliveryArtifactMapping(unit: {
 }
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import schema from '../../../schema/delivery.schema.json' with { type: 'json' };
+import { defaultBuildWorkflow, isBuildWorkflow, releasePleaseUnitId } from './release-workflow.js';
 
 export interface DeliveryConfig {
-  schemaVersion: 1 | 2;
+  schemaVersion: 1 | 2 | 3;
+  buildWorkflow?: string;
   repositoryAuthors: { id: number; evidence: string }[];
   units: DeliveryUnit[];
 }
@@ -81,20 +83,41 @@ export function channelFiles(unit: DeliveryUnit, channelId: string, files: reado
 }
 
 /** Finite delivery facts at S. Commands, build recipes and publication policy are not data fields. */
-export function parseDeliveryConfig(input: unknown): DeliveryConfig {
-  if (input && typeof input === 'object' && !Array.isArray(input) && [1,2].includes((input as { schemaVersion?: number }).schemaVersion ?? 0)) {
+export function parseDeliveryConfig(input: unknown, releasePlease?:{packages?:Record<string,{component?:unknown}>}): DeliveryConfig {
+  if (input && typeof input === 'object' && !Array.isArray(input) && [1,2,3].includes((input as { schemaVersion?: number }).schemaVersion ?? 0)) {
     const authors = (input as { repositoryAuthors?: unknown }).repositoryAuthors;
-    if (!Array.isArray(authors) || !authors.length || authors.some(author => author && typeof author === 'object'
-      && (typeof author.evidence !== 'string' || !author.evidence.trim()))) throw new Error('AUTHOR_IDENTITY_UNVERIFIED');
+    if (authors !== undefined && (!Array.isArray(authors) || authors.some(author => author && typeof author === 'object'
+      && (typeof author.evidence !== 'string' || !author.evidence.trim())))) throw new Error('AUTHOR_IDENTITY_UNVERIFIED');
   }
   if (!validateDelivery(input)) throw new Error('DELIVERY_CONFIG_STRUCTURE');
-  const value = structuredClone(input) as unknown as DeliveryConfig;
+  const value = structuredClone(input) as unknown as DeliveryConfig & {notes?:Record<string,string>};
+  value.repositoryAuthors ??= [];
+  if (value.buildWorkflow !== undefined && !isBuildWorkflow(value.buildWorkflow)) throw new Error('DELIVERY_BUILD_WORKFLOW');
+  if(value.schemaVersion===3) {
+    const packages=releasePlease?.packages;
+    const paths=packages&&typeof packages==='object'&&!Array.isArray(packages)?Object.keys(packages):[];
+    if(!paths.length||paths.length>128||Object.keys(value.notes??{}).some(path=>!Object.hasOwn(packages!,path)))
+      throw new Error('DELIVERY_RELEASE_PLEASE_UNITS');
+    if(value.repositoryAuthors.some(author=>/^(?:https:\/\/github\.com\/[^ /?#]+|https:\/\/api\.github\.com\/users\/[^ /?#]+)\/?$/i.test(author.evidence.trim())))
+      throw new Error('AUTHOR_IDENTITY_UNVERIFIED');
+    value.buildWorkflow??=defaultBuildWorkflow;
+    value.units=paths.sort().map(path=>{
+      const item=packages![path];
+      if(!item||typeof item!=='object'||Array.isArray(item))throw new Error('DELIVERY_RELEASE_PLEASE_UNITS');
+      const id=releasePleaseUnitId(path,item.component);
+      const notesPath=(value.notes&&Object.hasOwn(value.notes,path)?value.notes[path]:undefined)??'.release-notes/'+id+'.md';
+      return {id,path,notesPath,assets:[],buildLocks:[],channels:[]};
+    });
+    delete value.notes;
+  }
   const unique = (values: unknown[]) => new Set(values).size === values.length;
   if (!unique(value.units.map(unit => unit.id)) || !unique(value.units.map(unit => unit.path.toLowerCase()))
     || !unique(value.repositoryAuthors.map(author => author.id)) || value.repositoryAuthors.some(author => !author.evidence.trim()))
     throw new Error('DELIVERY_DUPLICATE_IDENTITY');
   const paths=value.units.map(unit=>unit.path.toLowerCase());
-  if(paths.some((path,i)=>paths.some((other,j)=>i!==j&&(path==='.'||other.startsWith(path+'/')))))throw new Error('DELIVERY_NESTED_UNIT_PATH');
+  if(value.schemaVersion===3) {
+    if(!unique(value.units.map(unit=>unit.notesPath.toLowerCase())))throw new Error('DELIVERY_DUPLICATE_NOTES_PATH');
+  } else if(paths.some((path,i)=>paths.some((other,j)=>i!==j&&(path==='.'||other.startsWith(path+'/')))))throw new Error('DELIVERY_NESTED_UNIT_PATH');
   for (const unit of value.units) {
     // Version 1 implicitly published the entire seal to GitHub. In version 2 omission disables it.
     if (value.schemaVersion === 2 && !unit.channels.some(channel => channel.id === 'github-release'))

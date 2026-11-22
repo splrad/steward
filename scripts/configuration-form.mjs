@@ -94,7 +94,7 @@ export function configurationForm(model,head,state={}) {
     field(id+'.target','目标 ID');
     field(id+'.path','发行单元目录（相对于仓库根目录）',defaults.path);
     field(id+'.notes','发行单元说明文件',defaults.notes);
-    if(values[id+'.notes'] && !model.files.has(values[id+'.notes'])) field(id+'.notesBody','新说明的 Markdown 正文（概述和更新内容）');
+    if(values[id+'.notes'] && !model.files.has(values[id+'.notes'])) field(id+'.notesBody','按采用模板填写的新 Markdown 说明');
     if(values[id+'.changelog'] && !model.files.has(posix.join(defaults.path,values[id+'.changelog']))) field(id+'.logBody','新变更日志的起始正文');
     const existingUnit=model.delivery?.units.find(u=>u.id===defaults.raw);
     field(id+'.locks','构建锁文件（每行一个仓根相对路径；无锁时输入 []）',existingUnit?.buildLocks?.join('\n')??'');
@@ -165,10 +165,6 @@ export function configurationForm(model,head,state={}) {
     field('site.unit','正式 Release 来源单元',site.unit);
   }
   const hasReleaseEntry=entries.some(entry=>values[entry.id+'.use']);
-  if(!model.delivery && hasReleaseEntry) {
-    field('author.id','已核实仓库作者的 GitHub 数字 ID');
-    field('author.evidence','作者身份核验依据');
-  }
   if(hasReleaseEntry) field('signing','已确认所选单元签名不适用',false,'check');
   for(const [id,label] of [['configure','准备入口并写入本 PR'],['trial','使用已核验的运行或执行只构建试跑'],['select','将正式文件和各渠道选择写入本 PR'],['approve','批准本 PR 的当前提交']])
     field('operation.'+id,label,false,'check');
@@ -243,7 +239,6 @@ export function planFromForm(model,state,operation) {
   for(const c of channels.values()) units.get(c.unit).channels.push({id:c.id,location:c.location,required:false});
   const settings={targets,channelWorkflow:v['channel.workflow'],units:[...units.values()],signing:v.signing?'not-applicable':null};
   if(operation==='configure' && versions.size) settings.versions=[...versions.values()];
-  if(!model.delivery && entries.length) settings.repositoryAuthors=[{id:Number(v['author.id']),evidence:v['author.evidence']}];
   const edits=[];
   for(const unit of model.delivery?.units??[]) for(const c of effectiveChannels(model.delivery,unit)) {
     const field='channel.'+unit.id+'.'+c.id, enabled=v[field];

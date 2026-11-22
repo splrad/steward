@@ -76,7 +76,7 @@ it('publishes seven bytesets, waits for both channels, recovers protected consum
     if(path.includes('/pulls?'))return response([pr]);if(path.endsWith('/pulls/2'))return response(pr);
     if(path.endsWith('/pulls/1'))return response({...pr,number:1,merge_commit_sha:A,head:{...pr.head,ref:'onboarding'}});
     if(path.endsWith('/pulls/33'))return response({number:33,state:merged?'closed':'open',merged,head:{ref:'steward/Fixture.Product/1.2.3'},base:{repo:{full_name:'microsoft/winget-pkgs'}}});
-    if(path.includes('/contents/')){const b=path.includes('delivery.json')?deliveryBytes:path.includes('ref='+S)?workflow:sourceWorkflow;return response({type:'file',encoding:'base64',content:b.toString('base64'),size:b.length,sha:blob(b)});}
+    if(path.includes('/contents/')){const file=path.split('/contents/')[1]!.split('?')[0],b=path.includes('delivery.json')?deliveryBytes:path.includes('ref='+S)?workflow:sourceWorkflow;return response({type:'file',path:file,encoding:'base64',content:b.toString('base64'),size:b.length,sha:blob(b)});}
     if(path.includes('/actions/workflows/')&&!path.includes('/runs'))return response({id:10,path:'.github/workflows/steward-release-channels.yml',state:'active'});
     if(path.includes('/workflows/10/runs?'))return response({total_count:probe?1:0,workflow_runs:probe?[probe]:[]});
     const runMatch=/\/actions\/runs\/(\d+)(.*)$/.exec(path);if(runMatch){const id=Number(runMatch[1]),tail=runMatch[2]!;

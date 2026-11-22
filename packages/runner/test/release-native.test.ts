@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, rm, writeFile, copyFile, open } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { nativeInspectionTimeoutMs, nativeReleaseInspector } from '../src/release-native.js';
+import { inspectWorkflowAsset, nativeInspectionTimeoutMs, nativeReleaseInspector } from '../src/release-native.js';
 import { collectFileBuildManifest } from '../src/build-manifest.js';
 import { BuildContractError, type BuildArtifactInput } from '../../core/src/build-manifest.js';
 import { isolatedBuildEnvironment } from '../src/build-environment.js';
@@ -14,6 +14,23 @@ it('rejects unsupported Linux native formats before starting any PowerShell proc
   const inspector = nativeReleaseInspector('does-not-exist.ps1', 'unused', 'linux');
   await expect(inspector.inspectPath!('artifact.zip')).rejects.toThrow('NATIVE_FORMAT_UNSUPPORTED');
   await expect(inspector.inspectPath!('artifact.dll')).rejects.toThrow('NATIVE_FORMAT_UNSUPPORTED');
+});
+
+it('checks PE version and file type on either controller platform', async () => {
+  const root=await mkdtemp(join(tmpdir(),'native-workflow-pe-'));
+  try {
+    registerOfflineFixtureRoot(root);
+    permitOfflineScript(resolve('scripts/inspect-python-release.py'));
+    const bytes=resolve('packages/runner/test/fixtures/native-release/fixture.dll');
+    await copyFile(bytes,join(root,'product.dll'));
+    await copyFile(bytes,join(root,'product.exe'));
+    await copyFile(bytes,join(root,'product.unknown'));
+    const check=(file:string,version:string)=>inspectWorkflowAsset(join(root,file),'simple',version,process.cwd(),root);
+    await expect(check('product.dll','1.2.3')).resolves.toBeUndefined();
+    await expect(check('product.dll','1.2.4')).rejects.toThrow('RN_DELIVERY_VERSION');
+    await expect(check('product.exe','1.2.3')).rejects.toThrow('RN_DELIVERY_FORMAT');
+    await expect(check('product.unknown','1.2.3')).rejects.toThrow('RN_DELIVERY_UNSUPPORTED');
+  } finally { await rm(root,{recursive:true,force:true}); }
 });
 
 describe.skipIf(process.platform !== 'win32')('native Windows versions and bounded archive inspection', () => {

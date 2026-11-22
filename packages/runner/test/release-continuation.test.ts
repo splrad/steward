@@ -13,6 +13,16 @@ it('alerts after one automatic native rerun rather than constructing a cross-sta
  expect(result).toMatchObject({status:'BLOCKED',reason:'NATIVE_MAINTENANCE_REQUIRED'});
  expect(f.calls.some(call=>call.startsWith('POST'))).toBe(false);
 });
+it('accepts a success on the original workflow after its native failed-job rerun',async()=>{
+ const f=evidenceFixture(2);f.context.cycle.workflowDelivery=true;f.runs.get(2).conclusion='success';
+ for(const [attempt,jobs] of f.jobs) {
+   jobs[0]!.name='delivery/app';jobs[0]!.conclusion=attempt===2?'success':'failure';
+   jobs[0]!.steps[0].name='Upload GitHub release delivery';
+ }
+ const result=await recoverNativeCycle(f.context,100,f.store,[],f.io,NOW);
+ expect(result).toMatchObject({status:'SATISFIED',reason:'NO_NATIVE_RECOVERY_REQUIRED'});
+ expect(f.calls.some(call=>call.startsWith('POST'))).toBe(false);
+});
 
 function channel(attempts=1,mode:'submit'|'verify'='submit') {
   const f=evidenceFixture(attempts),unit=f.context.cycle.units[0]!;
