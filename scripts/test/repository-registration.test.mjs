@@ -17,6 +17,7 @@ import {releasePolicyGuard} from '../release-repository-policy.mjs';
 import {servicePages} from '../pages-maintenance.mjs';
 import {projectionBytes,readRepositoryPolicySelection,readRepositoryProjection,repositoryPolicyAdoptionPath} from '../repository-policy-projection.mjs';
 import {projectMergedRepositoryPolicy} from '../repository-policy-publish.mjs';
+import {validateRegistrationPreview} from '../repository-registration-preview.mjs';
 import {workflowPagesOptions} from '../select-pages-source.mjs';
 import {writeReleaseRecords} from '../release-record.mjs';
 import {nativeTemporaryParent} from '../native-scratch.mjs';
@@ -49,6 +50,18 @@ const productFiles = new Map([
   [pages,'env: {STEWARD_DOCS_SOURCE: "${{ vars.STEWARD_DOCS_SOURCE }}"}\njobs: {build: {}, deploy: {}}']
 ]);
 const propose = (repo, files = new Map()) => registrationProposal(repo, async path => files.get(path) ?? null,[...files.keys()]);
+function compactProductFiles(siteSource='default-branch',unit='layerscape') {
+  const workflow='.github/workflows/build-product.yml';
+  return new Map([
+    ['.github/product-ci.json',productFiles.get('.github/product-ci.json')],
+    [ci,productFiles.get(ci)],
+    ['.github/delivery.json',JSON.stringify({schemaVersion:3,buildWorkflow:workflow,
+      repositoryAuthors:[{id:1,evidence:'fixture source'}]})],
+    ['release-please-config.json',JSON.stringify({packages:{'.':{component:unit}}})],
+    [workflow,'on: workflow_dispatch\njobs: {package: {}}'],
+    [pages,`env: {STEWARD_DOCS_SOURCE: ${siteSource}, STEWARD_DOCS_UNIT: layerscape}\njobs: {build: {if: "(true && true) && (success())"}}`]
+  ]);
+}
 const body = (event, action, repository_ids) => ({
   delivery:'12345678-1234-4321-8123-123456789012',body_sha256:'f'.repeat(64),event,action,
   ...(repository_ids === undefined ? {} : {repository_ids})
@@ -583,6 +596,21 @@ test('central Pages consumer blocks recovery for disabled and build-only sites a
     io:{request:async method=>{assert.equal(method,'GET');return {status:404};}}}),/PAGES_REPOSITORY_POLICY_CONFLICT/);
 });
 
+test('a native release entry needs no central registration and honors a migrated pause',async()=>{
+  let reads=0,policy={adoption:'central',policy:{release:{units:[]}}};
+  const guard=releasePolicyGuard({},product,async()=>{reads++;return policy;});
+  const read=async()=>assert.fail('native admission must not read fixed legacy workflow paths');
+  await guard(read,{nativeEntry:true,priorRegistration:false});
+  assert.equal(reads,0);
+  await guard(read,{nativeEntry:true,priorRegistration:true});
+  assert.equal(reads,1);
+  policy={adoption:'central',policy:{release:null}};
+  await guard(read,{nativeEntry:true,priorRegistration:true});
+  await assert.rejects(guard(read),/CANDIDATE_REPOSITORY_POLICY_DISABLED/);
+  policy={adoption:'paused',policy:{release:null}};
+  await assert.rejects(guard(read,{nativeEntry:true,priorRegistration:true}),/CANDIDATE_REPOSITORY_POLICY_DISABLED/);
+});
+
 test('private receiver accepts verified metadata and one ID for recovery', () => {
   assert.deepEqual(registrationIds(event(body('repository','created',[governance.id])),'repository_dispatch'),[governance.id]);
   assert.deepEqual(registrationIds(event(body('installation_repositories','added',[governance.id,product.id])),
@@ -730,6 +758,101 @@ test('initial .github and LayerScape drafts contain their actual selection shape
     assert.match(state.open[0].body,/人工改稿/);
     assert.deepEqual(state.writes.at(-1),['comment',42]);
     assert.match(state.comments[0].body,/未通过结构校验/);
+  }
+});
+
+test('workflow-owned release units allow ordinary CI and Pages drafts without a second release selection',async()=>{
+  const repo={...product,private:false};
+  const {api,state}=fake();
+  const path=registrationPath(repo);
+  const observe=()=>propose(repo,compactProductFiles());
+  const proposal=await observe();
+  assert.deepEqual(proposal.nativeReleaseUnits,['layerscape']);
+  assert.deepEqual(proposal.pending,[]);
+  const run=()=>reconcileRegistration(api,admin,repo,source,observe,async()=>source);
+  assert.equal((await run()).result,'created');
+  const selected=JSON.parse(state.trees.get(candidate).get(path));
+  assert.deepEqual(selected,{schemaVersion:1,repositoryId:repo.id,repository:repo.full_name,productCi:[ci],
+    release:null,site:{workflow:pages,mode:'build-only',source:'default-branch'}});
+  const legacy=await propose(repo,productFiles);
+  state.trees.get(candidate).set(path,JSON.stringify({...selected,release:legacy.policy.release}));
+  const outcome=await run();
+  assert.equal(outcome.result,'reused');
+  assert.match(outcome.pending.join(' '),/正式文件和渠道由产品工作流管理/);
+  assert.equal((await propose(repo,compactProductFiles('release'))).policy.site,null);
+});
+
+test('workflow-owned delivery keeps existing release admission and Pages authorization across CI changes',async()=>{
+  const path=registrationPath(product);
+  const legacy=(await propose(product,productFiles)).policy;
+  const selected={...legacy,adoption:'central',productCi:[ci,'.github/workflows/obsolete.yml'],
+    site:{workflow:pages,mode:'build-and-deploy',source:'release',unit:'layerscape'}};
+  const {api,state}=fake({files:new Map([[path,JSON.stringify(selected)]])});
+  const files=compactProductFiles('release');
+  const observe=()=>propose(product,files);
+  const run=()=>reconcileRegistration(api,admin,product,source,observe,async()=>source);
+  const outcome=await run();
+  assert.equal(outcome.result,'created');
+  assert.deepEqual(outcome.differences,['productCi','site']);
+  assert.deepEqual(outcome.pending,[]);
+  const adjusted={...selected,productCi:[ci]};
+  assert.deepEqual(JSON.parse(state.trees.get(candidate).get(path)),adjusted);
+
+  const app={forRepository:(_id,operation)=>operation('fixture')};
+  const projection='configuration/repository.json';
+  const ports={
+    getPolicy:async()=>({commit:base,policy:adjusted}),currentSource:async()=>source,
+    getState:async()=>({snapshot:{currentPaths:[projection]},readBytes:async()=>Buffer.from(projectionBytes(adjusted))}),
+    write:async()=>assert.fail('Existing projection should remain unchanged')
+  };
+  const project=()=>projectMergedRepositoryPolicy(app,product,source,observe,async path=>files.get(path),ports);
+  assert.equal(await project(),'UNCHANGED');
+  files.set('release-please-config.json',compactProductFiles('release','another').get('release-please-config.json'));
+  await assert.rejects(project(),/PROJECTION_PAGES/);
+});
+
+test('public registration preview compares a workflow-owned product against the approved release field',async t=>{
+  const files=compactProductFiles();
+  const repository={...product,private:false},prefix='/repos/'+repository.full_name;
+  t.mock.method(globalThis,'fetch',async (input,init)=>{
+    const url=new URL(input);
+    assert.equal(init.method,'GET');
+    assert.equal(url.origin,'https://api.github.com');
+    if(url.pathname==='/repositories/'+repository.id)return Response.json(repository);
+    if(url.pathname===prefix+'/branches/main')return Response.json({protected:true,name:'main',commit:{sha:source}});
+    if(url.pathname===prefix+'/git/trees/'+source) {
+      assert.equal(url.search,'?recursive=1');
+      return Response.json({truncated:false,tree:[...files.keys()].map(path=>({path,type:'blob',mode:'100644',sha:candidate}))});
+    }
+    const path=url.pathname.slice((prefix+'/contents/').length);
+    assert.ok(url.pathname.startsWith(prefix+'/contents/')&&files.has(path));
+    assert.equal(url.search,'?ref='+source);
+    return Response.json({path,type:'file',sha:candidate,encoding:'base64',content:Buffer.from(files.get(path)).toString('base64')});
+  });
+  const workspace=await mkdtemp(join(await nativeTemporaryParent('REGISTRATION_FIXTURE_TEMP_LINK'),'registry-preview-'));
+  const path=registrationPath(product),file=join(workspace,path);
+  const runGit=(...args)=>execFileSync('git',['-c','core.hooksPath=','-c','user.name=Fixture',
+    '-c','user.email=fixture@example.invalid','-c','commit.gpgsign=false',...args],
+  {cwd:workspace,encoding:'utf8',windowsHide:true}).trim();
+  const validate=base=>validateRegistrationPreview(workspace,{input:{changedPaths:[path],base},files:[path]},{});
+  try {
+    const legacy={...(await propose(product,productFiles)).policy,adoption:'central'};
+    runGit('init','--quiet','--initial-branch=main');
+    runGit('commit','--quiet','--allow-empty','-m','initial');
+    const before=runGit('rev-parse','HEAD');
+    await mkdir(dirname(file),{recursive:true});
+    await writeFile(file,JSON.stringify({...legacy,release:null}));
+    await validate(before);
+    await writeFile(file,JSON.stringify(legacy));
+    await assert.rejects(validate(before),/VALIDATION_REGISTRATION_PREVIEW_SELECTION/);
+    runGit('add','--',path);
+    runGit('commit','--quiet','-m','approved registration');
+    const approved=runGit('rev-parse','HEAD');
+    await validate(approved);
+    await writeFile(file,JSON.stringify({...legacy,release:null}));
+    await assert.rejects(validate(approved),/VALIDATION_REGISTRATION_PREVIEW_SELECTION/);
+  } finally {
+    await rm(workspace,{recursive:true,force:true});
   }
 });
 

@@ -57,7 +57,7 @@ export class BoundedRecheckCoordinator {
   if(action==='/register'){ensure(this.env.BOUNDED_RECHECK_ENABLED==='true','QUIESCED');await this.engine.register(b.registration);await initialWake(this.state.storage,this.env,()=>this.engine.wake(),b.wakeContext);value=await this.store.read();}
   else if(action==='/status')value=await this.store.read();
   else if(['/pause','/resume','/cancel'].includes(action)){if(action==='/resume')ensure(this.env.BOUNDED_RECHECK_ENABLED==='true','QUIESCED');value=await this.engine.control(action.slice(1) as 'pause'|'resume'|'cancel',b.expectedGeneration);}
-  else if(action==='/receipt'){const r=await this.store.read();ensure(r?.intent?.key===b.requestKey,'RECEIPT_INTENT');await this.engine.wake();value=await this.store.read();}
+  else if(action==='/receipt'){await this.engine.receipt(b);value=await this.store.read();}
   else return new Response(null,{status:404});
   return Response.json(value,{headers:{'Cache-Control':'no-store'}});
  }

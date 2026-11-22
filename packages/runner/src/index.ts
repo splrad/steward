@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 export { selectReleaseContributors } from '../../core/src/release-candidate.js';
+export { confirmedReleaseContributorsPath, confirmedReleaseContributors } from '../../core/src/release-candidate.js';
+export { isAdoptedOrganizationReleaseTemplate, isConditionalTemplate, isPreviouslyAdoptedReleaseTemplate } from '../../core/src/conditional-release-notes.js';
 export { manualCandidateFacts, manualCandidatePreview, manualCandidateBody, validateManualCandidateRecord } from '../../core/src/manual-candidate.js';
 export { parseDeliveryConfig, deliveryAssetNames, assertDeliveryPath } from '../../core/src/delivery-config.js';
+export { defaultBuildWorkflow, dispatchWorkflow, encodeRepositoryPath, staticMatrixRows } from '../../core/src/release-workflow.js';
+export { productReleaseTemplatePath, sharedReleaseTemplatePath } from '../../core/src/release-template.js';
+export { readLegacyReleaseTemplate, releaseTemplateControllerPin } from './release-template-source.js';
 export { githubUnits } from '../../core/src/release-observation.js';
 export { downloadNativeArtifact } from './native-artifact-download.js';
 export { assertProductDelivery, assertRegisteredAdapters } from './release-pipeline.js';
 export { parsePipelineRecord, pipelineSource } from './release-pipeline-record.js';
-export { pipelineIdentity, pipelineNotes, pipelineInspect, pipelineRecoverCycleFinal, mergedBuildCycle, findFrozenFinal, pipelineDownloadPhase, pipelineFrozenManifest, pipelinePublish, pipelineVerifyPublished, pipelinePreparePublication, readCycleDelivery, prepareNormalizedDelivery } from './release-pipeline.js';
+export { pipelineIdentity, pipelineNotes, pipelineInspect, pipelineRecoverCycleFinal, mergedBuildCycle, findFrozenFinal, pipelineDownloadPhase, pipelineFrozenManifest, pipelinePublish, pipelineVerifyPublished, pipelinePreparePublication, readCycleDelivery, prepareNormalizedDelivery, prepareWorkflowChannelReceipts, githubDeliveryArtifact, applyWorkflowDelivery } from './release-pipeline.js';
 export { inspectProductArtifacts, sealProductArtifacts, validateProductManifest } from './release-artifacts.js';
 export { renderFrozenReleaseNotes } from '../../core/src/release-template.js';
 export { decodeCompletionArchive } from '../../core/src/release-history.js';
@@ -128,3 +133,5 @@ export async function main(argv=process.argv.slice(2)):Promise<void>{
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href)main().catch(()=>{process.stderr.write('STEWARD_COMMAND_FAILED\n');process.exitCode=1;});
 export { downloadArtifactArchive } from './artifact-handoff.js';
+export { publicationManifestDigest } from './release-artifacts.js';
+export { sameWorkflowDelivery } from '../../core/src/release-observation.js';

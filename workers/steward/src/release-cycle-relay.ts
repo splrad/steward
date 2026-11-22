@@ -1,4 +1,5 @@
 import {GitHubRetryError,rejectedDispatch,retryAfterTime} from './bounded-retry-after.js';
+import {channelWorkflow as channelPath,defaultBuildWorkflow as publishPath,dispatchWorkflow,isBuildWorkflow} from '../../../packages/core/src/release-workflow.js';
 import {PendingPromotion,promotionMessage} from './release-promotion.js';
 import {promotedController} from './bounded-controller.js';
 import {readCycle} from './bounded-winget-evidence.js';
@@ -14,14 +15,13 @@ type SignedSource=Pick<ProductTarget,'name'|'defaultBranch'>;
 type ReleaseIntake={hint:Hint;source:SignedSource;tries:number;next:number};
 type Relay = {hint: Hint; stage: Stage; tries: number; next: number; policy: string; reserved: number; runId?: number; reason?: string; waitingFor?:string; resumedFor?:string; paused?:boolean};
 
-type RelayProduct=ProductTarget & {publishWorkflowId?:number;channelWorkflowId?:number};
+type RelayProduct=ProductTarget & {publishWorkflowId?:number;channelWorkflowId?:number;buildWorkflow?:string};
 const legacyWorkflowTarget={...TARGET,publishWorkflowId:410998652,channelWorkflowId:410998651};
-const publishPath='.github/workflows/steward-release-publish.yml',channelPath='.github/workflows/steward-release-channels.yml';
 async function workflowProduct(g:GitReader,target:ProductTarget,path:string):Promise<RelayProduct> {
-  ensure(path===publishPath||path===channelPath,'RELEASE_WORKFLOW_PATH');
-  const workflow=await g.json(target.id,`/repos/${target.name}/actions/workflows/${path.split('/').at(-1)}`);
+  ensure(isBuildWorkflow(path)||path===channelPath,'RELEASE_WORKFLOW_PATH');
+  const workflow=await g.json(target.id,`/repos/${target.name}/actions/workflows/${encodeURIComponent(path.split('/').at(-1)!)}`);
   ensure(workflow.path===path&&positive(workflow.id)&&workflow.state==='active','RELEASE_NATIVE_WORKFLOW');
-  return {...target,...(path===publishPath?{publishWorkflowId:workflow.id}:{channelWorkflowId:workflow.id})};
+  return {...target,...(path===channelPath?{channelWorkflowId:workflow.id}:{publishWorkflowId:workflow.id,buildWorkflow:path})};
 }
 export function releaseHint(event: string, p: any, installation: string | undefined,product:RelayProduct=legacyWorkflowTarget): Hint | undefined {
   const repo = p.repository;
@@ -39,7 +39,8 @@ export function releaseHint(event: string, p: any, installation: string | undefi
   const run = p.workflow_run;
   if (run?.head_repository?.id !== product.id || run.status !== 'completed' || run.event !== 'workflow_dispatch' ||
       run.actor?.id !== 301115370 || !positive(run.id) || !positive(run.run_attempt)) return;
-  const publish = /^steward\/build\/[A-Za-z0-9_.-]{1,128}$/.test(run.head_branch) && run.workflow_id === product.publishWorkflowId && run.path === '.github/workflows/steward-release-publish.yml' && /^Build [a-f0-9]{64}$/.test(run.display_title);
+  const buildTitle=product.buildWorkflow===undefined?/^Build [a-f0-9]{64}$/:/[a-f0-9]{64}/;
+  const publish = /^steward\/build\/[A-Za-z0-9_.-]{1,128}$/.test(run.head_branch) && run.workflow_id === product.publishWorkflowId && run.path === (product.buildWorkflow??publishPath) && buildTitle.test(run.display_title);
   const channels = run.head_branch===product.defaultBranch && run.workflow_id === product.channelWorkflowId && run.path === '.github/workflows/steward-release-channels.yml' && (/^Channels (submit|verify) [a-f0-9]{64}$/.test(run.display_title) || run.conclusion==='success' && /^Channels observe [a-f0-9]{64}$/.test(run.display_title));
   if (publish || channels) return {repositoryId: product.id, kind: 'run', runId: run.id, attempt: run.run_attempt};
 }
@@ -64,7 +65,7 @@ export async function acceptReleaseHint(env: BoundedEnv, event: string, payload:
     hint={...hint,productRepositoryId:prior.hint.repositoryId};
   }else{
     if(event!=='push' && !(event==='workflow_run'&&payload.action==='completed'&&run?.status==='completed'&&run.event==='workflow_dispatch'&&
-      run.actor?.id===301115370&&run.head_repository?.id===repo?.id&&[publishPath,channelPath].includes(run.path)))return;
+      run.actor?.id===301115370&&run.head_repository?.id===repo?.id&&(isBuildWorkflow(run.path)||run.path===channelPath)))return;
     if(!repo||repo.private!==false||repo.archived!==false||repo.fork!==false||repo.owner?.id!==302208797||
        !positive(repo.id)||!payload.installation?.id||payload.installation.id!==Number(env.INSTALLATION_ID))return;
     if(event==='push'&&(payload.ref!=='refs/heads/'+repo.default_branch||payload.deleted!==false||!sha(payload.after)||/^0+$/.test(payload.after)))return;
@@ -73,7 +74,7 @@ export async function acceptReleaseHint(env: BoundedEnv, event: string, payload:
        (repo.visibility!==undefined&&repo.visibility!=='public'))return;
     source={name:repo.full_name,defaultBranch:repo.default_branch};
     if(event==='workflow_run'&&!positive(run.workflow_id))return;
-    const product={id:repo.id,...source,publishWorkflowId:run?.workflow_id,channelWorkflowId:run?.workflow_id};
+    const product={id:repo.id,...source,publishWorkflowId:run?.workflow_id,channelWorkflowId:run?.workflow_id,buildWorkflow:run?.path};
     hint=releaseHint(event,payload,env.INSTALLATION_ID,product);
   }
   if (!hint) return;
@@ -202,12 +203,13 @@ export class ReleaseRelay {
           const repeated=releaseHint('workflow_run',{action:'completed',repository:{id:target.id,full_name:target.name,default_branch:target.defaultBranch,fork:false,archived:false},
             installation:{id:Number(this.env.INSTALLATION_ID)},workflow_run:run},this.env.INSTALLATION_ID,product);
           ensure(run.repository?.id===target.id && sha(run.head_sha) && repeated && relayKey(repeated)===key,'RELEASE_PRODUCT_RUN');
-          if(run.path===publishPath){
+          if(run.path!==channelPath){
             const cycleId=run.head_branch.slice('steward/build/'.length),{cycle}=await readCycle(scoped,cycleId);
             const matches=cycle.dispatches?.filter((d:any)=>d.purpose==='build' && d.ref===run.head_branch &&
               d.executionSha===run.head_sha && d.sourceSha===cycle.sourceSha && cycle.sourceSha===run.head_sha &&
-              d.workflowId===run.workflow_id && (d.canonicalRunId===null || d.canonicalRunId===run.id) &&
-              run.display_title==='Build '+d.operationKey && Date.parse(run.created_at)>=Math.floor(Date.parse(d.sentAt)/1000)*1000);
+              d.workflowId===run.workflow_id && dispatchWorkflow(d)===run.path && (d.canonicalRunId===null || d.canonicalRunId===run.id) &&
+              (d.buildWorkflow===undefined?run.display_title==='Build '+d.operationKey:run.display_title.includes(d.operationKey)) &&
+              Date.parse(run.created_at)>=Math.floor(Date.parse(d.sentAt)/1000)*1000);
             ensure(matches?.length===1,'RELEASE_BUILD_DISPATCH');
           }
         }

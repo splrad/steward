@@ -7,6 +7,12 @@ import {execFileSync} from 'node:child_process';
 import {registerOfflineFixtureRoot} from './offline-fixtures.js';
 const script=(name:string)=>import(pathToFileURL(resolve('scripts/'+name+'.mjs')).href);
 const S='a'.repeat(40);
+function checkRunsFor(run:{id:number,check_suite_id:number,repository:{full_name:string},head_sha:string,run_started_at:string},
+  jobs:{id:number,name:string,status:string,conclusion:string|null}[]) {
+  return jobs.map(({id,name,status,conclusion})=>({id,name,status,conclusion,head_sha:run.head_sha,
+    check_suite:{id:run.check_suite_id},app:{id:15368},started_at:run.run_started_at,
+    details_url:`https://github.com/${run.repository.full_name}/actions/runs/${run.id}/job/${id}`}));
+}
 it('private governance rejects product trees before publishing any build outputs',async()=>{
   const {main}=await script('validation-input'),root=await mkdtemp(join(tmpdir(),'governance-admission-'));registerOfflineFixtureRoot(root);
   const git=(...args:string[])=>execFileSync('git',args,{cwd:root,encoding:'utf8'}).trim();
@@ -46,7 +52,57 @@ it('reads real complete Git base/head and detects stale base, wrong checkout and
     git('checkout',head);const payload=JSON.parse(await readFile(event,'utf8'));payload.pull_request.base.sha=S;await writeFile(event,JSON.stringify(payload));await expect(validationInput(root,env)).rejects.toThrow();
   }finally{await rm(root,{recursive:true,force:true});}
 },30000);
-it('uses the protected base repository marker for a fork with Issues and Pages disabled',async()=>{
+it('keeps CI registered while scoping modified prose on both PR and single-parent promotion inputs',async()=>{
+  const {validationInput}=await script('validation-input');
+  const root=await mkdtemp(join(tmpdir(),'validation-diff-scope-'));
+  registerOfflineFixtureRoot(root);
+  const git=(...args:string[])=>execFileSync('git',args,{cwd:root,encoding:'utf8'}).trim();
+  try{
+    git('init','--initial-branch=main');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid');
+    git('config','core.autocrlf','false');
+    const workflowPath='.github/workflows/source.yml';
+    const write=async(path:string,content:string)=>{
+      await mkdir(resolve(root,path,'..'),{recursive:true});await writeFile(join(root,path),content);
+    };
+    await write('.github/product-ci.json',JSON.stringify([workflowPath]));
+    await write(workflowPath,'on: [push, pull_request]\njobs: {test: {}}\n');
+    await write('README.md','guide\n');
+    await write('SECURITY.md','policy\n');
+    await write('config/review/security-common.md','public policy\n');
+    await write('src/main.js','export const n = 1;\n');
+    const commit=()=>{
+      git('add','--all');git('commit','--signoff','--no-gpg-sign','-qm','fixture');return git('rev-parse','HEAD');
+    };
+    const base=commit();
+    const event=join(root,'.git','event.json');
+    const check=async(before:string,head:string,productApplicable:boolean,steward=true)=>{
+      const repository={id:steward?1296724484:42,full_name:steward?'splrad/steward':'splrad/fixture',private:false,default_branch:'main'};
+      git('update-ref','refs/remotes/origin/main',before);
+      for(const type of ['pull_request','push']){
+        const payload=type==='push'?{repository,before,after:head,ref:'refs/heads/main'}
+          :{repository,pull_request:{base:{repo:{id:repository.id},ref:'main',sha:before},head:{sha:head}}};
+        await writeFile(event,JSON.stringify(payload));
+        const env={GITHUB_EVENT_PATH:event,GITHUB_EVENT_NAME:type,GITHUB_REPOSITORY_ID:String(repository.id),
+          GITHUB_REPOSITORY:repository.full_name,WORKFLOW_REPOSITORY:'splrad/steward',
+          WORKFLOW_PATH:'.github/workflows/pr-validation-native.yml',WORKFLOW_SHA:S};
+        await expect(validationInput(root,env)).resolves.toMatchObject({productApplicable,workflows:[workflowPath]});
+      }
+    };
+    await write('README.md','revised guide\n');const guide=commit();
+    await check(base,guide,false);
+    await check(base,guide,true,false);
+    await write('SECURITY.md','revised policy\n');const policy=commit();
+    await check(guide,policy,true);
+    await check(guide,policy,false,false);
+    await write('config/review/security-common.md','revised public policy\n');const common=commit();
+    await check(policy,common,true);
+    await write('README.md','mixed with code\n');await write('src/main.js','export const n = 2;\n');const code=commit();
+    await check(common,code,true);
+    await write('docs/new.md','new file\n');const added=commit();
+    await check(code,added,true);
+  }finally{await rm(root,{recursive:true,force:true});}
+},45000);
+it.each([false,true])('uses the protected base repository marker for a fork (private=%s)',async privateRepository=>{
   const {main}=await script('validation-input'),root=await mkdtemp(join(tmpdir(),'validation-fork-'));
   registerOfflineFixtureRoot(root);
   const git=(...args:string[])=>execFileSync('git',args,{cwd:root,encoding:'utf8'}).trim();
@@ -61,7 +117,7 @@ it('uses the protected base repository marker for a fork with Issues and Pages d
     const base=git('rev-parse','HEAD'),tree=git('rev-parse',base+':.github'),blob=git('rev-parse',base+':'+marker);
     git('update-ref','refs/remotes/origin/main',base);
     git('rm',marker);git('commit','--signoff','--no-gpg-sign','-m','remove marker in fork');
-    const repository={id:42,full_name:'splrad/fixture',default_branch:'main',has_issues:false,has_pages:false};
+    const repository={id:42,full_name:'splrad/fixture',default_branch:'main',private:privateRepository,has_issues:false,has_pages:false};
     const event=join(root,'event.json'),output=join(root,'output.txt');
     await writeFile(event,JSON.stringify({repository,pull_request:{base:{repo:{id:42},ref:'main',sha:base},
       head:{repo:{id:91,full_name:'contributor/fixture'},sha:git('rev-parse','HEAD')}}}));
@@ -73,11 +129,13 @@ it('uses the protected base repository marker for a fork with Issues and Pages d
       ['git/matching-refs/heads/steward/governance-state',[]],
     ]);
     const origin='https://api.github.com/repos/splrad/fixture';
+    const requests:string[]=[];
     vi.stubGlobal('fetch',vi.fn(async(url:string,request:RequestInit)=>{
       expect(url.startsWith(origin)).toBe(true);
       expect(request.method).toBe('GET');
       expect(new Headers(request.headers).get('authorization')).toBe('Bearer workflow-read');
       const path=url.slice(origin.length).replace(/^\//,'');
+      requests.push(path);
       if(path==='git/ref/heads/steward/governance-state')return new Response(null,{status:404});
       const value=responses.get(path);
       expect(value).toBeDefined();
@@ -88,11 +146,14 @@ it('uses the protected base repository marker for a fork with Issues and Pages d
       WORKFLOW_PATH:'.github/workflows/pr-validation-native.yml',WORKFLOW_SHA:S,GITHUB_ACTIONS:'true',
       REPOSITORY_POLICY_TOKEN:'workflow-read'};
     await expect(main(env)).rejects.toThrow('REPOSITORY_POLICY_PROJECTION_REQUIRED');
+    expect(requests).toContain('git/ref/heads/steward/governance-state');
     await expect(readFile(output)).rejects.toMatchObject({code:'ENOENT'});
     responses.set('git/trees/'+tree,{truncated:true,tree:[]});
     await expect(main(env)).rejects.toThrow('REPOSITORY_POLICY_PROJECTION_UNAVAILABLE');
     responses.set('git/trees/'+tree,{truncated:false,tree:[]});
+    requests.length=0;
     expect(await main(env)).toMatchObject({productApplicable:false,workflows:[]});
+    expect(requests.some(path=>path.includes('steward/governance-state'))).toBe(privateRepository);
     const fileJobEnv:NodeJS.ProcessEnv={...process.env,...env};
     delete fileJobEnv.REPOSITORY_POLICY_TOKEN;
     const workflow=(await import('yaml')).parse(await readFile('.github/workflows/pr-validation-native.yml','utf8'));
@@ -316,16 +377,18 @@ it('binds all workflow and matrix results to this repository, PR pair, commit an
   const paths=['.github/workflows/one.yml','.github/workflows/two.yml'];
   const pr={number:4,base:{repo:{id:1},ref:'trunk',sha:S},head:{repo:{id:2},ref:'topic',sha:'b'.repeat(40)}};
   const event={repository:{id:1,full_name:'org/product'},pull_request:pr};
-  const run={id:51,run_attempt:2,path:paths[0],repository:{id:1},head_repository:{id:2},head_sha:pr.head.sha,
+  const run={id:51,run_attempt:2,path:paths[0],repository:event.repository,head_repository:{id:2},head_sha:pr.head.sha,
+    workflow_id:61,check_suite_id:71,run_started_at:'2026-11-21T21:07:30Z',
     event:'pull_request',pull_requests:[pr],status:'completed',conclusion:'success'};
-  const job={run_id:51,run_attempt:2,head_sha:run.head_sha,status:'completed',conclusion:'success',steps:[{status:'completed',conclusion:'success'}]};
+  const job={id:58,name:'product CI',run_id:51,run_attempt:2,head_sha:run.head_sha,status:'completed',conclusion:'success',steps:[{status:'completed',conclusion:'success'}]};
   const check=(runs:any[],jobs:any[]=[job],source=run.head_sha)=>evidence(paths,runs.map(r=>({...r,node_id:r.path})),event,'pull_request',async()=>jobs,[],
-    async(path:string)=>({path,repositoryFileUrl:`https://github.com/org/product/blob/${source}/${path}`}));
+    async(path:string)=>({path,repositoryFileUrl:`https://github.com/org/product/blob/${source}/${path}`}),new Set(),
+    {wait:async()=>{},loadChecks:async(selected:typeof run)=>checkRunsFor(selected,jobs),loadAttemptHistory:async()=>jobs});
   await expect(check([run],[job],S)).rejects.toThrow('workflow source');
   expect(await check([run])).toHaveLength(1);
-  expect(await check([run],[job,{...job,conclusion:'skipped'}])).toHaveLength(1);
+  expect(await check([run],[job,{...job,id:59,name:'optional',conclusion:'skipped'}])).toHaveLength(1);
   const caller={...job,name:'call product CI',steps:[]};
-  const called={...job,name:'call product CI / build'};
+  const called={...job,id:59,name:'call product CI / build'};
   expect(await check([run],[caller,called])).toHaveLength(1);
   await expect(check([run],[caller,{...called,run_id:52}])).rejects.toThrow('incomplete job evidence');
   expect(await check([run,{...run,path:paths[1]}])).toHaveLength(2);
@@ -337,6 +400,79 @@ it('binds all workflow and matrix results to this repository, PR pair, commit an
   for(const jobs of [[],[{...job,run_attempt:1}],[{...job,head_sha:S}],[{...job,conclusion:'skipped'}],[{...job,steps:[]}]])
     await expect(check([run],jobs)).rejects.toThrow('incomplete job evidence');
   await expect(evidence([],[],event,'pull_request',async()=>[])).rejects.toThrow('NOT_CONFIGURED');
+});
+it('re-reads only the chosen completed run attempt while its jobs reach a terminal snapshot',async()=>{
+  const {evidence}=await script('product-ci-evidence'),path='.github/workflows/steward-source.yml';
+  const head='de50c4a09e9e6261cb70275c591f2b81e47b72ca';
+  const repository={id:1296724484,full_name:'splrad/steward'};
+  const branch='dependabot/npm_and_yarn/workers/steward/cloudflare/workers-types-5.20261118.1';
+  const pr={number:426,base:{ref:'main',sha:'0c4248e42578c59b960192a862d96d33b5f19ab0',repo:repository},
+    head:{ref:branch,sha:head,repo:repository}};
+  const event={repository,pull_request:pr};
+  const run={id:44949882339,run_attempt:1,path,repository,head_repository:repository,head_sha:head,head_branch:branch,
+    node_id:'WFR_kwLOTUpyBM8AAAAKdzjF4w',workflow_id:424176722,check_suite_id:121654399352,run_started_at:'2026-11-21T21:07:30Z',
+    event:'pull_request',pull_requests:[pr],status:'completed',conclusion:'success'};
+  const job=(id:number,name:string)=>({id,name,run_id:run.id,run_attempt:1,head_sha:head,status:'completed',conclusion:'success',
+    steps:[{status:'completed',conclusion:'success'}]});
+  const linux=job(136985250142,'test (ubuntu-24.04)'),windows=job(136985249960,'test (windows-2025)');
+  const wait=vi.fn(async()=>{}),readRun=vi.fn(async()=>run);
+  const file=async()=>({path,repositoryFileUrl:`https://github.com/splrad/steward/blob/${head}/${path}`});
+  const loadChecks=vi.fn(async(selected:typeof run)=>checkRunsFor(selected,[linux,windows]));
+  const check=(loadJobs:any,options:{readRun?:typeof readRun,loadChecks?:typeof loadChecks,
+    loadAttemptHistory?:()=>Promise<(typeof linux)[]>}={},value=run)=>
+    evidence([path],[value],event,'pull_request',loadJobs,[],file,new Set(),{wait,readRun,loadChecks,...options});
+  const lagged=vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([linux])
+    .mockResolvedValueOnce([linux,{...windows,status:'in_progress',conclusion:null}])
+    .mockResolvedValueOnce([linux,windows]).mockResolvedValueOnce([windows,linux]);
+  await expect(check(lagged)).resolves.toEqual([{workflow:path,id:run.id,attempt:1,jobs:[
+    {id:windows.id,name:windows.name,conclusion:'success'},{id:linux.id,name:linux.name,conclusion:'success'}]}]);
+  expect(lagged.mock.calls).toEqual([[run],[run],[run],[run],[run]]);
+  expect(wait.mock.calls).toEqual([[1000],[2000],[4000],[8000]]);
+  expect(readRun).toHaveBeenCalledExactlyOnceWith(run.id);
+  for(const bad of [{...windows,run_id:run.id+1},{...windows,run_attempt:2},{...windows,head_sha:S},{...windows,conclusion:'failure'}]){
+    const load=vi.fn(async()=>[linux,bad]);
+    await expect(check(load)).rejects.toThrow('incomplete job evidence');
+    expect(load).toHaveBeenCalledOnce();
+  }
+  const missing=vi.fn(async()=>[]);
+  await expect(check(missing)).rejects.toThrow('incomplete job evidence');
+  expect(missing).toHaveBeenCalledTimes(5);
+  const shrinking=vi.fn().mockResolvedValue([linux])
+    .mockResolvedValueOnce([linux,{...windows,status:'in_progress',conclusion:null}]);
+  await expect(check(shrinking)).rejects.toThrow('incomplete job evidence');
+  const consistentlyPartial=vi.fn(async()=>[linux]);
+  await expect(check(consistentlyPartial)).rejects.toThrow('incomplete job evidence');
+  expect(consistentlyPartial).toHaveBeenCalledTimes(5);
+  const shrinkingChecks=vi.fn(async()=>checkRunsFor(run,[linux]))
+    .mockResolvedValueOnce(checkRunsFor(run,[linux,windows]));
+  await expect(check(async()=>[linux],{loadChecks:shrinkingChecks})).rejects.toThrow('incomplete job evidence');
+  expect(shrinkingChecks).toHaveBeenCalledTimes(5);
+  const wrongSuite=vi.fn(async()=>checkRunsFor({...run,check_suite_id:run.check_suite_id+1},[linux,windows]));
+  await expect(check(async()=>[linux,windows],{loadChecks:wrongSuite})).rejects.toThrow('check suite source mismatch');
+  const rerun={...run,run_attempt:2,run_started_at:'2026-11-21T21:30:00Z'};
+  const rerunJob={...windows,id:136985249961,run_attempt:2};
+  const inheritedWithPriorStart=checkRunsFor({...rerun,run_started_at:run.run_started_at},[rerunJob]);
+  const bothAttempts=vi.fn(async()=>[...checkRunsFor(run,[linux,windows]),...inheritedWithPriorStart]);
+  const loadAttemptHistory=async()=>[linux,windows,rerunJob];
+  await expect(check(async()=>[rerunJob],{loadChecks:bothAttempts,loadAttemptHistory,readRun:vi.fn(async()=>rerun)},rerun))
+    .resolves.toMatchObject([{id:run.id,attempt:2,jobs:[{id:rerunJob.id}]}]);
+  const incompleteHistory=vi.fn(async()=>[rerunJob]).mockResolvedValueOnce([
+    rerunJob,{...linux,id:136985249962,run_attempt:2}
+  ]);
+  const latestChecks=vi.fn(async()=>inheritedWithPriorStart);
+  await expect(check(async()=>[rerunJob],{loadChecks:latestChecks,loadAttemptHistory:incompleteHistory},rerun))
+    .rejects.toThrow('incomplete job evidence');
+  const lateHistory=vi.fn(loadAttemptHistory).mockResolvedValueOnce([rerunJob]);
+  const disappearingOldChecks=vi.fn(async()=>inheritedWithPriorStart)
+    .mockResolvedValueOnce([...checkRunsFor(run,[linux,windows]),...inheritedWithPriorStart]);
+  await expect(check(async()=>[rerunJob],{loadChecks:disappearingOldChecks,loadAttemptHistory:lateHistory,
+    readRun:vi.fn(async()=>rerun)},rerun)).resolves.toMatchObject([{attempt:2,jobs:[{id:rerunJob.id}]}]);
+  expect(lateHistory).toHaveBeenCalledTimes(3);
+  await expect(check(async()=>[linux,linux])).rejects.toThrow('incomplete job evidence');
+  await expect(check(async()=>[linux,windows],{readRun:vi.fn(async()=>({...run,run_attempt:2}))})).rejects.toThrow('changed while reading');
+  const noRead=vi.fn();
+  await expect(check(noRead,{}, {...run,conclusion:'failure'})).rejects.toThrow('concluded failure');
+  expect(noRead).not.toHaveBeenCalled();
 });
 it('keeps registered settings and supplier lock metadata in organizational checks',async()=>{
   const {requiresProductCI}=await script('validation-input');

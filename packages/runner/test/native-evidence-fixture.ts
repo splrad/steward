@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { crc32 } from 'node:zlib';
+import { crc32, gzipSync } from 'node:zlib';
 import type { CycleRecord } from '../../core/src/release-observation.js';
 import type { NativeResult } from '../../core/src/native-evidence.js';
 import { nativeRequestIdentity, type EvidenceContext, type EvidenceResponse, type EvidenceTransport, type EvidenceStore } from '../src/native-release-evidence.js';
@@ -11,6 +11,17 @@ export function zipResult(value:unknown,name='result.json') {
   central.writeUInt32LE(0x02014b50);central.writeUInt16LE(20,4);central.writeUInt16LE(20,6);central.writeUInt32LE(crc,16);central.writeUInt32LE(data.length,20);central.writeUInt32LE(data.length,24);central.writeUInt16LE(n.length,28);
   end.writeUInt32LE(0x06054b50);end.writeUInt16LE(1,8);end.writeUInt16LE(1,10);end.writeUInt32LE(central.length+n.length,12);end.writeUInt32LE(local.length+n.length+data.length,16);
   return Buffer.concat([local,n,data,central,n,end]);
+}
+export function npmPackageFixture(version:string) {
+  const data=Buffer.from(JSON.stringify({name:'fixture-cli',version})),header=Buffer.alloc(512),padded=Buffer.alloc(512);
+  header.write('package/package.json');
+  header.write('0000644\0'+'0000000\0'+'0000000\0',100);
+  header.write(data.length.toString(8).padStart(11,'0')+'\0'+'00000000000\0',124);
+  header.fill(' ',148,156);
+  header.write('0',156);header.write('ustar\0'+'00',257);
+  header.write(header.reduce((sum,byte)=>sum+byte,0).toString(8).padStart(6,'0')+'\0 ',148);
+  data.copy(padded);
+  return gzipSync(Buffer.concat([header,padded,Buffer.alloc(1024)]));
 }
 export function evidenceFixture(attempts=1) {
   const cycle:CycleRecord={id:`pr-12-${S}`,prNumber:12,sourceSha:S,controllerSha:C,deliveryConfigSha:D,units:[{id:'app',version:'1.0.0',tag:'v1.0.0',releaseId:null,assets:[],notesDigest:null,manifestDigest:null}],requiredChannels:[],dispatches:[],publications:[],channelFacts:[],executionEvidence:[],completionObservations:[],completedEvidencePath:null,repairOf:null,approvedRepairDecision:null};
@@ -43,7 +54,7 @@ export function evidenceFixture(attempts=1) {
     if(suffix==='')return response({id:1,full_name:context.repository,private:false,default_branch:'main',archived:false,disabled:false});
     if(suffix==='actions/runs/100')return response(runs.get(latest));
     if(suffix==='actions/workflows/10')return response({id:10,path:runs.get(1).path});
-    if(suffix.startsWith('contents/'))return response({type:'file',encoding:'base64',content:workflowBytes.toString('base64'),size:workflowBytes.length,sha:blobSha});
+    if(suffix.startsWith('contents/'))return response({path:decodeURIComponent(suffix.slice('contents/'.length).split('?')[0]!),type:'file',encoding:'base64',content:workflowBytes.toString('base64'),size:workflowBytes.length,sha:blobSha});
     if(suffix==='actions/runs/100/artifacts?per_page=100')return response({total_count:artifacts.length,artifacts});
     let match=/^actions\/runs\/100\/attempts\/(\d+)(\/jobs\?per_page=100)?$/.exec(suffix);
     if(match){const n=Number(match[1]);return match[2]?response({total_count:jobs.get(n)!.length,jobs:jobs.get(n)}):response(runs.get(n));}

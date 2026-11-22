@@ -1,5 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
 import {createHash,generateKeyPairSync} from 'node:crypto';
 import {withCycleEventProduct,validateEvent} from '../release-cycle-event.mjs';
 import {withCandidateProduct} from '../bounded-candidate-contract.mjs';
@@ -96,6 +97,28 @@ test('manual validation follows the template at the exact candidate head for opt
   await validateManualCandidate(f.session,f.producer,f.io);
   f.files['.github/release-template.md.mustache']='{{{compatibility}}}';
   await assert.rejects(validateManualCandidate(f.session,f.producer,f.io), /missing heading/);
+});
+
+test('a template transition is limited to the protected earlier draft and still guards edited paths',async()=>{
+  const f=fixture(),path='.release-notes/layerscape.md';
+  const old=await readFile('packages/core/test/fixtures/release-template-compact.mustache','utf8');
+  const current=await readFile('templates/repository/.github/release-template.md.mustache','utf8');
+  f.files['.github/release-template.md.mustache']=current;
+  f.session.identity.authorsDigest=hash(f.delivery.repositoryAuthors);
+  f.session.generated.files=[{path,mode:'100644',content:f.files[path]}];
+  f.io.isAncestor=async(a,b)=>a===S&&b===H||a===G&&(b===S||b===H);
+  f.io.readLegacyTemplate=async sha=>{assert.equal(sha,G);return {template:old};};
+  const manual=await validateManualCandidate(f.session,f.producer,f.io);
+  assert.equal(manual.files.find(file=>file.path===path).sha256,hash(f.files[path]));
+  f.io.changedPaths=async()=>[path,'source.ts'];
+  await assert.rejects(validateManualCandidate(f.session,f.producer,f.io),/MANUAL_UNMANAGED_CHANGES/);
+  f.io.changedPaths=async()=>[path];
+  await assert.rejects(validateManualCandidate(f.session,f.producer,{...f.io,readLegacyTemplate:async()=>({template:old+'\n'})}),/MANUAL_NOTE_TEMPLATE/);
+  f.session.generated.baseSha=f.session.repository.candidate.baseSha=S;
+  await assert.rejects(validateManualCandidate(f.session,f.producer,f.io),/MANUAL_NOTE_TEMPLATE/);
+  f.session.identity.noteTemplate=current;
+  await assert.rejects(validateManualCandidate(f.session,f.producer,{...f.io,confirmedHumans:async()=>[]}),/RELEASE_TEMPLATE/);
+  assert.deepEqual(f.calls,[]);
 });
 
 for(const schemaVersion of [1,2])test('two declared release units on trunk bind independent inputs for schema '+schemaVersion,async()=>{
