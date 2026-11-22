@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
-      source: ${{ steps.identity.outputs.workflows != '[]' && 'true' || steps.identity.outputs.productApplicable == 'false' && 'false' || steps.scope.outputs.source }}
+      source: ${{ steps.identity.outputs.productApplicable }}
       dependency: ${{ startsWith(steps.identity.outputs.dependencyMode, 'private-') && 'true' || steps.scope.outputs.dependency }}
       dependency-mode: ${{ steps.identity.outputs.dependencyMode }}
       docs: ${{ steps.scope.outputs.docs }}
@@ -129,6 +129,7 @@ jobs:
     timeout-minutes: 65
     permissions:
       actions: read
+      checks: read
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

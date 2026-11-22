@@ -122,9 +122,18 @@ class LockContractTest(unittest.TestCase):
                 self.assertEqual(classify(head, source), "full")
                 policy = commit("docs/SECURITY.md", "policy")
                 self.assertEqual(classify(source, policy), "full")
+                policy_source = commit("config/review/security-common.md", "initial public policy")
+                self.assertEqual(classify(policy, policy_source), "full")
+                revised = commit("config/review/security-common.md", "revised public policy")
+                self.assertEqual(classify(policy_source, revised), "policy")
+                mixed = commit("packages/runner/dist/index.js", "runtime change")
+                self.assertEqual(classify(revised, mixed), "full")
+                self.assertEqual(classify(policy_source, mixed), "full")
             with patch.dict(os.environ, {"GITHUB_EVENT_NAME": "pull_request"}):
                 self.assertEqual(classify(first, head), "docs")
                 self.assertEqual(classify(first, source), "full")
+                self.assertEqual(classify(policy_source, revised), "policy")
+                self.assertEqual(classify(policy_source, mixed), "full")
 
     def test_base_absent_from_fork(self):
         with tempfile.TemporaryDirectory() as directory:
