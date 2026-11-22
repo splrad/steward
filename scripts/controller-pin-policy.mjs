@@ -16,10 +16,17 @@ function readWorkflowPins(repo, revision, path) {
   const jobs = Object.values(workflow?.jobs ?? {});
   const steps = jobs.flatMap(job => job.steps ?? []);
   const checkouts = steps.filter(step =>
-    typeof step.with?.repository === 'string' && step.with.repository.toLowerCase() === controllerRepository
-    && typeof step.uses === 'string' && step.uses.toLowerCase().startsWith('actions/checkout@'));
-  if (!checkouts.length) throw Error('VALIDATION_CONTROLLER_CHECKOUT_MISSING ' + path);
-  const pins = checkouts.map(step => step.with.ref);
+    typeof step.uses === 'string' && step.uses.toLowerCase().startsWith('actions/checkout@'));
+  const pins = [];
+  for (const checkout of checkouts) {
+    const repository = checkout.with?.repository;
+    if (typeof repository !== 'string') continue;
+    if (repository.includes('${{')) {
+      throw Error('VALIDATION_CONTROLLER_CHECKOUT_REPOSITORY_EXPRESSION ' + path);
+    }
+    if (repository.toLowerCase() === controllerRepository) pins.push(checkout.with.ref);
+  }
+  if (!pins.length) throw Error('VALIDATION_CONTROLLER_CHECKOUT_MISSING ' + path);
   if (path.endsWith('/pages.yml')) {
     const variable = 'STEWARD_CONTROLLER_SHA';
     pins.push(workflow.env?.[variable]);

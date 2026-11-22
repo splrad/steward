@@ -29,14 +29,16 @@ test('requires forward promotion and consistent Steward references when LayerSca
   const product = repository(t);
   const workflowDir = join(product.dir, '.github', 'workflows');
   mkdirSync(workflowDir, {recursive: true});
-  function pinFiles(pin, {pagePin = pin, reusablePin = pin, pagesJobPin, pagesStepPin, extraCheckoutPin} = {}) {
+  function pinFiles(pin, {
+    pagePin = pin, reusablePin = pin, pagesJobPin, pagesStepPin, extraCheckout,
+  } = {}) {
     for (const name of workflows) {
       const workflow = {jobs: {sample: {steps: [
         {uses: 'actions/checkout@' + '0'.repeat(40), with: {repository: 'splrad/steward', ref: pin}},
       ]}}};
-      if (extraCheckoutPin !== undefined) workflow.jobs.sample.steps.push({
+      if (extraCheckout) workflow.jobs.sample.steps.push({
         uses: 'Actions/Checkout@' + '0'.repeat(40),
-        with: {repository: 'SPLRAD/Steward', ref: extraCheckoutPin},
+        with: extraCheckout,
       });
       if (name === 'pages') {
         workflow.env = {STEWARD_CONTROLLER_SHA: pagePin};
@@ -55,7 +57,12 @@ test('requires forward promotion and consistent Steward references when LayerSca
   const next = pinFiles(unpromoted);
   const mixedPages = pinFiles(promoted, {pagePin: older});
   const mixedReusable = pinFiles(promoted, {reusablePin: older});
-  const mixedCheckout = pinFiles(promoted, {extraCheckoutPin: older});
+  const mixedCheckout = pinFiles(promoted, {
+    extraCheckout: {repository: 'SPLRAD/Steward', ref: older},
+  });
+  const expressionCheckout = pinFiles(promoted, {
+    extraCheckout: {repository: '${{ github.repository }}', ref: promoted},
+  });
   const mixedPagesJob = pinFiles(promoted, {pagesJobPin: older});
   const mixedPagesStep = pinFiles(promoted, {pagesStepPin: unpromoted});
   const consistentPagesEnv = pinFiles(promoted, {pagesJobPin: promoted, pagesStepPin: promoted});
@@ -72,6 +79,7 @@ test('requires forward promotion and consistent Steward references when LayerSca
   assert.throws(() => validate(prior, mixedPages), /VALIDATION_CONTROLLER_PIN_MISMATCH/);
   assert.throws(() => validate(prior, mixedReusable), /VALIDATION_CONTROLLER_PIN_MISMATCH/);
   assert.throws(() => validate(prior, mixedCheckout), /VALIDATION_CONTROLLER_PIN_MISMATCH/);
+  assert.throws(() => validate(prior, expressionCheckout), /VALIDATION_CONTROLLER_CHECKOUT_REPOSITORY_EXPRESSION/);
   assert.throws(() => validate(prior, mixedPagesJob), /VALIDATION_CONTROLLER_PIN_MISMATCH/);
   assert.throws(() => validate(prior, mixedPagesStep), /VALIDATION_CONTROLLER_PIN_MISMATCH/);
   assert.doesNotThrow(() => validate(prior, consistentPagesEnv));
