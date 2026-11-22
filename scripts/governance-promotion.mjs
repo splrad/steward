@@ -367,15 +367,16 @@ export async function recordPromotionFailure(error,record) {
 }
 
 export async function publishPromotedSources(io,plan,target,appId,guard,record,readVersionRefs){
-  const published=await publishTemplateTag(io,plan,guard,record);
-  await record({kind:'template-result',...published});
+  // Keep controller version operations outside the existing template tag-and-wake sequence.
   const baseline=await bootstrapControllerVersion(io,appId,guard,readVersionRefs);
   if(baseline) await record({kind:'controller-version-baseline',...baseline});
+  const published=await publishTemplateTag(io,plan,guard,record);
+  await record({kind:'template-result',...published});
   const controller=await publishControllerSource(io,target,appId,guard,record);
   await record({kind:'controller-source-result',...controller});
+  await wakePublishedTemplate(io,published,guard,record);
   const version=await publishControllerVersion(io,target,appId,guard,readVersionRefs);
   await record({kind:'controller-version-result',...version});
-  await wakePublishedTemplate(io,published,guard,record);
   await guard();
 }
 

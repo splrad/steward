@@ -431,7 +431,7 @@ it('stops before writing when the default-branch protection changes',async()=>{
   expect(f.writes).toBe(0);
 });
 it.each(['before tag write','after tag write'])('checks the adopted default-branch protection during publication: %s',async when=>{
-  const {promoteRequiredWorkflow,publishPromotedSources}=await module();
+  const {promoteRequiredWorkflow,publishTemplateTag}=await module();
   const f=rulesFixture();
   const {verifyCurrent}=await promoteRequiredWorkflow(f,M,async()=>{},f.record,compare);
   const plan={status:'CREATE',commit:M,tag:'v1.0.1',tags:{}};
@@ -448,13 +448,13 @@ it.each(['before tag write','after tag write'])('checks the adopted default-bran
     shaBinding(f.current).sha=T;
     return {status:201,value:tagRef};
   }};
-  let versionReads=0;
-  const readVersionRefs=async()=>{versionReads++;return '';};
-  await expect(publishPromotedSources(io,plan,M,123,verifyCurrent,f.record,readVersionRefs))
+  const checkPublication=async()=>{
+    await publishTemplateTag(io,plan,verifyCurrent,f.record);
+    await verifyCurrent();
+  };
+  await expect(checkPublication())
     .rejects.toThrow(when==='before tag write'?'TARGET_PROTECTION_CHANGED':'TARGET_READBACK');
-  expect(versionReads).toBe(0);
   expect(writes).toEqual(when==='before tag write'?[]:['/repos/splrad/steward/git/refs']);
-  expect(f.records.some(record=>['controller-source-result','template-wake'].includes(record.kind))).toBe(false);
 });
 it.each(['sha','protection'])('rejects default-branch drift during final evidence recording: %s',async kind=>{
   const f=rulesFixture();

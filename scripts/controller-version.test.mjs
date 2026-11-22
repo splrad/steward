@@ -1,11 +1,13 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {publishPromotedSources} from './governance-promotion.mjs';
-import {bootstrapControllerVersion, controllerVersionNumber, latestControllerVersion, publishControllerVersion} from './controller-version.mjs';
+import {
+  bootstrapControllerVersion, controllerTagPrefix, controllerVersionNumber, latestControllerVersion, publishControllerVersion,
+} from './controller-version.mjs';
 
 const appId = 5639432;
 const sha = n => n.toString(16).padStart(40, '0');
-const ref = number => 'refs/tags/controller-v' + number;
+const ref = number => controllerTagPrefix + number;
 const branch = 'refs/heads/steward/validated-controller';
 const refValue = (name, commit) => ({ref: name, object: {type: 'commit', sha: commit}});
 
@@ -65,7 +67,8 @@ function fixture({versions = 999, target = 1000, loseResponse = false} = {}) {
     if (loseResponse) throw Error('lost response');
     return {status: 201};
   }};
-  const read = async () => [...tags].sort(([a], [b]) => a.localeCompare(b)).map(([name, commit]) => commit + '\t' + name).join('\n');
+  const read = async () => [...tags].filter(([name]) => name.startsWith(controllerTagPrefix))
+    .sort(([a], [b]) => a.localeCompare(b)).map(([name, commit]) => commit + '\t' + name).join('\n');
   return {io, source, rules, history, read};
 }
 
@@ -135,4 +138,42 @@ test('the production promotion coordinator records the baseline, advances the so
     ['controller-source-result', 'ALREADY_PUBLISHED', undefined],
     ['controller-version-result', 'ALREADY_PUBLISHED', 'controller-v2'],
   ]);
+});
+
+test('version-rule failures leave template publication untouched before its write or already woken afterward', async () => {
+  const data = fixture({versions: 0, target: 101});
+  const target = sha(102);
+  const tag = 'v1.0.1';
+  const templateRef = 'refs/tags/' + tag;
+  const newTemplate = {status: 'CREATE', commit: target, tag, tags: {}};
+  let wakes = 0;
+  let failVersionRules = true;
+  const io = {async request(method, path, body) {
+    if (path.endsWith('/rulesets/27857928') && failVersionRules) return {status: 503};
+    if (path.endsWith('/dispatches')) {
+      assert.equal(method, 'POST');
+      assert.equal(body.event_type, 'steward-template-event');
+      wakes++;
+      failVersionRules = true;
+      return {status: 204};
+    }
+    return data.io.request(method, path, body);
+  }};
+  const publish = plan => publishPromotedSources(io, plan, target, appId, async () => {}, async () => {}, data.read);
+
+  await assert.rejects(publish(newTemplate), /CONTROLLER_VERSION_READ/);
+  assert.deepEqual(data.history, []);
+  assert.equal(wakes, 0);
+
+  failVersionRules = false;
+  await assert.rejects(publish(newTemplate), /CONTROLLER_VERSION_READ/);
+  assert.deepEqual(data.history, [
+    {ref: ref(1), sha: sha(101)}, {ref: templateRef, sha: target}, {sha: target, force: false},
+  ]);
+  assert.equal(wakes, 1);
+
+  failVersionRules = false;
+  await publish({status: 'UNCHANGED', commit: target, tags: {[templateRef]: target}});
+  assert.equal(wakes, 1);
+  assert.deepEqual(data.history.at(-1), {ref: ref(2), sha: target});
 });
