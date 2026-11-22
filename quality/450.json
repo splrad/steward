@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "repositoryId": 1296724484,
   "pullRequestNumber": 450,
-  "currentHead": "107cf02b466c88a53102abccd1f87fdf6961ff76",
+  "currentHead": "76be7b914dcc9c8872cbc9d945cb63441edf1767",
   "configVersion": "quality-native-comments-v1",
   "heads": {
     "734e82029d182e7b6ea330424479e96bcf94f0a0": {
@@ -61,6 +61,25 @@
       "checkId": 137250336074,
       "externalId": "splrad-quality:1296724484:450:107cf02b466c88a53102abccd1f87fdf6961ff76",
       "observedAt": "2026-11-22T15:02:41.252Z"
+    },
+    "76be7b914dcc9c8872cbc9d945cb63441edf1767": {
+      "sourceSetDigest": "02ddcee04a9a4610a8d0be335f5765201ae1272a312e115ef0078ecfb01c80f4",
+      "sources": [
+        {
+          "sourceCommentId": "review-comment:4658499232",
+          "sourceCommit": "734e82029d182e7b6ea330424479e96bcf94f0a0",
+          "sourceUrl": "https://github.com/splrad/steward/pull/450#discussion_r4658499232",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Unused variable, import, function or class\n\nUnused variable same.\n\n---\n\n<p>The best fix is to remove the unused <code>same</code> constant declaration from <code>scripts/validator-revalidation.mjs</code> and leave all runtime behavior unchanged.</p>\n<ul>\n<li>**General approach:** delete unused variables/functions/imports when they are truly not referenced.</li>\n<li>**Specific change here:** remove line 9 (<code>const same=...</code>) from the top-level declarations near <code>check</code>, <code>number</code>, <code>active</code>, etc.</li>\n<li>**Why this is best:** it resolves the CodeQL warning cleanly without changing logic, APIs, or side effects.</li>\n<li>**File/region:** <code>scripts/validator-revalidation.mjs</code>, around lines 7–11 in the provided snippet.</li>\n<li>**No new imports/dependencies/methods** are needed.</li>\n</ul>",
+          "updatedAt": "2026-11-22T14:27:56Z"
+        }
+      ],
+      "keys": [
+        "cfd52b152782f902b5f5e0b7ca997b9d54737bf5458c54ee490f32549ff64ab9"
+      ],
+      "checkId": null,
+      "externalId": "splrad-quality:1296724484:450:76be7b914dcc9c8872cbc9d945cb63441edf1767",
+      "observedAt": "2026-11-22T15:17:04.057Z"
     }
   },
   "entries": {
