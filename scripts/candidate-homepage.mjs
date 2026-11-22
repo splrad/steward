@@ -9,11 +9,10 @@ const pathUrl = path => path.split('/').map(encodeURIComponent).join('/');
 const isSha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 
 function fitsPullBody(body) {
-  let length = 0;
-  for (const character of body) {
-    if (++length > maxBodyCharacters) return false;
-  }
-  return true;
+  if (body.length <= maxBodyCharacters) return true;
+  if (body.length > 2 * maxBodyCharacters) return false;
+  // String length counts UTF-16 code units. Iteration counts Unicode code points.
+  return Array.from(body).length <= maxBodyCharacters;
 }
 
 function creationRecord(body, marker, start, end) {
@@ -72,6 +71,7 @@ export function renderCandidateHomepage(prBody, { candidate, repository, head, n
 
 // Run under the candidate PR's concurrency group. The event wakes
 // reconciliation; only the live PR and branch select the commit for display.
+// release:editing pauses candidate-branch writes. The homepage mirrors committed notes during that pause.
 export async function syncCandidateHomepage({ candidate, units, repository, repositoryId, defaultBranch,
   getPull, fetchHead, readHead, stateCurrent, readFile, updateBody, wait = delay }) {
   const matches = pull => pull?.number === candidate.prNumber && pull.head?.repo?.id === repositoryId

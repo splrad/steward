@@ -285,6 +285,20 @@ test('oversized notes keep the full source links, metadata and creation record',
   assert.match(body,/## 1.0.1/);
 });
 
+test('the exact body limit counts a supplementary Unicode character once',()=>{
+  const notes = [{path:notesPath,unit:'layerscape',version:'1.1.0',markdown:'x'}];
+  const model = {candidate,repository,head:source,notes};
+  const fixedLength = Array.from(renderCandidateHomepage(creation,model)).length - 1;
+  notes[0].markdown = '😀'.repeat(65536-fixedLength);
+  const full = renderCandidateHomepage(creation,model);
+  assert.equal(Array.from(full).length,65536);
+  assert.ok(full.includes(notes[0].markdown));
+  notes[0].markdown+='𠮷';
+  const overflow = renderCandidateHomepage(creation,model);
+  assert.match(overflow,/发布说明超出 PR 正文长度限制/);
+  assert.ok(overflow.includes('/blob/'+source+'/'+notesPath));
+});
+
 function candidateHomepageFixture() {
   const current = {head:source, body:creation};
   const writes = [], versions = new Map([[source,'1.1.0'],[later,'1.1.1']]);
@@ -316,6 +330,18 @@ test('a delayed event for A reconciles the current head B without writing A',asy
   assert.match(writes[0],/发布说明 · 1.1.1/);
   assert.equal((await syncCandidateHomepage(ports)).reason,'CANDIDATE_HOMEPAGE_CURRENT');
   assert.equal(writes.length,1);
+});
+
+test('release:editing pauses branch updates while committed notes still reach the homepage',async()=>{
+  const {current,writes,ports} = candidateHomepageFixture();
+  const getPull = ports.getPull;
+  ports.getPull = async()=>({...await getPull(),labels:[{name:'release:editing'}]});
+  assert.equal((await syncCandidateHomepage(ports)).head,source);
+  current.head = later;
+  assert.equal((await syncCandidateHomepage(ports)).head,later);
+  assert.equal(writes.length,2);
+  assert.ok(current.body.includes('发布说明 '+later));
+  assert.ok(!current.body.includes('发布说明 '+source));
 });
 
 test('a new head before PATCH supersedes the old draft in the same attempt',async()=>{
