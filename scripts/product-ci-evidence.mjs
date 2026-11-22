@@ -32,7 +32,28 @@ export function workflowSource(file,path,event,head){
   return file?.path===path&&sources.some(repo=>file.repositoryFileUrl===`https://github.com/${repo}/blob/${head}/${path}`);
 }
 
-export async function evidence(paths,runs,event,type,loadJobs,boundNames=[],loadFile=async()=>null,pending=new Set()) {
+class IncompleteJobsSnapshot extends Error {}
+
+async function readAttemptJobs(run,loadJobs,{deadline=Infinity,wait=delay}={}) {
+  const problem=()=>Error(run.path+' run '+run.id+' attempt '+run.run_attempt+' has incomplete job evidence');
+  for(let pause=1000;;pause*=2){
+    let jobs;
+    try {jobs=await loadJobs(run);}
+    catch(error){if(!(error instanceof IncompleteJobsSnapshot))throw error;}
+    if(jobs){
+      if(jobs.some(job=>job.run_id!==run.id||job.head_sha!==run.head_sha||job.run_attempt!==run.run_attempt
+        ||job.status==='completed'&&job.conclusion!=null&&!['success','skipped'].includes(job.conclusion)))throw problem();
+      const complete=jobs.every(job=>job.status==='completed'&&['success','skipped'].includes(job.conclusion));
+      if(complete&&jobs.some(job=>job.conclusion==='success'
+        &&job.steps?.some(step=>step.status==='completed'&&step.conclusion==='success')))return jobs;
+      if(jobs.length&&complete&&jobs.every(job=>job.conclusion==='skipped'))throw problem();
+    }
+    if(pause>8000||Date.now()+pause>=deadline)throw problem();
+    await wait(pause);
+  }
+}
+
+export async function evidence(paths,runs,event,type,loadJobs,boundNames=[],loadFile=async()=>null,pending=new Set(),options={}) {
   if(!Array.isArray(paths)||!paths.length)throw Error('VALIDATION_PRODUCT_CI_NOT_CONFIGURED: .github/product-ci.json');
   const receipts=[];
   for(const path of paths){
@@ -47,12 +68,12 @@ export async function evidence(paths,runs,event,type,loadJobs,boundNames=[],load
     if(run.conclusion!=='success')throw Error(path+' run '+run.id+' concluded '+run.conclusion);
     if(!workflowSource(await loadFile(run.node_id),path,event,run.head_sha))
       throw Error(path+' run '+run.id+' workflow source does not match the declared commit');
-    const jobs=await loadJobs(run);
-    const ranSteps=jobs.some(job=>job.conclusion==='success' &&
-      job.steps?.some(step=>step.status==='completed' && step.conclusion==='success'));
-    if(!ranSteps || jobs.some(job=>job.run_id!==run.id || job.head_sha!==run.head_sha || job.run_attempt!==run.run_attempt ||
-      job.status!=='completed' || !['skipped','success'].includes(job.conclusion)))
-      throw Error(path+' run '+run.id+' attempt '+run.run_attempt+' has incomplete job evidence');
+    const jobs=await readAttemptJobs(run,loadJobs,options);
+    const current=options.readRun&&await options.readRun(run.id);
+    if(options.readRun&&(current?.id!==run.id||current.node_id!==run.node_id||current.workflow_id!==run.workflow_id
+      ||current.run_attempt!==run.run_attempt||current.status!=='completed'
+      ||current.conclusion!=='success'||!(matchesRun(current,path,event,type)||boundForkRun(current,path,event,type,boundNames))))
+      throw Error(path+' run '+run.id+' attempt '+run.run_attempt+' changed while reading job evidence');
     receipts.push({workflow:path,id:run.id,attempt:run.run_attempt,jobs:jobs.map(job=>({id:job.id,name:job.name,conclusion:job.conclusion}))});
   }
   return receipts;
@@ -90,19 +111,25 @@ async function main(){
   const type=process.env.GITHUB_EVENT_NAME,paths=JSON.parse(process.env.PRODUCT_WORKFLOWS);
   const head=event.pull_request?.head.sha??event.after;
   const root=process.env.GITHUB_API_URL+'/repos/'+event.repository.full_name+'/actions/';
+  async function read(url){
+    const response=await readEvidenceResponse(()=>fetch(url,{redirect:'error',headers:{Authorization:'Bearer '+process.env.GH_TOKEN,
+      Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}}),deadline);
+    if(!response.ok)throw Error('Product CI evidence HTTP '+response.status);
+    return response.json();
+  }
   async function list(route,key){
     const rows=[];
     for(let page=1;;page++){
       const url=new URL(root+route);
       url.searchParams.set('page',page);url.searchParams.set('per_page','100');
-      const response=await readEvidenceResponse(()=>fetch(url,{redirect:'error',headers:{Authorization:'Bearer '+process.env.GH_TOKEN,
-        Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}}),deadline);
-      if(!response.ok)throw Error('Product CI evidence HTTP '+response.status);
-      const data=await response.json();
+      const data=await read(url);
       if(!Array.isArray(data[key]))throw Error('Product CI response missing '+key);
       rows.push(...data[key]);
       if(rows.length===data.total_count)return rows;
-      if(data[key].length<100||rows.length>data.total_count)throw Error('Product CI incomplete '+key);
+      if(data[key].length<100||rows.length>data.total_count){
+        if(key==='jobs')throw new IncompleteJobsSnapshot('Product CI incomplete jobs');
+        throw Error('Product CI incomplete '+key);
+      }
     }
   }
   const boundNames=JSON.parse(process.env.BOUND_NAMES);
@@ -123,7 +150,8 @@ async function main(){
   for(;;){
     const runs=await list('runs?event='+type+'&head_sha='+head,'workflow_runs');
     const pending=new Set();
-    const results=await evidence(paths,runs,event,type,run=>list('runs/'+run.id+'/attempts/'+run.run_attempt+'/jobs','jobs'),boundNames,loadFile,pending);
+    const results=await evidence(paths,runs,event,type,run=>list('runs/'+run.id+'/attempts/'+run.run_attempt+'/jobs','jobs'),
+      boundNames,loadFile,pending,{deadline,readRun:id=>read(root+'runs/'+id)});
     if(results.length===paths.length){
       const report=JSON.stringify(results,null,2);
       console.log(report);await appendFile(process.env.GITHUB_STEP_SUMMARY,'```json\n'+report+'\n```\n');return;

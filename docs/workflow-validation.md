@@ -2,7 +2,9 @@
 
 中央 [Native Validation](../.github/workflows/pr-validation-native.yml) 从 `job.workflow_repository`、`job.workflow_sha`、`job.workflow_file_path` 取得受信源 P，检出准确的候选 head H。PR 基点还必须与检出时的目标分支一致；main push 使用事件的 before/after。身份检查拒绝缺失对象、浅克隆和来源不符。
 
-固定完整 SHA 的 `dorny/paths-filter` 使用 Git 模式读取准确 base/head，关闭 token，不持久化检出凭据；改名按删除旧路径和新增路径检查。source、dependency、docs、governance 四类过滤器内联在 P 的 YAML 中，候选不能提供自己的过滤策略。原生输出直接驱动 job 的 `if`。普通文档变更运行链接检查；治理输入、共享依赖、构建入口和未知影响路径触发相应检查。源码 job 直接运行 npm 验证或 Windows .NET restore/build，治理 job 执行 JSON/YAML、指令载体和实际工作流扫描。Windows 还解析 PowerShell/MSBuild 文件。
+固定完整 SHA 的 `dorny/paths-filter` 使用 Git 模式读取准确 base/head，关闭 token，不持久化检出凭据；改名按删除旧路径和新增路径检查。P 的原生范围决定依赖、文档和治理作业。登记的产品工作流继续核对入口和触发范围；是否等待 Product CI 另由准确差异决定。Steward 普通指南和其他组织仓已存在的根安全政策只修改普通文件内容时，由原生文档或治理作业签收。Steward 安全政策源与根安全政策的正文变更等待 Linux 专项验证和原生治理、文档检查。源码、共享依赖、执行配置及影响未明的变更保留适用的产品检查；新增、删除、模式变更或来源关系不明时使用完整检查。PR 与单父主线提交采用同一范围边界。
+
+Product CI 证据绑定工作流、提交、Run 和 attempt。已完成的 Run 遇到作业证据暂未齐备时，在原 attempt 内有界复读；身份冲突、作业明确失败、等待耗尽或读取期间 attempt 改变均阻断验证。
 
 jactionlint、shellcheck、pyflakes 与 zizmor 使用中央锁定工具扫描真实 YAML。候选的忽略配置不能关闭检查。标题入口按已批准的 `E07-TITLE-METADATA-20261028` 固定元数据例外处理；原始诊断、退出码和其他失败保留。扫描工具直接支持 queue 和 `job.workflow_*`，无需旧的工作流镜像或任务解释器。
 
