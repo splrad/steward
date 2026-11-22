@@ -9,7 +9,9 @@ const roots=['package.json','package-lock.json','npm-shrinkwrap.json','.npmrc',
   'mise.toml','mise.lock','.mise/','.github/jactionlint.yaml'];
 const policyPaths=/(?:^|[\s"'(])(?:\.\/)?policy\/([\w./-]+)/g;
 const actionPaths=/\$\{\{\s*github\.action_path\s*\}\}\/([\w./-]+)/g;
-const commandPaths=/(?:^|[\s;&|])(?:node|python3?|pwsh|bash|cat|source|\.)\s+(?:\.\/)?((?:scripts|tools|config|schema|templates|packages|\.mise)\/[\w./-]+)/g;
+const directCommands=/(?:^|[;&|])\s*\.\/([\w./-]+)/g;
+const interpreterCommands=/(?:^|[\s;&|(])(?:node|python3?|powershell|pwsh|bash|sh|cat|source|\.)\s+([^;&|)]+)/g;
+const localArguments=/(?:^|[\s"'])(?:\.\/([\w./-]+)|((?:scripts|tools|config|schema|templates|packages|\.github|\.mise)\/[\w./-]+))/g;
 const packageCommands=/\b(npm|npx|pnpm|yarn|bunx)\s+([^;&|)]+)/g;
 const localUrls=/new URL\(([^\n]+?),\s*import\.meta\.url\)/g;
 const trustedAssets={
@@ -72,14 +74,21 @@ export async function validatorSource(directory,sha) {
     check(/@[a-f0-9]{40}$/.test(value),'UNPINNED_ACTION');
   };
   const runInputs=(text,directory,action)=>{
+    const cwd=typeof directory==='string'&&(directory==='policy'||directory.startsWith('policy/'))
+      ?directory.slice('policy'.length).replace(/^\//,''):null;
     for(const line of text.split('\n').filter(line=>!line.trimStart().startsWith('#'))) {
       for(const [,tool,args] of line.matchAll(packageCommands)){
         // npm ci has no local hooks here. Other launch modes need a traceable
         // entry point before allowing a future policy version to adopt them.
-        check(tool==='npm'&&/^ci\s/.test(args)&&/(?:^|\s)--ignore-scripts(?:\s|$)/.test(args),'INDIRECT_PACKAGE_COMMAND');
+        check(tool==='npm'&&/^ci(?:\s+--(?:ignore-scripts|no-audit|no-fund))+\s*$/.test(args)
+          &&/\s--ignore-scripts(?:\s|$)/.test(args),'INDIRECT_PACKAGE_COMMAND');
       }
       for(const [,path] of line.matchAll(policyPaths))add(path,true);
-      if(directory==='policy')for(const [,path] of line.matchAll(commandPaths))add(path,true);
+      if(cwd!==null) {
+        for(const [,path] of line.matchAll(directCommands))add(posix.join(cwd,path),true);
+        for(const [,args] of line.matchAll(interpreterCommands))
+          for(const [,relative,rooted] of args.matchAll(localArguments))add(posix.join(cwd,relative??rooted),true);
+      }
       if(action)for(const [,path] of line.matchAll(actionPaths))add(resolve(action,'./'+path),true);
     }
   };

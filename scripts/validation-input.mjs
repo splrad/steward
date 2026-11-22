@@ -25,7 +25,7 @@ export function validationController(policy,validator) {
   check(/^[a-f0-9]{40}$/.test(controller),'CONTROLLER_SOURCE');
   const common=git(policy,['merge-base',validator,controller]).toString().trim();
   check(common===validator||common===controller,'CONTROLLER_LINEAGE');
-  return common===validator?controller:validator;
+  return controller;
 }
 export async function regular(workspace,path) {
   const root=await realpath(workspace),file=join(root,path),actual=await realpath(file),info=await lstat(file);

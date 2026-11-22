@@ -117,7 +117,7 @@ test('a template transition is limited to the protected earlier draft and still 
   f.session.generated.baseSha=f.session.repository.candidate.baseSha=S;
   await assert.rejects(validateManualCandidate(f.session,f.producer,f.io),/MANUAL_NOTE_TEMPLATE/);
   f.session.identity.noteTemplate=current;
-  await assert.rejects(validateManualCandidate(f.session,f.producer,{...f.io,confirmedHumans:async()=>[]}),/RELEASE_TEMPLATE/);
+  await assert.rejects(validateManualCandidate(f.session,f.producer,f.io),/RELEASE_TEMPLATE/);
   assert.deepEqual(f.calls,[]);
 });
 

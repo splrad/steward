@@ -256,7 +256,9 @@ test('validator compares the exact local execution graph in both trees and accep
   git('update-ref','refs/remotes/origin/steward/validated-controller',graph);
   git('checkout','--detach','-q',script);
   assert.equal(validationController(directory,script),graph);
+  git('update-ref','refs/remotes/origin/steward/validated-controller',script);
   git('checkout','--detach','-q',graph);
+  assert.equal(validationController(directory,graph),script);
   await file(validatorPath,'name: Native\njobs:\n  test:\n    steps:\n      - uses: ./policy/.github/actions/check\n');
   await file('.github/actions/check/action.yml','runs:\n  using: composite\n  steps:\n    - shell: bash\n      run: bash "${{ github.action_path }}/inspect.sh"\n');
   await file('.github/actions/check/inspect.sh','true\n');
@@ -264,9 +266,17 @@ test('validator compares the exact local execution graph in both trees and accep
   await file('.github/actions/check/inspect.sh','false\n');
   const actionUpdate=commit();
   assert.deepEqual((await compareValidatorSources(directory,action,actionUpdate)).files,['.github/actions/check/inspect.sh']);
+  await file(validatorPath,'name: Native\njobs:\n  test:\n    steps:\n      - working-directory: policy\n        run: ./scripts/check.sh\n      - working-directory: policy\n        run: pwsh -NoProfile -File scripts/check.ps1\n');
+  await file('scripts/check.sh','true\n');
+  await file('scripts/check.ps1','exit 0\n');
+  const localCommands=commit();
+  await file('scripts/check.sh','false\n');
+  await file('scripts/check.ps1','exit 1\n');
+  const updatedCommands=commit();
+  assert.deepEqual((await compareValidatorSources(directory,localCommands,updatedCommands)).files,['scripts/check.ps1','scripts/check.sh']);
   await file(validatorPath,'name: Native\njobs:\n  test:\n    steps:\n      - working-directory: policy\n        run: npm run verify-local\n');
   const indirect=commit();
-  await assert.rejects(compareValidatorSources(directory,actionUpdate,indirect),/INDIRECT_PACKAGE_COMMAND/);
+  await assert.rejects(compareValidatorSources(directory,updatedCommands,indirect),/INDIRECT_PACKAGE_COMMAND/);
   git('checkout','--detach','-q',graph);
   await file('scripts/c.mjs',"await import(process.env.LOCAL_MODULE);\n");
   const unresolved=commit();

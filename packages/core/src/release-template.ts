@@ -197,7 +197,7 @@ export function nestReleaseMarkdown(markdown: string, minimumDepth = 4): string 
 export interface FrozenReleaseNotes {
   repository: string; unitId: string; displayName?: string | undefined; version: string; tag: string; sourceSha: string; controllerSha: string;
   notes: string; sourceLinkLabel: string; sourceUrl: string; commitUrl: string; contributors: ReleaseContributor[]; repositoryAuthors: RepositoryAuthor[];
-  confirmedHumans?: RepositoryAuthor[];
+  contributorMode?: 'github-authors';
   selectedDownloads?: ReadonlySet<string>;
   githubDisabled?: boolean;
   assets: { id: string; name: string; build: string; description?: string | undefined }[];
@@ -240,7 +240,8 @@ export function renderFrozenReleaseNotes(template: string, data: FrozenReleaseNo
   if (!/^[a-z][a-z0-9-]*$/.test(data.unitId) || !data.tag || /[\s\0]/.test(data.tag)) fail('unit or tag');
   const conditional = isConditionalTemplate(template);
   const contributors = selectReleaseContributors(data.contributors.map(person => ({ ...person, type: 'User' })),
-    data.repositoryAuthors, conditional ? data.confirmedHumans ?? [] : undefined).contributors;
+    data.repositoryAuthors, data.contributorMode === 'github-authors' ? 'github-authors'
+      : conditional ? data.contributors : undefined).contributors;
   if (JSON.stringify(contributors) !== JSON.stringify(data.contributors)) fail('frozen contributors');
   if (data.commitUrl !== `https://github.com/${data.repository}/commit/${data.sourceSha}`) fail('commit URL');
   if (conditional) {
