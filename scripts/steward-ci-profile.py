@@ -15,7 +15,9 @@ SECURITY_POLICY = {"SECURITY.md", "config/review/security-common.md"}
 GOVERNANCE_PROMOTION = {
     "scripts/controller-source.mjs", "scripts/controller-source.test.mjs",
     "scripts/validator-revalidation.mjs", "scripts/validator-revalidation.test.mjs",
+    "scripts/validator-source.mjs",
     "scripts/governance-promotion.mjs", "packages/runner/test/governance-promotion.test.ts",
+    "tools/template/promotion.py", "tools/template/test_promotion.py",
 }
 # Single-file tools with a native version command on both supported runners.
 COMMANDS = {

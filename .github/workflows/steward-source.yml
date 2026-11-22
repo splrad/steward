@@ -9,7 +9,7 @@ permissions:
   contents: read
 jobs:
   plan:
-    if: github.event_name == 'pull_request' || (github.ref_name == github.event.repository.default_branch || github.ref_name == 'perf/governance-windows-checks')
+    if: github.event_name == 'pull_request' || github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -19,37 +19,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ${{ github.event.repository.full_name }}
-          ref: ${{ github.event.pull_request.base.sha || 'c9912de6e7b7eb18693dd3fdd47b717e312896ba' }}
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
           path: policy
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-          ref: ${{ github.event.pull_request.head.sha || '70433e5a9e0512785c3b8c66db22777546aa1ab6' }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: target
           fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        if: github.event_name == 'push'
-        with:
-          ref: 8da838a02a48916cc8da597c60e6786762ab66ca
-          path: replay-policy
           persist-credentials: false
       - id: select
         shell: bash
         env:
-          BASE: ${{ github.event.pull_request.base.sha || 'c9912de6e7b7eb18693dd3fdd47b717e312896ba' }}
-          HEAD: ${{ github.event.pull_request.head.sha || '70433e5a9e0512785c3b8c66db22777546aa1ab6' }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           profile=full
           if [[ -n "$BASE" && -f policy/scripts/steward-ci-profile.py ]]; then
             profile=$(python policy/scripts/steward-ci-profile.py "$BASE" "$HEAD")
-          fi
-          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
-            test "$(git -C target rev-parse HEAD)" = "$HEAD"
-            test "$(git -C policy rev-parse HEAD)" = "$BASE"
-            profile=$(GITHUB_EVENT_NAME=pull_request python replay-policy/scripts/steward-ci-profile.py "$BASE" "$HEAD")
-            test "$profile" = governance
           fi
           case "$profile" in
             full|governance|title|docs|policy) runners='["ubuntu-24.04"]' ;;
@@ -72,13 +60,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ${{ github.event.repository.full_name }}
-          ref: ${{ github.event.pull_request.base.sha || 'c9912de6e7b7eb18693dd3fdd47b717e312896ba' }}
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
           path: policy
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-          ref: ${{ github.event.pull_request.head.sha || '70433e5a9e0512785c3b8c66db22777546aa1ab6' }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: target
           fetch-depth: 0
           persist-credentials: false
@@ -90,8 +78,8 @@ jobs:
         shell: bash
         env:
           PROFILE: ${{ needs.plan.outputs.profile }}
-          BASE: ${{ github.event.pull_request.base.sha || 'c9912de6e7b7eb18693dd3fdd47b717e312896ba' }}
-          HEAD: ${{ github.event.pull_request.head.sha || '70433e5a9e0512785c3b8c66db22777546aa1ab6' }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: python policy/scripts/steward-ci-candidate.py "$PROFILE" "$BASE" "$HEAD"
   test:
     needs: plan
@@ -106,13 +94,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ${{ github.event.repository.full_name }}
-          ref: ${{ github.event.pull_request.base.sha || 'c9912de6e7b7eb18693dd3fdd47b717e312896ba' }}
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
           path: policy
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-          ref: ${{ github.event.pull_request.head.sha || '70433e5a9e0512785c3b8c66db22777546aa1ab6' }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: target
           fetch-depth: 0
           persist-credentials: false
@@ -140,30 +128,25 @@ jobs:
       - name: Verify changed candidate lock assets on this platform
         shell: bash
         env:
-          BASE: ${{ github.event.pull_request.base.sha || 'c9912de6e7b7eb18693dd3fdd47b717e312896ba' }}
-          HEAD: ${{ github.event.pull_request.head.sha || '70433e5a9e0512785c3b8c66db22777546aa1ab6' }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           if [[ -f policy/scripts/steward-ci-candidate.py ]]; then
             python policy/scripts/steward-ci-candidate.py full-lock "$BASE" "$HEAD"
           fi
       - run: npm ci --ignore-scripts --no-audit --no-fund
         working-directory: target
-      - name: Prepare isolated Windows rejection case for this draft
-        if: github.event_name == 'pull_request' && runner.os == 'Windows'
-        shell: bash
-        working-directory: target
-        run: |
-          echo "it('rejects the deliberate Windows validation fixture', () => { throw Error('WINDOWS_GATE_FIXTURE'); });" >> packages/runner/test/governance-promotion.test.ts
       - name: Windows governance promotion checks
-        if: runner.os == 'Windows' && (needs.plan.outputs.profile == 'governance' || github.event_name == 'pull_request')
+        if: runner.os == 'Windows' && needs.plan.outputs.profile == 'governance'
         working-directory: target
         shell: bash
         env:
           STEWARD_TEST_TOOLCHAIN_ROOT: ${{ github.workspace }}/policy
         run: |
           npm run test:controller-source
-          npm exec --offline -- vitest run packages/runner/test/{governance-promotion,build-environment,git-snapshot}.test.ts
-          uv run --project tools/template --frozen python -m unittest discover -s tools/template -p test_promotion.py
+          suites=(packages/runner/test/{governance-promotion,build-environment,git-snapshot}.test.ts)
+          for suite in "${suites[@]}"; do test -f "$suite"; done
+          npm exec --offline -- vitest run "${suites[@]}"
       - name: Node tests and configuration
         if: runner.os != 'Windows' || needs.plan.outputs.profile == 'full'
         env:
@@ -176,6 +159,9 @@ jobs:
           npm run typecheck
           npm run verify:config -- --toolchain-root "$GITHUB_WORKSPACE/policy"
           npm run verify:dist
+      - name: Test template promotion with native Git
+        working-directory: target
+        run: uv run --project tools/template --frozen python tools/template/test_promotion.py
       - name: Verify production Worker source
         if: runner.os != 'Windows' || needs.plan.outputs.profile == 'full'
         working-directory: target/workers/steward
@@ -195,7 +181,7 @@ jobs:
           npm run typecheck --prefix tools/quality-language
   result:
     needs: [plan, candidate, test]
-    if: always() && (github.event_name == 'pull_request' || (github.ref_name == github.event.repository.default_branch || github.ref_name == 'perf/governance-windows-checks'))
+    if: always() && (github.event_name == 'pull_request' || github.ref_name == github.event.repository.default_branch)
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:

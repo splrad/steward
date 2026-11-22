@@ -146,6 +146,13 @@ class LockContractTest(unittest.TestCase):
                 self.assertEqual(classify(created, updated), "governance")
                 self.assertEqual(classify(created, shared), "full")
                 self.assertEqual(classify(shared, updated), "full")
+                for path in ("scripts/validator-source.mjs", "tools/template/promotion.py",
+                             "tools/template/test_promotion.py", "scripts/validator-revalidation.test.mjs"):
+                    initial = commit(path, "initial")
+                    revised = commit(path, "revised")
+                    with self.subTest(path=path):
+                        self.assertEqual(classify(initial, revised), "governance")
+                self.assertEqual(classify(created, revised), "full")
 
     def test_base_absent_from_fork(self):
         with tempfile.TemporaryDirectory() as directory:
