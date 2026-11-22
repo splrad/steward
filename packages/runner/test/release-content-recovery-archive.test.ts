@@ -16,7 +16,8 @@ async function fixture(){
   const old=await planContentBatches(input,[source],evidence),batch=old.input.batches[0];
   const attempt={ordinal:1,startedAt:'2026-11-08T00:00:00Z',status:'REJECTED',model:'fixture',usage:null,errorCode:'CONTENT_OUTPUT_SCHEMA'};
   Object.assign(batch,{status:'FAILED',errorCode:'CONTENT_OUTPUT_SCHEMA',attempts:[attempt]});
-  const protections={branch:[{type:'deletion'},{type:'workflows',parameters:{workflows:[{repository_id:1296724484,path:'.github/workflows/pr-validation-native.yml',sha:identity.controllerSha}]}}],tags:[{type:'deletion'}]};
+  const protections={branch:[{type:'deletion'},{type:'workflows',ruleset_id:18883080,ruleset_source:'splrad',ruleset_source_type:'Organization',
+    parameters:{workflows:[{repository_id:1296724484,path:'.github/workflows/pr-validation-native.yml',sha:'d'.repeat(40)}]}}],tags:[{type:'deletion'}]};
   const archiveProtectionDigest=hash([protections.branch,protections.tags]),protectionPath=`generated/protections-${archiveProtectionDigest}.json`;
   const facts={baseSha:identity.targetSha,config:'fixed',protectionsEvidencePath:protectionPath},authorsDigest=hash('authors');
   const archiveContentDigest=hash([hash(facts),input.configDigest,authorsDigest]),root=`content/${input.candidateId}/${archiveContentDigest}/`;
@@ -24,7 +25,7 @@ async function fixture(){
   const docs={[root+'manifest.json']:manifest,[manifest.payloadPaths[batch.id]]:old.payloads[batch.id],[manifest.evidencePath]:evidence,[protectionPath]:{facts,protections}};
   const nextEvidence=structuredClone(evidence);nextEvidence.manifests[0].identity.controllerSha='c'.repeat(40);
   const work=await planContentBatches({...input,controllerSha:'c'.repeat(40),sourceManifestDigest:hash(nextEvidence.manifests)},[source],nextEvidence);
-  const currentProtections=structuredClone(protections);currentProtections.branch[1].parameters.workflows[0].sha=work.input.controllerSha;
+  const currentProtections=structuredClone(protections);currentProtections.branch[1].parameters.workflows[0].sha='e'.repeat(40);
   const currentFacts={...facts,protectionsEvidencePath:`generated/protections-${hash([currentProtections.branch,currentProtections.tags])}.json`};
   const key=hash([batch.inputDigest,input.configDigest]),cache={[key]:{inputDigest:batch.inputDigest,configDigest:input.configDigest,attempts:[structuredClone(attempt)],result:null}};
   const grant={candidateId:input.candidateId,batchId:batch.id,previousAttemptSha256:hash(attempt),authorizationId:hash('approval'),outputContractSha256:hash(CONTENT_OUTPUT_SCHEMA),archiveContentDigest,archiveProtectionDigest};
@@ -49,7 +50,7 @@ it.each(['missing-archive','missing-pair','path','facts','protection','pin','wor
   if(kind==='protection')f.io.protections.tags.push({type:'update'});
   if(kind==='pin')f.io.protections.branch[1].parameters.workflows[0].sha='d'.repeat(40);
   if(kind==='workflow-ref')f.io.protections.branch[1].parameters.workflows[0].ref='main';
-  if(kind==='duplicate-workflow')f.io.protections.branch.push({type:'workflows',parameters:{workflows:[]}});
+  if(kind==='duplicate-workflow')f.io.protections.branch.push({...f.io.protections.branch[1],parameters:{workflows:[]}});
   if(kind==='source')f.work.evidence.manifests[0].commits.push({sha:'d'.repeat(40)});
   if(kind==='identity')f.work.input.repositoryId=2;
   if(kind==='config')f.work.input.configDigest=hash('changed');

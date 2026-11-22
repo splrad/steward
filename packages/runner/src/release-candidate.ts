@@ -29,6 +29,8 @@ export interface CandidateRuntime {
   pullRequests(branch: string): Promise<CandidatePullRequest[]>;
   legacyCandidate(): Promise<CandidatePullRequest | null>;
   generation(baseSha: string): Promise<{ status: 'READY'; snapshot: CandidateSnapshot; title: string; body: string } | { status: 'UNCHANGED' | 'DRIFT' }>;
+  contentArchive?(candidate: NonNullable<RepositoryRecord['candidate']>, generatedDigest: string):
+    Promise<{digest:string;saveWithManifest:boolean}>;
   content(candidate: NonNullable<RepositoryRecord['candidate']>, snapshot: CandidateSnapshot): Promise<{ status: 'READY'; files: CandidateSnapshot['files']; actors: (ReleaseActor | null)[]; unitActors: Record<string, (ReleaseActor | null)[]> } | { status: 'WAIT' | 'EDITING' | 'FAILED' }>;
   /** Atomic protected state transaction. Returns the exact archive commit for preview links. */
   save(session: CandidateSession): Promise<string>;
@@ -311,7 +313,10 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
       || digest(generation.snapshot.units) !== digest(prior.units)) return { status: 'WAIT', reason: 'SOURCE_DRIFT' };
     N = { ...generation.snapshot, files: prior.files };
   } else {
-    candidate.contentGenerationDigest = digest([generation.snapshot.sourceDigest, generation.snapshot.configDigest, source.authorsDigest]); await save();
+    const generatedDigest = digest([generation.snapshot.sourceDigest, generation.snapshot.configDigest, source.authorsDigest]);
+    const selectedArchive = await io.contentArchive?.(candidate,generatedDigest);
+    candidate.contentGenerationDigest = selectedArchive?.digest ?? generatedDigest;
+    if(!selectedArchive?.saveWithManifest)await save();
     const content = await io.content(candidate, generation.snapshot);
     if (content.status !== 'READY') return { status: 'WAIT', reason: `CONTENT_${content.status}` };
     N = { ...generation.snapshot, files: [...generation.snapshot.files, ...content.files] };

@@ -15,7 +15,7 @@ import { advanceReleaseCandidate, pushPreparedCandidate, collectContentInput, pl
   defaultBuildWorkflow, productReleaseTemplatePath, readLegacyReleaseTemplate,
   isAdoptedOrganizationReleaseTemplate, isConditionalTemplate, reviewedConditionalReleaseTemplate } from '../packages/runner/dist/index.js';
 import { readReleaseRecords, writeReleaseRecords, assertReleaseWriterProtection } from './release-record.mjs';
-import { restoreContentRecovery } from './release-content-recovery.mjs';
+import { restoreContentRecovery, selectContentArchive } from './release-content-recovery.mjs';
 import {readControllerReleaseTemplate,releaseTemplateControllerPin} from './release-template-source.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -145,6 +145,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       persisted.set(path, await fileAt(state.head, path));
     let expectedHead = state.head, writes = 0, lastFacts = null, lastProtections = null, delivery = null, conditional = false;
     let candidateTemplate, notesPaths;
+    let transferBaseDigest=null,saveWithManifest=false;
     const loadDocument = async path => {
       const text = loaded.get(path); if (text === undefined) return null;
       const first = JSON.parse(text), chunks = [first];
@@ -294,11 +295,19 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         await source();
         return JSON.stringify(frozen) === JSON.stringify(lastFacts) && lastFacts.baseSha === B ? result : { status: 'DRIFT' };
       },
+      contentArchive:async(candidate,digest)=>{
+        const selected=await selectContentArchive(candidate,digest,{loadDocument,controllerSha,grant:contentRecovery});
+        transferBaseDigest=selected.transferBaseDigest;
+        saveWithManifest=transferBaseDigest!==null&&selected.digest!==candidate.contentGenerationDigest;
+        return {digest:selected.digest,saveWithManifest};
+      },
       content: async (candidate, snapshot) => {
         if(observation)fail('CANDIDATE_OBSERVATION_CONTENT_FORBIDDEN');
         const path = `content/${candidate.id}/${candidate.contentGenerationDigest}/manifest.json`, cachePath = `content/${candidate.id}/cache.json`;
         const stored = await loadDocument(path), cacheIndex = await loadDocument(cachePath), cache = {};
         if (contentRecovery?.archiveContentDigest && stored) fail('CONTENT_RECOVERY_ARCHIVE_EXISTS');
+        if(transferBaseDigest&&stored&&stored.input?.controllerSha!==controllerSha)
+          fail('CONTENT_ARCHIVE_CONTRACT');
         let work = null;
         for (const entry of cacheIndex?.entries ?? []) {
           const value = await loadDocument(entry.path); if (hash(JSON.stringify(value)) !== entry.digest || hash(JSON.stringify([value.inputDigest, value.configDigest])) !== entry.key) fail('CONTENT_CACHE_DIGEST');
@@ -342,6 +351,14 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         }
         if (contentRecovery?.archiveContentDigest) await restoreContentRecovery(work,cache,contentRecovery,
           {loadDocument,facts:lastFacts,protections:lastProtections,authorsDigest:hash(JSON.stringify(delivery.repositoryAuthors))});
+        // A later controller may archive a confirmed cached result. A missing
+        // cache entry cannot turn the prior explicit recovery into a new call.
+        if(transferBaseDigest&&!stored&&!contentRecovery?.archiveContentDigest)for(const batch of work.input.batches) {
+          const entry=cache[hash(JSON.stringify([batch.inputDigest,work.input.configDigest]))];
+          if(!entry?.result||!entry.attempts.some(attempt=>attempt.recovery?.archiveContentDigest===transferBaseDigest))
+            fail('CONTENT_ARCHIVE_CONTRACT');
+          batch.attempts=structuredClone(entry.attempts);
+        }
         const save = async (work, cache) => {
           const results = [], payloadPaths = {}, evidencePath = path.replace(/manifest\.json$/, 'source-manifest.json');
           for (const batch of work.input.batches) {
@@ -358,9 +375,17 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
             const entryPath = `content/${candidate.id}/cache/${key}.json`; entries.push({ key, path: entryPath, digest: hash(JSON.stringify(entry)) });
             results.push(...archive('cache-entry', candidate.id, entryPath, entry));
           }
-          return persist([...archive('content', candidate.id, path, { input: work.input, payloadPaths, evidencePath,
+          const files=[...archive('content', candidate.id, path, { input: work.input, payloadPaths, evidencePath,
             ...(conditional ? { conditional: true } : {}) }),
-            ...archive('content-evidence', candidate.id, evidencePath, work.evidence), ...archive('cache', candidate.id, cachePath, { entries }), ...results]);
+            ...archive('content-evidence', candidate.id, evidencePath, work.evidence), ...archive('cache', candidate.id, cachePath, { entries }), ...results];
+          if(!saveWithManifest)return persist(files);
+          // Rebinding the pointer and creating the new manifest are one protected
+          // Git transaction. An interruption cannot strand the old release archive.
+          session.repository.revision++;
+          session.repository.lastProgressAt=now();
+          const published=await runtime.save(session,files);
+          saveWithManifest=false;
+          return published;
         };
         const result = await resumeContentBatches(work, cache, { now, repository: request.repository, recovery: contentRecovery, editing: async () => (await prs(candidate.branch)).some(p => p.number === candidate.prNumber && p.editing), ...sdk, save });
         if (result.status !== 'READY') return { status: result.status === 'EDITING' ? 'EDITING' : result.status === 'FAILED' ? 'FAILED' : 'WAIT' };
@@ -419,14 +444,14 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         }
         return { status: 'READY', files: assembleUnitNotes(work, notesPaths), actors, unitActors };
       },
-      save: async session => {
+      save: async (session,contentFiles=[]) => {
         const { repository, ...data } = session, id = repository.candidate.id;
         const files = [{ path: 'state.json', content: JSON.stringify(repository, null, 2) + '\n' }, ...archive('session', id, `generated/${id}/session.json`, data)];
         if (lastFacts) files.push(...archive('native-input', id, lastFacts.protectionsEvidencePath, { facts: lastFacts, protections: lastProtections }));
         if (session.generated) files.push(...archive('generated', id, repository.candidate.generatedSnapshotPath, session.generated));
         if (session.adoption) files.push(...archive('adoption', id, `generated/${id}/adoption.json`, session.adoption));
         if (session.preview !== null) files.push({ path: `generated/${id}/preview.md`, content: session.preview });
-        return persist(files);
+        return persist([...files,...contentFiles]);
       },
       isAncestor: async (a, b) => {
         // The proposed object may exist only in the durable write archive. The

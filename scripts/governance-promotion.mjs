@@ -7,10 +7,12 @@ import {promisify} from 'node:util';
 import {Octokit} from '@octokit/rest';
 import {createAppAuth} from '@octokit/auth-app';
 import YAML from 'yaml';
-import {isolatedBuildEnvironment,resolvePolicyTool} from '../packages/runner/dist/index.js';
+import {isolatedBuildEnvironment,nativeReleaseApp,resolvePolicyTool} from '../packages/runner/dist/index.js';
 import {requiredWorkflowBinding as binding} from './required-workflow-binding.mjs';
 import {completeNativeRuleParameters} from './native-rule-parameters.mjs';
 import {createSourceGuard,publishControllerSource} from './controller-source.mjs';
+import {compareValidatorSources} from './validator-source.mjs';
+import {epoch,hasPendingValidators,journalRepository,reconcileValidators,validatorJournal} from './validator-revalidation.mjs';
 
 const repo='/repos/splrad/steward';
 const rulesetId=18883080;
@@ -109,11 +111,12 @@ async function readRule(io) {
 }
 
 /** PUT is not a CAS. Only rules are sent; unrelated fields are compared before and after. */
-async function writeRequiredWorkflow(io,target,assertCurrent,record) {
+async function writeRequiredWorkflow(io,old,target,assertCurrent,record) {
   for(let attempt=1;attempt<=3;attempt++) {
-    const {rule:original,body:before}=await readRule(io),old=binding(before).sha;
+    const {rule:original,body:before}=await readRule(io),pin=binding(before).sha;
     await record({kind:'rules-before',attempt,before:original,adoptedSha:old,target});
-    if(old===target)return {status:'ALREADY_ADOPTED',sha:target};
+    if(pin===target)return {status:'ALREADY_ADOPTED',sha:target};
+    check(pin===old,'VALIDATOR_PIN_MOVED');
     await assertCurrent();
     const {rule:latest,body:fresh}=await readRule(io);
     if(!same(before,fresh)){await record({kind:'rules-changed-before-write',attempt,current:latest});continue;}
@@ -125,25 +128,33 @@ async function writeRequiredWorkflow(io,target,assertCurrent,record) {
     if(same(after,expected))return {status:'ADOPTED',sha:target};
     const actual=binding(after).sha,rest=structuredClone(after);binding(rest).sha=old;
     check(same(rest,before),'EXTERNAL_RULE_CHANGE');
-    if(actual!==old&&actual!==target)await record({kind:'rules-third-value',attempt,sha:actual});
+    check(actual===old,'VALIDATOR_PIN_MOVED');
   }
   throw Error('PROMOTION_RECONCILIATION_LIMIT');
 }
 
-export async function promoteRequiredWorkflow(io,target,assertCurrent,record) {
-  check(sha(target),'TARGET');
+export async function promoteRequiredWorkflow(io,controllerSha,assertCurrent,record,{
+  compare=(active,target)=>compareValidatorSources(process.cwd(),active,target),beforeWrite=async()=>{}
+}={}) {
+  check(sha(controllerSha),'TARGET');
   const withoutSha=body=>{
     const copy=structuredClone(body);
     binding(copy).sha=null;
     return copy;
   };
   const {rule,body}=await readRule(io);
+  const old=binding(body).sha;
+  const difference=await compare(old,controllerSha);
+  const planned=difference.changed?controllerSha:old;
+  let target=planned;
   const protection=withoutSha(body);
-  await record({kind:'workflow-target-before',rulesetId,target,before:rule});
+  await record({kind:'workflow-target-before',rulesetId,target,controllerSha,difference,before:rule});
   const checkProtection=body=>check(same(withoutSha(body),protection),'TARGET_PROTECTION_CHANGED');
   const guard=async()=>{
     await assertCurrent();
-    checkProtection((await readRule(io)).body);
+    const {body}=await readRule(io);
+    checkProtection(body);
+    check([old,target].includes(binding(body).sha),'VALIDATOR_PIN_MOVED');
   };
   const verifyTarget=async()=>{
     const {rule,body}=await readRule(io);
@@ -158,13 +169,19 @@ export async function promoteRequiredWorkflow(io,target,assertCurrent,record) {
   };
 
   await guard();
-  const result=await writeRequiredWorkflow(io,target,guard,event=>record({...event,rulesetId}));
+  if(difference.changed){
+    if(await beforeWrite(old,planned,guard)===false)target=old;
+    await guard();
+  }
+  const result=target!==old
+    ?await writeRequiredWorkflow(io,old,target,guard,event=>record({...event,rulesetId}))
+    :{status:difference.changed?'DEFERRED':old===controllerSha?'ALREADY_ADOPTED':'UNCHANGED',sha:old};
   await record({kind:'workflow-target-result',rulesetId,...result});
   await assertCurrent();
   const observed=await verifyTarget();
   await record({kind:'workflow-target-final',rulesetId,target,observed});
   await verifyCurrent();
-  return {...result,targets:[{rulesetId,...result}],verifyCurrent};
+  return {...result,controllerSha,targets:[{rulesetId,...result}],verifyCurrent};
 }
 
 export async function publishTemplateTag(io,plan,assertCurrent,record) {
@@ -204,15 +221,28 @@ export async function withGovernanceCredential(env,operation,transport=fetch) {
   app.hook.before('request',options=>{options.headers['x-github-api-version']=apiVersion.version;});
   const fact=(await app.request('GET /app')).data,installation=(await app.request('GET /orgs/splrad/installation')).data;
   check(fact.id===appId&&fact.slug==='splrad-governance'&&installation.app_id===appId&&installation.account?.id===302208797&&!installation.suspended_at,'APP_IDENTITY');
-  const permissions={organization_administration:'write',contents:'write',metadata:'read'};
-  const credential=(await app.request('POST /app/installations/{installation_id}/access_tokens',{installation_id:installation.id,repository_ids:[1296724484],permissions})).data;
-  check(typeof credential.token==='string'&&credential.token,'TOKEN');const io=promotionIO(credential.token,transport);
-  try {
-    check(same(credential.permissions,permissions),'TOKEN_PERMISSIONS');
-    const scope=await get(io,'/installation/repositories?per_page=100');
-    check(scope.total_count===1&&scope.repositories?.length===1&&scope.repositories[0].id===1296724484&&scope.repositories[0].full_name==='splrad/steward','TOKEN_SCOPE');
-    return await operation(io);
-  }finally{const revoked=await io.request('DELETE','/installation/token');check(revoked.status===204,'TOKEN_REVOKE');}
+  const scoped=async(repository,permissions,work)=>{
+    const credential=(await app.request('POST /app/installations/{installation_id}/access_tokens',{
+      installation_id:installation.id,repository_ids:[repository.id],permissions})).data;
+    check(typeof credential.token==='string'&&credential.token,'TOKEN');
+    const io=promotionIO(credential.token,transport);
+    try {
+      check(same(credential.permissions,permissions),'TOKEN_PERMISSIONS');
+      const scope=await get(io,'/installation/repositories?per_page=100');
+      check(scope.total_count===1&&scope.repositories?.length===1&&scope.repositories[0].id===repository.id
+        &&scope.repositories[0].full_name===repository.name,'TOKEN_SCOPE');
+      return await work(io);
+    }finally{const revoked=await io.request('DELETE','/installation/token');check(revoked.status===204,'TOKEN_REVOKE');}
+  };
+  const withJournal=work=>scoped(journalRepository,{actions_variables:'write',metadata:'read'},async io=>{
+    const repository=await get(io,'/repos/'+journalRepository.name);
+    check(repository.id===journalRepository.id&&repository.owner?.id===302208797
+      &&repository.full_name===journalRepository.name&&repository.private===true&&repository.visibility==='private'
+      &&!repository.archived&&!repository.disabled,'JOURNAL_REPOSITORY');
+    return work(validatorJournal(io));
+  });
+  return scoped({id:1296724484,name:'splrad/steward'},{organization_administration:'write',contents:'write',metadata:'read'},
+    io=>operation(io,withJournal));
 }
 
 export async function verifyPromotionSource(env,transport=fetch) {
@@ -248,7 +278,7 @@ export async function wakePublishedTemplate(io,published,assertCurrent,record) {
 }
 
 export async function recordPromotionFailure(error,record) {
-  const code=/^(?:PROMOTION|CONTROLLER_SOURCE|NATIVE_RULE_PARAMETERS)_[A-Z0-9_]+$/.test(error?.message??'')?error.message:'PROMOTION_UNAVAILABLE';
+  const code=/^(?:PROMOTION|CONTROLLER_SOURCE|NATIVE_RULE_PARAMETERS|VALIDATOR(?:_SOURCE|_REVALIDATION)?)_[A-Z0-9_]+$/.test(error?.message??'')?error.message:'PROMOTION_UNAVAILABLE';
   await record({kind:'failure',code});throw Error(code);
 }
 
@@ -279,16 +309,41 @@ export async function main(env=process.env,transport=fetch) {
   await execute(uv,['run','--project','tools/template','--frozen','--no-sync','python','tools/template/promotion.py','--central',process.cwd(),'--commit',source.sha,'--output',planPath],{env:clean,windowsHide:true,timeout:120000});
   const plan=JSON.parse(await readFile(planPath,'utf8'));await record({kind:'template-plan',...plan});
   await assertCurrent();
-  await withGovernanceCredential(env,async io=>{
+  const outcome=await withGovernanceCredential(env,async(io,withJournal)=>{
     // The source namespace must be protected before any promotion write occurs.
     const appId=Number(env.GOVERNANCE_APP_ID);
     const guard=createSourceGuard(io,appId,assertCurrent);
     await guard();
-    const {verifyCurrent,...adopted}=await promoteRequiredWorkflow(io,source.sha,guard,record);
+    let app;
+    const reconcile=async(pending,journal,verify,draining=false)=>{
+      app??=await nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY??'',transport);
+      const ioFor=(repoId,operation)=>app.forRepository(repoId,token=>operation(promotionIO(token,transport)),'validator-revalidation');
+      await reconcileValidators(pending,app,ioFor,journal,verify,record,{draining});
+    };
+    const beforeWrite=(previous,validator,verify)=>withJournal(async journal=>{
+      const pending=await journal.load();
+      if(pending?.previous===previous&&pending.validator===validator)return;
+      if(pending?.pulls.some(entry=>entry.status==='prepared')){
+        await reconcile(pending,journal,verify,true);
+        if(pending.pulls.some(entry=>entry.status==='prepared')){
+          await record({kind:'validator-epoch-deferred',active:previous,proposed:validator});
+          return false;
+        }
+      }
+      await journal.save(epoch(previous,validator));
+      await record({kind:'validator-epoch-prepared',previous,validator});
+    });
+    const {verifyCurrent,...adopted}=await promoteRequiredWorkflow(io,source.sha,guard,record,{beforeWrite});
     await record({kind:'rules-result',...adopted});
-    await publishPromotedSources(io,plan,adopted.sha,appId,verifyCurrent,record);
+    await publishPromotedSources(io,plan,source.sha,appId,verifyCurrent,record);
+    await withJournal(async journal=>{
+      const pending=await journal.load();
+      if(pending?.validator===adopted.sha&&hasPendingValidators(pending))await reconcile(pending,journal,verifyCurrent);
+      else if(pending?.pulls.some(entry=>entry.status==='prepared'))await reconcile(pending,journal,verifyCurrent,true);
+    });
+    return adopted.status;
   },transport);
-  process.stdout.write('Promotion: adopted and reconciled\n');
+  process.stdout.write(`Promotion: controller reconciled, validator ${outcome}\n`);
   }catch(error){
     await recordPromotionFailure(error,record);
   }
