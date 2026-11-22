@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { registerOfflineFixtureRoot } from './offline-fixtures.js';
@@ -369,6 +369,53 @@ async function observationFixture() {
   f.io.createPullRequest=async()=>{throw Error('CREATE_PR_MUST_NOT_RUN');};
   return f;
 }
+it.each(['refresh', 'observation', 'editing', 'policy-first', 'unapproved'])(
+  'protects a reviewed conditional candidate during a template upgrade: %s', async kind => {
+    const f = await controllerFixture();
+    const originalTemplate = await readFile('packages/core/test/fixtures/release-template-conditional-v1.mustache', 'utf8');
+    const upgradedTemplate = await readFile('templates/repository/.github/release-template.md.mustache', 'utf8');
+    const notes = '## 概述\n\n已审核的发行说明。\n';
+    const head = await f.commit('.release-notes/app.md', notes, 'freeze reviewed draft');
+    f.pr.head = head;
+    f.session.repository.candidate!.publishedHead = head;
+    f.session.generated = f.snapshot(f.B, notes);
+    const actor = (id: number, login: string) => ({ id, login, type: 'User',
+      profileUrl: `https://github.com/${login}`, avatarUrl: `https://avatars.githubusercontent.com/u/${id}` });
+    const reviewed = actor(44, 'reviewed-author');
+    const actors = [reviewed, actor(45, 'unreviewed-account')];
+    const { id, login, profileUrl, avatarUrl } = reviewed;
+    const contributors = { contributors: [{ id, login, profileUrl, avatarUrl, alt: login }], unresolved: 1 };
+    const archived = { actors, contributors };
+    f.session.identity = { ...archived, authorsDigest: digest, sourceDigest: digest,
+      noteTemplate: originalTemplate, units: [{ id: 'app', ...archived }] };
+    const before = structuredClone(f.session.identity);
+    const originalSource = f.io.source;
+    const noteTemplate = { 'policy-first': originalTemplate, unapproved: upgradedTemplate + '\n' }[kind] ?? upgradedTemplate;
+    f.io.source = async () => ({ ...await originalSource(), contributorMode: 'github-authors', noteTemplate });
+    f.io.content = async () => { throw Error('must use the reviewed archive'); };
+    f.pr.editing = kind === 'editing';
+    const binding = kind === 'observation' ? candidateObservationIdentity(f.session) : undefined;
+
+    if (kind === 'unapproved') {
+      await expect(advanceReleaseCandidate(f.session, f.io, binding)).rejects.toThrow('CANDIDATE_NOTE_TEMPLATE_DRIFT');
+      expect(f.saved).toHaveLength(0);
+    } else {
+      await expect(advanceReleaseCandidate(f.session, f.io, binding)).resolves.toMatchObject(
+        kind === 'editing' ? { status: 'WAIT', reason: 'EDITING', head }
+          : kind === 'observation' ? { status: 'READY', reason: 'CACHED_OBSERVATION', head }
+            : { status: 'READY', prNumber: 9, head });
+      if (kind !== 'editing') {
+        expect(f.session.preview).toContain('已审核的发行说明。');
+        expect(f.session.preview).toContain('alt="reviewed-author"');
+        expect(f.session.preview).not.toMatch(/unreviewed-account|贡献者 GitHub ID/);
+        expect(f.comments.find(comment => comment.id === 10)?.body).toContain(f.session.preview);
+      }
+    }
+    expect(f.session.identity).toEqual(before);
+    expect(f.pr.head).toBe(head);
+    expect(f.pushes()).toBe(0);
+    expect(f.generations()).toBe(0);
+  });
 it.each(['unchanged','editing','human'])( 'fixed observation protects %s without generation or branch writes',async kind=>{
   const f=await observationFixture(), binding=candidateObservationIdentity(f.session), frozen=structuredClone(f.session.generated);
   if(kind==='editing')f.pr.editing=true;

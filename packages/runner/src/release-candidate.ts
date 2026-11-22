@@ -1,4 +1,5 @@
 import { renderCandidateNote, renderCandidateProjection } from '../../core/src/candidate-note.js';
+import { reviewedConditionalReleaseTemplate } from '../../core/src/conditional-release-notes.js';
 export { renderCandidateNote };
 import { manualCandidateFacts, type ManualCandidate } from '../../core/src/manual-candidate.js';
 import { createHash } from 'node:crypto';
@@ -176,6 +177,7 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   if (observed.pr?.state === 'closed') return { status: 'WAIT', reason: observed.pr.merged ? 'MERGED_SOURCE_HANDOFF' : 'CLOSED_PR' };
   // Refresh derived identity even on protected early returns, without changing its native evidence.
   const frozen = session.identity, generated = session.generated;
+  let retainReviewedGeneration = false;
   if (observation && (!frozen || !generated || frozen.sourceDigest !== generated.sourceDigest
     || frozen.authorsDigest !== source.authorsDigest
     || JSON.stringify(frozen.units.map(u => u.id).sort()) !== JSON.stringify(generated.units.map(u => u.id).sort())))
@@ -183,15 +185,22 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   if (frozen && generated && generated.baseSha === source.baseSha
     && frozen.sourceDigest === generated.sourceDigest && frozen.authorsDigest === source.authorsDigest
     && JSON.stringify(frozen.units.map(u => u.id).sort()) === JSON.stringify(generated.units.map(u => u.id).sort())) {
-    if (frozen.noteTemplate !== source.noteTemplate || frozen.units.some(unit => {
+    const reviewedTemplate = source.noteTemplate === undefined ? undefined
+      : await reviewedConditionalReleaseTemplate(source.noteTemplate, frozen.noteTemplate);
+    if (frozen.noteTemplate !== reviewedTemplate || frozen.units.some(unit => {
       const declared = source.notesPaths?.[unit.id];
       return declared ? (unit.notesPath ?? `.release-notes/${unit.id}.md`) !== declared : unit.notesPath !== undefined;
     }))
       throw Error('CANDIDATE_NOTE_TEMPLATE_DRIFT');
+    retainReviewedGeneration = reviewedTemplate !== source.noteTemplate
+      || (reviewedTemplate !== undefined && !frozen.contributorMode && source.contributorMode === 'github-authors');
     const mode = frozen.contributorMode ?? (frozen.noteTemplate ? 'recorded' : undefined);
     const projected = { ...frozen, contributors: replayReleaseContributors(frozen, source.authors, mode),
       units: frozen.units.map(unit => ({ ...unit, contributors: replayReleaseContributors(unit, source.authors, mode) })) };
-    if (JSON.stringify(projected) !== JSON.stringify(frozen)) { session.identity = projected; await save(); }
+    if (JSON.stringify(projected) !== JSON.stringify(frozen)) {
+      if (retainReviewedGeneration) throw Error('CANDIDATE_OBSERVATION_CACHE_MISMATCH');
+      session.identity = projected; await save();
+    }
   }
   const statusComment = async (body: string, previewHead: string, currentHead: string) => {
     if (!candidate.prNumber) return;
@@ -232,9 +241,8 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
       return { status: 'CONFLICT', reason: difference.conflictPaths.every(isNotesPath) ? 'HUMAN_EDIT_CONFLICT' : 'SOURCE_CHANGED', paths: difference.conflictPaths };
     }
   }
-  // A fixed observation can only project the frozen identity and protect existing notes.
-  // It never recovers a pending write, regenerates content, or creates another PR.
-  if (observation) {
+  // Reuse the frozen generation when the template or contributor policy is being adopted.
+  if (observation || retainReviewedGeneration) {
     // A mergeable tree can still require a write (for example a human revert to B).
     // Observation never performs that write, so only the actual frozen tree can complete.
     if (!observed.head || !session.generated || !await candidateTreeMatches(io.workspace, observed.head,
@@ -243,14 +251,17 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
     const stable=async()=>{
       const now=await current(),latest=await io.source();
       if(!now.pr||now.pr.state!=='open'||now.pr.editing||now.head!==observed.head||latest.baseSha!==source.baseSha
-        ||latest.authorsDigest!==source.authorsDigest)throw Error('CANDIDATE_OBSERVATION_MOVED');
+        ||latest.authorsDigest!==source.authorsDigest||latest.noteTemplate!==source.noteTemplate)
+        throw Error('CANDIDATE_OBSERVATION_MOVED');
     };
     await stable();const preview=candidateProjectionPreview(session,io.repository);
     const changed=session.preview!==preview;session.preview=preview;
     const archive=changed?await save():await io.save(session);
     await stable();const projectionEvidence=await statusComment(preview,archive,observed.head!);
     await stable();if(!projectionEvidence)throw Error('CANDIDATE_PROJECTION_UNKNOWN');
-    return { status: 'READY', reason: 'CACHED_OBSERVATION', head: observed.head,projectionEvidence };
+    return observation
+      ? { status: 'READY', reason: 'CACHED_OBSERVATION', head: observed.head, projectionEvidence }
+      : { status: 'READY', prNumber: candidate.prNumber, head: observed.head };
   }
   // Check the identity inputs before running upstream generation.
   selectReleaseContributors([], source.authors, source.contributorMode);
