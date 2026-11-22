@@ -138,6 +138,13 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
       && prs.some(p => p.state === 'closed' && p.merged && p.base === io.defaultBranch && p.head === head);
     return { pr, head, retiredHead };
   };
+  const openCandidatePullRequest = async (metadata: { title: string; body: string }) => {
+    try {
+      await io.createPullRequest({ branch: candidate.branch, base: io.defaultBranch,
+        title: metadata.title, body: candidateCreationBody(candidate.id, metadata.body) });
+    } catch { /* Creation response is never the identity; all-state native readback is. */ }
+    return current();
+  };
   const finishPending = async () => {
     if (!session.pending) return null;
     const pending = session.pending;
@@ -245,15 +252,27 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   if (observation || retainReviewedGeneration) {
     // A mergeable tree can still require a write (for example a human revert to B).
     // Observation never performs that write, so only the actual frozen tree can complete.
-    if (!observed.head || !session.generated || !await candidateTreeMatches(io.workspace, observed.head,
-      session.generated.baseSha, session.generated.files, io.temporaryRoot))
-      return { status: 'WAIT', reason: 'GENERATED_FILES_MISMATCH', head: observed.head };
-    const stable=async()=>{
+    const reviewedHead = observed.head, reviewed = session.generated;
+    if (!reviewedHead || !reviewed || !await candidateTreeMatches(io.workspace, reviewedHead,
+      reviewed.baseSha, reviewed.files, io.temporaryRoot))
+      return { status: 'WAIT', reason: 'GENERATED_FILES_MISMATCH', head: reviewedHead };
+    const stable=async(allowMissingPull = false)=>{
       const now=await current(),latest=await io.source();
-      if(!now.pr||now.pr.state!=='open'||now.pr.editing||now.head!==observed.head||latest.baseSha!==source.baseSha
+      if((!now.pr&&!allowMissingPull)||now.pr?.state==='closed'||now.pr?.editing||now.head!==reviewedHead||latest.baseSha!==source.baseSha
         ||latest.authorsDigest!==source.authorsDigest||latest.noteTemplate!==source.noteTemplate)
         throw Error('CANDIDATE_OBSERVATION_MOVED');
+      return now;
     };
+    if (!observed.pr && !observation) {
+      if (candidate.publishedHead !== reviewedHead) return { status: 'WAIT', reason: 'GENERATED_FILES_MISMATCH', head: reviewedHead };
+      const metadata = await io.generation(source.baseSha);
+      if (metadata.status !== 'READY') return { status: 'WAIT', reason: metadata.status };
+      if (metadata.snapshot.baseSha !== reviewed.baseSha || metadata.snapshot.configDigest !== reviewed.configDigest
+        || metadata.snapshot.sourceDigest !== reviewed.sourceDigest) return { status: 'WAIT', reason: 'SOURCE_DRIFT' };
+      observed = await stable(true);
+      if (!observed.pr) observed = await openCandidatePullRequest(metadata);
+      if (!observed.pr) return { status: 'WAIT', reason: 'PR_CREATE_UNKNOWN' };
+    }
     await stable();const preview=candidateProjectionPreview(session,io.repository);
     const changed=session.preview!==preview;session.preview=preview;
     const archive=changed?await save():await io.save(session);
@@ -313,9 +332,7 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   }
   observed = await current();
   if (!observed.pr) {
-    try { await io.createPullRequest({ branch: candidate.branch, base: io.defaultBranch, title: generation.title, body: candidateCreationBody(candidate.id, generation.body) }); }
-    catch { /* Creation response is never the identity; all-state native readback is. */ }
-    observed = await current();
+    observed = await openCandidatePullRequest(generation);
     if (!observed.pr) return { status: 'WAIT', reason: 'PR_CREATE_UNKNOWN' };
   }
   if (observed.pr.state === 'closed') return { status: 'WAIT', reason: 'CLOSED_PR' };

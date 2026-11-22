@@ -369,7 +369,7 @@ async function observationFixture() {
   f.io.createPullRequest=async()=>{throw Error('CREATE_PR_MUST_NOT_RUN');};
   return f;
 }
-it.each(['refresh', 'observation', 'editing', 'policy-first', 'unapproved'])(
+it.each(['refresh', 'observation', 'editing', 'policy-first', 'creation-retry', 'creation-race', 'unapproved'])(
   'protects a reviewed conditional candidate during a template upgrade: %s', async kind => {
     const f = await controllerFixture();
     const originalTemplate = await readFile('packages/core/test/fixtures/release-template-conditional-v1.mustache', 'utf8');
@@ -390,16 +390,44 @@ it.each(['refresh', 'observation', 'editing', 'policy-first', 'unapproved'])(
       noteTemplate: originalTemplate, units: [{ id: 'app', ...archived }] };
     const before = structuredClone(f.session.identity);
     const originalSource = f.io.source;
-    const noteTemplate = { 'policy-first': originalTemplate, unapproved: upgradedTemplate + '\n' }[kind] ?? upgradedTemplate;
+    const recoveringCreation = kind === 'creation-retry' || kind === 'creation-race';
+    const noteTemplate = kind === 'policy-first' || recoveringCreation ? originalTemplate
+      : kind === 'unapproved' ? upgradedTemplate + '\n' : upgradedTemplate;
     f.io.source = async () => ({ ...await originalSource(), contributorMode: 'github-authors', noteTemplate });
     f.io.content = async () => { throw Error('must use the reviewed archive'); };
     f.pr.editing = kind === 'editing';
     const binding = kind === 'observation' ? candidateObservationIdentity(f.session) : undefined;
+    let creationAttempts = 0;
+    if (recoveringCreation) {
+      f.session.repository.candidate!.prNumber = null;
+      f.io.pullRequests = async () => creationAttempts === 2 ? [f.pr] : [];
+      f.io.createPullRequest = async ({ title, body }) => {
+        expect(title).toBe('Upstream title');
+        f.pr.body = body;
+        creationAttempts++;
+        throw Error('creation response lost');
+      };
+    }
 
-    if (kind === 'unapproved') {
+    if (kind === 'creation-race') {
+      const originalGeneration = f.io.generation;
+      f.io.generation = async base => {
+        const result = await originalGeneration(base);
+        f.pr.head = await f.commit('code.txt', 'candidate changed\n');
+        return result;
+      };
+      await expect(advanceReleaseCandidate(f.session, f.io)).rejects.toThrow('CANDIDATE_OBSERVATION_MOVED');
+      expect(creationAttempts).toBe(0);
+      expect(f.saved).toHaveLength(0);
+    } else if (kind === 'unapproved') {
       await expect(advanceReleaseCandidate(f.session, f.io, binding)).rejects.toThrow('CANDIDATE_NOTE_TEMPLATE_DRIFT');
       expect(f.saved).toHaveLength(0);
     } else {
+      if (kind === 'creation-retry') {
+        await expect(advanceReleaseCandidate(f.session, f.io)).resolves.toMatchObject({ status: 'WAIT', reason: 'PR_CREATE_UNKNOWN' });
+        expect(creationAttempts).toBe(1);
+        expect(f.session.identity).toEqual(before);
+      }
       await expect(advanceReleaseCandidate(f.session, f.io, binding)).resolves.toMatchObject(
         kind === 'editing' ? { status: 'WAIT', reason: 'EDITING', head }
           : kind === 'observation' ? { status: 'READY', reason: 'CACHED_OBSERVATION', head }
@@ -411,10 +439,11 @@ it.each(['refresh', 'observation', 'editing', 'policy-first', 'unapproved'])(
         expect(f.comments.find(comment => comment.id === 10)?.body).toContain(f.session.preview);
       }
     }
+    if (kind === 'creation-retry') expect(creationAttempts).toBe(2);
     expect(f.session.identity).toEqual(before);
-    expect(f.pr.head).toBe(head);
+    if (kind !== 'creation-race') expect(f.pr.head).toBe(head);
     expect(f.pushes()).toBe(0);
-    expect(f.generations()).toBe(0);
+    expect(f.generations()).toBe(kind === 'creation-retry' ? 2 : kind === 'creation-race' ? 1 : 0);
   });
 it.each(['unchanged','editing','human'])( 'fixed observation protects %s without generation or branch writes',async kind=>{
   const f=await observationFixture(), binding=candidateObservationIdentity(f.session), frozen=structuredClone(f.session.generated);
