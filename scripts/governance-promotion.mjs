@@ -4,6 +4,7 @@ import {resolve,join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
+import {setTimeout as wait} from 'node:timers/promises';
 import {Octokit} from '@octokit/rest';
 import {createAppAuth} from '@octokit/auth-app';
 import YAML from 'yaml';
@@ -24,18 +25,69 @@ const positive=value=>Number.isSafeInteger(value)&&value>0;
 const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(k=>[k,canonical(value[k])])):value;
 const same=(a,b)=>JSON.stringify(canonical(a))===JSON.stringify(canonical(b));
 const quiet={debug(){},info(){},warn(){},error(){}};
+const requestTimeoutMs=60_000;
+const maxReadRetryDelayMs=5_000;
+const evidenceRecorder=output=>value=>appendFile(join(output,'observations.jsonl'),JSON.stringify(value)+'\n',{mode:0o600});
+
+function readRetryDelay(response) {
+  const retryAfter=response.headers.get('retry-after');
+  if(retryAfter===null)return 0;
+  if(/^\d+$/.test(retryAfter))return Number(retryAfter)*1000;
+  // Retry-After uses an HTTP-date or a nonnegative number of seconds.
+  if(!retryAfter.endsWith(' GMT'))return NaN;
+  return Math.max(0,Date.parse(retryAfter)-Date.now());
+}
+
+export function promotionTransport(transport,record,botReadToken) {
+  return async (url,init)=>{
+    if(init?.method!=='GET')return transport(url,init);
+    const signal=init.signal??AbortSignal.timeout(requestTimeoutMs);
+    init={...init,signal};
+    if(botReadToken){
+      const target=new URL(url);
+      // nativeReleaseApp otherwise uses the anonymous IP bucket for the bot lookup.
+      if(target.origin==='https://api.github.com'&&/^\/users\/[a-z0-9-]+%5bbot%5d$/i.test(target.pathname)){
+        const headers=new Headers(init.headers);
+        if(!headers.has('authorization')){
+          headers.set('authorization',`Bearer ${botReadToken}`);
+          init={...init,headers,redirect:'error'};
+        }
+      }
+    }
+    const response=await transport(url,init);
+    if(![502,503,504].includes(response.status)||signal.aborted)return response;
+    const delayMs=readRetryDelay(response);
+    if(!Number.isFinite(delayMs)||delayMs>maxReadRetryDelayMs)return response;
+    await response.body?.cancel().catch(()=>{});
+    if(delayMs)await wait(delayMs,undefined,{signal});
+    signal.throwIfAborted();
+    await record({kind:'read-retry',httpStatus:response.status,delayMs});
+    return transport(url,init);
+  };
+}
+
+async function promotionStage(stage,operation,record) {
+  try {return await operation();}
+  catch(error){
+    const httpStatus=Number.isInteger(error?.status)&&error.status>=400&&error.status<=599?error.status:null;
+    const errorKind=httpStatus?'HTTP':error?.name==='SyntaxError'?'JSON_PARSE':
+      ['AbortError','TimeoutError'].includes(error?.name)?'ABORT':'UNCLASSIFIED';
+    await record({kind:'stage-failure',stage,errorKind,httpStatus});
+    throw error;
+  }
+}
 
 export function promotionIO(token,transport=fetch) {
   const client=new Octokit({auth:token,log:quiet,request:{fetch:transport,headers:{'x-github-api-version':apiVersion.version}}});
   client.hook.before('request',options=>{options.headers['x-github-api-version']=apiVersion.version;});
-  return {graphql: (query,variables={})=>client.graphql(query,{...variables,request:{signal:AbortSignal.timeout(60000)}}),async request(method,path,body){
-    try {const r=await client.request(`${method} ${path}`,{...body,request:{signal:AbortSignal.timeout(60000)}});return {status:r.status,value:r.data};}
+  return {graphql: (query,variables={})=>client.graphql(query,{...variables,request:{signal:AbortSignal.timeout(requestTimeoutMs)}}),async request(method,path,body){
+    try {const r=await client.request(`${method} ${path}`,{...body,request:{signal:AbortSignal.timeout(requestTimeoutMs)}});return {status:r.status,value:r.data};}
     catch(e){if(e.status)return {status:e.status,value:e.response?.data};throw Error('PROMOTION_TRANSPORT');}
   }};
 }
 async function get(io,path,absent=false) {
   const r=await io.request('GET',path);if(absent&&r.status===404)return null;
-  check(r.status===200,`NATIVE_READ_${Number.isInteger(r.status)?r.status:'UNKNOWN'}`);
+  if(r.status!==200)throw Object.assign(Error(`PROMOTION_NATIVE_READ_${Number.isInteger(r.status)?r.status:'UNKNOWN'}`),{status:r.status});
   check(r.value!=null,'NATIVE_PAYLOAD');
   return r.value;
 }
@@ -214,31 +266,56 @@ export async function publishTemplateTag(io,plan,assertCurrent,record) {
   return result('PUBLISHED');
 }
 
-export async function withGovernanceCredential(env,operation,transport=fetch) {
+export async function withGovernanceCredential(env,operation,transport=fetch,record=async()=>{}) {
   const appId=Number(env.GOVERNANCE_APP_ID);check(positive(appId)&&appId!==4243096,'APP_ID');
   const app=new Octokit({authStrategy:createAppAuth,auth:{appId,privateKey:env.GOVERNANCE_APP_PRIVATE_KEY},log:quiet,
     request:{fetch:transport,headers:{'x-github-api-version':apiVersion.version}}});
   app.hook.before('request',options=>{options.headers['x-github-api-version']=apiVersion.version;});
-  const fact=(await app.request('GET /app')).data,installation=(await app.request('GET /orgs/splrad/installation')).data;
-  check(fact.id===appId&&fact.slug==='splrad-governance'&&installation.app_id===appId&&installation.account?.id===302208797&&!installation.suspended_at,'APP_IDENTITY');
+  const stage=(name,work)=>promotionStage(name,work,record);
+  const installation=await stage('governance-app-identity',async()=>{
+    const fact=(await app.request('GET /app')).data,installed=(await app.request('GET /orgs/splrad/installation')).data;
+    check(fact.id===appId&&fact.slug==='splrad-governance'&&installed.app_id===appId&&installed.account?.id===302208797&&!installed.suspended_at,'APP_IDENTITY');
+    return installed;
+  });
   const scoped=async(repository,permissions,work)=>{
-    const credential=(await app.request('POST /app/installations/{installation_id}/access_tokens',{
-      installation_id:installation.id,repository_ids:[repository.id],permissions})).data;
-    check(typeof credential.token==='string'&&credential.token,'TOKEN');
+    const purpose=repository.id===journalRepository.id?'journal':'controller';
+    const credential=await stage(purpose+'-token',async()=>{
+      const {data}=await app.request('POST /app/installations/{installation_id}/access_tokens',{
+        installation_id:installation.id,repository_ids:[repository.id],permissions});
+      check(typeof data.token==='string'&&data.token,'TOKEN');
+      return data;
+    });
     const io=promotionIO(credential.token,transport);
+    let operationFailed=false;
     try {
-      check(same(credential.permissions,permissions),'TOKEN_PERMISSIONS');
-      const scope=await get(io,'/installation/repositories?per_page=100');
-      check(scope.total_count===1&&scope.repositories?.length===1&&scope.repositories[0].id===repository.id
-        &&scope.repositories[0].full_name===repository.name,'TOKEN_SCOPE');
+      await stage(purpose+'-token-scope',async()=>{
+        check(same(credential.permissions,permissions),'TOKEN_PERMISSIONS');
+        const scope=await get(io,'/installation/repositories?per_page=100');
+        check(scope.total_count===1&&scope.repositories?.length===1&&scope.repositories[0].id===repository.id
+          &&scope.repositories[0].full_name===repository.name,'TOKEN_SCOPE');
+      });
       return await work(io);
-    }finally{const revoked=await io.request('DELETE','/installation/token');check(revoked.status===204,'TOKEN_REVOKE');}
+    }catch(error){
+      operationFailed=true;
+      throw error;
+    }finally{
+      try {
+        await stage(purpose+'-token-revoke',async()=>{
+          const {status}=await io.request('DELETE','/installation/token');
+          if(status!==204)throw Object.assign(Error('PROMOTION_TOKEN_REVOKE'),{status});
+        });
+      }catch(error){
+        if(!operationFailed)throw error;
+      }
+    }
   };
   const withJournal=work=>scoped(journalRepository,{actions_variables:'write',metadata:'read'},async io=>{
-    const repository=await get(io,'/repos/'+journalRepository.name);
-    check(repository.id===journalRepository.id&&repository.owner?.id===302208797
-      &&repository.full_name===journalRepository.name&&repository.private===true&&repository.visibility==='private'
-      &&!repository.archived&&!repository.disabled,'JOURNAL_REPOSITORY');
+    await stage('journal-repository',async()=>{
+      const repository=await get(io,'/repos/'+journalRepository.name);
+      check(repository.id===journalRepository.id&&repository.owner?.id===302208797
+        &&repository.full_name===journalRepository.name&&repository.private===true&&repository.visibility==='private'
+        &&!repository.archived&&!repository.disabled,'JOURNAL_REPOSITORY');
+    });
     return work(validatorJournal(io));
   });
   return scoped({id:1296724484,name:'splrad/steward'},{organization_administration:'write',contents:'write',metadata:'read'},
@@ -255,8 +332,14 @@ export async function verifyPromotionSource(env,transport=fetch) {
 }
 export async function preflight(env=process.env,transport=fetch) {
   check(!env.GOVERNANCE_APP_PRIVATE_KEY,'PREFLIGHT_PRIVILEGE');
-  const source=await verifyPromotionSource(env,transport);
   const output=resolve(env.PROMOTION_EVIDENCE_DIRECTORY??'promotion-evidence');await mkdir(output,{recursive:true});
+  const record=evidenceRecorder(output);
+  let source;
+  try {
+    source=await promotionStage('source-preflight',()=>verifyPromotionSource(env,promotionTransport(transport,record)),record);
+  }catch(error){
+    await recordPromotionFailure(error,record);
+  }
   await writeFile(join(output,'source-preflight.json'),JSON.stringify(source)+'\n',{mode:0o600});
   if(env.GITHUB_OUTPUT)await appendFile(env.GITHUB_OUTPUT,`eligible=${source.status==='ELIGIBLE'}\n`);
   return source;
@@ -293,11 +376,13 @@ export async function publishPromotedSources(io,plan,target,appId,guard,record){
 
 export async function main(env=process.env,transport=fetch) {
   const output=resolve(env.PROMOTION_EVIDENCE_DIRECTORY??'promotion-evidence');await mkdir(output,{recursive:true});
-  const record=value=>appendFile(join(output,'observations.jsonl'),JSON.stringify(value)+'\n',{mode:0o600});
+  const record=evidenceRecorder(output);
+  const stage=(name,work)=>promotionStage(name,work,record);
+  transport=promotionTransport(transport,record,env.GITHUB_TOKEN);
   try {
   const read=promotionIO(env.GITHUB_TOKEN,transport);
   // Re-read native evidence with no reliance on preflight files/outputs for write authorization.
-  const source=await verifyPromotionSource(env,transport);
+  const source=await stage('source-validation',()=>verifyPromotionSource(env,transport));
   await record({kind:'source',...source});if(source.status!=='ELIGIBLE'){process.stdout.write(`Promotion: ${source.status}\n`);return;}
   const assertCurrent=async()=>check((await get(read,`${repo}/commits/main`)).sha===source.sha,'MAIN_MOVED');
   const uv=await resolvePolicyTool('uv'),profile=join(output,'profile'),clean=isolatedBuildEnvironment(env,profile);
@@ -313,15 +398,15 @@ export async function main(env=process.env,transport=fetch) {
     // The source namespace must be protected before any promotion write occurs.
     const appId=Number(env.GOVERNANCE_APP_ID);
     const guard=createSourceGuard(io,appId,assertCurrent);
-    await guard();
+    await stage('controller-protection',guard);
     let app;
     const reconcile=async(pending,journal,verify,draining=false)=>{
-      app??=await nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY??'',transport);
+      app??=await stage('validator-app-identity',()=>nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY??'',transport));
       const ioFor=(repoId,operation)=>app.forRepository(repoId,token=>operation(promotionIO(token,transport)),'validator-revalidation');
-      await reconcileValidators(pending,app,ioFor,journal,verify,record,{draining});
+      await stage('journal-reconcile',()=>reconcileValidators(pending,app,ioFor,journal,verify,record,{draining}));
     };
     const beforeWrite=(previous,validator,verify)=>withJournal(async journal=>{
-      const pending=await journal.load();
+      const pending=await stage('journal-read',()=>journal.load());
       if(pending?.previous===previous&&pending.validator===validator)return;
       if(pending?.pulls.some(entry=>entry.status==='prepared')){
         await reconcile(pending,journal,verify,true);
@@ -330,19 +415,20 @@ export async function main(env=process.env,transport=fetch) {
           return false;
         }
       }
-      await journal.save(epoch(previous,validator));
+      await stage('journal-prepare',()=>journal.save(epoch(previous,validator)));
       await record({kind:'validator-epoch-prepared',previous,validator});
     });
-    const {verifyCurrent,...adopted}=await promoteRequiredWorkflow(io,source.sha,guard,record,{beforeWrite});
+    const {verifyCurrent,...adopted}=await stage('validator-promotion',
+      ()=>promoteRequiredWorkflow(io,source.sha,guard,record,{beforeWrite}));
     await record({kind:'rules-result',...adopted});
-    await publishPromotedSources(io,plan,source.sha,appId,verifyCurrent,record);
+    await stage('publish-sources',()=>publishPromotedSources(io,plan,source.sha,appId,verifyCurrent,record));
     await withJournal(async journal=>{
-      const pending=await journal.load();
+      const pending=await stage('journal-read',()=>journal.load());
       if(pending?.validator===adopted.sha&&hasPendingValidators(pending))await reconcile(pending,journal,verifyCurrent);
       else if(pending?.pulls.some(entry=>entry.status==='prepared'))await reconcile(pending,journal,verifyCurrent,true);
     });
     return adopted.status;
-  },transport);
+  },transport,record);
   process.stdout.write(`Promotion: controller reconciled, validator ${outcome}\n`);
   }catch(error){
     await recordPromotionFailure(error,record);
