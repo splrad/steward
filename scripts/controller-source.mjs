@@ -10,7 +10,8 @@ const same=isDeepStrictEqual;
 async function read(io,path,absent=false){
   const response=await io.request('GET',path);
   if(absent&&response.status===404)return null;
-  check(response.status===200,'READ_UNCONFIRMED');return response.value;
+  if(response.status!==200)throw Object.assign(Error('CONTROLLER_SOURCE_READ_UNCONFIRMED'),{status:response.status});
+  return response.value;
 }
 /** Exact namespace protection is required because git-refs merges branch/tag names. */
 export function verifySourceProtection(rules,appId){
