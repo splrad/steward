@@ -54,9 +54,16 @@
       },
       "configVersion": "quality-native-comments-v1",
       "result": null,
-      "attempts": [],
-      "nextCheckAt": null,
-      "errorCode": null
+      "attempts": [
+        {
+          "startedAt": "2026-11-22T02:48:21.251Z",
+          "status": "UNKNOWN",
+          "model": null,
+          "usage": null
+        }
+      ],
+      "nextCheckAt": "2026-11-22T02:49:21.251Z",
+      "errorCode": "RESPONSE_UNKNOWN"
     }
   },
   "cursor": 0
