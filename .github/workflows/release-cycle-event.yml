@@ -16,7 +16,7 @@ permissions:
   contents: read
   actions: read
 concurrency:
-  group: steward-release-coordinator
+  group: ${{ startsWith(fromJSON(inputs.event_json).kind, 'candidate-') && format('steward-candidate-homepage-{0}-{1}', fromJSON(inputs.event_json).repositoryId, fromJSON(inputs.event_json).prNumber) || 'steward-release-coordinator' }}
   cancel-in-progress: false
   queue: max
 jobs:
@@ -68,3 +68,6 @@ jobs:
           path: result.json
           if-no-files-found: error
           retention-days: 90
+      - name: Report candidate preview failure
+        if: ${{ startsWith(fromJSON(inputs.event_json).kind, 'candidate-') }}
+        run: node -e "if (require('./result.json').status === 'FAILED') process.exitCode = 1"
