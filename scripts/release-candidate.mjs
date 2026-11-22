@@ -375,9 +375,34 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         }
         const users = new Map();
         const automatic = conditional;
+        const parentCounts = new Map();
+        if (automatic) {
+          if ((await git('rev-parse', '--is-shallow-repository')).toString().trim() !== 'false')
+            fail('CANDIDATE_CONTRIBUTOR_HISTORY_INCOMPLETE');
+          const ids = [...commits.keys()];
+          // Bound the Git argument line on Windows regardless of the release interval size.
+          for (let i = 0; i < ids.length; i += 256) {
+            const batch = ids.slice(i, i + 256);
+            if (!batch.every(validSha)) fail('CANDIDATE_CONTRIBUTOR_COMMIT_IDENTITY');
+            const headers = (await git('rev-list', '--parents', '--no-walk=unsorted', ...batch, '--')).toString().trim().split(/\r?\n/);
+            for (const header of headers) {
+              const [id, ...parents] = header.split(' ');
+              if (!batch.includes(id) || !parents.every(validSha) || parentCounts.has(id)) fail('CANDIDATE_CONTRIBUTOR_COMMIT_IDENTITY');
+              parentCounts.set(id, parents.length);
+            }
+          }
+          if (parentCounts.size !== commits.size) fail('CANDIDATE_CONTRIBUTOR_COMMIT_IDENTITY');
+        }
+        const ordinaryPaths = ['diff-tree', '--root', ...(automatic ? [] : ['-m']), '-r', '--no-commit-id'];
+        const remergePaths = ['show', '--format=', '--no-notes', '--no-show-signature', '--diff-merges=remerge', '--no-renames'];
         for (const [id, intervalUnits] of commits) {
-          const changed = (await git('diff-tree', '--root', ...(automatic ? [] : ['-m']), '-r', '--name-only', '-z',
-            '--no-commit-id', '--no-ext-diff', '--no-textconv', id)).toString('utf8').split('\0').filter(Boolean);
+          const parents = parentCounts.get(id);
+          // Remerge output is defined for two parents. Git can fall back to a
+          // different diff on octopus merges, so skip those explicitly.
+          if (parents > 2) continue;
+          const changePaths = parents === 2 ? remergePaths : ordinaryPaths;
+          const changed = (await git(...changePaths, '--name-only', '-z', '--no-ext-diff', '--no-textconv', id, '--'))
+            .toString('utf8').split('\0').filter(Boolean);
           const affected = new Set(changed.flatMap(path => releaseAffectedUnitIds(path, delivery.units, dependencies)));
           const units = intervalUnits.filter(id => affected.has(id));
           if (conditional && !units.length) continue;

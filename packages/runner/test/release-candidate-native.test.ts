@@ -50,12 +50,13 @@ const roots: string[] = [];
 afterEach(async () => { vi.unstubAllGlobals();for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-recovery', 'pending-recovery', 'legacy-pending-cancel', 'retained-legacy-manual', 'retained-controller-manual',
   'compact', 'compact-registered', 'conditional-organization', 'conditional-before-adoption', 'conditional-controller-upgrade',
-  'conditional-runtime-upgrade', 'conditional-compact', 'conditional-tampered'])('runs the native candidate adapter through protected state, real Git, upstream generation, fake SDK and same-PR editing: %s', async pinCase => {
+  'conditional-runtime-upgrade', 'conditional-merge-contributors', 'conditional-compact', 'conditional-tampered'])('runs the native candidate adapter through protected state, real Git, upstream generation, fake SDK and same-PR editing: %s', async pinCase => {
   const root = await mkdtemp(join(tmpdir(), 'candidate-native-test-')); roots.push(root); registerOfflineFixtureRoot(root);
   const directory = join(root, 'source'), remote = join(root, 'remote.git'); await mkdir(directory);
   const env = isolatedBuildEnvironment(process.env, root), identity = { name: 'Fixture', email: 'fixture@example.invalid' };
   const git = async (...args: string[]) => (await promisify(execFile)('git', args, { cwd: directory, env, encoding: 'utf8', windowsHide: true })).stdout.trim();
   const conditional = pinCase.startsWith('conditional-');
+  const mergeContributors = pinCase === 'conditional-merge-contributors';
   const runtimeController = pinCase === 'conditional-runtime-upgrade';
   const upgradeController = pinCase === 'conditional-controller-upgrade' || runtimeController;
   const olderConditionalLayout = pinCase === 'conditional-before-adoption' || upgradeController;
@@ -121,9 +122,50 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     await git('merge', '--no-ff', 'author-work');
     commitAuthors.set(await git('rev-parse', 'HEAD'), 48);
   }
+  let cleanMerge = '', resolvedMerge = '', octopusMerge = '';
+  if (mergeContributors) {
+    const path = 'merge-unit.txt';
+    const baseline = ['first', ...Array.from({length:16}, (_,i)=>'context line '+i), 'last'].join('\n')+'\n';
+    const commitFile = async (name: string, bytes: string) => {
+      await writeFile(join(directory,name),bytes);
+      await git('add','--',name);
+      await git('commit','--signoff','-m','fix: update product source');
+    };
+    await commitFile(path,baseline);
+    await git('switch','-c','clean-end');
+    await commitFile(path,baseline.replace('last','last on side'));
+    await git('switch','main');
+    await commitFile(path,baseline.replace('first','first on main'));
+    await git('merge','--no-ff','--no-edit','clean-end');
+    cleanMerge=await git('rev-parse','HEAD');
+    commitAuthors.set(cleanMerge,48);
+    expect(await git('show','--cc','--format=','--name-only',cleanMerge,'--')).toBe(path);
+    const clean=await readFile(join(directory,path),'utf8');
+    await git('switch','-c','conflict-side');
+    await commitFile(path,clean.replace('first on main','first on conflict side'));
+    await git('switch','main');
+    await commitFile(path,clean.replace('first on main','first on conflict main'));
+    await expect(git('merge','--no-ff','--no-edit','conflict-side')).rejects.toThrow();
+    expect(await git('diff','--name-only','--diff-filter=U')).toBe(path);
+    await commitFile(path,clean.replace('first on main','first resolved manually'));
+    resolvedMerge=await git('rev-parse','HEAD');
+    commitAuthors.set(resolvedMerge,49);
+    await git('switch','-c','octopus-a');
+    await commitFile('octopus-a.txt','part A\n');
+    await git('switch','main');
+    await git('switch','-c','octopus-b');
+    await commitFile('octopus-b.txt','part B\n');
+    await git('switch','main');
+    await commitFile('octopus-main.txt','main part\n');
+    await git('merge','--no-ff','--no-edit','octopus-a','octopus-b');
+    octopusMerge=await git('rev-parse','HEAD');
+    expect((await git('show','-s','--format=%P',octopusMerge)).split(' ')).toHaveLength(3);
+    commitAuthors.set(octopusMerge,50);
+  }
   const B = await git('rev-parse', 'HEAD');
   const actor = (id: number) => {
-    const login = ({7:'author',42:'contributor',43:'service',44:'owner',45:'committer-only',46:'robot[bot]',47:'unknown',48:'merge-operator',19864447:'web-flow'} as Record<number,string>)[id]!;
+    const login = ({7:'author',42:'contributor',43:'service',44:'owner',45:'committer-only',46:'robot[bot]',47:'unknown',48:'merge-operator',
+      49:'conflict-author',50:'octopus-operator',19864447:'web-flow'} as Record<number,string>)[id]!;
     return { id, login, type: id === 46 ? 'Bot' : 'User', html_url: 'https://github.com/' + login, avatar_url: `https://avatars.githubusercontent.com/u/${id}` };
   };
   await git('init', '--bare', remote); await git('push', '--porcelain', remote, 'HEAD:refs/heads/main');
@@ -371,6 +413,14 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     expect(comments[0].body).toContain('github.com&#x2F;owner');
     expect(comments[0].body).not.toMatch(/committer-only|merge-operator|web-flow|&#x2F;robot|&#x2F;service|&#x2F;unknown|文档更新/);
   }
+  if (mergeContributors) {
+    expect(comments[0].body).toContain('alt="conflict-author"');
+    expect(comments[0].body).toContain('- conflict-author · `49`');
+    expect(comments[0].body).not.toContain('octopus-operator');
+    const queried = requests.filter(request=>request.path.includes('/commits/')).map(request=>request.path);
+    expect(queried.some(path=>path.endsWith('/'+resolvedMerge))).toBe(true);
+    expect(queried.some(path=>path.endsWith('/'+cleanMerge) || path.endsWith('/'+octopusMerge))).toBe(false);
+  }
   if(upgradeController) {
     const adoptedPath = runtimeController ? '.copier-answers.yml' : buildWorkflow;
     const workflow = await readFile(join(directory,adoptedPath), 'utf8');
@@ -552,7 +602,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     pull: { number: 9, head: pr.head.sha, mergeCommitSha: S }, session: { pending: null, conflict: null } });
   expect(archive.documents.some((file: any) => file.path.endsWith('/session.json'))).toBe(true);
   if (conditional) expect(archive.session.identity).toMatchObject({noteTemplate:expect.stringContaining('{{#hasContributors}}'),
-    contributorMode:'github-authors',contributors:{contributors:[7,42,44].map(id=>expect.objectContaining({id}))},units:[{notesPath}]});
+    contributorMode:'github-authors',contributors:{contributors:(mergeContributors?[7,42,44,49]:[7,42,44]).map(id=>expect.objectContaining({id}))},units:[{notesPath}]});
   if (compactRegistered && !conditional) expect(archive.session.identity.units).toMatchObject([{notesPath}]);
   if (legacyTemplate) {
     expect(archive.legacyNotesTemplate).toEqual({sourceSha:B,sha256:createHash('sha256').update(legacyTemplate).digest('hex'),
@@ -605,6 +655,11 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     expect(frozen).toContain('## 版本记录');
     expect(frozen).toContain(`/blob/${S}/CHANGELOG.md`);
     expect(frozen).toContain('width="48"');
+    if (mergeContributors) {
+      expect(frozen).toContain('alt="conflict-author"');
+      expect(frozen).toContain('- conflict-author · `49`');
+      expect(frozen).not.toMatch(/merge-operator|octopus-operator/);
+    }
     expect(frozen).toContain(checksumUrl);
     build.delivery.units[0]!.channels=[{id:'github-release',required:true,location:'github',metadata:[]}];
     await expect(pipelineNotes(build, 'app', directory)).rejects.toThrow('acquisition link');
