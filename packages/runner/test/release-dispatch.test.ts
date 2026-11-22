@@ -1,10 +1,10 @@
 import { expect, it } from 'vitest';
 import { GITHUB_API_VERSION } from '../../github/src/api-version.js';
-import { dispatchNativeRun, prepareBuildDispatch, verifyExecutionSource, type DispatchStore } from '../src/release-run.js';
-import { nativeEvidenceTransport, nativeRunFact, type EvidenceTransport } from '../src/native-release-evidence.js';
+import { dispatchNativeRun, prepareBuildDispatch, prepareChannelDispatch, verifyExecutionSource, type DispatchStore } from '../src/release-run.js';
+import { nativeEvidenceTransport, nativeRequestIdentity, nativeRunFact, type EvidenceTransport } from '../src/native-release-evidence.js';
 import { decodeNativeDispatchObservation, type NativeDispatchObservation } from '../../core/src/native-evidence.js';
 import { parseNativeInvocation, nativeCommands } from '../src/native-release-cli.js';
-import { evidenceFixture, START, S } from './native-evidence-fixture.js';
+import { digest, evidenceFixture, START, S } from './native-evidence-fixture.js';
 const time=(minutes:number)=>new Date(Date.parse(START)+minutes*60_000).toISOString();
 function fixture() {
   const f=evidenceFixture(),context=structuredClone(f.context);context.cycle.dispatches=[];
@@ -60,6 +60,58 @@ it('archives a native 200 before a failed Run read, then binds that returned ID 
   expect((await f.execute()).status).toBe('UNKNOWN');expect(f.observations.some(value=>value.response?.workflow_run_id===100)).toBe(true);
   unavailable=false;f.setRuns([f.run(70),f.run(100)]);expect(await f.execute(6)).toMatchObject({status:'BOUND',canonicalRunId:100});
   expect(f.calls.filter(call=>call.method==='POST')).toHaveLength(1);
+});
+it('checks each selected formal release before a new channel send and can still recover an already sent Run',async()=>{
+  const f=evidenceFixture(),context=f.context,cycle=context.cycle,unit=cycle.units[0]!;
+  const body='approved notes',asset={id:15,name:'app.bin',size:4,state:'uploaded'};
+  const manifestDigest=digest('manifest'),delivery={runId:100,attempt:1,artifactId:200,digest:'sha256:'+digest('zip')};
+  const assets=[{id:'app',path:asset.name,size:asset.size,sha256:digest('good')}];
+  const channelId='ghcr-assets',target={unitId:unit.id,channelId,version:unit.version,releaseId:10,manifestDigest};
+  cycle.workflowDelivery=true;
+  Object.assign(unit,{releaseId:10,manifestDigest,notesDigest:digest(body),assets,githubDelivery:delivery,
+    channelDeliveries:[{channelId,delivery,assets}]});
+  cycle.units.push({id:'other',tag:'other-v1.0.0',version:unit.version,releaseId:11,
+    assets,manifestDigest,notesDigest:digest(body),githubDelivery:delivery});
+  cycle.requiredChannels.push({unitId:unit.id,channelId});
+  Object.assign(f.request,nativeRequestIdentity(context.repositoryId,cycle,f.request));
+  f.request.inputs.operation_key=f.request.operationKey;
+  const request=prepareChannelDispatch(context,12,'main',S,'submit',[target],START);
+  cycle.dispatches.push(request);
+  const path='.github/workflows/steward-release-channels.yml';
+  const returned={...f.runs.get(1),id:110,workflow_id:12,path,head_branch:'main',display_title:'Submit '+request.requestKey,
+    created_at:time(6),updated_at:time(6)};
+  const release={id:10,author:{id:42},tag_name:unit.tag,draft:false,immutable:true,body};
+  let formalBytes='fake',posts=0,assetReads=0,visible=false;
+  const observations:NativeDispatchObservation[]=[];
+  const io:EvidenceTransport={anonymous:()=>io,async request(method,url){
+    if(method==='POST'){posts++;throw Error('response lost');}
+    if(url.endsWith('/actions/workflows/12'))return f.response({id:12,path,state:'active'});
+    if(url.endsWith('/git/ref/heads/main'))return f.response({ref:'refs/heads/main',object:{type:'commit',sha:S}});
+    if(url.endsWith('/releases/10'))return f.response(release);
+    if(url.includes('/releases/10/assets?'))return f.response([asset]);
+    if(url.endsWith('/releases/assets/15')){assetReads++;return f.response(formalBytes);}
+    if(url.endsWith('/commits/'+unit.tag))return f.response({sha:S});
+    if(url.endsWith('/actions/runs/110'))return f.response(returned);
+    if(url.includes('/actions/workflows/12/runs?'))return f.response({total_count:visible?1:0,workflow_runs:visible?[returned]:[]});
+    return f.io.request(method,url);
+  }};
+  const store:DispatchStore={async save(_cycle,files){
+    observations.push(...files.map(file=>decodeNativeDispatchObservation(Buffer.from(file.content))));
+    return {status:'APPLIED',head:'d'.repeat(40)};
+  }};
+  const execute=(minutes:number)=>dispatchNativeRun(context,request.requestKey,store,{complete:true,observations},io,time(minutes));
+  await expect(execute(0)).resolves.toMatchObject({status:'UNKNOWN',reason:'NATIVE_DISPATCH_EVIDENCE_UNAVAILABLE'});
+  expect(posts).toBe(0);
+  expect(observations.map(value=>value.kind)).toEqual(['READ_FAILURE']);
+  expect(assetReads).toBe(1);
+  formalBytes='good';
+  await expect(execute(6)).resolves.toMatchObject({status:'UNKNOWN',reason:'DISPATCH_RESPONSE_LOST'});
+  expect(posts).toBe(1);
+  expect(assetReads).toBe(2);
+  formalBytes='fake';visible=true;
+  await expect(execute(7)).resolves.toMatchObject({status:'BOUND',canonicalRunId:110});
+  expect(posts).toBe(1);
+  expect(assetReads).toBe(2);
 });
 it.each(['repository','workflow','sha','ref','actor','event','path','frozen'])('rejects native source mismatch: %s',kind=>{
   const f=fixture(),actual=nativeRunFact(f.run());

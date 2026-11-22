@@ -5,7 +5,8 @@ import YAML from 'yaml';
 import {adaptBuild,renderBuild,repositoryPath,scriptBuild,selectWorkflow,staticMatrixRows} from './configuration-build.mjs';
 import {changeChannels,channelWorkflowPath,ciPath,deliveryPath,explicitDelivery,jsonFile,managedPagesCondition,pagesPath,publishPath,versionsPath} from './configuration-view.mjs';
 import {releaseAdoptionPlan} from './release-adoption.mjs';
-import {assertRegisteredAdapters,parseDeliveryConfig,parseSupplementalNotes} from '../packages/runner/dist/index.js';
+import {readControllerReleaseTemplate,releaseTemplateControllerPin} from './release-template-source.mjs';
+import {assertRegisteredAdapters,isAdoptedOrganizationReleaseTemplate,isConditionalTemplate,parseDeliveryConfig,parseSupplementalNotes,productReleaseTemplatePath} from '../packages/runner/dist/index.js';
 
 const key=/^[a-z][a-z0-9-]{0,63}$/;
 const caller='.github/workflows/repository-configuration-trial.yml';
@@ -102,6 +103,8 @@ export function assertChannelWorkflow(workflow,targets,nativeJobs=new Set()) {
 }
 
 export async function applySelection(model,operation,plan,context) {
+  if(model.delivery?.schemaVersion===3)
+    must(operation!=='select'&&(operation==='trial'||!plan.channels?.length),'请在受审产品工作流中编辑各渠道的交付文件');
   const changes=new Map(),targets=[],prepared=[],formal=[];
   const requested=plan.targets??[];
   must(Array.isArray(requested),'Expected a list of build targets');
@@ -131,7 +134,7 @@ export async function applySelection(model,operation,plan,context) {
   if(operation==='select') {
     const declaredChannels=(unit,facts)=>(facts?.channels??[]).filter(c=>
       !(plan.channels??[]).some(edit=>edit.unit===unit && edit.id===c.id && edit.sources));
-    delivery=explicitDelivery(delivery??{schemaVersion:2,repositoryAuthors:plan.repositoryAuthors,units:[]});
+    delivery=explicitDelivery(delivery??{schemaVersion:2,units:[]});
     const allAssets=new Map();
     for(let i=0;i<targets.length;i++) {
       const target=targets[i], recipe=prepared[i].recipe;
@@ -209,6 +212,8 @@ export async function applySelection(model,operation,plan,context) {
   }
   if(changes.has(deliveryPath)) {
     const normalized=parseDeliveryConfig(delivery);
+    if(normalized.schemaVersion!==3 && !normalized.repositoryAuthors.length)
+      must(await isAdoptedOrganizationReleaseTemplate(model.files.get(productReleaseTemplatePath)??''),'请先采用组织发行说明模板，再保存发行配置。');
     const adoption=releaseAdoptionPlan(normalized);
     if(adoption.externalTargets.length) {
       const existing=model.files.has(channelWorkflowPath);
@@ -243,11 +248,7 @@ export async function applySelection(model,operation,plan,context) {
     const manifestPath='.release-please-manifest.json';
     const manifest=JSON.parse(model.files.get(manifestPath)??'{}');
     const configuredUnits=(plan.units??[]).filter(u=>!requested.some(t=>t.unit===u.id) || targets.some(t=>t.unit===u.id));
-    for(const unit of configuredUnits) if(unit.notesBody && !model.files.has(unit.notesPath)) {
-      must(repositoryPath(unit.notesPath).startsWith('.release-notes/') && unit.notesPath.endsWith('.md'),'New notes belong in the release notes directory');
-      parseSupplementalNotes(unit.notesBody,model.files.get('.github/release-template.md.mustache')??'');
-      changes.set(unit.notesPath,unit.notesBody+'\n');
-    }
+    const newNotes=configuredUnits.filter(unit=>unit.notesBody && !model.files.has(unit.notesPath));
     const config=structuredClone(model.versions??{'separate-pull-requests':false,packages:{}});
     for(const unit of plan.versions.filter(v=>!(plan.units??[]).some(u=>u.path===v.path) || configuredUnits.some(u=>u.path===v.path))) {
       const path=repositoryPath(unit.path,true), version=repositoryPath(unit.versionFile), log=repositoryPath(unit.changelog);
@@ -272,6 +273,31 @@ export async function applySelection(model,operation,plan,context) {
       config.packages[path]={...tagPolicy,...config.packages[path],'release-type':unit.releaseType??config.packages[path]?.['release-type']??config['release-type']??'simple','version-file':version,'changelog-path':log};
     }
     changes.set(versionsPath,jsonFile(config));
+    if(newNotes.length) {
+      let template=model.files.get(productReleaseTemplatePath)??'';
+      const compact=delivery?.schemaVersion===3
+        ?parseDeliveryConfig(JSON.parse(model.files.get(deliveryPath)),config):null;
+      for(const unit of newNotes) {
+        const path=repositoryPath(unit.notesPath);
+        if(compact) {
+          must(compact.units.some(declared=>declared.id===unit.id && declared.path===unit.path && declared.notesPath===path),
+            '请使用交付配置中为此单元声明的说明路径。');
+          must(!changes.has(path),'说明路径与本次修改的其他配置文件冲突。');
+        } else {
+          must(path.startsWith('.release-notes/') && path.endsWith('.md'),'New notes belong in the release notes directory');
+        }
+      }
+      if(compact) {
+        const pin=releaseTemplateControllerPin(model.files.get(compact.buildWorkflow));
+        template=await (context.readControllerTemplate??readControllerReleaseTemplate)(pin);
+        if(isConditionalTemplate(template))
+          must(await isAdoptedOrganizationReleaseTemplate(template),'请先采用组织发行说明模板，再保存发行配置。');
+      }
+      for(const unit of newNotes) {
+        parseSupplementalNotes(unit.notesBody,template);
+        changes.set(unit.notesPath,unit.notesBody+'\n');
+      }
+    }
   }
   if(plan.site) {
     const doc=YAML.parseDocument(model.files.get(pagesPath)??'');

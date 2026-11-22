@@ -21,7 +21,7 @@ concurrency:
   queue: max
 jobs:
   release-coordinator:
-    if: github.repository_id == '1296724484' && github.ref == 'refs/heads/main' && vars.STEWARD_EXPECTED_PAUSED_RELEASE == '311600220' && github.event_name == 'workflow_dispatch' && inputs.policy_sha == github.sha && github.workflow_sha == github.sha
+    if: github.repository_id == '1296724484' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.policy_sha == github.sha && github.workflow_sha == github.sha
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment:
@@ -56,7 +56,6 @@ jobs:
           STEWARD_CENTRAL_TOKEN: ${{ github.token }}
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
           STEWARD_CONTROLLER_SHA: ${{ github.workflow_sha }}
-          STEWARD_EXPECTED_PAUSED_RELEASE: ${{ vars.STEWARD_EXPECTED_PAUSED_RELEASE }}
           BOUNDED_MODE: cycle
           STEWARD_COPILOT_TOKEN: ${{ github.token }}
           BOUNDED_POLICY_SHA: ${{ inputs.policy_sha }}

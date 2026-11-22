@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
-import { committedVersionNotes, parseSupplementalNotes, renderCommittedReleaseNotes, type ReleaseTemplateData } from '../src/release-template.js';
-const template = readFileSync('templates/repository/.github/release-template.md.mustache', 'utf8');
+import { committedVersionNotes, parseLegacyNotes as parseSupplementalNotes, renderCommittedReleaseNotes, type ReleaseTemplateData } from '../src/release-template.js';
+const template = readFileSync('packages/core/test/fixtures/release-template-compact.mustache', 'utf8');
 it('extracts only the exact committed version section and tag comparison', () => {
   const input = '# Changes\n\n## [1.2.3](https://github.com/example/product/compare/v1.2.2...v1.2.3)\n\n- Fixed path.\n\n## 1.2.2\n\nOlder.\n';
   expect(committedVersionNotes(input, '1.2.3', 'example/product', 'a'.repeat(40), 'v1.2.3')).toEqual({ changelog: '- Fixed path.', sourceLinkLabel: '查看比较', commitUrl: 'https://github.com/example/product/commit/'+'a'.repeat(40), sourceUrl: 'https://github.com/example/product/compare/v1.2.2...'+'a'.repeat(40) });

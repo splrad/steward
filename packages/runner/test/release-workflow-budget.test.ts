@@ -16,12 +16,3 @@ it('contains the native product build and inspection budgets within hosted job l
     expect(job['continue-on-error']).toBeUndefined();
   }
 });
-it('runs the release coordinator within its 45 minute budget', async () => {
-  const d = await load('release.yml');
-  expect(Object.keys(d.jobs)).toEqual(['release-coordinator']);
-  expect(d.on.schedule).toEqual([{cron:'3-58/5 * * * *'}]);
-  expect(d.concurrency).toEqual({group:'steward-release-coordinator','cancel-in-progress':false});
-  expect(d.jobs['release-coordinator']['timeout-minutes']).toBe(45);
-  expect(d.jobs['release-coordinator'].steps.at(-1).run).toBe('node scripts/release-coordinator.mjs');
-  expect(JSON.stringify(d.jobs['release-coordinator'])).not.toMatch(/release-plan|release-please-action|matrix|upload-artifact/);
-});

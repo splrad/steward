@@ -291,13 +291,14 @@ def deliver(request, api, central_api, *, read_token=None, renderer=copier.rende
                 git('rm', '--', copier.ADOPTION_REPORT)
                 git('commit', '--signoff', '--no-gpg-sign', '-m', 'Finish the reconciled first adoption')
         if adopted or upgrade_pending:
-            renderer(central, work, template_sha, 'update', repository_inputs(template_sha))
+            rendered = renderer(central, work, template_sha, 'update', repository_inputs(template_sha))
         else:
             # A pending adoption keeps its actual native source while newer template tags appear.
             if pending_answers:
                 _, template_sha, _ = copier.answers(central, work, env)
-            copier.prepare_adoption(central, work, root/'seed', template_sha, expected_report=expected_report,
-                                    data=repository_inputs(template_sha))
+            rendered = copier.prepare_adoption(central, work, root/'seed', template_sha, expected_report=expected_report,
+                                               data=repository_inputs(template_sha))
+        review_rules_digest = rendered['reviewRulesSha256']
         policy_tool = Path(__file__).resolve().parents[2] / 'scripts/security-policy.mjs'
         policy_result = subprocess.run(['node', str(policy_tool), 'prepare', str(work), str(central),
                                         template_sha, request['workflowSha']], cwd=work, env=env,
@@ -322,6 +323,10 @@ def deliver(request, api, central_api, *, read_token=None, renderer=copier.rende
             if staged.returncode == 1:
                 git('commit', '--signoff', '--no-gpg-sign', '-m', 'chore: update common repository template')
                 require(string('show','-s','--format=%B').splitlines().count(signoff) == 1, 'LOCAL_SIGNOFF')
+        if review_rules_digest:
+            require(string('ls-tree', 'HEAD', '--', copier.REVIEW_RULES_PATH).startswith('100644 blob ')
+                    and hashlib.sha256(git('show', f'HEAD:{copier.REVIEW_RULES_PATH}')).hexdigest() == review_rules_digest,
+                    'REVIEW_RULES_STAGED_BYTES')
         if policy_digest:
             require(string('ls-tree', 'HEAD', '--', 'SECURITY.md').startswith('100644 blob ')
                     and hashlib.sha256(git('show', 'HEAD:SECURITY.md')).hexdigest() == policy_digest,
