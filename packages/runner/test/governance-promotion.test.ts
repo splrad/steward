@@ -242,9 +242,9 @@ it.each([
   const response=await promotionTransport(fetcher,record)('https://api.github.com/repos/example/repository',{method});
   expect(response.status).toBe(status);
   expect(fetcher).toHaveBeenCalledTimes(calls);
-  expect(record.mock.calls).toEqual(calls===2?[[{kind:'read-retry',httpStatus:status}]]:[]);
+  expect(record.mock.calls).toEqual(calls===2?[[{kind:'read-retry',httpStatus:status,delayMs:0}]]:[]);
 });
-it('recovers a transient journal read and respects an explicit server retry window',async()=>{
+it('recovers a transient journal read and defers a server window beyond the retry bound',async()=>{
   const {promotionTransport,promotionIO}=await module();
   const {validatorJournal}=await import(pathToFileURL(resolve('scripts/validator-revalidation.mjs')).href);
   const journal={schema:1,previous:'a'.repeat(40),validator:'b'.repeat(40),phase:'observe',pulls:[]};
@@ -257,11 +257,59 @@ it('recovers a transient journal read and respects an explicit server retry wind
   const record=vi.fn();
   await expect(validatorJournal(promotionIO(id,promotionTransport(fetcher,record))).load()).resolves.toEqual(journal);
   expect(fetcher).toHaveBeenCalledTimes(2);
-  expect(record).toHaveBeenCalledWith({kind:'read-retry',httpStatus:503});
+  expect(record).toHaveBeenCalledWith({kind:'read-retry',httpStatus:503,delayMs:0});
   fetcher.mockReset();
   fetcher.mockResolvedValue(Response.json({}, {status:503,headers:{'retry-after':'60'}}));
-  await expect(validatorJournal(promotionIO(id,promotionTransport(fetcher,record))).load()).rejects.toThrow('JOURNAL_READ');
+  await expect(validatorJournal(promotionIO(id,promotionTransport(fetcher,record))).load())
+    .rejects.toMatchObject({message:'VALIDATOR_REVALIDATION_JOURNAL_READ',status:503});
   expect(fetcher).toHaveBeenCalledTimes(1);
+});
+it.each(['seconds','date'])('waits for a short Retry-After expressed as %s',async(kind)=>{
+  const {promotionTransport}=await module();
+  const now=Date.UTC(2026,10,23,0);
+  const original=vi.spyOn(Date,'now').mockReturnValue(now);
+  try{
+    const header=kind==='seconds'?'1':new Date(now+1000).toUTCString();
+    const fetcher=vi.fn().mockResolvedValueOnce(Response.json({}, {status:503,headers:{'retry-after':header}}))
+      .mockResolvedValueOnce(Response.json({}));
+    const record=vi.fn();
+    const start=performance.now();
+    const result=await promotionTransport(fetcher,record)('https://api.github.com/example',{method:'GET'});
+    expect(result.status).toBe(200);
+    expect(performance.now()-start).toBeGreaterThanOrEqual(950);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[0]![1].signal).toBe(fetcher.mock.calls[1]![1].signal);
+    expect(record).toHaveBeenCalledWith({kind:'read-retry',httpStatus:503,delayMs:1000});
+  }finally{original.mockRestore();}
+});
+it('does not send the second GET when Retry-After outlasts the request signal',async()=>{
+  const {promotionTransport}=await module();
+  const fetcher=vi.fn().mockResolvedValue(Response.json({}, {status:503,headers:{'retry-after':'1'}}));
+  const record=vi.fn();
+  await expect(promotionTransport(fetcher,record)('https://api.github.com/example',
+    {method:'GET',signal:AbortSignal.timeout(30)})).rejects.toMatchObject({name:'AbortError'});
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(record).not.toHaveBeenCalled();
+});
+it('reports a journal write response only when readback cannot confirm the mutation',async()=>{
+  const {validatorJournal,epoch}=await import(pathToFileURL(resolve('scripts/validator-revalidation.mjs')).href);
+  for(const persisted of [false,true]){
+    let stored:string|null=null;
+    const methods:string[]=[];
+    const writer=validatorJournal({request:async(method:string,_path:string,body?:{value:string})=>{
+      methods.push(method);
+      if(method==='POST'){
+        if(persisted)stored=body!.value;
+        return {status:409};
+      }
+      return stored===null?{status:404}:{status:200,value:{name:'STEWARD_VALIDATOR_REVALIDATION',value:stored}};
+    }});
+    await writer.load();
+    const result=writer.save(epoch('a'.repeat(40),'b'.repeat(40)));
+    if(persisted)await expect(result).resolves.toBeUndefined();
+    else await expect(result).rejects.toMatchObject({message:'VALIDATOR_REVALIDATION_JOURNAL_WRITE',status:409});
+    expect(methods).toEqual(['GET','GET','POST','GET']);
+  }
 });
 it('wires trusted native validation and serialized promotion without upstream artifacts or caches',async()=>{
   const {validationJobNames}=await module(),native=YAML.parse(await readFile('.github/workflows/pr-validation-native.yml','utf8'));

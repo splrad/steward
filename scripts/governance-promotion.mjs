@@ -4,6 +4,7 @@ import {resolve,join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
+import {setTimeout as wait} from 'node:timers/promises';
 import {Octokit} from '@octokit/rest';
 import {createAppAuth} from '@octokit/auth-app';
 import YAML from 'yaml';
@@ -24,10 +25,24 @@ const positive=value=>Number.isSafeInteger(value)&&value>0;
 const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(k=>[k,canonical(value[k])])):value;
 const same=(a,b)=>JSON.stringify(canonical(a))===JSON.stringify(canonical(b));
 const quiet={debug(){},info(){},warn(){},error(){}};
+const requestTimeoutMs=60_000;
+const maxReadRetryDelayMs=5_000;
+
+function readRetryDelay(response) {
+  const retryAfter=response.headers.get('retry-after');
+  if(retryAfter===null)return 0;
+  if(/^\d+$/.test(retryAfter))return Number(retryAfter)*1000;
+  // Retry-After uses an HTTP-date or a nonnegative number of seconds.
+  if(!retryAfter.endsWith(' GMT'))return NaN;
+  return Math.max(0,Date.parse(retryAfter)-Date.now());
+}
 
 export function promotionTransport(transport,record,botReadToken) {
   return async (url,init)=>{
-    if(init?.method==='GET'&&botReadToken){
+    if(init?.method!=='GET')return transport(url,init);
+    const signal=init.signal??AbortSignal.timeout(requestTimeoutMs);
+    init={...init,signal};
+    if(botReadToken){
       const target=new URL(url);
       // nativeReleaseApp otherwise uses the anonymous IP bucket for the bot lookup.
       if(target.origin==='https://api.github.com'&&/^\/users\/[a-z0-9-]+%5bbot%5d$/i.test(target.pathname)){
@@ -39,9 +54,13 @@ export function promotionTransport(transport,record,botReadToken) {
       }
     }
     const response=await transport(url,init);
-    if(init?.method!=='GET'||![502,503,504].includes(response.status)||response.headers.has('retry-after'))return response;
+    if(![502,503,504].includes(response.status)||signal.aborted)return response;
+    const delayMs=readRetryDelay(response);
+    if(!Number.isFinite(delayMs)||delayMs>maxReadRetryDelayMs)return response;
     await response.body?.cancel().catch(()=>{});
-    await record({kind:'read-retry',httpStatus:response.status});
+    if(delayMs)await wait(delayMs,undefined,{signal});
+    signal.throwIfAborted();
+    await record({kind:'read-retry',httpStatus:response.status,delayMs});
     return transport(url,init);
   };
 }
@@ -60,14 +79,14 @@ async function promotionStage(stage,operation,record) {
 export function promotionIO(token,transport=fetch) {
   const client=new Octokit({auth:token,log:quiet,request:{fetch:transport,headers:{'x-github-api-version':apiVersion.version}}});
   client.hook.before('request',options=>{options.headers['x-github-api-version']=apiVersion.version;});
-  return {graphql: (query,variables={})=>client.graphql(query,{...variables,request:{signal:AbortSignal.timeout(60000)}}),async request(method,path,body){
-    try {const r=await client.request(`${method} ${path}`,{...body,request:{signal:AbortSignal.timeout(60000)}});return {status:r.status,value:r.data};}
+  return {graphql: (query,variables={})=>client.graphql(query,{...variables,request:{signal:AbortSignal.timeout(requestTimeoutMs)}}),async request(method,path,body){
+    try {const r=await client.request(`${method} ${path}`,{...body,request:{signal:AbortSignal.timeout(requestTimeoutMs)}});return {status:r.status,value:r.data};}
     catch(e){if(e.status)return {status:e.status,value:e.response?.data};throw Error('PROMOTION_TRANSPORT');}
   }};
 }
 async function get(io,path,absent=false) {
   const r=await io.request('GET',path);if(absent&&r.status===404)return null;
-  check(r.status===200,`NATIVE_READ_${Number.isInteger(r.status)?r.status:'UNKNOWN'}`);
+  if(r.status!==200)throw Object.assign(Error(`PROMOTION_NATIVE_READ_${Number.isInteger(r.status)?r.status:'UNKNOWN'}`),{status:r.status});
   check(r.value!=null,'NATIVE_PAYLOAD');
   return r.value;
 }
