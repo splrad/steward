@@ -10,7 +10,7 @@ const roots=['package.json','package-lock.json','npm-shrinkwrap.json','.npmrc',
 const policyPaths=/(?:^|[\s"'(])(?:\.\/)?policy\/([\w./-]+)/g;
 const actionPaths=/\$\{\{\s*github\.action_path\s*\}\}\/([\w./-]+)/g;
 const directCommands=/(?:^|[;&|])\s*\.\/([\w./-]+)/g;
-const interpreterCommands=/(?:^|[\s;&|(])(?:node|python3?|powershell|pwsh|bash|sh|cat|source|\.)\s+([^;&|)]+)/g;
+const interpreterCommands=/(?:^|[\s;&|(])(node|python3?|powershell|pwsh|bash|sh|cat|source|\.)\s+([^;&|)]+)/g;
 const localArguments=/(?:^|[\s"'])(?:\.\/([\w./-]+)|((?:scripts|tools|config|schema|templates|packages|\.github|\.mise)\/[\w./-]+))/g;
 const packageCommands=/\b(npm|npx|pnpm|yarn|bunx)\s+([^;&|)]+)/g;
 const localUrls=/new URL\(([^\n]+?),\s*import\.meta\.url\)/g;
@@ -84,10 +84,10 @@ export async function validatorSource(directory,sha) {
           &&/\s--ignore-scripts(?:\s|$)/.test(args),'INDIRECT_PACKAGE_COMMAND');
       }
       for(const [,path] of line.matchAll(policyPaths))add(path,true);
-      if(cwd!==null) {
-        for(const [,path] of line.matchAll(directCommands))add(posix.join(cwd,path),true);
-        for(const [,args] of line.matchAll(interpreterCommands))
-          for(const [,relative,rooted] of args.matchAll(localArguments))add(posix.join(cwd,relative??rooted),true);
+      if(cwd!==null)for(const [,path] of line.matchAll(directCommands))add(posix.join(cwd,path),true);
+      for(const [,program,args] of line.matchAll(interpreterCommands)) {
+        check(!/^python3?$/.test(program)||!/(?:^|\s)-[a-zA-Z]*[mc]/.test(args),'INDIRECT_MODULE_COMMAND');
+        if(cwd!==null)for(const [,relative,rooted] of args.matchAll(localArguments))add(posix.join(cwd,relative??rooted),true);
       }
       if(action)for(const [,path] of line.matchAll(actionPaths))add(resolve(action,'./'+path),true);
     }

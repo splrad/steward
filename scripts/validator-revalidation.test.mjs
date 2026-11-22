@@ -93,7 +93,7 @@ function fixture() {
     return journal.load();
   };
   const addRun=(id,source,status,conclusion,title,attempt=1)=>{
-    const run={id,node_id:'WFR_'+id,path:validatorPath,event:'pull_request',repository:repo,head_repository:repo,
+    const run={id,node_id:'WFR_'+id,path:validatorPath,event:'pull_request',repository:repo,head_repository:pr.head.repo,
       head_sha:pr.head.sha,head_branch:pr.head.ref,pull_requests:[],status,conclusion,run_attempt:attempt,
       display_title:title??`Native validation PR 32 / ${pr.head.sha} / main`};
     if(conclusion==='success')jobs.push({id:id*10,run_id:id,run_attempt:attempt,head_sha:pr.head.sha,name:'SPLRAD Validation',status,conclusion});
@@ -182,6 +182,21 @@ test('an advancing head retains its predecessor evidence and reconciles the nati
   assert.equal(state.pulls[1].status,'success');
   assert.equal(state.pulls[1].run.head,newer);
   assert.equal(state.pulls[1].run.job,110);
+  assert.deepEqual(f.changes,[]);
+});
+
+test('tracks the current open PR source tuple even when a ref or repository changes at the same SHA',async()=>{
+  const f=fixture();
+  f.addRun(20,validator,'in_progress',null);
+  assert.equal((await f.run()).pulls[0].run.id,20);
+  f.pr.head.ref='author/renamed';
+  f.pr.head.repo={...repo,id:45};
+  const replacement=f.addRun(21,validator,'in_progress',null);
+  const state=await f.run();
+  assert.deepEqual(state.pulls.map(x=>[x.head,x.headRef,x.headRepo,x.status,x.run.id]),[
+    [head,'author/policy-change',repo.id,'superseded',20],
+    [head,'author/renamed',45,'in_progress',replacement.id]
+  ]);
   assert.deepEqual(f.changes,[]);
 });
 
@@ -277,6 +292,9 @@ test('validator compares the exact local execution graph in both trees and accep
   await file(validatorPath,'name: Native\njobs:\n  test:\n    steps:\n      - working-directory: policy\n        run: npm run verify-local\n');
   const indirect=commit();
   await assert.rejects(compareValidatorSources(directory,updatedCommands,indirect),/INDIRECT_PACKAGE_COMMAND/);
+  await file(validatorPath,'name: Native\njobs:\n  test:\n    steps:\n      - working-directory: policy\n        run: python -I -m scripts.check\n');
+  const moduleCommand=commit();
+  await assert.rejects(compareValidatorSources(directory,updatedCommands,moduleCommand),/INDIRECT_MODULE_COMMAND/);
   git('checkout','--detach','-q',graph);
   await file('scripts/c.mjs',"await import(process.env.LOCAL_MODULE);\n");
   const unresolved=commit();

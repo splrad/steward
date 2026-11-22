@@ -159,14 +159,12 @@ export async function reconcilePull(io,state,entry,save,guard,record,{draining=f
     // A synchronize event normally schedules the new head itself. Keep the old
     // evidence and watch the exact successor before considering a missing Run.
     if(!draining&&pr.state==='open'&&!pr.merged&&pr.number===entry.number&&pr.base?.repo?.id===entry.repoId
-      &&pr.base?.ref===entry.base&&pr.head?.repo?.id===entry.headRepo&&pr.head?.ref===entry.headRef
-      &&pr.head.sha!==entry.head&&validatorCommit(pr.head.sha)
-      &&!state.pulls.some(other=>active.has(other.status)&&other.repoId===entry.repoId
-        &&other.number===entry.number&&other.head===pr.head.sha)){
-      const reopened=state.pulls.some(other=>other.repoId===entry.repoId&&other.number===entry.number
-        &&other.head===pr.head.sha&&other.reopenEvent);
+      &&pr.base?.ref===entry.base&&number(pr.head?.repo?.id)&&typeof pr.head.ref==='string'&&pr.head.ref
+      &&validatorCommit(pr.head.sha)&&!exactPull(pr,entry)
+      &&!state.pulls.some(other=>active.has(other.status)&&exactPull(pr,other))){
+      const reopened=state.pulls.some(other=>exactPull(pr,other)&&other.reopenEvent);
       state.pulls.push({repoId:entry.repoId,repo:entry.repo,number:entry.number,base:entry.base,
-        head:pr.head.sha,headRepo:entry.headRepo,headRef:entry.headRef,
+        head:pr.head.sha,headRepo:pr.head.repo.id,headRef:pr.head.ref,
         status:reopened?'reopened':'waiting',reason:'synchronize',notBefore:now()+synchronizeGrace});
     }
     return change('superseded');
