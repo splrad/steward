@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { confirmedReleaseContributors, selectReleaseContributors } from '../src/release-candidate.js';
+import { replayReleaseContributors, selectReleaseContributors } from '../src/release-candidate.js';
 import { isAdoptedOrganizationReleaseTemplate, reviewedConditionalReleaseTemplate } from '../src/conditional-release-notes.js';
 import { renderCandidateNote, renderCandidateProjection } from '../src/candidate-note.js';
 import { parseSupplementalNotes, renderFrozenReleaseNotes, type FrozenReleaseNotes } from '../src/release-template.js';
@@ -57,18 +57,19 @@ describe('organization conditional release notes', () => {
     expect(() => parseSupplementalNotes(input, template)).toThrow('RELEASE_TEMPLATE');
   });
 
-  it('requires a positive confirmation and uses linked avatars with escaped attributes', () => {
+  it('replays the reviewed historical contributors without promoting unselected actors', () => {
     const native = { id: 42, login: 'example', type: 'User', profileUrl: 'https://github.com/example', avatarUrl: 'https://avatars.githubusercontent.com/u/42?v=4' };
-    const humans = confirmedReleaseContributors('[{"id":42,"evidence":"Offline direct confirmation"}]');
-    expect(confirmedReleaseContributors(null)).toEqual([]);
-    expect(() => confirmedReleaseContributors('[{"id":42,"evidence":" "}]')).toThrow('CONTRIBUTOR_CONFIRMATION_INVALID');
-    expect(selectReleaseContributors([native], [], []).contributors).toEqual([]);
-    const contributors = selectReleaseContributors([native, native], [{id: 42, evidence: 'Legacy author record'}], humans).contributors;
-    const input = { ...frozen, notes: examples[0]!.input, contributors };
-    expect(() => renderFrozenReleaseNotes(originalTemplate, input)).toThrow('frozen contributors');
-    const result = renderFrozenReleaseNotes(originalTemplate, { ...input, confirmedHumans: humans });
+    const other = { ...native, id:43, login:'other', profileUrl:'https://github.com/other' };
+    const reviewed = { id:native.id, login:native.login, profileUrl:native.profileUrl, avatarUrl:native.avatarUrl, alt:native.login };
+    const record = { actors:[native,native,other], contributors:{contributors:[reviewed],unresolved:1} };
+    expect(replayReleaseContributors(record, frozen.repositoryAuthors, 'recorded')).toEqual(record.contributors);
+    expect(replayReleaseContributors(record, frozen.repositoryAuthors, 'github-authors').contributors.map(person=>person.id)).toEqual([42,43]);
+    const input = { ...frozen, notes: examples[0]!.input, contributors:[reviewed] };
+    const result = renderFrozenReleaseNotes(originalTemplate, input);
     expect(result.match(/width="48" height="48"/g)).toHaveLength(1);
     expect(result).toMatch(/## 贡献者[\s\S]*github\.com&#x2F;example[\s\S]*alt="example"[\s\S]*## 版本记录/);
+    expect(result).not.toContain('贡献者 GitHub ID');
+    expect(() => renderFrozenReleaseNotes(originalTemplate, { ...input, contributors:[reviewed, reviewed] })).toThrow('frozen contributors');
   });
 
   it('collects native authors and includes their IDs in a closed disclosure in both notes', async () => {

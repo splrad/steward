@@ -11,20 +11,10 @@ export interface CandidateSnapshot {
 }
 export interface RepositoryAuthor { id: number; evidence: string }
 export interface ReleaseActor extends GitHubActor { profileUrl: string; avatarUrl: string }
-export type ReleaseContributorPolicy = readonly Pick<RepositoryAuthor, 'id'>[] | 'github-authors';
+type ReleaseContributorPolicy = readonly Pick<RepositoryAuthor, 'id'>[] | 'github-authors';
 
 function isServiceLogin(login: string): boolean {
   return /^(?:bot|automation|service|svc|ci)(?:-|$)|-(?:bot|automation|service|svc)$/i.test(login);
-}
-export const confirmedReleaseContributorsPath = '.github/release-contributors.json';
-export function confirmedReleaseContributors(text: string | null): RepositoryAuthor[] {
-  if (text === null) return [];
-  const value: unknown = JSON.parse(text);
-  if (!Array.isArray(value) || value.length > 1024 || value.some(person => !person || typeof person !== 'object'
-    || Object.keys(person).sort().join(',') !== 'evidence,id' || !Number.isSafeInteger(person.id) || person.id <= 0
-    || typeof person.evidence !== 'string' || !person.evidence.trim() || person.evidence.length > 4096)
-    || new Set(value.map(person => person.id)).size !== value.length) throw new Error('CONTRIBUTOR_CONFIRMATION_INVALID');
-  return value as RepositoryAuthor[];
 }
 import type {ReleaseContributor} from './candidate-note.js';
 export type {ReleaseContributor} from './candidate-note.js';
@@ -65,6 +55,16 @@ export function selectReleaseContributors(actors: readonly (ReleaseActor | null)
   }
   return { contributors: [...selected.values()].sort((a, b) => a.id - b.id), unresolved };
 }
+/** Verify the frozen projection against the recorded GitHub actors. Historical
+ * conditional records already contain their reviewed contributor IDs. */
+export function replayReleaseContributors(
+  record: { actors: readonly (ReleaseActor | null)[]; contributors: ReturnType<typeof selectReleaseContributors> },
+  authors: readonly RepositoryAuthor[],
+  mode?: 'github-authors' | 'recorded',
+) {
+  return selectReleaseContributors(record.actors, authors, mode === 'recorded' ? record.contributors.contributors : mode);
+}
+
 export async function candidateId(repositoryId: number, branch: string, baseSha: string, lastCompletedCycleId: string | null) {
   if (!Number.isSafeInteger(repositoryId) || repositoryId <= 0 || !/^[a-f0-9]{40}$/.test(baseSha) || !branch)
     throw new Error('CANDIDATE_IDENTITY_INVALID');

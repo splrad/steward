@@ -42,17 +42,17 @@ const sectionByHeading = new Map<string, ConditionalSection>(
 );
 export const isConditionalTemplate = (template: string): boolean => template.includes('{{#requiredActions}}');
 const firstConditionalDigest = '104ba109cfd13d3dca3b3ffb51d9d48eadae31fbc3c38c1ba517aceb94245231';
-export const automaticContributorTemplateDigest = '120dc4498c5a8ab55e14caf222f0fce2dd09b366f072798c6d12a2db3945776a';
-export const usesAutomaticReleaseContributors = (template: string): boolean => template.includes('{{id}}');
+const contributorIdsTemplateDigest = '120dc4498c5a8ab55e14caf222f0fce2dd09b366f072798c6d12a2db3945776a';
+const showsReleaseContributorIds = (template: string): boolean => template.includes('{{id}}');
 
 export async function isAdoptedOrganizationReleaseTemplate(template: string): Promise<boolean> {
   const digest = await sha256Hex(template);
-  return digest === firstConditionalDigest || digest === automaticContributorTemplateDigest;
+  return digest === firstConditionalDigest || digest === contributorIdsTemplateDigest;
 }
 
 /** An already reviewed conditional note retains the exact format across template adoption. */
 export async function reviewedConditionalReleaseTemplate(current: string, reviewed?: string): Promise<string> {
-  if (reviewed && reviewed !== current && await sha256Hex(current) === automaticContributorTemplateDigest
+  if (reviewed && reviewed !== current && await sha256Hex(current) === contributorIdsTemplateDigest
     && await sha256Hex(reviewed) === firstConditionalDigest) return reviewed;
   return current;
 }
@@ -306,7 +306,7 @@ export function renderConditionalNotes(template: string, notes: ConditionalNotes
     ...['profileUrl', 'avatarUrl', 'alt'].map(key => 'hasContributors.contributors.' + key),
     'sourceLink.label', 'sourceLink.url',
   ];
-  if (usesAutomaticReleaseContributors(template)) required.push('hasContributors.contributors.id', 'hasContributors.contributors.login');
+  if (showsReleaseContributorIds(template)) required.push('hasContributors.contributors.id', 'hasContributors.contributors.login');
   if (required.some(key => !used.has(key))) fail('conditional template omits a required field');
   httpsLink(sourceLink.url);
   const output = Mustache.render(template, {

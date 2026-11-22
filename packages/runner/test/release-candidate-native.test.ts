@@ -49,12 +49,13 @@ const { readReleaseRecords,writeReleaseRecords,releaseCommand } = await import(p
 const roots: string[] = [];
 afterEach(async () => { vi.unstubAllGlobals();for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-recovery', 'pending-recovery', 'legacy-pending-cancel', 'retained-legacy-manual', 'retained-controller-manual',
-  'compact', 'compact-registered', 'conditional-organization', 'conditional-compact', 'conditional-tampered'])('runs the native candidate adapter through protected state, real Git, upstream generation, fake SDK and same-PR editing: %s', async pinCase => {
+  'compact', 'compact-registered', 'conditional-organization', 'conditional-before-adoption', 'conditional-compact', 'conditional-tampered'])('runs the native candidate adapter through protected state, real Git, upstream generation, fake SDK and same-PR editing: %s', async pinCase => {
   const root = await mkdtemp(join(tmpdir(), 'candidate-native-test-')); roots.push(root); registerOfflineFixtureRoot(root);
   const directory = join(root, 'source'), remote = join(root, 'remote.git'); await mkdir(directory);
   const env = isolatedBuildEnvironment(process.env, root), identity = { name: 'Fixture', email: 'fixture@example.invalid' };
   const git = async (...args: string[]) => (await promisify(execFile)('git', args, { cwd: directory, env, encoding: 'utf8', windowsHide: true })).stdout.trim();
   const conditional = pinCase.startsWith('conditional-');
+  const olderConditionalLayout = pinCase === 'conditional-before-adoption';
   const retainedController = pinCase==='retained-controller-manual';
   const retainedManual = pinCase==='retained-legacy-manual'||retainedController;
   await git('init', '--initial-branch=main'); await git('config', 'user.name', identity.name); await git('config', 'user.email', identity.email);
@@ -93,7 +94,8 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     '.release-please-manifest.json': '{".":"0.0.0"}', '.github/delivery.json': JSON.stringify(delivery), 'code.txt': '功能实现\n' })) await writeFile(join(directory, path), text);
   if (conditional) {
     await writeFile(join(directory, '.github/release-template.md.mustache'), compact ? 'Product override is ignored in schema v3.\n'
-      : (await readFile('templates/repository/.github/release-template.md.mustache','utf8')).replace('width="48"',pinCase==='conditional-tampered'?'width="12"':'width="48"'));
+      : (await readFile(olderConditionalLayout ? 'packages/core/test/fixtures/release-template-conditional-v1.mustache'
+        : 'templates/repository/.github/release-template.md.mustache','utf8')).replace('width="48"',pinCase==='conditional-tampered'?'width="12"':'width="48"'));
   }
   await git('add', '.'); await git('commit', '--signoff', '-m', 'feat: initial product');
   const commitAuthors = new Map<string, number>();
@@ -151,7 +153,8 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
       const file=path.split('/contents/')[1]!,ref=url.searchParams.get('ref');
       if(path.startsWith('/repos/splrad/steward/'))expect(pinCase==='old-source'?[sourceControllerSha,'f'.repeat(40)]:[sourceControllerSha,historicalControllerSha]).toContain(ref);
       const bytes=path.startsWith('/repos/splrad/steward/')
-        ?await readFile(conditional||retainedController&&ref===sourceControllerSha?file:'packages/core/test/fixtures/release-template-compact.mustache')
+        ?await readFile(olderConditionalLayout ? 'packages/core/test/fixtures/release-template-conditional-v1.mustache'
+          : conditional||retainedController&&ref===sourceControllerSha ? file : 'packages/core/test/fixtures/release-template-compact.mustache')
         :Buffer.from(await git('show',ref+':'+file));
       const fileSha=path.startsWith('/repos/splrad/steward/')?createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex')
         :await git('rev-parse',ref+':'+file);
@@ -356,8 +359,8 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   if (conditional) {
     expect(comments[0].body).toContain('### 🐛 错误修复');
     expect(comments[0].body).toContain('width="48"');
-    expect(comments[0].body).toContain('<summary>贡献者 GitHub ID</summary>');
-    expect(comments[0].body).toContain('- contributor · `42`');
+    expect(comments[0].body.includes('<summary>贡献者 GitHub ID</summary>')).toBe(!olderConditionalLayout);
+    expect(comments[0].body.includes('- contributor · `42`')).toBe(!olderConditionalLayout);
     expect(comments[0].body.split('github.com&#x2F;contributor')).toHaveLength(2);
     expect(comments[0].body).toContain('github.com&#x2F;owner');
     expect(comments[0].body).not.toMatch(/committer-only|merge-operator|web-flow|&#x2F;robot|&#x2F;service|&#x2F;unknown|文档更新/);
@@ -522,7 +525,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     pull: { number: 9, head: pr.head.sha, mergeCommitSha: S }, session: { pending: null, conflict: null } });
   expect(archive.documents.some((file: any) => file.path.endsWith('/session.json'))).toBe(true);
   if (conditional) expect(archive.session.identity).toMatchObject({noteTemplate:expect.stringContaining('{{#hasContributors}}'),
-    contributors:{contributors:[7,42,44].map(id=>expect.objectContaining({id}))},units:[{notesPath}]});
+    contributorMode:'github-authors',contributors:{contributors:[7,42,44].map(id=>expect.objectContaining({id}))},units:[{notesPath}]});
   if (compactRegistered && !conditional) expect(archive.session.identity.units).toMatchObject([{notesPath}]);
   if (legacyTemplate) {
     expect(archive.legacyNotesTemplate).toEqual({sourceSha:B,sha256:createHash('sha256').update(legacyTemplate).digest('hex'),
@@ -559,8 +562,9 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   if (conditional && !compact) {
     const { tag, version } = merged.cycles[0].value.units[0];
     const contributors = archive.session.identity.units[0].contributors.contributors;
-    const templateBytes = await readFile('templates/repository/.github/release-template.md.mustache');
-    const build: BuildPipelineRecord = { schemaVersion: 1, kind: 'build', repositoryId: request.repositoryId,
+    const templateBytes = await readFile(olderConditionalLayout ? 'packages/core/test/fixtures/release-template-conditional-v1.mustache'
+      : 'templates/repository/.github/release-template.md.mustache');
+    const build: BuildPipelineRecord = { contributorMode:'github-authors', schemaVersion: 1, kind: 'build', repositoryId: request.repositoryId,
       fullName: request.repository, sourceSha: S, controllerSha: sourceControllerSha,
       delivery: { schemaVersion: 1, units: delivery.units!, repositoryAuthors: [] }, noteFormat: 'conditional',
       cycleId: merged.cycles[0].value.id, requestKey: 'a'.repeat(64), buildRef: 'refs/heads/steward/build/fixture',
