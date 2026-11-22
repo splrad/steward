@@ -18,6 +18,24 @@ const managedWorkflows = [
 ];
 const isPin = value => typeof value === 'string' && /^[0-9a-f]{40}$/.test(value);
 
+const controllerAction = /^splrad\/steward(?:\/|@)/i;
+const gitMutation = /\bgit(?:\.exe)?\b[^;&|]*?\b(?:clone|checkout|switch|reset|restore|worktree|pull|update-ref|merge|rebase|fetch)\b/i;
+const fileMutation = /\b(?:rm|cp|mv|rmdir|del|remove-item|move-item|copy-item|rsync|set-content|add-content|out-file|ln)\b/i;
+
+function isControllerMount(value) {
+  if (typeof value !== 'string') return false;
+  const normalized = posix.resolve('/', value.replaceAll('\\', '/')).slice(1).toLowerCase();
+  return controllerMounts.some(mount => normalized === mount || normalized.startsWith(mount + '/'));
+}
+
+function directlyMutatesController(run, directory) {
+  if (typeof run !== 'string') return false;
+  const mentionsMount = /(?:^|[\s"'=:/(\\])(?:configuration-)?controller(?=$|[\s"'/:)\\;|&])/i;
+  return run.split(/\r?\n/).some(line =>
+    (gitMutation.test(line) && isControllerMount(directory))
+    || (mentionsMount.test(line) && (gitMutation.test(line) || fileMutation.test(line))));
+}
+
 function archiveReaderKey(checkout, install, collect) {
   const guard = checkout.if;
   if (checkout.name !== 'Check out native archive reader' || typeof guard !== 'string' || !guard
@@ -59,7 +77,14 @@ function readWorkflowPins(repo, revision, path, archiveReaders) {
           }
         }
       }
-      if (typeof step.uses !== 'string' || !step.uses.toLowerCase().startsWith('actions/checkout@')) continue;
+      const runDirectory = step['working-directory'] ?? job.defaults?.run?.['working-directory']
+        ?? workflow.defaults?.run?.['working-directory'];
+      if (directlyMutatesController(step.run, runDirectory)) {
+        throw Error('VALIDATION_CONTROLLER_MOUNT_MUTATION ' + path);
+      }
+      if (typeof step.uses !== 'string') continue;
+      if (controllerAction.test(step.uses)) controllerPins.push(step.uses.slice(step.uses.lastIndexOf('@') + 1));
+      if (!step.uses.toLowerCase().startsWith('actions/checkout@')) continue;
       const repository = step.with?.repository;
       if (typeof repository === 'string' && repository.includes('${{')) {
         throw Error('VALIDATION_CONTROLLER_CHECKOUT_REPOSITORY_EXPRESSION ' + path);
@@ -68,10 +93,8 @@ function readWorkflowPins(repo, revision, path, archiveReaders) {
       if (typeof mount === 'string' && mount.includes('${{')) {
         throw Error('VALIDATION_CONTROLLER_CHECKOUT_MOUNT ' + path);
       }
-      const normalizedMount = typeof mount === 'string'
-        ? posix.resolve('/', mount.replaceAll('\\', '/')).slice(1).toLowerCase() : '';
       if (typeof repository !== 'string' || repository.toLowerCase() !== controllerRepository) {
-        if (controllerMounts.some(reserved => normalizedMount === reserved || normalizedMount.startsWith(reserved + '/'))) {
+        if (isControllerMount(mount)) {
           throw Error('VALIDATION_CONTROLLER_CHECKOUT_MOUNT ' + path);
         }
         continue;
