@@ -27,6 +27,7 @@ const same=(a,b)=>JSON.stringify(canonical(a))===JSON.stringify(canonical(b));
 const quiet={debug(){},info(){},warn(){},error(){}};
 const requestTimeoutMs=60_000;
 const maxReadRetryDelayMs=5_000;
+const evidenceRecorder=output=>value=>appendFile(join(output,'observations.jsonl'),JSON.stringify(value)+'\n',{mode:0o600});
 
 function readRetryDelay(response) {
   const retryAfter=response.headers.get('retry-after');
@@ -331,8 +332,14 @@ export async function verifyPromotionSource(env,transport=fetch) {
 }
 export async function preflight(env=process.env,transport=fetch) {
   check(!env.GOVERNANCE_APP_PRIVATE_KEY,'PREFLIGHT_PRIVILEGE');
-  const source=await verifyPromotionSource(env,transport);
   const output=resolve(env.PROMOTION_EVIDENCE_DIRECTORY??'promotion-evidence');await mkdir(output,{recursive:true});
+  const record=evidenceRecorder(output);
+  let source;
+  try {
+    source=await promotionStage('source-preflight',()=>verifyPromotionSource(env,promotionTransport(transport,record)),record);
+  }catch(error){
+    await recordPromotionFailure(error,record);
+  }
   await writeFile(join(output,'source-preflight.json'),JSON.stringify(source)+'\n',{mode:0o600});
   if(env.GITHUB_OUTPUT)await appendFile(env.GITHUB_OUTPUT,`eligible=${source.status==='ELIGIBLE'}\n`);
   return source;
@@ -369,13 +376,13 @@ export async function publishPromotedSources(io,plan,target,appId,guard,record){
 
 export async function main(env=process.env,transport=fetch) {
   const output=resolve(env.PROMOTION_EVIDENCE_DIRECTORY??'promotion-evidence');await mkdir(output,{recursive:true});
-  const record=value=>appendFile(join(output,'observations.jsonl'),JSON.stringify(value)+'\n',{mode:0o600});
+  const record=evidenceRecorder(output);
   const stage=(name,work)=>promotionStage(name,work,record);
   transport=promotionTransport(transport,record,env.GITHUB_TOKEN);
   try {
   const read=promotionIO(env.GITHUB_TOKEN,transport);
   // Re-read native evidence with no reliance on preflight files/outputs for write authorization.
-  const source=await verifyPromotionSource(env,transport);
+  const source=await stage('source-validation',()=>verifyPromotionSource(env,transport));
   await record({kind:'source',...source});if(source.status!=='ELIGIBLE'){process.stdout.write(`Promotion: ${source.status}\n`);return;}
   const assertCurrent=async()=>check((await get(read,`${repo}/commits/main`)).sha===source.sha,'MAIN_MOVED');
   const uv=await resolvePolicyTool('uv'),profile=join(output,'profile'),clean=isolatedBuildEnvironment(env,profile);
@@ -391,7 +398,7 @@ export async function main(env=process.env,transport=fetch) {
     // The source namespace must be protected before any promotion write occurs.
     const appId=Number(env.GOVERNANCE_APP_ID);
     const guard=createSourceGuard(io,appId,assertCurrent);
-    await guard();
+    await stage('controller-protection',guard);
     let app;
     const reconcile=async(pending,journal,verify,draining=false)=>{
       app??=await stage('validator-app-identity',()=>nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY??'',transport));
@@ -411,7 +418,8 @@ export async function main(env=process.env,transport=fetch) {
       await stage('journal-prepare',()=>journal.save(epoch(previous,validator)));
       await record({kind:'validator-epoch-prepared',previous,validator});
     });
-    const {verifyCurrent,...adopted}=await promoteRequiredWorkflow(io,source.sha,guard,record,{beforeWrite});
+    const {verifyCurrent,...adopted}=await stage('validator-promotion',
+      ()=>promoteRequiredWorkflow(io,source.sha,guard,record,{beforeWrite}));
     await record({kind:'rules-result',...adopted});
     await stage('publish-sources',()=>publishPromotedSources(io,plan,source.sha,appId,verifyCurrent,record));
     await withJournal(async journal=>{

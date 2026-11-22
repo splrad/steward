@@ -332,14 +332,27 @@ it('wires trusted native validation and serialized promotion without upstream ar
   expect(promote.jobs.promote.steps.indexOf(preflight)).toBeLessThan(promote.jobs.promote.steps.indexOf(write));
 });
 
-it.each(['eligible','failed','moved','private-key','forged-preflight'])('preflight stays read-only and privileged entry independently verifies native facts: %s',async mode=>{
+it.each(['eligible','failed','moved','private-key','forged-preflight','transient','unavailable'])('preflight stays read-only and privileged entry independently verifies native facts: %s',async mode=>{
   const {mkdtemp,writeFile,readFile,rm}=await import('node:fs/promises'),{tmpdir}=await import('node:os'),{join}=await import('node:path');
   const directory=await mkdtemp(join(tmpdir(),'promotion-preflight-'));
   try {
     const api=await module(),f=source(),definition=YAML.parse(await readFile('.github/workflows/pr-validation-native.yml','utf8'));
     f.jobs.splice(0,f.jobs.length,...api.validationJobNames(definition).map((name:string,i:number)=>({id:100+i,run_id:12,run_attempt:2,head_sha:M,name,status:'completed',conclusion:'success'})));
     const env:any={GITHUB_REPOSITORY:'splrad/steward',GITHUB_REPOSITORY_ID:'1296724484',GITHUB_REF:'refs/heads/main',STEWARD_CONTROLLER_SHA:M,GITHUB_RUN_ID:'50',GITHUB_EVENT_NAME:'workflow_run',SOURCE_VALIDATION_RUN_ID:'12',NATIVE_VALIDATION_WORKFLOW_ID:'5',GITHUB_TOKEN:'read-only-fixture',GITHUB_OUTPUT:join(directory,'output'),PROMOTION_EVIDENCE_DIRECTORY:directory};
-    const transport=async(url:string,init:any)=>{expect(init.method).toBe('GET');const u=new URL(url),r=await f.request(init.method,u.pathname+u.search);return Response.json(r.value,{status:r.status});};
+    let mainReads=0;
+    const transport=async(url:string,init:any)=>{
+      expect(init.method).toBe('GET');
+      const u=new URL(url);
+      if(u.pathname.endsWith('/commits/main')){
+        mainReads++;
+        if(mode==='unavailable'||mode==='transient'&&mainReads===1)return Response.json({}, {status:503});
+      }
+      const r=await f.request(init.method,u.pathname+u.search);
+      return Response.json(r.value,{status:r.status});
+    };
+    const events=async()=>(await readFile(join(directory,'observations.jsonl'),'utf8')).trim()
+      .split('\n').map(line=>JSON.parse(line));
+    const retry={kind:'read-retry',httpStatus:503,delayMs:0};
     if(mode==='failed')f.run.conclusion='failure';if(['moved','forged-preflight'].includes(mode))f.main=T;
     if(mode==='private-key'){
       env.GOVERNANCE_APP_PRIVATE_KEY='must-not-enter-preflight';
@@ -351,11 +364,39 @@ it.each(['eligible','failed','moved','private-key','forged-preflight'])('preflig
       expect(await readFile(join(directory,'observations.jsonl'),'utf8')).toContain('STALE');
       expect(f.calls.every(c=>c.startsWith('GET '))).toBe(true);return;
     }
+    if(mode==='unavailable'){
+      await expect(api.preflight(env,transport)).rejects.toThrow('PROMOTION_NATIVE_READ_503');
+      expect(mainReads).toBe(2);
+      expect(await events()).toEqual([
+        retry,{kind:'stage-failure',stage:'source-preflight',errorKind:'HTTP',httpStatus:503},
+        {kind:'failure',code:'PROMOTION_NATIVE_READ_503'}
+      ]);
+      await expect(readFile(env.GITHUB_OUTPUT,'utf8')).rejects.toHaveProperty('code','ENOENT');
+      return;
+    }
     const result=await api.preflight(env,transport);
-    expect(result.status).toBe(mode==='eligible'?'ELIGIBLE':mode==='failed'?'WAITING_VALIDATION':'STALE');
-    expect(await readFile(env.GITHUB_OUTPUT,'utf8')).toBe(`eligible=${mode==='eligible'}\n`);
+    expect(result.status).toBe(mode==='failed'?'WAITING_VALIDATION':mode==='moved'?'STALE':'ELIGIBLE');
+    if(mode==='transient'){
+      expect(mainReads).toBe(3); // one recovery and the existing final main readback
+      expect(await events()).toEqual([retry]);
+    }
+    expect(await readFile(env.GITHUB_OUTPUT,'utf8')).toBe(`eligible=${mode==='eligible'||mode==='transient'}\n`);
     expect(JSON.parse(await readFile(join(directory,'source-preflight.json'),'utf8'))).toEqual(result);
   }finally{await rm(directory,{recursive:true,force:true});}
+});
+it('preserves failed HTTP status at both controller protection and validator read boundaries',async()=>{
+  const {assertSourceProtection}=await import(pathToFileURL(resolve('scripts/controller-source.mjs')).href);
+  const {promoteRequiredWorkflow}=await module();
+  const io={request:async(method:string)=>{
+    expect(method).toBe('GET');
+    return {status:503,value:{}};
+  }};
+  await expect(assertSourceProtection(io,765)).rejects.toMatchObject({
+    message:'CONTROLLER_SOURCE_READ_UNCONFIRMED',status:503
+  });
+  await expect(promoteRequiredWorkflow(io,M,vi.fn(),vi.fn(),compare)).rejects.toMatchObject({
+    message:'PROMOTION_NATIVE_READ_503',status:503
+  });
 });
 it('publishes one fixed template wake only after a new tag; unknown responses never retry',async()=>{
   const {wakePublishedTemplate}=await module();
