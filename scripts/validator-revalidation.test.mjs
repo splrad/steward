@@ -294,6 +294,45 @@ test('a historical reopen is still a single attempt after mergeability changes o
   assert.deepEqual(f.changes,['closed','open']);
 });
 
+test('keeps the original App reopen when a superseded head returns through a conflict',async()=>{
+  const f=fixture();
+  f.runtime.now=1_000;
+  const first=(await f.run()).pulls[0];
+  assert.equal(first.reopenEvent,2);
+  f.pr.head.sha='d'.repeat(40);
+  await f.run();
+  f.pr.head.sha=head;
+  Object.assign(f.pr,{mergeable:false,mergeable_state:'dirty'});
+  const dirty=(await f.run()).pulls.at(-1);
+  assert.equal(dirty.head,head);
+  assert.equal(dirty.status,'waiting');
+  assert.equal(dirty.reason,'merge-conflict');
+  Object.assign(f.pr,{mergeable:true,mergeable_state:'clean'});
+  f.runtime.now=200_000;
+  await f.run();
+  assert.deepEqual(f.changes,['closed','open']);
+  assert.equal(dirty.reopenEvent,first.reopenEvent);
+  f.addRun(64,validator,'completed','success',undefined,2);
+  const returned=(await f.run()).pulls.at(-1);
+  assert.equal(returned.status,'success');
+  assert.equal(returned.reopenEvent,first.reopenEvent);
+  assert.deepEqual(returned.run,{id:64,attempt:2,source:validator,head,status:'completed',conclusion:'success',job:640});
+});
+
+test('does not transfer an App reopen to a different PR source at the same SHA',async()=>{
+  for(const source of [{ref:'author/renamed'},{repo:{...repo,id:45}}]){
+    const f=fixture();
+    const first=(await f.run()).pulls[0];
+    assert.equal(first.reopenEvent,2);
+    Object.assign(f.pr.head,source);
+    const state=await f.run();
+    assert.equal(state.pulls[0].status,'superseded');
+    assert.equal(state.pulls[1].status,'waiting');
+    assert.equal(state.pulls[1].reopenEvent,undefined);
+    assert.deepEqual(f.changes,['closed','open']);
+  }
+});
+
 test('validator compares the exact local execution graph in both trees and accepts a newer protected data source',async t=>{
   const directory=await mkdtemp(join(tmpdir(),'steward-validator-'));
   t.after(()=>rm(directory,{recursive:true,force:true}));

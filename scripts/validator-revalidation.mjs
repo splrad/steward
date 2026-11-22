@@ -174,10 +174,11 @@ export async function reconcilePull(io,state,entry,save,guard,record,{draining=f
       &&pr.base?.ref===entry.base&&number(pr.head?.repo?.id)&&typeof pr.head.ref==='string'&&pr.head.ref
       &&validatorCommit(pr.head.sha)&&!exactPull(pr,entry)
       &&!state.pulls.some(other=>active.has(other.status)&&exactPull(pr,other))){
-      const reopened=state.pulls.some(other=>exactPull(pr,other)&&other.reopenEvent);
+      // A later mergeability check can move the successor back to waiting.
+      const reopenEvent=state.pulls.find(other=>exactPull(pr,other)&&number(other.reopenEvent))?.reopenEvent;
       state.pulls.push({repoId:entry.repoId,repo:entry.repo,number:entry.number,base:entry.base,
         head:pr.head.sha,headRepo:pr.head.repo.id,headRef:pr.head.ref,
-        status:reopened?'reopened':'waiting',reason:'synchronize',notBefore:now()+synchronizeGrace});
+        status:reopenEvent?'reopened':'waiting',reopenEvent,reason:'synchronize',notBefore:now()+synchronizeGrace});
     }
     return change('superseded');
   };
