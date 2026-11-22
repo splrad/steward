@@ -7,6 +7,7 @@ const controllerRepository = 'splrad/steward';
 const publishWorkflow = '.github/workflows/steward-release-publish.yml';
 const controllerPath = 'controller';
 const archiveReaderPath = 'configuration-controller';
+const archiveReaderCommand = 'node scripts/configuration-native-artifact.mjs';
 const controllerMounts = [controllerPath, archiveReaderPath];
 const managedWorkflows = [
   '.github/workflows/channel-preflight.yml',
@@ -25,7 +26,7 @@ function archiveReaderKey(checkout, install, collect) {
     || install.run !== 'npm ci --ignore-scripts --no-audit --no-fund'
     || collect?.name !== 'Collect verified product workflow archive' || collect.if !== guard
     || collect['working-directory'] !== archiveReaderPath
-    || collect.run !== 'node scripts/configuration-native-artifact.mjs') {
+    || collect.run !== archiveReaderCommand) {
     throw Error('VALIDATION_CONTROLLER_ARCHIVE_READER_WIRING');
   }
   return guard;
@@ -38,17 +39,23 @@ function readWorkflowPins(repo, revision, path, archiveReaders) {
   const controllerPins = [];
   for (const [jobId, job] of jobs) {
     const steps = job.steps ?? [];
+    let jobController;
     // The managed workflows declare controller entry points directly.
     if ([job, ...steps].some(entry => typeof entry.uses === 'string' && entry.uses.startsWith('./'))) {
       throw Error('VALIDATION_CONTROLLER_LOCAL_USES ' + path);
     }
     for (const [index, step] of steps.entries()) {
-      if (path === publishWorkflow && jobId === 'build' && step['working-directory'] === archiveReaderPath
-        && step.run === 'node scripts/configuration-native-artifact.mjs') {
-        const checkout = steps[index - 2];
-        if (checkout?.with?.path !== archiveReaderPath || !archiveReaders.has(step.if)
-          || archiveReaders.get(step.if) !== checkout.with.ref) {
-          throw Error('VALIDATION_CONTROLLER_ARCHIVE_READER_WIRING');
+      if (path === publishWorkflow && jobId === 'build' && step.run === archiveReaderCommand) {
+        const guard = step.if;
+        const directory = step['working-directory'];
+        if (directory === controllerPath && jobController && typeof guard === 'string' && guard && !archiveReaders.has(guard)) {
+          archiveReaders.set(guard, jobController);
+        } else {
+          const checkout = steps[index - 2];
+          if (directory !== archiveReaderPath || checkout?.with?.path !== archiveReaderPath
+            || !archiveReaders.has(guard) || archiveReaders.get(guard) !== checkout.with.ref) {
+            throw Error('VALIDATION_CONTROLLER_ARCHIVE_READER_WIRING');
+          }
         }
       }
       if (typeof step.uses !== 'string' || !step.uses.toLowerCase().startsWith('actions/checkout@')) continue;
@@ -77,7 +84,8 @@ function readWorkflowPins(repo, revision, path, archiveReaders) {
         if (archiveReaders.has(key)) throw Error('VALIDATION_CONTROLLER_ARCHIVE_READER_WIRING');
         archiveReaders.set(key, step.with.ref);
       } else {
-        controllerPins.push(step.with.ref);
+        jobController = step.with.ref;
+        controllerPins.push(jobController);
       }
     }
   }
