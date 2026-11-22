@@ -4,7 +4,7 @@ const name='STEWARD_VALIDATOR_REVALIDATION';
 export const journalRepository={id:1447987054,name:'splrad/steward-settings'};
 const variables=`/repos/${journalRepository.name}/actions/variables`;
 const key=`${variables}/${name}`;
-const check=(ok,reason)=>{if(!ok)throw Error('VALIDATOR_REVALIDATION_'+reason);};
+const check=(ok,reason,status)=>{if(!ok)throw Object.assign(Error('VALIDATOR_REVALIDATION_'+reason),{status});};
 const number=value=>Number.isSafeInteger(value)&&value>0;
 const active=new Set(['queued','waiting','prepared','reopened','in_progress']);
 const actorId=301115370;
@@ -12,7 +12,7 @@ const synchronizeGrace=2*60*1000;
 
 async function get(io,path) {
   const result=await io.request('GET',path);
-  check(result.status===200&&result.value!=null,'READ_'+result.status);
+  check(result.status===200&&result.value!=null,'READ_'+result.status,result.status);
   return result.value;
 }
 
@@ -36,7 +36,7 @@ export function validatorJournal(io) {
   async function read() {
     const response=await io.request('GET',key);
     if(response.status===404)return null;
-    check(response.status===200&&response.value?.name===name&&typeof response.value.value==='string','JOURNAL_READ');
+    check(response.status===200&&response.value?.name===name&&typeof response.value.value==='string','JOURNAL_READ',response.status);
     return response.value.value;
   }
   return {
@@ -60,8 +60,9 @@ export function validatorJournal(io) {
       if(saved===raw)return;
       check(Buffer.byteLength(raw)<=47*1024,'JOURNAL_SIZE');
       check(await read()===saved,'JOURNAL_CONCURRENT');
-      try {await io.request(saved===null?'POST':'PATCH',saved===null?variables:key,{name,value:raw});}catch{}
-      check(await read()===raw,'JOURNAL_WRITE');
+      let writeStatus;
+      try {({status:writeStatus}=await io.request(saved===null?'POST':'PATCH',saved===null?variables:key,{name,value:raw}));}catch{}
+      check(await read()===raw,'JOURNAL_WRITE',writeStatus);
       saved=raw;
     }
   };
