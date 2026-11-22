@@ -7,6 +7,12 @@ import {execFileSync} from 'node:child_process';
 import {registerOfflineFixtureRoot} from './offline-fixtures.js';
 const script=(name:string)=>import(pathToFileURL(resolve('scripts/'+name+'.mjs')).href);
 const S='a'.repeat(40);
+function checkRunsFor(run:{id:number,check_suite_id:number,repository:{full_name:string},head_sha:string,run_started_at:string},
+  jobs:{id:number,name:string,status:string,conclusion:string|null}[]) {
+  return jobs.map(({id,name,status,conclusion})=>({id,name,status,conclusion,head_sha:run.head_sha,
+    check_suite:{id:run.check_suite_id},app:{id:15368},started_at:run.run_started_at,
+    details_url:`https://github.com/${run.repository.full_name}/actions/runs/${run.id}/job/${id}`}));
+}
 it('private governance rejects product trees before publishing any build outputs',async()=>{
   const {main}=await script('validation-input'),root=await mkdtemp(join(tmpdir(),'governance-admission-'));registerOfflineFixtureRoot(root);
   const git=(...args:string[])=>execFileSync('git',args,{cwd:root,encoding:'utf8'}).trim();
@@ -371,11 +377,13 @@ it('binds all workflow and matrix results to this repository, PR pair, commit an
   const paths=['.github/workflows/one.yml','.github/workflows/two.yml'];
   const pr={number:4,base:{repo:{id:1},ref:'trunk',sha:S},head:{repo:{id:2},ref:'topic',sha:'b'.repeat(40)}};
   const event={repository:{id:1,full_name:'org/product'},pull_request:pr};
-  const run={id:51,run_attempt:2,path:paths[0],repository:{id:1},head_repository:{id:2},head_sha:pr.head.sha,
+  const run={id:51,run_attempt:2,path:paths[0],repository:event.repository,head_repository:{id:2},head_sha:pr.head.sha,
+    workflow_id:61,check_suite_id:71,run_started_at:'2026-11-21T21:07:30Z',
     event:'pull_request',pull_requests:[pr],status:'completed',conclusion:'success'};
   const job={id:58,name:'product CI',run_id:51,run_attempt:2,head_sha:run.head_sha,status:'completed',conclusion:'success',steps:[{status:'completed',conclusion:'success'}]};
   const check=(runs:any[],jobs:any[]=[job],source=run.head_sha)=>evidence(paths,runs.map(r=>({...r,node_id:r.path})),event,'pull_request',async()=>jobs,[],
-    async(path:string)=>({path,repositoryFileUrl:`https://github.com/org/product/blob/${source}/${path}`}),new Set(),{wait:async()=>{}});
+    async(path:string)=>({path,repositoryFileUrl:`https://github.com/org/product/blob/${source}/${path}`}),new Set(),
+    {wait:async()=>{},loadChecks:async(selected:typeof run)=>checkRunsFor(selected,jobs),loadAttemptHistory:async()=>jobs});
   await expect(check([run],[job],S)).rejects.toThrow('workflow source');
   expect(await check([run])).toHaveLength(1);
   expect(await check([run],[job,{...job,id:59,name:'optional',conclusion:'skipped'}])).toHaveLength(1);
@@ -402,13 +410,17 @@ it('re-reads only the chosen completed run attempt while its jobs reach a termin
     head:{ref:branch,sha:head,repo:repository}};
   const event={repository,pull_request:pr};
   const run={id:44949882339,run_attempt:1,path,repository,head_repository:repository,head_sha:head,head_branch:branch,
+    node_id:'WFR_kwLOTUpyBM8AAAAKdzjF4w',workflow_id:424176722,check_suite_id:121654399352,run_started_at:'2026-11-21T21:07:30Z',
     event:'pull_request',pull_requests:[pr],status:'completed',conclusion:'success'};
   const job=(id:number,name:string)=>({id,name,run_id:run.id,run_attempt:1,head_sha:head,status:'completed',conclusion:'success',
     steps:[{status:'completed',conclusion:'success'}]});
   const linux=job(136985250142,'test (ubuntu-24.04)'),windows=job(136985249960,'test (windows-2025)');
   const wait=vi.fn(async()=>{}),readRun=vi.fn(async()=>run);
   const file=async()=>({path,repositoryFileUrl:`https://github.com/splrad/steward/blob/${head}/${path}`});
-  const check=(loadJobs:any,options={wait,readRun},value=run)=>evidence([path],[value],event,'pull_request',loadJobs,[],file,new Set(),options);
+  const loadChecks=vi.fn(async(selected:typeof run)=>checkRunsFor(selected,[linux,windows]));
+  const check=(loadJobs:any,options:{readRun?:typeof readRun,loadChecks?:typeof loadChecks,
+    loadAttemptHistory?:()=>Promise<(typeof linux)[]>}={},value=run)=>
+    evidence([path],[value],event,'pull_request',loadJobs,[],file,new Set(),{wait,readRun,loadChecks,...options});
   const lagged=vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([linux])
     .mockResolvedValueOnce([linux,{...windows,status:'in_progress',conclusion:null}])
     .mockResolvedValueOnce([linux,windows]).mockResolvedValueOnce([windows,linux]);
@@ -428,10 +440,22 @@ it('re-reads only the chosen completed run attempt while its jobs reach a termin
   const shrinking=vi.fn().mockResolvedValue([linux])
     .mockResolvedValueOnce([linux,{...windows,status:'in_progress',conclusion:null}]);
   await expect(check(shrinking)).rejects.toThrow('incomplete job evidence');
+  const consistentlyPartial=vi.fn(async()=>[linux]);
+  await expect(check(consistentlyPartial)).rejects.toThrow('incomplete job evidence');
+  expect(consistentlyPartial).toHaveBeenCalledTimes(5);
+  const wrongSuite=vi.fn(async()=>checkRunsFor({...run,check_suite_id:run.check_suite_id+1},[linux,windows]));
+  await expect(check(async()=>[linux,windows],{loadChecks:wrongSuite})).rejects.toThrow('check suite source mismatch');
+  const rerun={...run,run_attempt:2,run_started_at:'2026-11-21T21:30:00Z'};
+  const rerunJob={...windows,id:136985249961,run_attempt:2};
+  const inheritedWithPriorStart=checkRunsFor({...rerun,run_started_at:run.run_started_at},[rerunJob]);
+  const bothAttempts=vi.fn(async()=>[...checkRunsFor(run,[linux,windows]),...inheritedWithPriorStart]);
+  const loadAttemptHistory=async()=>[linux,windows,rerunJob];
+  await expect(check(async()=>[rerunJob],{loadChecks:bothAttempts,loadAttemptHistory,readRun:vi.fn(async()=>rerun)},rerun))
+    .resolves.toMatchObject([{id:run.id,attempt:2,jobs:[{id:rerunJob.id}]}]);
   await expect(check(async()=>[linux,linux])).rejects.toThrow('incomplete job evidence');
-  await expect(check(async()=>[linux,windows],{wait,readRun:vi.fn(async()=>({...run,run_attempt:2}))})).rejects.toThrow('changed while reading');
+  await expect(check(async()=>[linux,windows],{readRun:vi.fn(async()=>({...run,run_attempt:2}))})).rejects.toThrow('changed while reading');
   const noRead=vi.fn();
-  await expect(check(noRead,{wait,readRun},{...run,conclusion:'failure'})).rejects.toThrow('concluded failure');
+  await expect(check(noRead,{}, {...run,conclusion:'failure'})).rejects.toThrow('concluded failure');
   expect(noRead).not.toHaveBeenCalled();
 });
 it('keeps registered settings and supplier lock metadata in organizational checks',async()=>{

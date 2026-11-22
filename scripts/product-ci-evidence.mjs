@@ -34,8 +34,37 @@ export function workflowSource(file,path,event,head){
 
 class IncompleteJobsSnapshot extends Error {}
 
-async function readAttemptJobs(run,loadJobs,{deadline=Infinity,wait=delay}={}) {
+function corroboratesAttempt(run,jobs,checks,attemptHistory) {
+  const prior=new Set();
+  for(const job of attemptHistory){
+    if(job.run_id!==run.id||job.head_sha!==run.head_sha||!Number.isSafeInteger(job.id)||job.id<=0
+      ||!Number.isSafeInteger(job.run_attempt)||job.run_attempt<1||job.run_attempt>run.run_attempt)
+      throw Error('Product CI job attempt history mismatch');
+    if(job.run_attempt<run.run_attempt)prior.add(job.id);
+  }
+  const expected=new Map();
+  for(const check of checks){
+    if(check.app?.id!==15368)continue;
+    const detail=`https://github.com/${run.repository.full_name}/actions/runs/${run.id}/job/${check.id}`;
+    if(check.check_suite?.id!==run.check_suite_id||check.head_sha!==run.head_sha||check.details_url!==detail
+      ||!Number.isSafeInteger(check.id)||check.id<=0)throw Error('Product CI check suite source mismatch');
+    // The suite spans retries. The Actions history assigns attempts to Check
+    // Run IDs, including carried jobs whose start time predates this retry.
+    if(prior.has(check.id))continue;
+    if(expected.has(check.id))throw Error('Product CI duplicate check run');
+    expected.set(check.id,check);
+  }
+  return jobs.length===expected.size&&jobs.every(job=>{
+    const check=expected.get(job.id);
+    return check?.name===job.name&&check.status===job.status&&check.conclusion===job.conclusion;
+  });
+}
+
+async function readAttemptJobs(run,loadJobs,{deadline=Infinity,wait=delay,loadChecks,loadAttemptHistory}={}) {
   const problem=()=>Error(run.path+' run '+run.id+' attempt '+run.run_attempt+' has incomplete job evidence');
+  if(!Number.isSafeInteger(run.check_suite_id)||run.check_suite_id<=0
+    ||!Number.isSafeInteger(run.run_attempt)||run.run_attempt<1||typeof loadChecks!=='function'
+    ||run.run_attempt>1&&typeof loadAttemptHistory!=='function')throw problem();
   const observedIds=new Set();
   let previous;
   for(let pause=1000;;pause*=2){
@@ -52,12 +81,19 @@ async function readAttemptJobs(run,loadJobs,{deadline=Infinity,wait=delay}={}) {
       const complete=jobs.every(job=>job.status==='completed'&&['success','skipped'].includes(job.conclusion));
       if(complete&&jobs.length===observedIds.size&&jobs.some(job=>job.conclusion==='success'
         &&job.steps?.some(step=>step.status==='completed'&&step.conclusion==='success'))){
-        snapshot=JSON.stringify(jobs.map(job=>[job.id,job.name,job.conclusion]).sort((a,b)=>a[0]-b[0]));
-        if(snapshot===previous)return jobs;
+        let checks,attemptHistory;
+        try {
+          [checks,attemptHistory]=await Promise.all([loadChecks(run),run.run_attempt>1?loadAttemptHistory(run):[]]);
+        }
+        catch(error){if(!(error instanceof IncompleteJobsSnapshot))throw error;}
+        if(checks&&corroboratesAttempt(run,jobs,checks,attemptHistory)){
+          snapshot=JSON.stringify(jobs.map(job=>[job.id,job.name,job.conclusion]).sort((a,b)=>a[0]-b[0]));
+          if(snapshot===previous)return jobs;
+        }
       }
     }
-    // A locally consistent page can still omit jobs during propagation. Keep
-    // every seen ID and require consecutive matching terminal inventories.
+    // Keep every seen ID and require consecutive terminal inventories agreed
+    // by both the Actions attempt and its independently listed Check Runs.
     previous=snapshot;
     if(pause>8000||Date.now()+pause>=deadline)throw problem();
     await wait(pause);
@@ -82,6 +118,7 @@ export async function evidence(paths,runs,event,type,loadJobs,boundNames=[],load
     const jobs=await readAttemptJobs(run,loadJobs,options);
     const current=options.readRun&&await options.readRun(run.id);
     if(options.readRun&&(current?.id!==run.id||current.node_id!==run.node_id||current.workflow_id!==run.workflow_id
+      ||current.check_suite_id!==run.check_suite_id||current.run_started_at!==run.run_started_at
       ||current.run_attempt!==run.run_attempt||current.status!=='completed'
       ||current.conclusion!=='success'||!(matchesRun(current,path,event,type)||boundForkRun(current,path,event,type,boundNames))))
       throw Error(path+' run '+run.id+' attempt '+run.run_attempt+' changed while reading job evidence');
@@ -121,7 +158,7 @@ async function main(){
   const event=JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH,'utf8'));
   const type=process.env.GITHUB_EVENT_NAME,paths=JSON.parse(process.env.PRODUCT_WORKFLOWS);
   const head=event.pull_request?.head.sha??event.after;
-  const root=process.env.GITHUB_API_URL+'/repos/'+event.repository.full_name+'/actions/';
+  const root=process.env.GITHUB_API_URL+'/repos/'+event.repository.full_name+'/';
   async function read(url){
     const response=await readEvidenceResponse(()=>fetch(url,{redirect:'error',headers:{Authorization:'Bearer '+process.env.GH_TOKEN,
       Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}}),deadline);
@@ -131,8 +168,8 @@ async function main(){
   async function list(route,key){
     const rows=[];
     let total;
-    const incomplete=()=>key==='jobs'
-      ?new IncompleteJobsSnapshot('Product CI incomplete jobs'):Error('Product CI incomplete '+key);
+    const incomplete=()=>key==='workflow_runs'
+      ?Error('Product CI incomplete '+key):new IncompleteJobsSnapshot('Product CI incomplete '+key);
     for(let page=1;;page++){
       const url=new URL(root+route);
       url.searchParams.set('page',page);url.searchParams.set('per_page','100');
@@ -162,10 +199,12 @@ async function main(){
   }
   const start=Date.now(),deadline=start+60*60*1000;
   for(;;){
-    const runs=await list('runs?event='+type+'&head_sha='+head,'workflow_runs');
+    const runs=await list('actions/runs?event='+type+'&head_sha='+head,'workflow_runs');
     const pending=new Set();
-    const results=await evidence(paths,runs,event,type,run=>list('runs/'+run.id+'/attempts/'+run.run_attempt+'/jobs','jobs'),
-      boundNames,loadFile,pending,{deadline,readRun:id=>read(root+'runs/'+id)});
+    const results=await evidence(paths,runs,event,type,run=>list('actions/runs/'+run.id+'/attempts/'+run.run_attempt+'/jobs','jobs'),
+      boundNames,loadFile,pending,{deadline,readRun:id=>read(root+'actions/runs/'+id),
+        loadChecks:run=>list('check-suites/'+run.check_suite_id+'/check-runs?filter=all','check_runs'),
+        loadAttemptHistory:run=>list('actions/runs/'+run.id+'/jobs?filter=all','jobs')});
     if(results.length===paths.length){
       const report=JSON.stringify(results,null,2);
       console.log(report);await appendFile(process.env.GITHUB_STEP_SUMMARY,'```json\n'+report+'\n```\n');return;
