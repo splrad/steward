@@ -1,10 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { confirmedReleaseContributors, selectReleaseContributors } from '../src/release-candidate.js';
+import { isAdoptedOrganizationReleaseTemplate, reviewedConditionalReleaseTemplate } from '../src/conditional-release-notes.js';
 import { renderCandidateNote, renderCandidateProjection } from '../src/candidate-note.js';
 import { parseSupplementalNotes, renderFrozenReleaseNotes, type FrozenReleaseNotes } from '../src/release-template.js';
 
 const template = readFileSync('templates/repository/.github/release-template.md.mustache', 'utf8');
+const originalTemplate = readFileSync('packages/core/test/fixtures/release-template-conditional-v1.mustache', 'utf8');
 const repository = 'example/product';
 const sourceSha = 'a'.repeat(40);
 const sourceUrl = `https://github.com/${repository}/tree/${sourceSha}`;
@@ -63,10 +65,31 @@ describe('organization conditional release notes', () => {
     expect(selectReleaseContributors([native], [], []).contributors).toEqual([]);
     const contributors = selectReleaseContributors([native, native], [{id: 42, evidence: 'Legacy author record'}], humans).contributors;
     const input = { ...frozen, notes: examples[0]!.input, contributors };
-    expect(() => renderFrozenReleaseNotes(template, input)).toThrow('frozen contributors');
-    const result = renderFrozenReleaseNotes(template, { ...input, confirmedHumans: humans });
+    expect(() => renderFrozenReleaseNotes(originalTemplate, input)).toThrow('frozen contributors');
+    const result = renderFrozenReleaseNotes(originalTemplate, { ...input, confirmedHumans: humans });
     expect(result.match(/width="48" height="48"/g)).toHaveLength(1);
     expect(result).toMatch(/## 贡献者[\s\S]*github\.com&#x2F;example[\s\S]*alt="example"[\s\S]*## 版本记录/);
+  });
+
+  it('collects native authors and includes their IDs in a closed disclosure in both notes', async () => {
+    const actor = (id: number, login: string, type = 'User') => ({ id, login, type,
+      profileUrl: 'https://github.com/' + login, avatarUrl: 'https://avatars.githubusercontent.com/u/' + id });
+    const human = actor(42, 'actual-author');
+    const selected = selectReleaseContributors([human, human, actor(43, 'release-automation'),
+      actor(44, 'robot[bot]', 'Bot'), actor(19864447, 'web-flow'), null], [], 'github-authors');
+    expect(selected.contributors.map(person => person.id)).toEqual([42]);
+    const input = examples[0]!.input;
+    const result = renderFrozenReleaseNotes(template, { ...frozen, notes: input, contributors: selected.contributors });
+    const preview = renderCandidateNote('release.md', input, selected.contributors, {template,repository,sourceSha});
+    for (const body of [result, preview]) {
+      expect(body).toContain('width="48" height="48"');
+      expect(body).toContain('<details>\n<summary>贡献者 GitHub ID</summary>\n\n- actual-author · `42`\n\n</details>');
+    }
+    expect(renderFrozenReleaseNotes(template, { ...frozen, notes: input })).not.toContain('<details>');
+    expect(await isAdoptedOrganizationReleaseTemplate(template)).toBe(true);
+    expect(await reviewedConditionalReleaseTemplate(template, originalTemplate)).toBe(originalTemplate);
+    expect(await reviewedConditionalReleaseTemplate(template, originalTemplate + '\n')).toBe(template);
+    expect(await reviewedConditionalReleaseTemplate(originalTemplate, template)).toBe(originalTemplate);
   });
 
   it.each(['releases/latest', 'releases/tag/v1.0.0', 'releases/download/v1.2.3/missing.zip', 'blob/main/README.md'])(

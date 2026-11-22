@@ -239,9 +239,9 @@ it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-r
   if(kind==='python-freeze')expect(manifest.toolLocks).toHaveProperty('source/requirements-build.txt',digest(f.source['requirements-build.txt']!));
 });
 
-it.each(['legacy','conditional'])('prepares a native Node delivery with the %s notes template and reuses the original attempt',async layout=>{
+it.each(['legacy','conditional','reviewed-conditional'])('prepares a native Node delivery with the %s notes template and reuses the original attempt',async layout=>{
   const f=productPipelineFixture(2,false,[]),{context,source}=f;
-  const conditional=layout==='conditional';
+  const conditional=layout!=='legacy', retainedConditional=layout==='reviewed-conditional';
   const notesPath=conditional?'docs/release-current.md':'.release-notes/app.md';
   permitOfflineScript(resolve('scripts/inspect-python-release.py'));
   f.input.controllerDirectory=process.cwd();
@@ -253,7 +253,6 @@ it.each(['legacy','conditional'])('prepares a native Node delivery with the %s n
   source[notesPath]=['概述','更新内容','兼容性','升级与迁移','安装说明','已知问题','恢复'].map(label=>'## '+label+'\n\n已审文稿。').join('\n\n');
   if(conditional) {
     source[notesPath]='## 获取与使用\n\n**安装命令**。从[本版附件](<https://github.com/example/product/releases/download/v1.0.0/fixture-cli.tgz>)获取 CLI。\n\n```sh\nnpm install -g ./fixture-cli.tgz\n```\n';
-    source['.github/release-contributors.json']=JSON.stringify([{id:902,evidence:'Offline confirmation'}]);
   }
   function adoptedWorkflow(files:string[]) {
     return JSON.stringify({'run-name':'为 GitHub 打包 ${{ inputs.operation_key }}',on:{workflow_dispatch:{
@@ -266,6 +265,7 @@ it.each(['legacy','conditional'])('prepares a native Node delivery with the %s n
   }
   const initial=['fixture-cli.tgz'];
   const sharedTemplate=conditional ? await readFile('templates/repository/.github/release-template.md.mustache','utf8') : source['.github/release-template.md.mustache']!;
+  const protectedTemplate=retainedConditional?await readFile('packages/core/test/fixtures/release-template-conditional-v1.mustache','utf8'):sharedTemplate;
   source['.github/release-template.md.mustache']='disallowed product override';
   source[workflow]=adoptedWorkflow(['dist/fixture-cli.tgz','dist/fixture-cli-*.sha256']);
   source['.github/delivery.json']=JSON.stringify(conditional?{schemaVersion:3,notes:{'.':notesPath}}:{schemaVersion:3,repositoryAuthors:f.delivery.repositoryAuthors});
@@ -275,7 +275,7 @@ it.each(['legacy','conditional'])('prepares a native Node delivery with the %s n
       {content:string;documentDigest:string};
     const session=JSON.parse(chunk.content);
     session.identity.authorsDigest=digest('[]');
-    session.identity.noteTemplate=sharedTemplate;
+    session.identity.noteTemplate=protectedTemplate;
     session.identity.units[0].notesPath=notesPath;
     chunk.content=JSON.stringify(session);
     chunk.documentDigest=digest(chunk.content);
@@ -310,7 +310,7 @@ it.each(['legacy','conditional'])('prepares a native Node delivery with the %s n
     const document=JSON.parse(chunk.content);
     const actor={id:902,login:'verified-contributor',type:'User',profileUrl:'https://github.com/verified-contributor',avatarUrl:'https://avatars.githubusercontent.com/u/902'};
     const projection={actors:[actor],contributors:{contributors:[{id:actor.id,login:actor.login,profileUrl:actor.profileUrl,avatarUrl:actor.avatarUrl,alt:actor.login}],unresolved:0}};
-    Object.assign(document.session.identity,projection,{authorsDigest:digest('[]'),noteTemplate:sharedTemplate,units:[{id:'app',notesPath,...projection}]});
+    Object.assign(document.session.identity,projection,{authorsDigest:digest('[]'),noteTemplate:protectedTemplate,units:[{id:'app',notesPath,...projection}]});
     chunk.content=JSON.stringify(document);
     chunk.documentDigest=digest(chunk.content);
   }
@@ -318,6 +318,7 @@ it.each(['legacy','conditional'])('prepares a native Node delivery with the %s n
     digest:'sha256:'+digest('node archive'),workflow_run:{id:100,head_sha:S},created_at:'2026-10-26T00:00:30.000Z'};
   let deliveryConclusion='success',wrongSourcePath=false,notesStatus=200;
   let repeatedDelivery:'none'|'retained'|'replacement'='none';
+  let historicalContributorReads=0;
   const deliveryJob=()=>({id:1100,name:'delivery/app',run_id:100,run_attempt:1,head_sha:S,status:'completed',conclusion:deliveryConclusion,
     started_at:START,completed_at:END,steps:[{number:1,name:'Upload GitHub release delivery',status:'completed',conclusion:'success',started_at:START,completed_at:END}]});
   const io={request:async(method:string,path:string)=>{
@@ -327,7 +328,13 @@ it.each(['legacy','conditional'])('prepares a native Node delivery with the %s n
       if(file===notesPath&&notesStatus!==200)return f.response({},notesStatus);
       if(file.endsWith('/release-template.md.mustache'))
         expect(path).toBe('/repos/splrad/steward/contents/templates/repository/.github/release-template.md.mustache?ref='+C);
-      const value=path.startsWith('/repos/splrad/steward/')?sharedTemplate:source[file];
+      let value=path.startsWith('/repos/splrad/steward/')?sharedTemplate:source[file];
+      if (file==='.github/release-contributors.json') {
+        expect(retainedConditional).toBe(true);
+        expect(path.endsWith('?ref='+D)).toBe(true);
+        historicalContributorReads++;
+        value=JSON.stringify([{id:902,evidence:'Historical source fixture'}]);
+      }
       if(value===undefined)return f.response({},404);
       const bytes=Buffer.from(value);
       return f.response({type:'file',path:wrongSourcePath&&file===workflow?'.github/workflows/other.yml':file,encoding:'base64',size:bytes.length,content:bytes.toString('base64'),
@@ -406,6 +413,8 @@ it.each(['legacy','conditional'])('prepares a native Node delivery with the %s n
     const body=target.publicBody;
     expect(body).toContain('~~~sh\nnpm install -g ./fixture-cli.tgz\n~~~');
     expect(body).toContain('alt="verified-contributor" width="48"');
+    expect(body.includes('贡献者 GitHub ID')).toBe(!retainedConditional);
+    expect(historicalContributorReads>0).toBe(retainedConditional);
     expect(body).toContain('## 版本记录');
     const before=source[notesPath]!;
     source[notesPath]=before.replace('/fixture-cli.tgz>)','/internal.tgz>)');

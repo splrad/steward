@@ -3,7 +3,7 @@ import {TagName} from 'release-please/build/src/util/tag-name.js';
 import {Version} from 'release-please/build/src/version.js';
 import {candidateCycleIsSeparate,parseDeliveryConfig,assertProductDelivery,renderCandidateNote,parseSupplementalNotes,assertDeliveryPath,manualCandidateFacts,manualCandidatePreview,
   candidateCommentFits,candidateStatusBody,manualCandidateBody,validateManualCandidateRecord,isAdoptedOrganizationReleaseTemplate,isConditionalTemplate,
-  isPreviouslyAdoptedReleaseTemplate,productReleaseTemplatePath,selectReleaseContributors} from '../packages/runner/dist/index.js';
+  isPreviouslyAdoptedReleaseTemplate,productReleaseTemplatePath,reviewedConditionalReleaseTemplate,selectReleaseContributors,usesAutomaticReleaseContributors} from '../packages/runner/dist/index.js';
 const hash=v=>createHash('sha256').update(typeof v==='string'?v:JSON.stringify(v)).digest('hex');
 const fail=code=>{throw Error(code);};
 export function matchesFrozenUnits(session,snapshot=session.generated) {
@@ -56,12 +56,13 @@ export async function validateManualCandidate(session,producer,io) {
   const currentTemplate=io.readTemplate?await io.readTemplate(before.headSha,delivery):await io.read(before.headSha,productReleaseTemplatePath);
   const retained=delivery.schemaVersion!==3&&isConditionalTemplate(currentTemplate)
     ?await retainedManualNotesTemplate(session,currentTemplate,before,io):null;
-  const template=retained?.template??currentTemplate;
+  const template=retained?.template??await reviewedConditionalReleaseTemplate(currentTemplate,session.identity.noteTemplate);
   const conditional=isConditionalTemplate(template);
   if(session.identity.noteTemplate!==(conditional?template:undefined))fail('MANUAL_NOTE_TEMPLATE');
   if(retained&&session.identity.authorsDigest!==hash(delivery.repositoryAuthors))fail('MANUAL_CONTRIBUTOR_POLICY');
   if(conditional) {
-    const confirmedHumans=await io.confirmedHumans(before.sourceSha);
+    const confirmedHumans=usesAutomaticReleaseContributors(template)?'github-authors'
+      :await io.confirmedHumans(template===currentTemplate?before.sourceSha:session.generated.baseSha);
     if(session.identity.authorsDigest!==hash(delivery.repositoryAuthors)
       || session.identity.units.some(unit=>JSON.stringify(selectReleaseContributors(unit.actors,delivery.repositoryAuthors,confirmedHumans))!==JSON.stringify(unit.contributors)))
       fail('MANUAL_CONTRIBUTOR_POLICY');

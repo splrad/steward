@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { automaticContributorTemplateDigest } from '../../core/src/conditional-release-notes.js';
 import { assertDeliveryArtifactMapping, assertDeliveryPath } from '../../core/src/delivery-config.js';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { artifactNames, parseReleaseDescriptor, type ReleaseUnit } from '../../core/src/release-descriptor.js';
@@ -110,6 +112,7 @@ export interface BuildPipelineRecord {
   runId: number; runAttempt: number; toolLocks: Record<string, string>;
   delivery: DeliveryConfig; deliverySha256: string; templateSha256: string;
   noteFormat?: 'conditional';
+  reviewedNotesTemplate?: { template: string; sourceSha: string };
   legacyNotesTemplateSourceSha?: string;
   legacyNotesTemplateControllerSha?: string;
   units: (Omit<PipelineSource['unit'], 'deliverySha256' | 'templateSha256'> & {
@@ -140,6 +143,7 @@ const releases = { type: 'array', minItems: 1, items: exactObject({ unitId: key,
 const recordAjv = new Ajv2020({ strict: false }).addSchema(deliverySchema);
 const buildRecordSchema = { ...exactObject(buildFields), properties: {
   ...buildFields, noteFormat: { const: 'conditional' }, legacyNotesTemplateSourceSha: sha, legacyNotesTemplateControllerSha: sha,
+  reviewedNotesTemplate: exactObject({ template: { type: 'string', minLength: 1, maxLength: 16000 }, sourceSha: sha }),
 } };
 const validateRecord = recordAjv.compile({ oneOf: [buildRecordSchema,
   exactObject({ schemaVersion: { const: 1 }, kind: { const: 'publish' }, build: buildRecordSchema, releases }),
@@ -158,6 +162,9 @@ export function parsePipelineRecord(input: unknown): PipelineRecord {
     if ((build.legacyNotesTemplateSourceSha && (build.noteFormat || build.legacyNotesTemplateSourceSha === build.sourceSha))
       || (build.legacyNotesTemplateControllerSha && !build.legacyNotesTemplateSourceSha))
       throw new Error('RELEASE_RECORD: legacy notes template source');
+    if (build.reviewedNotesTemplate && (build.noteFormat !== 'conditional'
+      || createHash('sha256').update(build.reviewedNotesTemplate.template).digest('hex') !== build.templateSha256))
+      throw new Error('RELEASE_RECORD: reviewed notes template');
     const { repositoryAuthors } = parseDeliveryConfig(build.delivery);
     build.delivery.repositoryAuthors = repositoryAuthors;
     if (build.buildRef !== `refs/heads/steward/build/${build.cycleId}`
@@ -177,7 +184,8 @@ export function parsePipelineRecord(input: unknown): PipelineRecord {
         if (jobs.has(producer.jobName)) throw new Error('RELEASE_RECORD: duplicate product job'); jobs.add(producer.jobName);
       }
       const selected = selectReleaseContributors(unit.contributors.map(person => ({ ...person, type: 'User' })),
-        repositoryAuthors, build.noteFormat === 'conditional' ? unit.contributors : undefined);
+        repositoryAuthors, build.templateSha256 === automaticContributorTemplateDigest ? 'github-authors'
+          : build.noteFormat === 'conditional' ? unit.contributors : undefined);
       if (JSON.stringify(selected.contributors) !== JSON.stringify(unit.contributors)) throw new Error('RELEASE_RECORD: frozen contributor identity');
     }
   }

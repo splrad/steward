@@ -41,8 +41,21 @@ const sectionByHeading = new Map<string, ConditionalSection>(
   Object.entries(conditionalHeadings).map(([key, value]) => [value, key as ConditionalSection]),
 );
 export const isConditionalTemplate = (template: string): boolean => template.includes('{{#requiredActions}}');
-export const isAdoptedOrganizationReleaseTemplate = async (template: string): Promise<boolean> =>
-  await sha256Hex(template) === '104ba109cfd13d3dca3b3ffb51d9d48eadae31fbc3c38c1ba517aceb94245231';
+const firstConditionalDigest = '104ba109cfd13d3dca3b3ffb51d9d48eadae31fbc3c38c1ba517aceb94245231';
+export const automaticContributorTemplateDigest = '120dc4498c5a8ab55e14caf222f0fce2dd09b366f072798c6d12a2db3945776a';
+export const usesAutomaticReleaseContributors = (template: string): boolean => template.includes('{{id}}');
+
+export async function isAdoptedOrganizationReleaseTemplate(template: string): Promise<boolean> {
+  const digest = await sha256Hex(template);
+  return digest === firstConditionalDigest || digest === automaticContributorTemplateDigest;
+}
+
+/** An already reviewed conditional note retains the exact format across template adoption. */
+export async function reviewedConditionalReleaseTemplate(current: string, reviewed?: string): Promise<string> {
+  if (reviewed && reviewed !== current && await sha256Hex(current) === automaticContributorTemplateDigest
+    && await sha256Hex(reviewed) === firstConditionalDigest) return reviewed;
+  return current;
+}
 
 const legacyOrganizationTemplates = new Set([
   '456bedbae6c57f772630a44153077d0b26fd44c340abb8ea2905d1d813b76711', // Steward 723f1583
@@ -258,7 +271,7 @@ const escapedFields: Record<string, readonly string[]> = {
   items: ['title', 'affectedUsers'],
   links: ['label'],
   example: ['language'],
-  contributors: ['profileUrl', 'avatarUrl', 'alt'],
+  contributors: ['profileUrl', 'avatarUrl', 'alt', 'login', 'id'],
 };
 const rawFields: Record<string, readonly string[]> = {
   root: ['sourceLink.url'],
@@ -293,6 +306,7 @@ export function renderConditionalNotes(template: string, notes: ConditionalNotes
     ...['profileUrl', 'avatarUrl', 'alt'].map(key => 'hasContributors.contributors.' + key),
     'sourceLink.label', 'sourceLink.url',
   ];
+  if (usesAutomaticReleaseContributors(template)) required.push('hasContributors.contributors.id', 'hasContributors.contributors.login');
   if (required.some(key => !used.has(key))) fail('conditional template omits a required field');
   httpsLink(sourceLink.url);
   const output = Mustache.render(template, {

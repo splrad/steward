@@ -94,7 +94,6 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   if (conditional) {
     await writeFile(join(directory, '.github/release-template.md.mustache'), compact ? 'Product override is ignored in schema v3.\n'
       : (await readFile('templates/repository/.github/release-template.md.mustache','utf8')).replace('width="48"',pinCase==='conditional-tampered'?'width="12"':'width="48"'));
-    await writeFile(join(directory, '.github/release-contributors.json'), JSON.stringify([7, 42, 44, 45, 46, 19864447].map(id => ({ id, evidence: 'Offline confirmation fixture' }))));
   }
   await git('add', '.'); await git('commit', '--signoff', '-m', 'feat: initial product');
   const commitAuthors = new Map<string, number>();
@@ -105,10 +104,18 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
       await git('add', 'code.txt'); await git('commit', '--signoff', '-m', 'fix: adjust product behavior');
       commitAuthors.set(await git('rev-parse', 'HEAD'), author);
     }
+    await git('switch', '-c', 'author-work');
+    await writeFile(join(directory, 'author-work.txt'), 'Independent contribution.\n');
+    await git('add', 'author-work.txt');
+    await git('commit', '-m', 'fix: preserve author work');
+    commitAuthors.set(await git('rev-parse', 'HEAD'), 42);
+    await git('switch', 'main');
+    await git('merge', '--no-ff', 'author-work');
+    commitAuthors.set(await git('rev-parse', 'HEAD'), 48);
   }
   const B = await git('rev-parse', 'HEAD');
   const actor = (id: number) => {
-    const login = ({7:'author',42:'contributor',43:'service',44:'owner',45:'committer-only',46:'robot[bot]',47:'unknown',19864447:'web-flow'} as Record<number,string>)[id]!;
+    const login = ({7:'author',42:'contributor',43:'service',44:'owner',45:'committer-only',46:'robot[bot]',47:'unknown',48:'merge-operator',19864447:'web-flow'} as Record<number,string>)[id]!;
     return { id, login, type: id === 46 ? 'Bot' : 'User', html_url: 'https://github.com/' + login, avatar_url: `https://avatars.githubusercontent.com/u/${id}` };
   };
   await git('init', '--bare', remote); await git('push', '--porcelain', remote, 'HEAD:refs/heads/main');
@@ -191,7 +198,8 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
       ['cat-file','blob',path.split('/').at(-1)!],{cwd:directory,env,encoding:'buffer',windowsHide:true})).stdout.toString('base64')};
     else if (/\/commits\/[a-f0-9]{40}$/.test(path)) {
       const sha=path.split('/').at(-1)!;
-      value={sha,author:actor(commitAuthors.get(sha)??42),committer:actor(conditional?45:7)};
+      const authorId=commitAuthors.get(sha)??42;
+      value={sha,author:authorId===47?null:actor(authorId),committer:actor(conditional?45:7)};
     }
     else if (path.startsWith('/users/')) {
       value=[7,42,43,44,45,46,47,19864447].map(actor).find(person=>path==='/users/'+person.login);
@@ -348,9 +356,11 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   if (conditional) {
     expect(comments[0].body).toContain('### 🐛 错误修复');
     expect(comments[0].body).toContain('width="48"');
+    expect(comments[0].body).toContain('<summary>贡献者 GitHub ID</summary>');
+    expect(comments[0].body).toContain('- contributor · `42`');
     expect(comments[0].body.split('github.com&#x2F;contributor')).toHaveLength(2);
     expect(comments[0].body).toContain('github.com&#x2F;owner');
-    expect(comments[0].body).not.toMatch(/committer-only|web-flow|&#x2F;robot|&#x2F;service|&#x2F;unknown|文档更新/);
+    expect(comments[0].body).not.toMatch(/committer-only|merge-operator|web-flow|&#x2F;robot|&#x2F;service|&#x2F;unknown|文档更新/);
   }
   pr.title = '人工修改标题'; pr.body = '人工修改正文'; pr.labels = [{ name: 'release:editing' }];
   expect(await nativeReleaseCandidate({ ...request, writeDirectory: join(root, 'edit-writes') }, options)).toMatchObject({ reason: 'EDITING', head: firstHead });
@@ -567,7 +577,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     expect(frozen).toContain(checksumUrl);
     build.delivery.units[0]!.channels=[{id:'github-release',required:true,location:'github',metadata:[]}];
     await expect(pipelineNotes(build, 'app', directory)).rejects.toThrow('acquisition link');
-    expect(frozen).not.toMatch(/committer-only|web-flow|&#x2F;robot|&#x2F;service|&#x2F;unknown/);
+    expect(frozen).not.toMatch(/committer-only|merge-operator|web-flow|&#x2F;robot|&#x2F;service|&#x2F;unknown/);
   }
   const tree = (await promisify(execFile)('git', ['ls-tree', '-r', '-z', archive.stateCommit], { cwd: directory, env, encoding: 'utf8', windowsHide: true })).stdout;
   const blobs = new Map(tree.split('\0').filter(Boolean).map(entry => {

@@ -2,7 +2,7 @@ import { renderCandidateNote, renderCandidateProjection } from '../../core/src/c
 export { renderCandidateNote };
 import { manualCandidateFacts, type ManualCandidate } from '../../core/src/manual-candidate.js';
 import { createHash } from 'node:crypto';
-import { candidateId, candidateCreationBody, selectReleaseContributors, type CandidateSnapshot, type ReleaseActor, type RepositoryAuthor } from '../../core/src/release-candidate.js';
+import { candidateId, candidateCreationBody, selectReleaseContributors, type CandidateSnapshot, type ReleaseActor, type RepositoryAuthor, type ReleaseContributorPolicy } from '../../core/src/release-candidate.js';
 import { assertRepositoryWrite, type CycleRecord, type RepositoryRecord } from '../../core/src/release-observation.js';
 import { mergeCandidate, prepareCandidateWrite, resumeCandidateWrite, candidateTreeMatches, type PreparedCandidateWrite } from './release-candidate-update.js';
 
@@ -22,7 +22,7 @@ export interface CandidateRuntime {
   workspace: string; temporaryRoot: string; repository: string; defaultBranch: string; appBotId: number; identity: { name: string; email: string };
   now(): string;
   source(): Promise<{ baseSha: string; authors: RepositoryAuthor[]; authorsDigest: string; noteTemplate?: string;
-    notesPaths?: Record<string,string>; confirmedHumans?: RepositoryAuthor[] }>;
+    notesPaths?: Record<string,string>; contributorPolicy?: ReleaseContributorPolicy }>;
   pullRequests(branch: string): Promise<CandidatePullRequest[]>;
   legacyCandidate(): Promise<CandidatePullRequest | null>;
   generation(baseSha: string): Promise<{ status: 'READY'; snapshot: CandidateSnapshot; title: string; body: string } | { status: 'UNCHANGED' | 'DRIFT' }>;
@@ -188,8 +188,8 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
       return declared ? (unit.notesPath ?? `.release-notes/${unit.id}.md`) !== declared : unit.notesPath !== undefined;
     }))
       throw Error('CANDIDATE_NOTE_TEMPLATE_DRIFT');
-    const projected = { ...frozen, contributors: selectReleaseContributors(frozen.actors, source.authors, source.confirmedHumans),
-      units: frozen.units.map(unit => ({ ...unit, contributors: selectReleaseContributors(unit.actors, source.authors, source.confirmedHumans) })) };
+    const projected = { ...frozen, contributors: selectReleaseContributors(frozen.actors, source.authors, source.contributorPolicy),
+      units: frozen.units.map(unit => ({ ...unit, contributors: selectReleaseContributors(unit.actors, source.authors, source.contributorPolicy) })) };
     if (JSON.stringify(projected) !== JSON.stringify(frozen)) { session.identity = projected; await save(); }
   }
   const statusComment = async (body: string, previewHead: string, currentHead: string) => {
@@ -252,7 +252,7 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
     return { status: 'READY', reason: 'CACHED_OBSERVATION', head: observed.head,projectionEvidence };
   }
   // Check the identity inputs before running upstream generation.
-  selectReleaseContributors([], source.authors, source.confirmedHumans);
+  selectReleaseContributors([], source.authors, source.contributorPolicy);
   const generation = await io.generation(source.baseSha);
   if (generation.status !== 'READY') return { status: 'WAIT', reason: generation.status };
   candidate.contentGenerationDigest = digest([generation.snapshot.sourceDigest, generation.snapshot.configDigest, source.authorsDigest]); await save();
@@ -263,9 +263,9 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   const previousIdentity = session.identity;
   session.identity = { authorsDigest: source.authorsDigest, sourceDigest: N.sourceDigest,
     ...(source.noteTemplate ? { noteTemplate: source.noteTemplate } : {}),
-    actors: content.actors, contributors: selectReleaseContributors(content.actors, source.authors, source.confirmedHumans),
+    actors: content.actors, contributors: selectReleaseContributors(content.actors, source.authors, source.contributorPolicy),
     units: N.units.map(unit => ({ id: unit.id, ...(source.notesPaths ? {notesPath:source.notesPaths[unit.id]!} : {}),
-      actors: content.unitActors[unit.id]!, contributors: selectReleaseContributors(content.unitActors[unit.id]!, source.authors, source.confirmedHumans) })) };
+      actors: content.unitActors[unit.id]!, contributors: selectReleaseContributors(content.unitActors[unit.id]!, source.authors, source.contributorPolicy) })) };
   const latestSource = await io.source();
   if (latestSource.baseSha !== source.baseSha || latestSource.authorsDigest !== source.authorsDigest) return { status: 'WAIT', reason: 'SOURCE_DRIFT' };
   observed = await current();

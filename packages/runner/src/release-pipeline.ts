@@ -24,7 +24,7 @@ import { decodeNormalizedDelivery,type NormalizedDeliveryEvidence } from '../../
 import { githubUnits, parseReleaseRecord, sameWorkflowDelivery, type CycleRecord, type RepositoryRecord, type WorkflowChannelReceipt, type WorkflowDeliveryReceipt } from '../../core/src/release-observation.js';
 import { decodeCandidateDocument, type CandidateArchiveChunk, type LegacyNotesTemplate } from '../../core/src/release-candidate-record.js';
 import { confirmedReleaseContributors, confirmedReleaseContributorsPath, selectReleaseContributors } from '../../core/src/release-candidate.js';
-import { isAdoptedOrganizationReleaseTemplate, isConditionalTemplate, isPreviouslyAdoptedReleaseTemplate } from '../../core/src/conditional-release-notes.js';
+import { isAdoptedOrganizationReleaseTemplate, isConditionalTemplate, isPreviouslyAdoptedReleaseTemplate, reviewedConditionalReleaseTemplate, usesAutomaticReleaseContributors } from '../../core/src/conditional-release-notes.js';
 import { nativeRunFact, NativeEvidenceReader, EvidenceReadError, type EvidenceContext, type EvidenceTransport, nativeEvidenceTransport } from './native-release-evidence.js';
 import { verifyExecutionSource, verifyDispatchWorkflow, channelTargets, channelTargetsDigest, verifyContinuationReleases, type ChannelTarget } from './release-run.js';
 import { parseDocument } from 'yaml';
@@ -496,17 +496,24 @@ export async function pipelineIdentity(input: ProductBuildInput, environment: No
   const sharedTemplate=await file(input.controllerDirectory,cycle.controllerSha,sharedReleaseTemplatePath);
   const currentTemplate=delivery.buildWorkflow===undefined?await source(productReleaseTemplatePath):
     await localGitSnapshot.file(input.sourceDirectory,cycle.sourceSha,productReleaseTemplatePath)??sharedTemplate;
+  const currentText = currentTemplate.toString('utf8');
+  const reviewed = await reviewedConditionalReleaseTemplate(currentText, session.identity.noteTemplate);
+  const reviewedNotesTemplate = reviewed !== currentText ? { template: reviewed, sourceSha: session.generated.baseSha } : undefined;
   const template=legacyNotesTemplate?await legacyNotesTemplateBytes(legacyNotesTemplate,currentTemplate,
-    localHistoricalNotesTemplate(input.sourceDirectory,controllerIo)):currentTemplate;
+    localHistoricalNotesTemplate(input.sourceDirectory,controllerIo)):Buffer.from(reviewed);
   const templateText = template.toString('utf8');
   const conditional = isConditionalTemplate(templateText);
-  const previous = !conditional && !template.equals(sharedTemplate)
-    && await isAdoptedOrganizationReleaseTemplate(sharedTemplate.toString('utf8')) && await isPreviouslyAdoptedReleaseTemplate(templateText);
-  if ((!template.equals(sharedTemplate) && !previous) || (conditional && !await isAdoptedOrganizationReleaseTemplate(templateText)))
+  const approvedConditional = conditional && await isAdoptedOrganizationReleaseTemplate(templateText);
+  const approvedAlternative = !template.equals(sharedTemplate)
+    && await isAdoptedOrganizationReleaseTemplate(sharedTemplate.toString('utf8'))
+    && (approvedConditional || await isPreviouslyAdoptedReleaseTemplate(templateText));
+  if ((!template.equals(sharedTemplate) && !approvedAlternative) || (conditional && !approvedConditional))
     fail('adopted notes template');
   if (session.identity.noteTemplate !== (conditional ? templateText : undefined)) fail('frozen candidate template');
-  const confirmations = conditional ? await localGitSnapshot.file(input.sourceDirectory, cycle.sourceSha, confirmedReleaseContributorsPath) : null;
-  const confirmedHumans = conditional ? confirmedReleaseContributors(confirmations?.toString('utf8') ?? null) : undefined;
+  const automatic = usesAutomaticReleaseContributors(templateText);
+  const confirmations = conditional && !automatic ? await localGitSnapshot.file(input.sourceDirectory,
+    reviewedNotesTemplate?.sourceSha ?? cycle.sourceSha, confirmedReleaseContributorsPath) : null;
+  const confirmedHumans = automatic ? 'github-authors' : conditional ? confirmedReleaseContributors(confirmations?.toString('utf8') ?? null) : undefined;
   const units: BuildPipelineRecord['units'] = [];
   for (const target of cycle.units) {
     const unit = delivery.units.find(unit => unit.id === target.id), frozen = session.generated.units.find((unit: any) => unit.id === target.id);
@@ -529,7 +536,7 @@ export async function pipelineIdentity(input: ProductBuildInput, environment: No
   if (!await stateRef()) return { status: 'UNKNOWN' as const, reason: 'STATE_SOURCE_MOVED' };
   const record = parsePipelineRecord({ schemaVersion: 1, kind: 'build', repositoryId, fullName, cycleId: cycle.id, requestKey: request.requestKey,
     sourceSha: cycle.sourceSha, controllerSha: cycle.controllerSha, buildRef: environment.GITHUB_REF, runId, runAttempt, toolLocks,
-    delivery, ...(conditional ? {noteFormat: 'conditional'} : {}),
+    delivery, ...(conditional ? {noteFormat: 'conditional'} : {}), ...(reviewedNotesTemplate ? {reviewedNotesTemplate} : {}),
     ...(legacyNotesTemplate ? {
       legacyNotesTemplateSourceSha:legacyNotesTemplate.sourceSha,
       ...(legacyNotesTemplate.controllerSha ? {legacyNotesTemplateControllerSha:legacyNotesTemplate.controllerSha} : {}),
@@ -548,6 +555,11 @@ async function pipelineNotesTemplate(record: BuildPipelineRecord, sourceDirector
       sourceSha:record.legacyNotesTemplateSourceSha,sha256:record.templateSha256,
       ...(record.legacyNotesTemplateControllerSha ? {controllerSha:record.legacyNotesTemplateControllerSha} : {}),
     },template,localHistoricalNotesTemplate(sourceDirectory,controllerIo));
+  if (record.reviewedNotesTemplate && template) {
+    const reviewed = await reviewedConditionalReleaseTemplate(template.toString('utf8'), record.reviewedNotesTemplate.template);
+    if (reviewed !== record.reviewedNotesTemplate.template) fail('reviewed notes template source');
+    template = Buffer.from(reviewed);
+  }
   if (!template || hash(template) !== record.templateSha256) fail('notes template source');
   const text = template.toString('utf8');
   if (isConditionalTemplate(text) !== (record.noteFormat === 'conditional')) fail('notes template format');
@@ -574,8 +586,8 @@ async function renderPipelineNotes(record: BuildPipelineRecord, unitId: string, 
   const changelogFile = delivery.path === '.' ? changelogPath : `${delivery.path}/${changelogPath}`;
   const changelog = await read(changelogFile);
   const publicNames=new Set(channelFiles(delivery,'github-release',unit.assets.map(asset=>({id:asset.id,path:asset.name}))));
-  const confirmationBytes = isConditionalTemplate(template)
-    ? await localGitSnapshot.file(sourceDirectory, record.sourceSha, confirmedReleaseContributorsPath) : null;
+  const confirmationBytes = isConditionalTemplate(template) && !usesAutomaticReleaseContributors(template)
+    ? await localGitSnapshot.file(sourceDirectory, record.reviewedNotesTemplate?.sourceSha ?? record.sourceSha, confirmedReleaseContributorsPath) : null;
   const { sourceLinkLabel, sourceUrl, commitUrl } = committedVersionNotes(changelog, unit.version, record.fullName, record.sourceSha, unit.tag,
     template.includes('{{controllerSha}}') ? undefined : changelogFile);
   return renderFrozenReleaseNotes(template, { repository: record.fullName, unitId, version: unit.version, tag: unit.tag, sourceSha: record.sourceSha,
@@ -1110,11 +1122,11 @@ type PublicationUnit={unitId:string;directory:string;manifest:ProductReleaseMani
 async function prepareWorkflowPublication(options:{
   context:EvidenceContext;delivery:DeliveryConfig;units:CycleRecord['units'];versions:Map<string,string>;releasePlease:any;
   reader:NativeEvidenceReader;pages:NativePages;source:(path:string)=>Promise<string>;template:string;
-  confirmations?: string | null;
+  confirmationsAt: (sha: string) => Promise<string | null>;
   root:string;controllerDirectory:string;token:string;history:{path:string;commit:string;value:unknown}[];
   handoff:WorkflowHandoff;unavailable?:(unitId:string)=>void;reject?:(unitId:string,reason:string)=>void;
 },download:typeof downloadWorkflowArtifact) {
-  const {context,delivery,units,versions,releasePlease,reader,pages,source,template,root,controllerDirectory,token,history,handoff}=options;
+  const {context,delivery,units,versions,releasePlease,reader,pages,source,root,controllerDirectory,token,history,handoff}=options;
   const {cycle}=context,requests=cycle.dispatches.filter(dispatch=>dispatch.purpose==='build');
   if(requests.length!==1||requests[0]!.canonicalRunId===null)
     return {status:'WAIT' as const,reason:'BUILD_BINDING_REQUIRED',publishInvoked:false as const};
@@ -1129,9 +1141,13 @@ async function prepareWorkflowPublication(options:{
   const merged=await decodeCandidateDocument(mergedCandidateChunks(history,cycle.id));
   if(merged.cycleId!==cycle.id||merged.sourceSha!==cycle.sourceSha||merged.pull.number!==cycle.prNumber
     ||merged.session.identity?.authorsDigest!==hash(Buffer.from(JSON.stringify(delivery.repositoryAuthors))))fail('workflow delivery reviewed source');
+  const template = await reviewedConditionalReleaseTemplate(options.template, merged.session.identity.noteTemplate);
   const conditional = isConditionalTemplate(template);
   if (merged.session.identity.noteTemplate !== (conditional ? template : undefined)) fail('frozen candidate template');
-  const confirmedHumans = conditional ? confirmedReleaseContributors(options.confirmations ?? null) : undefined;
+  const automatic = usesAutomaticReleaseContributors(template);
+  const confirmations = conditional && !automatic
+    ? await options.confirmationsAt(template === options.template ? cycle.sourceSha : merged.session.generated.baseSha) : null;
+  const confirmedHumans = automatic ? 'github-authors' : conditional ? confirmedReleaseContributors(confirmations) : undefined;
   const records:PublicationUnit[]=[];
   for(const target of units) {
     const unit=delivery.units.find(unit=>unit.id===target.id);
@@ -1183,7 +1199,7 @@ async function prepareWorkflowPublication(options:{
     const publicBody=renderFrozenReleaseNotes(template,{repository:context.repository,unitId:unit.id,version:target.version,tag:target.tag,
       sourceSha:cycle.sourceSha,controllerSha:cycle.controllerSha,displayName:unit.displayName,notes:await source(unit.notesPath),...links,
       contributors:contributors.contributors,repositoryAuthors:delivery.repositoryAuthors,
-      ...(confirmedHumans ? {confirmedHumans} : {}),channels:[],
+      ...(confirmedHumans && confirmedHumans !== 'github-authors' ? {confirmedHumans} : {}),channels:[],
       assets:artifacts.map(file=>({id:file.id,name:file.path,build:'delivery'}))});
     records.push({unitId:unit.id,directory,manifest,delivery:unit,build:null,archive:null,githubDelivery:nativeReceipt,publicBody});
   }
@@ -1230,6 +1246,7 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
       return sharedTemplate();
     });
   let legacyNotesTemplate: LegacyNotesTemplate | undefined;
+  let reviewedNotesTemplate: string | undefined;
   if(delivery.schemaVersion!==3&&isConditionalTemplate(currentTemplate.bytes.toString('utf8'))) {
     const chunks=mergedCandidateChunks(history,cycle.id);
     if(chunks.length) {
@@ -1237,6 +1254,7 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
       if(merged.cycleId!==cycle.id||merged.sourceSha!==cycle.sourceSha||merged.pull.number!==cycle.prNumber)
         fail('candidate identity archive');
       legacyNotesTemplate=merged.legacyNotesTemplate;
+      reviewedNotesTemplate=merged.session.identity.noteTemplate;
     }
   }
   const previousTemplate = historicalNotesTemplate(async (sha, path) => {
@@ -1247,7 +1265,8 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
       throw error;
     }
   }, controllerIo);
-  const templateBytes=legacyNotesTemplate?await legacyNotesTemplateBytes(legacyNotesTemplate,currentTemplate.bytes,previousTemplate):currentTemplate.bytes;
+  const templateBytes=legacyNotesTemplate?await legacyNotesTemplateBytes(legacyNotesTemplate,currentTemplate.bytes,previousTemplate)
+    :Buffer.from(await reviewedConditionalReleaseTemplate(currentTemplate.bytes.toString('utf8'), reviewedNotesTemplate));
   if (delivery.buildWorkflow !== cycle.buildWorkflow) fail('frozen delivery workflow');
   const workflow = await source(context.repository, cycle.sourceSha, delivery.buildWorkflow ?? defaultBuildWorkflow);
   const document = parseDocument(workflow.bytes.toString('utf8'), { uniqueKeys: true }); if (document.errors.length) fail('source workflow');
@@ -1263,12 +1282,12 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
   const conditional = isConditionalTemplate(notesTemplate);
   if (conditional && !await isAdoptedOrganizationReleaseTemplate(notesTemplate)) fail('adopted notes template');
   if(delivery.schemaVersion===3) {
-    const confirmations = conditional ? await source(context.repository, cycle.sourceSha, confirmedReleaseContributorsPath)
+    const confirmationsAt = (sha: string) => source(context.repository, sha, confirmedReleaseContributorsPath)
       .then(file => file.bytes.toString('utf8')).catch(error => {
         if (error instanceof EvidenceReadError && error.status === 404) return null;
         throw error;
-      }) : null;
-    return prepareWorkflowPublication({context,delivery,units,versions:projection.versions,releasePlease:original.releasePlease,reader,pages,template:notesTemplate,confirmations,
+      });
+    return prepareWorkflowPublication({context,delivery,units,versions:projection.versions,releasePlease:original.releasePlease,reader,pages,template:notesTemplate,confirmationsAt,
       source:async path=>{
         try {return (await source(context.repository,cycle.sourceSha,path)).bytes.toString('utf8');}
         catch(error) {
