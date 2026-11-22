@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "repositoryId": 1296724484,
+  "pullRequestNumber": 451,
+  "currentHead": "ee431108fe04c7fcbbd932fbdf9c06748a9880a5",
+  "configVersion": "quality-native-comments-v1",
+  "heads": {
+    "ee431108fe04c7fcbbd932fbdf9c06748a9880a5": {
+      "sourceSetDigest": "20eea3945562fd1664bfe54e0f845ca403048bcf8c640f196c168b74e812efaa",
+      "sources": [
+        {
+          "sourceCommentId": "review-comment:4659355014",
+          "sourceCommit": "4a9304f0653ad14607eb355e7174c53bedd54ada",
+          "sourceUrl": "https://github.com/splrad/steward/pull/451#discussion_r4659355014",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Unused loop iteration variable\n\nFor loop variable character is not used in the loop body.\n\n---\n\nGeneral fix: when a loop iteration variable is intentionally unused, replace the loop form so no unused binding is created, while preserving semantics.</p>\n<p>Best fix here: in <code>scripts/candidate-homepage.mjs</code>, inside <code>fitsPullBody</code>, change the <code>for (const character of body)</code> loop to <code>for (const _ of body)</code> (or equivalent) to indicate intentional discard and satisfy static analysis without changing logic. This keeps Unicode-aware iteration over code points and preserves the early return when exceeding <code>maxBodyCharacters</code>.</p>\n<p>No new imports, methods, or dependencies are needed.",
+          "updatedAt": "2026-11-22T18:20:30Z"
+        },
+        {
+          "sourceCommentId": "review-comment:4659355022",
+          "sourceCommit": "4a9304f0653ad14607eb355e7174c53bedd54ada",
+          "sourceUrl": "https://github.com/splrad/steward/pull/451#discussion_r4659355022",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Unused variable, import, function or class\n\nUnused variable character.\n\n---\n\nTo fix this without changing functionality, keep counting Unicode code points via string iteration but remove the unused loop variable binding.</p>\n<p>Best change in <code>scripts/candidate-homepage.mjs</code>:</p>\n<ul>\n<li>In <code>fitsPullBody</code>, replace:\n<ul>\n<li><code>for (const character of body) { ... }</code></li>\n</ul>\n</li>\n<li>With:\n<ul>\n<li><code>for (const _ of body) { ... }</code></li>\n</ul>\n</li>\n</ul>\n<p>Using <code>_</code> is a conventional placeholder for intentionally unused bindings, satisfies static analysis in typical configurations, and preserves exact behavior and performance characteristics of the current logic.</p>\n<p>No imports, helper methods, or additional definitions are needed.",
+          "updatedAt": "2026-11-22T18:20:30Z"
+        }
+      ],
+      "keys": [
+        "2ee0368f6223475114ff50ee659adc25d2bc1f2c8a86feef45f20a511cb39d52",
+        "67ce46f3a19f130bac47d64fc02fee3f4236a7f1f0825cfb80cbcb6d18811cdc"
+      ],
+      "checkId": null,
+      "externalId": "splrad-quality:1296724484:451:ee431108fe04c7fcbbd932fbdf9c06748a9880a5",
+      "observedAt": "2026-11-22T18:33:47.828Z"
+    }
+  },
+  "entries": {
+    "2ee0368f6223475114ff50ee659adc25d2bc1f2c8a86feef45f20a511cb39d52": {
+      "key": "2ee0368f6223475114ff50ee659adc25d2bc1f2c8a86feef45f20a511cb39d52",
+      "segment": {
+        "sourceCommentId": "review-comment:4659355014",
+        "sourceCommit": "4a9304f0653ad14607eb355e7174c53bedd54ada",
+        "sourceUrl": "https://github.com/splrad/steward/pull/451#discussion_r4659355014",
+        "severity": "原文未说明",
+        "bodyMarkdown": "## Unused loop iteration variable\n\nFor loop variable character is not used in the loop body.\n\n---\n\nGeneral fix: when a loop iteration variable is intentionally unused, replace the loop form so no unused binding is created, while preserving semantics.</p>\n<p>Best fix here: in <code>scripts/candidate-homepage.mjs</code>, inside <code>fitsPullBody</code>, change the <code>for (const character of body)</code> loop to <code>for (const _ of body)</code> (or equivalent) to indicate intentional discard and satisfy static analysis without changing logic. This keeps Unicode-aware iteration over code points and preserves the early return when exceeding <code>maxBodyCharacters</code>.</p>\n<p>No new imports, methods, or dependencies are needed.",
+        "segmentIndex": 0,
+        "originalIdentifiers": [
+          "<code>scripts/candidate-homepage.mjs</code>",
+          "<code>fitsPullBody</code>",
+          "<code>for (const character of body)</code>",
+          "<code>for (const _ of body)</code>",
+          "<code>maxBodyCharacters</code>",
+          "scripts/candidate-homepage.mjs"
+        ]
+      },
+      "configVersion": "quality-native-comments-v1",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    },
+    "67ce46f3a19f130bac47d64fc02fee3f4236a7f1f0825cfb80cbcb6d18811cdc": {
+      "key": "67ce46f3a19f130bac47d64fc02fee3f4236a7f1f0825cfb80cbcb6d18811cdc",
+      "segment": {
+        "sourceCommentId": "review-comment:4659355022",
+        "sourceCommit": "4a9304f0653ad14607eb355e7174c53bedd54ada",
+        "sourceUrl": "https://github.com/splrad/steward/pull/451#discussion_r4659355022",
+        "severity": "原文未说明",
+        "bodyMarkdown": "## Unused variable, import, function or class\n\nUnused variable character.\n\n---\n\nTo fix this without changing functionality, keep counting Unicode code points via string iteration but remove the unused loop variable binding.</p>\n<p>Best change in <code>scripts/candidate-homepage.mjs</code>:</p>\n<ul>\n<li>In <code>fitsPullBody</code>, replace:\n<ul>\n<li><code>for (const character of body) { ... }</code></li>\n</ul>\n</li>\n<li>With:\n<ul>\n<li><code>for (const _ of body) { ... }</code></li>\n</ul>\n</li>\n</ul>\n<p>Using <code>_</code> is a conventional placeholder for intentionally unused bindings, satisfies static analysis in typical configurations, and preserves exact behavior and performance characteristics of the current logic.</p>\n<p>No imports, helper methods, or additional definitions are needed.",
+        "segmentIndex": 0,
+        "originalIdentifiers": [
+          "<code>scripts/candidate-homepage.mjs</code>",
+          "<code>fitsPullBody</code>",
+          "<code>for (const character of body) { ... }</code>",
+          "<code>for (const _ of body) { ... }</code>",
+          "<code>_</code>",
+          "scripts/candidate-homepage.mjs"
+        ]
+      },
+      "configVersion": "quality-native-comments-v1",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    }
+  },
+  "cursor": 0
+}
