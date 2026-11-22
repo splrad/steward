@@ -66,7 +66,7 @@ export function prepareGovernance(snapshot) {
     { actor_id: team.id, actor_type: 'Team', bypass_mode: 'pull_request' },
   ]);
   independent.rules = [approval(1, false)];
-  const state = ['refs/heads/steward/release-state', 'refs/heads/steward/automation-health'];
+  const state = ['refs/heads/steward/release-state'];
   const governance = ['refs/heads/steward/governance-state'];
   const build = ['refs/heads/steward/build/*'];
   const pr = ['refs/heads/steward/managed-sync', 'refs/heads/steward/release-candidate'];

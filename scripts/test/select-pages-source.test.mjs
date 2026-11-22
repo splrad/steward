@@ -5,16 +5,17 @@ import {createHash} from 'node:crypto';
 import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {NativeEvidenceReader,sealProductArtifacts} from '../../packages/runner/dist/index.js';
+import {NativeEvidenceReader,sealProductArtifacts,mergedBuildCycle} from '../../packages/runner/dist/index.js';
 import {desiredPagesSource,selectPagesSource,selectWorkflowPagesSource,admitPagesEvent,pagesInputDigest,pagesDispatchInputs,pagesRunName,verifyPagesRelease} from '../select-pages-source.mjs';
 import {currentPagesSource} from '../pages-runtime.mjs';
 
 const S='a'.repeat(40),R='b'.repeat(40),P='c'.repeat(40),hash=b=>createHash('sha256').update(b).digest('hex');
-async function fixture(t) {
+const gitBlob=bytes=>createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+async function fixture(t,deliverySchemaVersion=1) {
   const root=await mkdtemp(join(tmpdir(),'pages-source-test-'));t.after(()=>rm(root,{recursive:true,force:true}));
   const state={head:R,corrupt:false,ref:S,changed:false,workflowAtSource:true};
   const repo={id:10,full_name:'fixture/product',default_branch:'trunk',archived:false,disabled:false,has_pages:true,private:false};
-  const delivery=Buffer.from(JSON.stringify({schemaVersion:1,repositoryAuthors:[{id:7,evidence:'fixture author'}],units:[{id:'app',path:'.',notesPath:'.release-notes/app.md',
+  const delivery=Buffer.from(JSON.stringify({schemaVersion:deliverySchemaVersion,repositoryAuthors:[{id:7,evidence:'fixture author'}],units:[{id:'app',path:'.',notesPath:'.release-notes/app.md',
     assets:[{id:'app',name:'app.bin',mediaType:'application/octet-stream'}],channels:[]}]}));
   const base={schemaVersion:3,repositoryId:10,fullName:repo.full_name,cycleId:'pr-2-'+S,requestKey:'e'.repeat(64),unitId:'app',version:'1.2.3',
     packageVersion:'1.2.3',tag:'v1.2.3',sourceSha:S,controllerSha:P,buildRef:'refs/heads/steward/build/pr-2-'+S,
@@ -30,7 +31,7 @@ async function fixture(t) {
   for(const [i,name] of names.entries()){const b=await readFile(join(root,name));bytes.set(200+i,b);assets.push({id:200+i,name,size:b.length,state:'uploaded',digest:'sha256:'+hash(b)});}
   const release={id:20,author:{id:42},draft:false,prerelease:false,immutable:true,published_at:'2026-10-30T01:00:00Z',
     tag_name:'v1.2.3',target_commitish:S,body:(await readFile(join(root,'release-notes.md'))).toString(),html_url:'https://github.com/fixture/product/releases/tag/v1.2.3'};
-  const releases=[release],calls=[],contentReads=[];
+  const releases=[release],calls=[],contentReads=[],releaseAssets=new Map(),cycleFiles=new Map();
   async function readContent(reader,path,ref) {
     contentReads.push([path,ref]);
     if(path==='.github/delivery.json')return delivery;
@@ -38,15 +39,26 @@ async function fixture(t) {
     if(path==='.github/workflows/pages.yml'&&(state.workflowAtSource||ref!==S))return Buffer.from('name: Pages\n');
     throw Error('missing content');
   }
-  const io={async request(method,path){
+  const io={anonymous:()=>io,async request(method,path){
     calls.push([method,path]);assert.equal(method,'GET');
     const endpoint=path.replace('/repos/fixture/product','').split('?')[0];let value;
     if(!endpoint)value=repo;
     else if(endpoint==='/git/ref/heads/trunk')value={ref:'refs/heads/trunk',object:{type:'commit',sha:state.head}};
+    else if(endpoint==='/git/ref/heads/steward/release-state') {
+      if(!state.releaseState)return {status:404,headers:new Headers(),bytes:Buffer.from('{}')};
+      value={ref:'refs/heads/steward/release-state',object:{type:'commit',sha:state.releaseState}};
+    }
+    else if(endpoint.startsWith('/commits/'))value={sha:releases.find(r=>r.tag_name===endpoint.slice(9))?.target_commitish};
+    else if(endpoint==='/git/trees/'+state.releaseState)value={truncated:false,
+      tree:[...cycleFiles].map(([path,bytes])=>({path,sha:gitBlob(bytes),mode:'100644',type:'blob'}))};
+    else if(endpoint.startsWith('/contents/cycles/')) {
+      const path=endpoint.slice(10),bytes=cycleFiles.get(path);
+      value={type:'file',path,sha:gitBlob(bytes),encoding:'base64',size:bytes.length,content:bytes.toString('base64')};
+    }
     else if(endpoint==='/git/ref/tags/v1.2.3')value={ref:'refs/tags/v1.2.3',object:{type:'commit',sha:state.ref}};
     else if(endpoint==='/releases')value=releases;
     else if(/^\/releases\/\d+$/.test(endpoint))value=releases.find(r=>r.id===Number(endpoint.split('/').at(-1)));
-    else if(/^\/releases\/\d+\/assets$/.test(endpoint))value=assets;
+    else if(/^\/releases\/\d+\/assets$/.test(endpoint))value=releaseAssets.get(Number(endpoint.split('/')[2]))??assets;
     else if(endpoint.startsWith('/releases/assets/'))return {status:200,headers:new Headers(),bytes:bytes.get(Number(endpoint.split('/').at(-1)))};
     else throw Error('unexpected '+path);
     return {status:200,headers:new Headers(),bytes:Buffer.from(JSON.stringify(value))};
@@ -68,7 +80,7 @@ async function fixture(t) {
   const options={reader,repositoryId:repo.id,mode:'release',unitId:'app',controllerSha:P,appBotId:42};
   const ports={readContent,verifyRelease:args=>verifyPagesRelease(args,{gh,download})};
   const event={name:'release',repositoryId:repo.id,repository:repo.full_name,ref:'refs/tags/v1.2.3',sha:S,payload:{action:'published',release:{id:20}}};
-  return {options,ports,event,state,repo,release,releases,manifest,bytes,assets,calls,contentReads};
+  return {options,ports,event,state,repo,release,releases,manifest,bytes,assets,calls,contentReads,releaseAssets,cycleFiles};
 }
 test('disabled site performs no native source lookup',async t=>{
   const f=await fixture(t);assert.equal((await desiredPagesSource({...f.options,mode:''},f.ports)).status,'DISABLED');assert.equal(f.calls.length,0);
@@ -95,6 +107,103 @@ test('formal Release retains S after main advances; native final-byte verifier i
   assert.equal(result.status,'READY');assert.equal(result.source.sourceSha,S);assert.equal(result.source.releaseId,20);
   assert.ok(f.contentReads.some(([p,s])=>p==='release-please-config.json'&&s===S));
   assert.ok(f.calls.some(c=>c[0]==='gh'&&c[1]==='attestation'));assert.ok(f.calls.some(c=>c[0]==='gh'&&c[2]==='verify-asset'));
+});
+for(const productFile of [false,true])test('formal release Pages uses frozen workflow bytes with a product manifest='+productFile,async t=>{
+  const f=await fixture(t),delivery=Buffer.from(JSON.stringify({schemaVersion:3,repositoryAuthors:[{id:7,evidence:'fixture author'}]}));
+  const settings=Buffer.from(JSON.stringify({'include-component-in-tag':false,packages:{'.':{component:'app'}}}));
+  f.assets.splice(1);
+  if(productFile) {
+    const bytes=Buffer.from('{"version":"1.2.3","application":"custom"}');
+    f.assets.push({id:201,name:'artifact-manifest.json',size:bytes.length,state:'uploaded',digest:'sha256:'+hash(bytes)});
+    f.bytes.set(201,bytes);
+  }
+  const stateSha='a'.repeat(40),blob=createHash('sha1').update('blob '+delivery.length+'\0').update(delivery).digest('hex');
+  f.state.releaseState=stateSha;
+  const unit={id:'app',version:'1.2.3',tag:f.release.tag_name,releaseId:f.release.id,
+    githubDelivery:{runId:111,attempt:1,artifactId:114,digest:'sha256:'+hash('archive')},
+    manifestDigest:hash('private manifest'),notesDigest:hash(f.release.body),
+    assets:f.assets.map(asset=>({id:'file-'+asset.id,path:asset.name,size:asset.size,sha256:hash(f.bytes.get(asset.id))}))};
+  const cycle={id:'pr-2-'+S,sourceSha:S,deliveryConfigSha:blob,workflowDelivery:true,units:[unit]};
+  const ports={...f.ports,readCycle:async()=>({stateSha,cycle,unit}),
+    readContent:(reader,path,ref)=>path==='.github/delivery.json'?delivery:path==='release-please-config.json'?settings:f.ports.readContent(reader,path,ref),
+    verifyRelease:()=>assert.fail('uses the frozen publication facts')};
+  const result=await selectPagesSource(f.options,f.event,ports);
+  assert.equal(result.status,'READY');assert.equal(result.source.manifestDigest,unit.manifestDigest);
+  assert.ok(f.calls.some(([,path])=>path.endsWith('/releases/assets/200')));
+  f.bytes.set(200,Buffer.from('bad'));
+  await assert.rejects(selectPagesSource(f.options,f.event,ports),/formal release bytes/);
+});
+test('Pages skips a different unit’s formal workflow delivery without parsing its own manifest as history',async t=>{
+  const f=await fixture(t);
+  const delivery={schemaVersion:3,repositoryAuthors:[{id:7,evidence:'fixture author'}]};
+  const settings={'include-component-in-tag':false,packages:{'.':{component:'app'},
+    'packages/sdk':{component:'sdk','include-component-in-tag':true}}};
+  const entries=[{id:'app',path:'.',version:'1.2.3',tag:f.release.tag_name},
+    {id:'sdk',path:'packages/sdk',version:'1.2.3',tag:'sdk-v1.2.3'}];
+  const workflow={jobs:Object.fromEntries(entries.map(({id})=>[id,{name:'delivery/'+id,steps:[{
+    id:'upload-github-release',name:'Upload GitHub release delivery',uses:'actions/upload-artifact@'+'a'.repeat(40),
+    with:{name:'delivery-github-release-${{ github.repository_id }}-'+id+'-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}',
+      path:'dist/*'}
+  }]}]))};
+  const deliveryBytes=Buffer.from(JSON.stringify(delivery));
+  const cycle=mergedBuildCycle({prNumber:2,sourceSha:S,sourceTree:S,reviewedTree:S,controllerSha:P,
+    deliveryBlobSha:gitBlob(deliveryBytes),delivery,releasePlease:settings,workflow:Buffer.from(JSON.stringify(workflow)),units:entries});
+  const operationKey=hash('dispatch operation');
+  cycle.dispatches.push({purpose:'build',workflowId:8,buildWorkflow:cycle.buildWorkflow,ref:'steward/build/'+cycle.id,sourceSha:S,
+    executionSha:S,sentAt:'2026-10-30T00:50:00Z',searchWindows:[],canonicalRunId:111,
+    nativeResponseEvidencePath:'evidence/build-111.json',continuationOfRunId:null,retryLimitEvidencePath:null,
+    operationKey,requestKey:hash('dispatch request'),inputDigest:hash('dispatch inputs'),targetKey:'build app and sdk',
+    inputs:{cycle_id:cycle.id,operation_key:operationKey,source_sha:S,controller_sha:P}});
+
+  f.state.releaseState=R;
+  f.assets.splice(1);
+  const sdk={...f.release,id:21,tag_name:entries[1].tag,published_at:'2026-10-30T02:00:00Z'};
+  const productManifest=Buffer.from('{"name":"SDK metadata","version":"1.2.3"}');
+  f.bytes.set(250,productManifest);
+  f.releaseAssets.set(sdk.id,[{id:250,name:'artifact-manifest.json',size:productManifest.length,state:'uploaded',
+    digest:'sha256:'+hash(productManifest)}]);
+  f.releases.unshift(sdk);
+  for(const [index,release] of [f.release,sdk].entries()) {
+    Object.assign(cycle.units[index],{releaseId:release.id,manifestDigest:hash('seal '+index),notesDigest:hash(release.body),
+      assets:(f.releaseAssets.get(release.id)??f.assets).map(asset=>({id:'file-'+asset.id,path:asset.name,
+        size:asset.size,sha256:hash(f.bytes.get(asset.id))})),
+      githubDelivery:{runId:111,attempt:1,artifactId:114+index,digest:'sha256:'+hash('archive '+index)}});
+  }
+  f.cycleFiles.set('cycles/'+cycle.id+'.json',Buffer.from(JSON.stringify(cycle)));
+  const ports={...f.ports,readContent:(reader,path,ref)=>path==='.github/delivery.json'?deliveryBytes:
+    path==='release-please-config.json'?Buffer.from(JSON.stringify(settings)):f.ports.readContent(reader,path,ref)};
+  const result=await selectPagesSource(f.options,f.event,ports);
+  assert.equal(result.status,'READY');
+  assert.equal(result.source.releaseId,f.release.id);
+  assert.ok(f.calls.some(([,path])=>path.includes('/commits/'+sdk.tag_name)));
+  assert.ok(f.calls.every(([,path])=>!path.includes('/releases/'+sdk.id+'/assets')));
+
+  delete cycle.units[1].githubDelivery;
+  const cyclePath='cycles/'+cycle.id+'.json';
+  f.cycleFiles.set(cyclePath,Buffer.from(JSON.stringify(cycle)));
+  assert.equal((await selectPagesSource(f.options,f.event,ports)).status,'READY');
+
+  const target=cycle.units[0];
+  for(const missing of ['release-id','artifact-id','receipt']) {
+    const changed=structuredClone(cycle);
+    if(missing==='release-id')changed.units[0].releaseId=null;
+    if(missing==='artifact-id')delete changed.units[0].githubDelivery.artifactId;
+    if(missing==='receipt')delete changed.units[0].githubDelivery;
+    f.cycleFiles.set(cyclePath,Buffer.from(JSON.stringify(changed)));
+    f.calls.length=0;
+    await assert.rejects(selectPagesSource(f.options,f.event,ports),missing==='artifact-id'?/invalid cycle record/:/PAGES_RELEASE_STATE/);
+    assert.ok(f.calls.every(([,path])=>!path.includes('/releases/'+target.releaseId+'/assets')));
+  }
+});
+for(const version of [1,2])test('Pages retains delivery v'+version+' when the default branch already uses workflow delivery',async t=>{
+  const f=await fixture(t,version);
+  const compact=Buffer.from(JSON.stringify({schemaVersion:3,repositoryAuthors:[{id:7,evidence:'fixture author'}]}));
+  const settings=Buffer.from(JSON.stringify({'include-component-in-tag':false,packages:{'.':{component:'app'}}}));
+  const ports={...f.ports,readContent:(reader,path,ref)=>path==='release-please-config.json'?settings:
+    path==='.github/delivery.json'&&ref===R?compact:f.ports.readContent(reader,path,ref)};
+  assert.equal((await selectPagesSource(f.options,f.event,ports)).status,'READY');
+  await assert.rejects(selectPagesSource(f.options,f.event,{...ports,readContent:(reader,path,ref)=>
+    path==='.github/delivery.json'?compact:ports.readContent(reader,path,ref)}),/PAGES_RELEASE_STATE/);
 });
 test('wired release mode uses the workflow pin at S even when main and coordinator advanced',async t=>{
   const f=await fixture(t),yaml=await readFile(new URL('../../templates/release/pages.yml',import.meta.url));

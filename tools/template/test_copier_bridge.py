@@ -113,7 +113,9 @@ class CopierTests(unittest.TestCase):
         old_answers = yaml.safe_load((self.product / '.copier-answers.yml').read_text())
         self.assertEqual(old_answers['_src_path'], bridge.SOURCE)
         def change(template):
-            p = template / 'AGENTS.md'; p.write_text(p.read_text(encoding='utf-8') + '\nShared second version.\n', encoding='utf-8')
+            p = template / 'AGENTS.md'
+            public, section = bridge.review_rules_sections(p.read_bytes())
+            p.write_bytes(public + b'\nShared second version.\n' + section)
         new = self.next_version(change)
         result = bridge.render(self.central, self.product, new, 'update')
         self.assertIn('AGENTS.md', result['paths'])
@@ -122,6 +124,55 @@ class CopierTests(unittest.TestCase):
             self.assertEqual((self.product / path).read_text(encoding='utf-8'), text)
         self.commit(self.product, 'Adopt second template')
         self.assertEqual(bridge.render(self.central, self.product, new, 'update')['paths'], [])
+
+    def test_upgrade_migrates_legacy_public_file_and_preserves_a_new_repository_section(self):
+        template = self.central / bridge.REVIEW_RULES_SOURCE
+        public, empty = bridge.review_rules_sections(template.read_bytes())
+        self.assertEqual(empty, bridge.REVIEW_RULES_EMPTY)
+        self.old = self.next_version(lambda _: template.write_bytes(public))
+        self.copy_adopt()
+        path = self.product / bridge.REVIEW_RULES_PATH
+        self.assertEqual(path.read_bytes(), public)
+        template.write_bytes(public + empty)
+        marked = self.commit(self.central, 'Add the empty repository rules section')
+        self.git(self.central, 'tag', 'v3.0.0')
+        bridge.render(self.central, self.product, marked, 'update')
+        self.assertEqual(path.read_bytes(), public + empty)
+        rules = bridge.REVIEW_RULES_START + '\n### 仓级审查\n\n- 保留 Unicode、标点和原始缩进。\n  Continued.\n'.encode() + bridge.REVIEW_RULES_FINISH
+        path.write_bytes(public + rules)
+        self.commit(self.product, 'Adopt empty markers and review a repository rule')
+        new_public = public + b'\nLast public rule changes here.\n'
+        template.write_bytes(new_public + empty)
+        upgraded = self.commit(self.central, 'Update the public text adjacent to the markers')
+        self.git(self.central, 'tag', 'v4.0.0')
+        self.assertIn('AGENTS.md', bridge.render(self.central, self.product, upgraded, 'update')['paths'])
+        self.assertEqual(path.read_bytes(), new_public + rules)
+        self.commit(self.product, 'Adopt the upgraded template')
+        self.assertEqual(bridge.render(self.central, self.product, upgraded, 'update')['paths'], [])
+
+    def test_marked_format_errors_stop_before_rendering_and_preserve_the_committed_file(self):
+        self.copy_adopt()
+        path = self.product / bridge.REVIEW_RULES_PATH
+        public, empty = bridge.review_rules_sections(path.read_bytes())
+        malformed = {
+            'both markers removed': public,
+            'missing end': public + bridge.REVIEW_RULES_START + b'Rule\n',
+            'duplicate markers': public + empty + empty,
+            'trailing text': public + empty + b'Extra content\n',
+            'bad public text': public + b'Changed public text\n' + empty,
+            'invalid UTF-8': public + bridge.REVIEW_RULES_START + b'\xff' + bridge.REVIEW_RULES_FINISH,
+        }
+        for reason, value in malformed.items():
+            with self.subTest(reason=reason):
+                path.write_bytes(value)
+                self.commit(self.product, reason)
+                head = self.git(self.product, 'rev-parse', 'HEAD')
+                with self.assertRaises(bridge.TemplateConflict) as caught:
+                    bridge.render(self.central, self.product, self.old, 'update')
+                self.assertEqual(caught.exception.paths, ['AGENTS.md'])
+                self.assertEqual(path.read_bytes(), value)
+                self.assertEqual(self.git(self.product, 'rev-parse', 'HEAD'), head)
+                self.assertEqual(self.git(self.product, 'status', '--porcelain'), '')
 
     def test_legacy_configuration_is_local_on_upgrade_and_absent_on_first_adoption(self):
         config = self.central / 'copier.yml'
@@ -181,10 +232,11 @@ class CopierTests(unittest.TestCase):
     def test_review_recovery_uses_a_new_template_version_and_keeps_product_changes(self):
         self.copy_adopt()
         original = (self.product / 'AGENTS.md').read_bytes()
+        public, section = bridge.review_rules_sections(original)
         contribution = self.product / 'CONTRIBUTING.md'
         contribution.write_text(contribution.read_text(encoding='utf-8') + '\n## Product notes\nKeep this recovery evidence.\n', encoding='utf-8')
         self.commit(self.product, 'Keep product contribution text')
-        changed = self.next_version(lambda template: (template / 'AGENTS.md').write_bytes(original + b'\nReviewed second version.\n'))
+        changed = self.next_version(lambda template: (template / 'AGENTS.md').write_bytes(public + b'\nReviewed second version.\n' + section))
         bridge.render(self.central, self.product, changed, 'update')
         self.commit(self.product, 'Adopt second template')
         (self.central / 'templates/repository/AGENTS.md').write_bytes(original)
@@ -208,12 +260,13 @@ class CopierTests(unittest.TestCase):
             bridge.render(self.central, self.product, self.old, 'update')
         self.commit(self.product, 'Human review change')
         def change(t):
-            (t / 'AGENTS.md').write_text(original.replace('## Code Review Rules', '## Central review change'), encoding='utf-8')
+            (t / 'AGENTS.md').write_bytes(original.replace('## Code Review Rules\n', '## Code Review Rules\n\nCentral review change\n').encode())
         new = self.next_version(change)
         with self.assertRaisesRegex(ValueError, 'CONFLICT|COMMAND_FAILED'):
             bridge.render(self.central, self.product, new, 'update')
         self.assertIn('Human review facts', self.git(self.product, 'show', 'HEAD:AGENTS.md'))
-        self.assertTrue(any('Human review facts' in p.read_text(encoding='utf-8') for p in self.product.rglob('*.rej')))
+        self.assertEqual(path.read_text(encoding='utf-8'), original.replace('## Code Review Rules', '## Human review facts'))
+        self.assertEqual(self.git(self.product, 'status', '--porcelain'), '')
         base = self.git(self.product, 'rev-parse', 'HEAD')
         status = self.git(self.product, 'status', '--porcelain')
         report = bridge.diagnose(self.central, self.product, new, base, None, {})

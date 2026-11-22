@@ -39,6 +39,26 @@ for(const order of [[source,later],[later,source]])test('delayed merge and later
   assert.equal(state.cycles.length,1); assert.equal(state.cycles[0].value.sourceSha,source);
   assert.deepEqual(calls,['dispatch-build']);
 });
+test('repeated pushes preserve completed freeze-only cycles in both delivery formats',async()=>{
+  for(const workflowDelivery of [false,true]) {
+    const unit={id:'internal-docs',...(workflowDelivery?{githubDisabled:true}:{})};
+    const cycle={id:'cycle',sourceSha:source,units:[unit],dispatches:[{purpose:'build',canonicalRunId:42}],
+      freezeCompletedAt:'2026-10-30T01:00:00Z',...(workflowDelivery?{workflowDelivery}:{freezeOnly:[{unitId:unit.id}]})};
+    const ports={snapshot:async()=>({cycles:[{value:cycle}]}),get:async()=>({object:{sha:later}}),
+      candidate:async()=>assert.fail('same source must not reopen the candidate'),
+      invoke:async command=>assert.fail('completed cycle invoked '+command)};
+    for(let i=0;i<2;i++)assert.deepEqual(await advanceEvent(push(source),ports),
+      {status:'FROZEN',reason:'NO_PUBLICATION_CHANNELS',cycleId:cycle.id});
+  }
+});
+test('a workflow-owned cycle without publication channels can still start its first build',async()=>{
+  const cycle={id:'cycle',sourceSha:source,workflowDelivery:true,units:[{id:'internal-docs',githubDisabled:true}],dispatches:[]};
+  const calls=[];
+  const ports={snapshot:async()=>({cycles:[{value:cycle}]}),get:async()=>({object:{sha:source}}),
+    invoke:async(command,id)=>{calls.push([command,id]);return {status:'BOUND'};}};
+  assert.deepEqual(await advanceEvent(push(source),ports),{status:'BOUND',cycleId:cycle.id});
+  assert.deepEqual(calls,[['dispatch-build',cycle.id]]);
+});
 test('a publication completion requires its exact archived invocation', async()=>{
   const run={id:52,run_attempt:1,created_at:'2026-11-19T01:00:00Z',updated_at:'2026-11-19T01:01:00Z',status:'completed',conclusion:'success',
     repository:{id:1296724484},head_repository:{id:1296724484},actor:{id:301115370},head_branch:'main',head_sha:source,

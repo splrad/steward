@@ -1,5 +1,6 @@
 """Fixed Copier copy/update connection. Git delivery and PR review remain separate."""
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -22,6 +23,13 @@ FORBIDDEN = {'VERSION', 'CHANGELOG.md', 'package.json', 'package-lock.json',
              'mise.toml', 'mise.lock', '.github/delivery.json', '.github/steward-template-adoption.md'}
 ADOPTION_REPORT = '.github/steward-template-adoption.md'
 RELEASE_NOTES_TEMPLATE = '.github/release-template.md.mustache'
+REVIEW_RULES_PATH = 'AGENTS.md'
+REVIEW_RULES_SOURCE = 'templates/repository/AGENTS.md'
+REVIEW_RULES_BEGIN = b'<!-- BEGIN SPLRAD REPOSITORY REVIEW RULES -->'
+REVIEW_RULES_END = b'<!-- END SPLRAD REPOSITORY REVIEW RULES -->'
+REVIEW_RULES_START = b'\n' + REVIEW_RULES_BEGIN + b'\n'
+REVIEW_RULES_FINISH = b'\n' + REVIEW_RULES_END + b'\n'
+REVIEW_RULES_EMPTY = REVIEW_RULES_START + REVIEW_RULES_FINISH
 
 
 class TemplateConflict(ValueError):
@@ -172,6 +180,35 @@ def paths_in_tree(directory):
     return result
 
 
+def review_rules_sections(content):
+    """Split a legacy public file or a public file with one final repository section."""
+    try:
+        content.decode('utf-8')
+    except UnicodeDecodeError:
+        return None
+    if (content.startswith(b'\xef\xbb\xbf') or b'\r' in content or b'\0' in content
+            or not content.endswith(b'\n') or content.endswith(b'\n\n')):
+        return None
+    public, separator, remainder = content.partition(REVIEW_RULES_START)
+    if (b'## Code Review Rules' not in public or not public.endswith(b'\n') or public.endswith(b'\n\n')
+            or REVIEW_RULES_BEGIN in public or REVIEW_RULES_END in public):
+        return None
+    if separator:
+        if not remainder.endswith(REVIEW_RULES_FINISH):
+            return None
+        rules = remainder[:-len(REVIEW_RULES_FINISH)]
+        if REVIEW_RULES_BEGIN in rules or REVIEW_RULES_END in rules or (rules and not rules.strip(b' \t\n')):
+            return None
+    return public, separator + remainder
+
+
+def review_rules_template(central, sha, env):
+    source = git(central, ['show', f'{sha}:{REVIEW_RULES_SOURCE}'], env)
+    sections = review_rules_sections(source)
+    require(sections is not None and sections[1] in (b'', REVIEW_RULES_EMPTY), 'TEMPLATE_REVIEW_RULES_SOURCE')
+    return sections
+
+
 def render(central, target, sha, mode, data=None):
     target_path = Path(target).absolute()
     require(not any(p.is_symlink() or getattr(p, 'is_junction', lambda: False)()
@@ -183,7 +220,9 @@ def render(central, target, sha, mode, data=None):
     with tempfile.TemporaryDirectory(prefix='steward-copier-profile-') as profile:
         env = environment(Path(profile))
         new_version, _, new_paths = contract(central, sha, data, env)
+        public_rules, default_section = review_rules_template(central, sha, env)
         before, old_paths = {}, set()
+        repository_section = b''
         if mode == 'copy':
             require(not target.exists(), 'TEMPLATE_SEED_EXISTS')
             argv = ['copy', '--defaults', '--vcs-ref', sha, SOURCE, str(target)]
@@ -195,7 +234,17 @@ def render(central, target, sha, mode, data=None):
             old_version, _, old_paths = contract(central, old_sha, old_data, env)
             require(new_version >= old_version, 'TEMPLATE_DOWNGRADE')
             before = paths_in_tree(target)
+            old_public, old_section = review_rules_template(central, old_sha, env)
+            previous = before.get(REVIEW_RULES_PATH, b'')
+            current = review_rules_sections(previous)
+            if (not current or current[0] != old_public or (old_section and not current[1])
+                    or (current[1] and not default_section)
+                    or git(target, ['show', f'HEAD:{REVIEW_RULES_PATH}'], env) != previous):
+                raise TemplateConflict([REVIEW_RULES_PATH])
+            repository_section = current[1]
             argv = ['update', '--defaults', '--vcs-ref', sha, '--conflict', 'rej']
+            if repository_section:
+                argv += ['--skip', '/' + REVIEW_RULES_PATH]
         if data:
             data_file = Path(profile) / 'data.json'
             data_file.write_text(json.dumps(data), encoding='utf-8')
@@ -216,6 +265,14 @@ def render(central, target, sha, mode, data=None):
                 rejects.remove(reject)
         if rejects:
             raise TemplateConflict(p.removesuffix('.rej') for p in rejects)
+        expected_rules = public_rules + (repository_section or default_section)
+        if repository_section:
+            if after.get(REVIEW_RULES_PATH) != before[REVIEW_RULES_PATH]:
+                raise TemplateConflict([REVIEW_RULES_PATH])
+            if expected_rules != before[REVIEW_RULES_PATH]:
+                (target / REVIEW_RULES_PATH).write_bytes(expected_rules)
+                after[REVIEW_RULES_PATH] = expected_rules
+        require(after.get(REVIEW_RULES_PATH) == expected_rules, 'TEMPLATE_REVIEW_RULES_OUTPUT')
         changed = {p for p in before.keys() | after.keys() if before.get(p) != after.get(p)}
         if new_paths.isdisjoint(LEGACY_CONFIGURATION):
             require(changed.isdisjoint(LEGACY_CONFIGURATION), 'TEMPLATE_LEGACY_CONFIGURATION_CHANGED')
@@ -227,7 +284,8 @@ def render(central, target, sha, mode, data=None):
         generated = yaml.safe_load(after['.copier-answers.yml'])
         require(generated['_src_path'] == SOURCE, 'TEMPLATE_GENERATED_SOURCE')
         require(git(central, ['rev-parse', '--verify', str(generated['_commit']) + '^{commit}'], env).decode().strip() == sha, 'TEMPLATE_GENERATED_VERSION')
-        return {'mode': mode, 'paths': sorted(changed), 'answers': generated}
+        return {'mode': mode, 'paths': sorted(changed), 'answers': generated,
+                'reviewRulesSha256': hashlib.sha256(expected_rules).hexdigest()}
 
 
 def adoption_diff(seed, product):
@@ -245,6 +303,12 @@ def classify_adoption_conflicts(differences):
     # The common contribution section is complete; extra product instructions remain verbatim.
     custom, conflicts = [], []
     for value in differences:
+        if value['path'] == REVIEW_RULES_PATH:
+            current = review_rules_sections(value['current'].encode('utf-8'))
+            generated = review_rules_sections(value['generated'].encode('utf-8'))
+            if current and generated and current[0] == generated[0] and current[1] and generated[1]:
+                custom.append(value['path'])
+                continue
         if value['path'] == 'CONTRIBUTING.md' and value['generated'].replace('\r\n','\n').strip() in value['current'].replace('\r\n','\n'):
             custom.append(value['path'])
         else:
@@ -261,6 +325,10 @@ def prepare_adoption(central, product, seed, sha, *, expected_report=None, data=
     render(central, seed, sha, 'copy', data)
     diff = adoption_diff(seed, product)
     custom, conflicts = classify_adoption_conflicts(diff['conflicts'])
+    review_rules_digest = None
+    if not any(item['path'] == REVIEW_RULES_PATH for item in conflicts):
+        rules = product if REVIEW_RULES_PATH in custom else seed
+        review_rules_digest = hashlib.sha256((rules / REVIEW_RULES_PATH).read_bytes()).hexdigest()
     for path in diff['new']:
         target = product / path; target.parent.mkdir(parents=True, exist_ok=True)
         with target.open('xb') as stream: stream.write((seed/path).read_bytes())
@@ -273,7 +341,8 @@ def prepare_adoption(central, product, seed, sha, *, expected_report=None, data=
     elif report.exists():
         # Only the exact prior App-owned report is removed after all conflicts are gone.
         report.unlink()
-    return {'mode':'adopt','conflicts':[v['path'] for v in conflicts],'preservedCustomFiles':custom}
+    return {'mode':'adopt','conflicts':[v['path'] for v in conflicts],'preservedCustomFiles':custom,
+            'reviewRulesSha256': review_rules_digest}
 
 
 def diagnose(central, target, sha, base, pending, data):

@@ -51,7 +51,7 @@ export function reconcileCycleHistory(input:{repositoryId:number;inventoryComple
   const states=new Map<string,CompletionTruth>();
   for(const cycle of cycles) {
     if(!discovered.some(f=>f.id===cycle.id&&f.sourceSha===cycle.sourceSha&&f.prNumber===cycle.prNumber)){add(cycle.id,'UNKNOWN','MERGED_SOURCE_UNPROVEN');states.set(cycle.id,'UNKNOWN');continue;}
-    if(cycle.freezeOnly) {
+    if(cycle.freezeOnly||cycle.freezeCompletedAt) {
       const result=input.verifiedFreezes?.includes(cycle.id)?'PASS':'UNKNOWN';
       add(cycle.id,result,'NATIVE_BUILD_FREEZE');
       if(result!=='PASS' || !githubUnits(cycle).length){states.set(cycle.id,result);continue;}

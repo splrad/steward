@@ -63,12 +63,12 @@ it('consolidates equal runtime constraints into five rules while preserving thei
   expect(named('Steward 构建分支不可变').rules).toEqual([{type:'update',parameters:{update_allows_fetch_and_merge:false}},{type:'deletion'}]);
   expect(named('Steward 治理状态写入限制').bypass_actors.map((a:any)=>a.actor_id)).toEqual([4243096,92]);
   expect(named('Steward 自动化分支创建限制').conditions.ref_name.include).toEqual(['refs/heads/steward/build/*','refs/heads/steward/managed-sync','refs/heads/steward/release-candidate']);
-  expect(named('Steward 自动化分支完整性保护').conditions.ref_name.include).toEqual(['refs/heads/steward/release-state','refs/heads/steward/automation-health','refs/heads/steward/governance-state','refs/heads/steward/managed-sync','refs/heads/steward/release-candidate']);
+  expect(named('Steward 运行状态写入限制').conditions.ref_name.include).toEqual(['refs/heads/steward/release-state']);
+  expect(named('Steward 自动化分支完整性保护').conditions.ref_name.include).toEqual(['refs/heads/steward/release-state','refs/heads/steward/governance-state','refs/heads/steward/managed-sync','refs/heads/steward/release-candidate']);
 });
 // This finite configuration comparison checks the request bodies, not GitHub enforcement.
 it.each([
   ['steward/release-state',[4243096],[4243096]],
-  ['steward/automation-health',[4243096],[4243096]],
   ['steward/governance-state',[4243096,92],[4243096,92]],
   ['steward/managed-sync',[4243096],[4243096,92,7,8]],
   ['steward/release-candidate',[4243096],[4243096,92,7,8]],
@@ -89,10 +89,10 @@ it.each([
 });
 it('keeps runtime constraints off default and unrelated branches',async()=>{
   const {prepareGovernance}=await module(),{runtime}=prepareGovernance(snapshot());
-  for(const branch of ['main','feature/next','steward/build-other','steward/governance-state-other'])
+  for(const branch of ['main','feature/next','steward/build-other','steward/governance-state-other','steward/automation-health'])
     expect(runtime.some((r:any)=>r.conditions.ref_name.include.some((p:string)=>p.endsWith('/*')?`refs/heads/${branch}`.startsWith(p.slice(0,-1)):p===`refs/heads/${branch}`))).toBe(false);
 });
-it.each(['steward/release-state','steward/automation-health','steward/build/cycle-1'])('connects consolidated request bodies to the actual writer protection reader: %s',async branch=>{
+it.each(['steward/release-state','steward/build/cycle-1'])('connects consolidated request bodies to the actual writer protection reader: %s',async branch=>{
   const {prepareGovernance}=await module();
   const {assertReleaseWriterProtection}=await import(pathToFileURL(resolve('scripts/release-record.mjs')).href);
   const all=prepareGovernance(snapshot()).runtime.map((rule:any,index:number)=>({...rule,id:700+index,name:`observed-${index}`}));

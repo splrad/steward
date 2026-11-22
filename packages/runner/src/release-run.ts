@@ -244,6 +244,8 @@ export async function nativeOrasRead(args:readonly string[]):Promise<string> {
   } finally {await rm(home,{recursive:true,force:true});}
 }
 export async function readDirectChannelTargets(context:EvidenceContext,targets:ChannelTarget[],io:EvidenceTransport,now:string,oras:OrasRead=nativeOrasRead,history:ChannelRecord[]=[]) {
+  // The direct evidence format binds legacy delivery.json. Workflow-owned targets still need the native product probe.
+  if(!targets.length||context.cycle.workflowDelivery)return {files:[] as ArchiveFile[],reads:[] as ChannelReadItem[]};
   const reader=new NativeEvidenceReader(io,context.repository);let source:any,legacy:ReturnType<typeof verifyNormalizedDelivery>|undefined;
   try {source=await reader.json(`contents/.github/delivery.json?ref=${context.cycle.sourceSha}`);}catch(error) {
     if ((error instanceof EvidenceReadError) && error.status === 404) {
@@ -362,6 +364,7 @@ export function selectChannelDispatch(context:EvidenceContext,reads:ChannelReadI
   const submit:ChannelTarget[]=[],verify:ChannelTarget[]=[];
   for(const channel of context.cycle.requiredChannels) {
     const unit=context.cycle.units.find(unit=>unit.id===channel.unitId)!, matches=reads.filter(read=>read.unitId===channel.unitId&&read.channelId===channel.channelId);
+    if(context.cycle.workflowDelivery&&!unit.channelDeliveries?.some(receipt=>receipt.channelId===channel.channelId))continue;
     if(matches.length!==1)return {kind:'unknown' as const};const read=matches[0]!;
     if(['AUTH_UNKNOWN','TRANSIENT','CONFLICT'].includes(read.readStatus))return {kind:'unknown' as const};
     const target={...channel,version:unit.version,releaseId:unit.releaseId!,manifestDigest:unit.manifestDigest!};channelTargets(context,[target]);
@@ -398,9 +401,12 @@ export interface DispatchHistory { complete: boolean; observations:NativeDispatc
   publication?:NonNullable<import('./native-release-evidence.js').ReadHistory['publication']> }
 
 /** Download and verify the original formal bytes; continuation never selects a build. */
-export async function verifyContinuationReleases(context:EvidenceContext,io:EvidenceTransport) {
+export async function verifyContinuationReleases(context:EvidenceContext,io:EvidenceTransport,unitIds?:ReadonlySet<string>) {
+  const units=githubUnits(context.cycle).filter(unit=>!unitIds||unitIds.has(unit.id));
+  if(unitIds&&units.length!==unitIds.size)fail('unknown formal release unit');
+  if(!units.length)return;
   const reader=await formalReleaseReader(context,io);
-  for(const unit of githubUnits(context.cycle)) {
+  for(const unit of units) {
     if(unit.releaseId===null||!unit.assets.length||unit.manifestDigest===null||unit.notesDigest===null)fail('frozen release required');
     const release=await reader.json(`releases/${unit.releaseId}`),assets=await reader.pages(`releases/${unit.releaseId}/assets`,'');
     if(release.id!==unit.releaseId||release.tag_name!==unit.tag||release.author?.id!==context.appBotId||release.draft!==false||release.immutable!==true
@@ -408,6 +414,7 @@ export async function verifyContinuationReleases(context:EvidenceContext,io:Evid
           sourceSha: context.cycle.sourceSha, tag: unit.tag, frozenDigest: unit.notesDigest }, release.body, path => reader.json(path))||(await reader.json(`commits/${encodeURIComponent(unit.tag)}`)).sha!==context.cycle.sourceSha
       ||assets.length!==unit.assets.length||new Set(assets.map(asset=>asset.name)).size!==assets.length)fail('formal release identity');
     for(const asset of assets) {
+      if(unit.githubDelivery&&asset.state!=='uploaded')fail('formal release asset');
       const actual=await reader.downloadDigest(`releases/assets/${asset.id}`);
       if(actual.size!==asset.size||!unit.assets.some(expected=>expected.path===asset.name&&expected.size===actual.size&&expected.sha256===actual.digest))fail('formal release bytes');
     }
@@ -563,6 +570,10 @@ export async function dispatchNativeRun(input:EvidenceContext, requestKey:string
     } else if(observations.some(value=>value.kind!=='READ_FAILURE'))fail('dispatch preparation missing');
     const deferred=Math.max(0,...observations.map(value=>Date.parse(value.nextCheckAt??'')||0));
     if(Date.parse(observedAt)<deferred)return result('WAIT','NATIVE_RETRY_AFTER',new Date(deferred).toISOString());
+    if(cycle.workflowDelivery&&request.purpose!=='build') {
+      const units=new Set(channelTargets(context,JSON.parse(request.inputs.targets_json!)).map(target=>target.unitId));
+      await verifyContinuationReleases(context,io,units);
+    }
     const preparedValue=observation('PREPARED');
     // UNCHANGED means another caller may already own this exact attempt. It cannot grant a second send.
     if(await save(preparedValue)!=='APPLIED')return result('UNKNOWN','DISPATCH_INTENT_NOT_NEW');
@@ -667,7 +678,8 @@ export async function observeNativeChannels(context:EvidenceContext,history:Chan
   root:string,controllerDirectory:string,token:string,io:EvidenceTransport,now:string,oras:OrasRead=nativeOrasRead, allowProbeDispatch=true) {
   const reader=new NativeEvidenceReader(io,context.repository),repository=await reader.json('');
   if(repository.id!==context.repositoryId||repository.full_name!==context.repository||repository.archived!==false||repository.disabled!==false)fail('channel repository');
-  const allTargets=channelTargets(context,context.cycle.requiredChannels.map(channel=>{
+  const allTargets=channelTargets(context,context.cycle.requiredChannels.filter(channel=>!context.cycle.workflowDelivery
+    ||context.cycle.units.find(unit=>unit.id===channel.unitId)?.channelDeliveries?.some(receipt=>receipt.channelId===channel.channelId)).map(channel=>{
     const unit=context.cycle.units.find(unit=>unit.id===channel.unitId)!;return {...channel,version:unit.version,releaseId:unit.releaseId!,manifestDigest:unit.manifestDigest!};
   }));
   const files:ArchiveFile[]=[],results:{item:ChannelResultItem;evidence:NativeChannelEvidence;path:string}[]=[],runs:NativeRun[]=[];

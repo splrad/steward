@@ -13,7 +13,7 @@ import { ciPath, deliveryPath, inspectRepository, jsonFile, pagesChoices, pagesP
   publishPath, versionsPath } from './configuration-view.mjs';
 import { productWorkflows, requiresProductCI, selectableProductCI } from './validation-input.mjs';
 import { dependencyMode, loadPolicy } from './private-dependency-policy.mjs';
-import { checkedRegistration,configurationConflicts,parseRegistration,releaseRegistration } from './repository-registration-policy.mjs';
+import { checkedRegistration,configurationConflicts,nativeReleaseConflict,parseRegistration,releaseRegistration } from './repository-registration-policy.mjs';
 import { projectMergedRepositoryPolicy } from './repository-policy-publish.mjs';
 import { readRepositoryProjection } from './repository-policy-projection.mjs';
 import { adminId, centralId, isGovernanceBot, loadPrivateRequest, makePrivateRequest, readWake, registrationGitHubOptions,
@@ -148,10 +148,11 @@ export async function registrationProposal(repo, read, productPaths) {
     workflow.path === path && selectableProductCI(workflow, repo.default_branch)));
   if ((productCiApplicable&&!ciPaths.length)||productCi.length!==ciPaths.length) pending.push('复核产品 CI 工作流或触发条件');
   const priorPending=pending.length;
-  const release = releaseRegistration(model, pending);
+  const {release,nativeReleaseUnits} = releaseRegistration(model, pending);
   const releaseIncomplete=pending.length>priorPending;
   const choice = pagesChoices(model.pages);
-  const validSiteUnit=choice.source!=='release'||release?.units.some(unit=>unit.id===choice.unit);
+  const validSiteUnit=choice.source!=='release'||(nativeReleaseUnits
+    ?nativeReleaseUnits.includes(choice.unit):release?.units.some(unit=>unit.id===choice.unit));
   let site = null;
   if (choice.build && choice.source && validSiteUnit) {
     site = { workflow: pagesPath, mode: 'build-only', source: choice.source,
@@ -169,8 +170,10 @@ export async function registrationProposal(repo, read, productPaths) {
     assets: new Map(unit.assets.map(asset => [asset.id, asset.name])),
     targets: rows.filter(row => row?.unit === unit.id && typeof row.target === 'string' && row.target).map(row => row.target)
   }]));
+  const nativeReleaseSite=nativeReleaseUnits&&site?.source==='release'?site:null;
   return { policy: checkedRegistration({ schemaVersion: 1, repositoryId: repo.id, repository: repo.full_name,
-    productCi, release, site }, repo.id), pending, releaseDetails, productCiApplicable, releaseIncomplete };
+    productCi, release, site:nativeReleaseSite?null:site }, repo.id), pending, releaseDetails, productCiApplicable,
+    releaseIncomplete, nativeReleaseUnits, nativeReleaseSite };
 }
 
 export function renderRegistrationPull(repo, source, proposal, current=null, policy=current ? {...current,repository:repo.full_name} : proposal.policy) {
@@ -193,7 +196,7 @@ export function renderRegistrationPull(repo, source, proposal, current=null, pol
   ];
   if(current && changed.length)lines.push('- 本次修改 '+list(changed));
   if(policy.productCi.length)lines.push('- 产品 CI '+list(policy.productCi));
-  if(policy.release) {
+  if(policy.release&&!proposal.nativeReleaseUnits) {
     lines.push('','## 发行与产物','','修改渠道或文件时，先更新产品默认分支的交付声明，再核对以下选择。','');
     lines.push('- 正式构建入口 '+quote(policy.release.buildWorkflow));
     for(const unit of policy.release.units) {
@@ -324,7 +327,12 @@ export async function reconcileRegistration(api, admin, repo, source, observe, v
   const merged = await read(path);
   const current = merged === null ? null : parseRegistration(merged, id);
   if(!current&&registryPush)return {result:'removed'};
-  const proposal=await observe();
+  const observed=await observe();
+  // Keep previous release admission and release-sourced Pages authorization on unrelated registry updates.
+  const approvedRelease=current?.release??null;
+  const proposal=observed.nativeReleaseUnits?{...observed,policy:{...observed.policy,release:approvedRelease,
+    site:approvedRelease?.units.some(unit=>unit.id===observed.nativeReleaseSite?.unit)
+      ?observed.nativeReleaseSite:observed.policy.site}}:observed;
   const differences = fields.filter(key => !current || !isDeepStrictEqual(current[key], proposal.policy[key]));
   const renamed=current&&current.repository!==repo.full_name;
   const policy=current?(renamed?{...current,repository:repo.full_name}:proposedRegistration(current,proposal.policy)):proposal.policy;
@@ -343,8 +351,8 @@ export async function reconcileRegistration(api, admin, repo, source, observe, v
         let selection;
         try { selection=parseRegistration(bytes,id); }
         catch { pending.push('当前草稿的登记 JSON 未通过结构校验，请核对格式和仓库 ID。'); }
-        if(selection)for(const conflict of configurationConflicts(selection,proposal))
-          pending.push(conflictDescriptions[conflict]);
+        if(selection)for(const conflict of configurationConflicts(selection,proposal,approvedRelease))
+          pending.push(proposal.nativeReleaseUnits&&conflict==='RELEASE'?nativeReleaseConflict:conflictDescriptions[conflict]);
       }
     }
     if(current||reviewedHead)await notify(pull,pending,reviewedHead);
