@@ -3,20 +3,23 @@ param(
   [Parameter(Mandatory)][string]$Archive,
   [Parameter(Mandatory)][string]$ExpectedSha256,
   [Parameter(Mandatory)][string]$ExpectedNames,
-  [Parameter(Mandatory)][string]$OutputDirectory
+  [Parameter(Mandatory)][string]$OutputDirectory,
+  [switch]$AllowSubset,
+  [switch]$DiscoverNames
 )
 $ErrorActionPreference = 'Stop'
 if ($ExpectedSha256 -cnotmatch '^[a-f0-9]{64}$') { throw 'Invalid archive digest' }
 if ((Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $ExpectedSha256) { throw 'Artifact archive digest mismatch' }
-$names = @(Get-Content -LiteralPath $ExpectedNames -Raw | ConvertFrom-Json)
-if ($names.Count -eq 0 -or @($names | Sort-Object -Unique).Count -ne $names.Count) { throw 'Invalid expected file set' }
-foreach ($name in $names) {
-  if ($name -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$' -or $name.EndsWith('.') -or $name -imatch '^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)') { throw 'Unsafe file name' }
-}
 if (Test-Path -LiteralPath $OutputDirectory) { throw 'Output already exists' }
 $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
 try {
-  if ($zip.Entries.Count -ne $names.Count) { throw 'Archive file set mismatch' }
+  if ($zip.Entries.Count -eq 0 -or $zip.Entries.Count -gt 1000) { throw 'Archive file count' }
+  $names = if ($DiscoverNames) { @($zip.Entries.FullName) } else { @(Get-Content -LiteralPath $ExpectedNames -Raw | ConvertFrom-Json) }
+  if (@($names).Count -eq 0 -or @($names | Sort-Object -Unique).Count -ne @($names).Count) { throw 'Invalid expected file set' }
+  foreach ($name in $names) {
+    if ($name -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$' -or $name.EndsWith('.') -or $name -imatch '^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)') { throw 'Unsafe file name' }
+  }
+  if ($zip.Entries.Count -gt @($names).Count -or (-not $AllowSubset -and $zip.Entries.Count -ne @($names).Count)) { throw 'Archive file set mismatch' }
   $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   [long]$total = 0
   foreach ($entry in $zip.Entries) {

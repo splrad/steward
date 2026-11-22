@@ -13,24 +13,8 @@ import {completeNativeRuleParameters} from './native-rule-parameters.mjs';
 import {createSourceGuard,publishControllerSource} from './controller-source.mjs';
 
 const repo='/repos/splrad/steward';
-const maintenanceRuleId=26975344;
-const maintenanceBranch='maintenance/legacy-runtime-e990eda';
-const maintenanceRef=`refs/heads/${maintenanceBranch}`;
-const coreTarget={id:18883080,binding};
-function maintenanceTarget(id){
-  check(positive(id)&&id!==18883080,'MAINTENANCE_RULE_ID');
-  return {id,binding(body){
-    check(same(body.conditions,{repository_id:{repository_ids:[1296724484]},ref_name:{include:[maintenanceRef],exclude:[]}})
-      &&same(body.bypass_actors,[]),'MAINTENANCE_SCOPE');
-    const rows=body.rules.filter(r=>r.type==='workflows');
-    check(rows.length===1&&rows[0].parameters?.do_not_enforce_on_create===true,'MAINTENANCE_BINDING');
-    const workflows=rows[0].parameters.workflows;
-    check(Array.isArray(workflows)&&workflows.length===1,'MAINTENANCE_BINDING');
-    const row=workflows[0];
-    check(row.repository_id===1296724484&&row.path==='.github/workflows/maintenance-validation.yml'&&sha(row.sha)&&!Object.hasOwn(row,'ref'),'MAINTENANCE_BINDING');
-    return row;
-  }};
-}
+const rulesetId=18883080;
+const rulePath=`/orgs/splrad/rulesets/${rulesetId}`;
 const validationPath='.github/workflows/pr-validation-native.yml';
 const check=(condition,code)=>{if(!condition)throw Error('PROMOTION_'+code);};
 const sha=value=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
@@ -111,47 +95,33 @@ export async function selectPromotion(io,{workflowId,event,sourceRunId,controlle
   if((await get(io,`${repo}/commits/main`)).sha!==current.sha)return {status:'STALE'};
   return {status:'ELIGIBLE',sha:current.sha,runId:run.id,runAttempt:run.run_attempt,workflowId,jobIds:selected};
 }
-function mutable(rule,target=coreTarget) {
-  check(rule.id===target.id&&rule.source==='splrad'&&rule.source_type==='Organization'&&rule.target==='branch'
+function mutable(rule) {
+  check(rule.id===rulesetId&&rule.source==='splrad'&&rule.source_type==='Organization'&&rule.target==='branch'
     &&rule.enforcement==='active'&&Array.isArray(rule.rules)&&Array.isArray(rule.bypass_actors)&&rule.conditions,'RULE');
   return Object.fromEntries(['name','target','enforcement','bypass_actors','conditions','rules'].map(k=>[k,structuredClone(rule[k])]));
 }
 
+async function readRule(io) {
+  const rule=await completeNativeRuleParameters(io,await get(io,rulePath));
+  const body=mutable(rule);
+  binding(body);
+  return {rule,body};
+}
+
 /** PUT is not a CAS. Only rules are sent; unrelated fields are compared before and after. */
-export async function promoteRequiredWorkflow(io,target,assertCurrent,record) {
-  return promoteWorkflowTarget(io,target,assertCurrent,record,coreTarget);
-}
-async function readRule(io,descriptor,allowMissing=false){
-  const observed=await get(io,`/orgs/splrad/rulesets/${descriptor.id}`,allowMissing);
-  if(observed===null)return null;
-  const rule=await completeNativeRuleParameters(io,observed);
-  const body=mutable(rule,descriptor);descriptor.binding(body);return {rule,body};
-}
-async function assertMaintenanceBranchAbsent(io){
-  const refs=await get(io,`${repo}/git/matching-refs/heads/${encodeURIComponent(maintenanceBranch)}`);
-  check(Array.isArray(refs)&&refs.every(row=>typeof row?.ref==='string'&&row.ref.startsWith(maintenanceRef)
-    &&row.object?.type==='commit'&&sha(row.object.sha)),'MAINTENANCE_REF_READBACK');
-  check(!refs.some(row=>row.ref===maintenanceRef),'MAINTENANCE_BRANCH_STILL_PRESENT');
-}
-async function assertMaintenanceRetired(io,id){
-  check(await get(io,`/orgs/splrad/rulesets/${id}`,true)===null,'MAINTENANCE_RULE_REAPPEARED');
-  await assertMaintenanceBranchAbsent(io);
-}
-async function promoteWorkflowTarget(io,target,assertCurrent,record,descriptor) {
-  const rulePath=`/orgs/splrad/rulesets/${descriptor.id}`,binding=descriptor.binding;
-  check(sha(target),'TARGET');
+async function writeRequiredWorkflow(io,target,assertCurrent,record) {
   for(let attempt=1;attempt<=3;attempt++) {
-    const {rule:original,body:before}=await readRule(io,descriptor),old=binding(before).sha;
+    const {rule:original,body:before}=await readRule(io),old=binding(before).sha;
     await record({kind:'rules-before',attempt,before:original,adoptedSha:old,target});
     if(old===target)return {status:'ALREADY_ADOPTED',sha:target};
     await assertCurrent();
-    const {rule:latest,body:fresh}=await readRule(io,descriptor);
+    const {rule:latest,body:fresh}=await readRule(io);
     if(!same(before,fresh)){await record({kind:'rules-changed-before-write',attempt,current:latest});continue;}
     const expected=structuredClone(fresh);binding(expected).sha=target;
     await assertCurrent();
     let response='unknown';
     try {response=(await io.request('PUT',rulePath,{rules:expected.rules})).status;}catch{}
-    const {rule:observed,body:after}=await readRule(io,descriptor);await record({kind:'rules-after',attempt,response,after:observed});
+    const {rule:observed,body:after}=await readRule(io);await record({kind:'rules-after',attempt,response,after:observed});
     if(same(after,expected))return {status:'ADOPTED',sha:target};
     const actual=binding(after).sha,rest=structuredClone(after);binding(rest).sha=old;
     check(same(rest,before),'EXTERNAL_RULE_CHANGE');
@@ -160,60 +130,41 @@ async function promoteWorkflowTarget(io,target,assertCurrent,record,descriptor) 
   throw Error('PROMOTION_RECONCILIATION_LIMIT');
 }
 
-/** Ruleset writes are sequential, not atomic. Re-entry reconciles each target independently. */
-export async function promoteRequiredWorkflows(io,target,assertCurrent,record,maintenanceId) {
+export async function promoteRequiredWorkflow(io,target,assertCurrent,record) {
   check(sha(target),'TARGET');
-  const maintenance=maintenanceTarget(maintenanceId);
-  const maintenanceBefore=await readRule(io,maintenance,true);
-  const targets=[coreTarget],baseline=new Map(),results=[];
-  if(maintenanceBefore)targets.push(maintenance);
-  else await assertMaintenanceBranchAbsent(io);
-  const withoutSha=(body,descriptor)=>{const copy=structuredClone(body);descriptor.binding(copy).sha=null;return copy;};
-  // Validate every active target before any write, even if the core pin already matches.
-  for(const descriptor of targets){
-    const {rule,body}=descriptor===maintenance?maintenanceBefore:await readRule(io,descriptor);
-    baseline.set(descriptor.id,withoutSha(body,descriptor));
-    await record({kind:'workflow-target-before',rulesetId:descriptor.id,target,before:rule});
-  }
+  const withoutSha=body=>{
+    const copy=structuredClone(body);
+    binding(copy).sha=null;
+    return copy;
+  };
+  const {rule,body}=await readRule(io);
+  const protection=withoutSha(body);
+  await record({kind:'workflow-target-before',rulesetId,target,before:rule});
+  const checkProtection=body=>check(same(withoutSha(body),protection),'TARGET_PROTECTION_CHANGED');
   const guard=async()=>{
     await assertCurrent();
-    if(!maintenanceBefore)await assertMaintenanceRetired(io,maintenanceId);
-    for(const descriptor of targets){
-      const {body}=await readRule(io,descriptor);
-      check(same(withoutSha(body,descriptor),baseline.get(descriptor.id)),'TARGET_PROTECTION_CHANGED');
-    }
+    checkProtection((await readRule(io)).body);
   };
-  await guard();
-  for(const descriptor of targets){
-    await guard();
-    const result=await promoteWorkflowTarget(io,target,guard,event=>record({...event,rulesetId:descriptor.id}),descriptor);
-    results.push({rulesetId:descriptor.id,...result});
-    await record({kind:'workflow-target-result',rulesetId:descriptor.id,...result});
-  }
-  const verifyTargets=async()=>{
-    const observed=[];
-    for(const descriptor of targets){
-      const {rule,body}=await readRule(io,descriptor);
-      check(same(withoutSha(body,descriptor),baseline.get(descriptor.id)),'TARGET_PROTECTION_CHANGED');
-      check(descriptor.binding(body).sha===target,'TARGET_READBACK');
-      observed.push({kind:'workflow-target-final',rulesetId:descriptor.id,target,observed:rule});
-    }
-    return observed;
+  const verifyTarget=async()=>{
+    const {rule,body}=await readRule(io);
+    checkProtection(body);
+    check(binding(body).sha===target,'TARGET_READBACK');
+    return rule;
   };
-  await guard();
-  const observed=await verifyTargets();
-  for(const event of observed)await record(event);
-  if(!maintenanceBefore)await record({kind:'maintenance-retired',rulesetId:maintenanceId,ref:maintenanceRef});
-  // Recheck the complete set after collecting and recording the first snapshot.
-  // Separate API reads cannot provide an atomic cross-ruleset snapshot.
   const verifyCurrent=async()=>{
     await assertCurrent();
-    await verifyTargets();
-    if(!maintenanceBefore)await assertMaintenanceRetired(io,maintenanceId);
+    await verifyTarget();
     await assertCurrent();
   };
+
+  await guard();
+  const result=await writeRequiredWorkflow(io,target,guard,event=>record({...event,rulesetId}));
+  await record({kind:'workflow-target-result',rulesetId,...result});
+  await assertCurrent();
+  const observed=await verifyTarget();
+  await record({kind:'workflow-target-final',rulesetId,target,observed});
   await verifyCurrent();
-  return {status:results.every(r=>r.status==='ALREADY_ADOPTED')?'ALREADY_ADOPTED':'ADOPTED',sha:target,targets:results,verifyCurrent};
+  return {...result,targets:[{rulesetId,...result}],verifyCurrent};
 }
 
 export async function publishTemplateTag(io,plan,assertCurrent,record) {
@@ -333,7 +284,7 @@ export async function main(env=process.env,transport=fetch) {
     const appId=Number(env.GOVERNANCE_APP_ID);
     const guard=createSourceGuard(io,appId,assertCurrent);
     await guard();
-    const {verifyCurrent,...adopted}=await promoteRequiredWorkflows(io,source.sha,guard,record,maintenanceRuleId);
+    const {verifyCurrent,...adopted}=await promoteRequiredWorkflow(io,source.sha,guard,record);
     await record({kind:'rules-result',...adopted});
     await publishPromotedSources(io,plan,adopted.sha,appId,verifyCurrent,record);
   },transport);

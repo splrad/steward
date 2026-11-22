@@ -11,7 +11,8 @@ const { build } = requireWrangler('esbuild');
 async function startWorker(contents: string, outboundService: (request: Request) => Promise<Response>) {
   const bundle = await build({
     stdin: { resolveDir: fileURLToPath(new URL('../src/', import.meta.url)), contents },
-    bundle: true, write: false, format: 'esm', platform: 'node',
+    bundle: true, write: false, format: 'esm', platform: 'browser',
+    conditions: ['workerd', 'worker', 'browser'], external: ['node:*'],
   });
   const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
   return new Miniflare(convertV4MiniflareOptions({

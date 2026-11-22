@@ -24,7 +24,7 @@ function fixture(mode:'submit'|'observe'='observe') {
     if(path.endsWith('/product'))return f.response({id:1,full_name:'example/product',default_branch:'trunk',archived:false,disabled:false});
     if(path.endsWith('/release-state'))return f.response({object:{sha:f.input.state.head}});
     if(path.endsWith('/runs/100'))return f.response(run);
-    if(path.endsWith(`delivery.json?ref=${cycle.sourceSha}`))return f.response({type:'file',encoding:'base64',content:bytes.toString('base64'),size:bytes.length,sha:blob});
+    if(path.endsWith(`delivery.json?ref=${cycle.sourceSha}`))return f.response({type:'file',path:'.github/delivery.json',encoding:'base64',content:bytes.toString('base64'),size:bytes.length,sha:blob});
     throw Error('Unexpected channel read '+path);
   }};
   return {...f,inputs,run,environment,io,calls,request};

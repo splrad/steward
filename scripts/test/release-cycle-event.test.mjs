@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import Handlebars from 'handlebars';
 import YAML from 'yaml';
-import { advanceEvent, validateEvent, publicCycleError } from '../release-cycle-event.mjs';
+import { advanceEvent, validateEvent, publicCycleError, withCycleCleanup } from '../release-cycle-event.mjs';
 import { product, sha256 } from '../bounded-candidate-contract.mjs';
 const source='a'.repeat(40), later='b'.repeat(40);
 const push=sourceSha=>({kind:'push',repositoryId:product.id,sourceSha});
@@ -38,6 +38,26 @@ for(const order of [[source,later],[later,source]])test('delayed merge and later
   for(const sha of order)await advanceEvent(push(sha),ports);
   assert.equal(state.cycles.length,1); assert.equal(state.cycles[0].value.sourceSha,source);
   assert.deepEqual(calls,['dispatch-build']);
+});
+test('repeated pushes preserve completed freeze-only cycles in both delivery formats',async()=>{
+  for(const workflowDelivery of [false,true]) {
+    const unit={id:'internal-docs',...(workflowDelivery?{githubDisabled:true}:{})};
+    const cycle={id:'cycle',sourceSha:source,units:[unit],dispatches:[{purpose:'build',canonicalRunId:42}],
+      freezeCompletedAt:'2026-10-30T01:00:00Z',...(workflowDelivery?{workflowDelivery}:{freezeOnly:[{unitId:unit.id}]})};
+    const ports={snapshot:async()=>({cycles:[{value:cycle}]}),get:async()=>({object:{sha:later}}),
+      candidate:async()=>assert.fail('same source must not reopen the candidate'),
+      invoke:async command=>assert.fail('completed cycle invoked '+command)};
+    for(let i=0;i<2;i++)assert.deepEqual(await advanceEvent(push(source),ports),
+      {status:'FROZEN',reason:'NO_PUBLICATION_CHANNELS',cycleId:cycle.id});
+  }
+});
+test('a workflow-owned cycle without publication channels can still start its first build',async()=>{
+  const cycle={id:'cycle',sourceSha:source,workflowDelivery:true,units:[{id:'internal-docs',githubDisabled:true}],dispatches:[]};
+  const calls=[];
+  const ports={snapshot:async()=>({cycles:[{value:cycle}]}),get:async()=>({object:{sha:source}}),
+    invoke:async(command,id)=>{calls.push([command,id]);return {status:'BOUND'};}};
+  assert.deepEqual(await advanceEvent(push(source),ports),{status:'BOUND',cycleId:cycle.id});
+  assert.deepEqual(calls,[['dispatch-build',cycle.id]]);
 });
 test('a publication completion requires its exact archived invocation', async()=>{
   const run={id:52,run_attempt:1,created_at:'2026-11-19T01:00:00Z',updated_at:'2026-11-19T01:01:00Z',status:'completed',conclusion:'success',
@@ -169,4 +189,55 @@ test('reports fixed readback failures without including arbitrary exception deta
     assert.equal(publicCycleError(new Error(code)),code);
   for(const error of [null,new Error('CANDIDATE_PR_HEAD_DRIFT: repo details'),new Error('network response details')])
     assert.equal(publicCycleError(error),'CYCLE_EVENT_STOPPED');
+});
+
+test('push diagnostics distinguish the failing operation and keep its original failure',async()=>{
+  const state={head:'1'.repeat(40),repository:{candidate:null},cycles:[]};
+  for(const [port,stage,message,diagnostic] of [
+    ['snapshot','LEDGER_READ','CYCLE_PRIVATE_VALUE','CYCLE_EVENT_STOPPED\nstage=LEDGER_READ category=UNCLASSIFIED'],
+    ['get','SOURCE_READ','NATIVE_HTTP_403','CYCLE_EVENT_STOPPED\nstage=SOURCE_READ category=NATIVE_HTTP_403'],
+    ['candidate','CANDIDATE','CANDIDATE_REF_DRIFT','CANDIDATE_REF_DRIFT\nstage=CANDIDATE'],
+    ['candidate','CANDIDATE','NATIVE_HTTP_403: private details','CYCLE_EVENT_STOPPED\nstage=CANDIDATE category=UNCLASSIFIED'],
+  ]) {
+    const calls=[];
+    const ports={snapshot:async()=>state,get:async()=>({object:{sha:source}}),candidate:async()=>({status:'READY'})};
+    ports[port]=async()=>{calls.push(stage);throw Error(message)};
+    await assert.rejects(advanceEvent(push(source),ports),error=>publicCycleError(error)===diagnostic);
+    assert.deepEqual(calls,[stage]);
+  }
+});
+
+
+test('run and publication read failures retain their source stage',async()=>{
+  const snapshot=async()=>({cycles:[]});
+  const unavailable=async()=>{throw Error('NATIVE_HTTP_503')};
+  for(const [kind,repositoryId,port] of [['run',product.id,'get'],['publication',1296724484,'centralGet']]) {
+    await assert.rejects(advanceEvent({kind,repositoryId,runId:52,attempt:1},{snapshot,[port]:unavailable}),
+      error=>publicCycleError(error)==='CYCLE_EVENT_STOPPED\nstage=SOURCE_READ category=NATIVE_HTTP_503');
+  }
+});
+
+test('a channel probe source error is reported only for runs on the registered workflow path',async()=>{
+  const event={kind:'run',repositoryId:product.id,runId:52,attempt:1};
+  const run={id:52,run_attempt:1,status:'completed',conclusion:'success',repository:{id:product.id},
+    head_repository:{id:product.id},actor:{id:301115370},head_branch:'main',head_sha:source,
+    event:'workflow_dispatch',workflow_id:410998651,created_at:'2026-11-19T01:00:00Z',
+    updated_at:'2026-11-19T01:01:00Z',display_title:'Channels observe '+source,
+    path:'.github/workflows/steward-release-channels.yml'};
+  const ports={snapshot:async()=>({cycles:[]}),get:async()=>run,
+    probeWorkflow:async()=>{throw Error('NATIVE_HTTP_503');}};
+  await assert.rejects(advanceEvent(event,ports),
+    error=>publicCycleError(error)==='CYCLE_EVENT_STOPPED\nstage=SOURCE_READ category=NATIVE_HTTP_503');
+  run.path='.github/workflows/other.yml';
+  await assert.rejects(advanceEvent(event,ports),/CYCLE_EVENT_AMBIGUOUS/);
+});
+
+test('cleanup runs once and preserves an earlier business failure',async()=>{
+  let calls=0;
+  const cleanup=async()=>{calls++;throw Error('private path')};
+  const original=new Error('BOUNDED_RUN_SOURCE');
+  await assert.rejects(withCycleCleanup(async()=>{throw original},cleanup),error=>error===original);
+  await assert.rejects(withCycleCleanup(async()=>1,cleanup),
+    error=>publicCycleError(error)==='CYCLE_EVENT_STOPPED\nstage=CLEANUP category=UNCLASSIFIED');
+  assert.equal(calls,2);
 });

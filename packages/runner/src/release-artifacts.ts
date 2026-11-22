@@ -4,9 +4,11 @@ import { lstat, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { artifactNames, type ReleaseUnit } from '../../core/src/release-descriptor.js';
 import { assertDeliveryAssetName } from '../../core/src/delivery-config.js';
+import { isBuildWorkflow, workflowPathPattern } from '../../core/src/release-workflow.js';
 import { inspectBuildFile, verifyBuildFileStates, type NativeVersionInspector } from './build-manifest.js';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { ProducerReceipt } from './release-run.js';
+import type { WorkflowDeliveryReceipt } from '../../core/src/release-observation.js';
 import schema from '../../../schema/artifact-manifest.schema.json' with { type: 'json' };
 import type { DeliveryUnit } from '../../core/src/delivery-config.js';
 import { deliveryAssetNames } from '../../core/src/delivery-config.js';
@@ -26,9 +28,51 @@ export interface ReleaseManifest extends ReleaseIdentity {
 }
 export interface ProductReleaseManifest {
   schemaVersion: 3; repositoryId: number; fullName: string; cycleId: string; requestKey: string; unitId: string;
+  buildWorkflow?: string;
   version: string; packageVersion: string; tag: string; sourceSha: string; controllerSha: string; buildRef: string;
   deliverySha256: string; templateSha256: string; runId: number; attempt: number; toolLocks: Record<string, string>;
   producers: ProducerReceipt[]; artifacts: (FileDigest & { id: string; mediaType: string })[]; evidence: FileDigest[];
+}
+
+/** Computed from one product handoff. No manifest or SBOM file is required in the artifact. */
+export interface WorkflowReleaseManifest {
+  schemaVersion: 4;
+  repositoryId:number;fullName:string;cycleId:string;unitId:string;version:string;packageVersion:string;tag:string;
+  sourceSha:string;buildWorkflow:string;buildRef:string;workflowId:number;runId:number;attempt:number;
+  delivery:WorkflowDeliveryReceipt;attested:boolean;
+  artifacts:(FileDigest&{id:string})[];
+}
+
+export type PublicationManifest=ReleaseManifest|ProductReleaseManifest|WorkflowReleaseManifest;
+
+export function validateWorkflowManifest(manifest:WorkflowReleaseManifest):void {
+  if(!/^[\w.-]+\/[\w.-]+$/.test(manifest.fullName)||manifest.fullName.split('/').some(part=>part==='.'||part==='..')
+    ||!/^[a-f0-9]{40}$/.test(manifest.sourceSha)||!manifest.cycleId.endsWith('-'+manifest.sourceSha)
+    ||manifest.buildRef!=='refs/heads/steward/build/'+manifest.cycleId||!isBuildWorkflow(manifest.buildWorkflow)
+    ||![manifest.repositoryId,manifest.workflowId,manifest.runId,manifest.attempt,manifest.delivery.artifactId].every(id=>Number.isSafeInteger(id)&&id>0)
+    ||manifest.delivery.runId!==manifest.runId||!Number.isSafeInteger(manifest.delivery.attempt)||manifest.delivery.attempt<1
+    ||(manifest.delivery.buildAttempt??manifest.delivery.attempt)!==manifest.attempt
+    ||manifest.delivery.buildAttempt!==undefined&&manifest.delivery.buildAttempt<=manifest.delivery.attempt
+    ||!/^sha256:[a-f0-9]{64}$/.test(manifest.delivery.digest)||typeof manifest.attested!=='boolean'
+    ||!manifest.artifacts.length||new Set(manifest.artifacts.map(file=>file.path.toLowerCase())).size!==manifest.artifacts.length
+    ||manifest.artifacts.some(file=>!Number.isSafeInteger(file.size)||file.size<=0||!/^[a-f0-9]{64}$/.test(file.sha256)))fail('workflow manifest identity');
+  for(const file of manifest.artifacts)assertDeliveryAssetName(file.path);
+}
+
+export async function publicationManifestDigest(directory:string,manifest:PublicationManifest):Promise<string> {
+  if(manifest.schemaVersion===4)return createHash('sha256').update(JSON.stringify(manifest)).digest('hex');
+  return (await fileDigest(directory,'artifact-manifest.json')).sha256;
+}
+
+export async function verifyPublicationFiles(directory:string,manifest:PublicationManifest) {
+  if(manifest.schemaVersion!==4)return verifySealedArtifacts(directory,manifest);
+  if(!manifest.artifacts.length
+    ||JSON.stringify((await readdir(directory)).sort())!==JSON.stringify(manifest.artifacts.map(file=>file.path).sort()))
+    fail('workflow delivery file set');
+  for(const file of manifest.artifacts) {
+    const actual=await fileDigest(directory,file.path);
+    if(actual.size!==file.size||actual.sha256!==file.sha256)fail('workflow delivery bytes');
+  }
 }
 const productSchema = structuredClone(schema) as any;
 productSchema.properties.schemaVersion = { const: 3 };
@@ -39,6 +83,7 @@ for (const [before, after] of [['policySha', 'controllerSha'], ['descriptorSha25
 Object.assign(productSchema.properties, { cycleId: { type: 'string', pattern: '^pr-[1-9][0-9]*-[a-f0-9]{40}$' },
   requestKey: { type: 'string', pattern: '^[a-f0-9]{64}$' }, buildRef: { type: 'string', pattern: '^refs/heads/steward/build/pr-[1-9][0-9]*-[a-f0-9]{40}$' } });
 productSchema.required.push('cycleId', 'requestKey', 'buildRef');
+productSchema.properties.buildWorkflow = {type:'string',pattern:workflowPathPattern};
 for (const key of ['kind', 'platform', 'architecture']) {
   delete productSchema.properties.artifacts.items.properties[key];
   productSchema.properties.artifacts.items.required = productSchema.properties.artifacts.items.required.filter((value: string) => value !== key);
@@ -47,6 +92,7 @@ const validateProduct = new Ajv2020({ strict: true }).compile(productSchema);
 export function validateProductManifest(input: unknown): asserts input is ProductReleaseManifest {
   if (!validateProduct(input)) throw new Error('RELEASE_ARTIFACTS: product manifest schema');
   const manifest = input as unknown as ProductReleaseManifest;
+  if (manifest.buildWorkflow !== undefined && !isBuildWorkflow(manifest.buildWorkflow)) throw new Error('RELEASE_ARTIFACTS: product workflow');
   if (manifest.buildRef !== 'refs/heads/steward/build/' + manifest.cycleId || !manifest.cycleId.endsWith('-' + manifest.sourceSha))
     throw new Error('RELEASE_ARTIFACTS: product source');
 }
@@ -115,7 +161,7 @@ export async function inspectReleaseArtifacts(unit: ReleaseUnit, directory: stri
   const manifest = { ...structuredClone(input), schemaVersion: 2 as const, artifacts: artifacts.sort((a, b) => a.path.localeCompare(b.path)), evidence: [] };
   validateReleaseManifest(manifest); return manifest;
 }
-async function sealFiles<T extends ReleaseManifest | ProductReleaseManifest>(directory: string, manifest: T): Promise<T> {
+async function sealFiles<T extends ReleaseManifest | ProductReleaseManifest>(directory: string, manifest: T, expectedNotes?: string): Promise<T> {
   if (manifest.schemaVersion === 3) validateProductManifest(manifest); else validateReleaseManifest(manifest);
   if (manifest.evidence.length) fail('already sealed');
   for (const artifact of manifest.artifacts) {
@@ -126,8 +172,11 @@ async function sealFiles<T extends ReleaseManifest | ProductReleaseManifest>(dir
   if (JSON.stringify((await readdir(directory)).sort()) !== JSON.stringify(expected)) fail('evidence set mismatch');
   const sbom = JSON.parse(await readFile(join(directory, names[0]!), 'utf8'));
   if (!/^SPDX-2\.[0-9]+$/.test(sbom.spdxVersion) || sbom.SPDXID !== 'SPDXRef-DOCUMENT' || !Array.isArray(sbom.packages)) fail('invalid SBOM');
-  const notes = await readFile(join(directory, names[1]!), 'utf8');
-  if (!notes.includes(manifest.version) || !notes.includes(manifest.sourceSha) || manifest.schemaVersion === 2 && !notes.includes(manifest.policySha)) fail('notes identity');
+  const notesBytes = await readFile(join(directory, names[1]!));
+  const notes = notesBytes.toString('utf8');
+  if (expectedNotes !== undefined ? !notesBytes.equals(Buffer.from(expectedNotes))
+    : !notes.includes(manifest.version) || !notes.includes(manifest.sourceSha) || manifest.schemaVersion === 2 && !notes.includes(manifest.policySha))
+    fail('notes identity');
   const sealed = { ...manifest, evidence: await Promise.all(names.map(name => fileDigest(directory, name))) };
   await writeFile(join(directory, 'artifact-manifest.json'), JSON.stringify(sealed, null, 2) + '\n', { flag: 'wx' });
   const checksums = [...sealed.artifacts, ...sealed.evidence, await fileDigest(directory, 'artifact-manifest.json')]
@@ -136,7 +185,9 @@ async function sealFiles<T extends ReleaseManifest | ProductReleaseManifest>(dir
   return sealed;
 }
 export async function sealReleaseArtifacts(directory: string, manifest: ReleaseManifest): Promise<ReleaseManifest> { return sealFiles(directory, manifest); }
-export async function sealProductArtifacts(directory: string, manifest: ProductReleaseManifest): Promise<ProductReleaseManifest> { return sealFiles(directory, manifest); }
+export async function sealProductArtifacts(directory: string, manifest: ProductReleaseManifest, expectedNotes?: string): Promise<ProductReleaseManifest> {
+  return sealFiles(directory, manifest, expectedNotes);
+}
 export async function verifySealedArtifacts(directory: string, expected: ReleaseManifest | ProductReleaseManifest): Promise<void> {
   if (expected.schemaVersion === 3) validateProductManifest(expected); else validateReleaseManifest(expected);
   const manifest = JSON.parse(await readFile(join(directory, 'artifact-manifest.json'), 'utf8'));

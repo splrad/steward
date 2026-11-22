@@ -15,7 +15,7 @@ export async function main(env=process.env) {
   }
   const legacy=JSON.parse(await readFile(new URL('../config/review/legacy-instructions.json',import.meta.url),'utf8'));
   await assertRepositoryInstructions(workspace,await readFile(new URL('../templates/repository/AGENTS.md',import.meta.url)),
-    {repositoryId:input.repositoryId,legacy,templateSource:env.GITHUB_REPOSITORY===env.WORKFLOW_REPOSITORY});
+    {repositoryId:input.repositoryId,legacy,templateSource:env.GITHUB_REPOSITORY===env.WORKFLOW_REPOSITORY,head:input.head});
   verifySecurityPolicy(workspace,input.base,input.head,securityPolicyController,input.workflowSha,
     env.GITHUB_HEAD_REF === 'steward/managed-sync',env.GITHUB_REPOSITORY === env.WORKFLOW_REPOSITORY);
   console.log(JSON.stringify(await scanWorkflows(workspace,await discoverWorkflowFiles(workspace,true),undefined,input.repositoryId),null,2));

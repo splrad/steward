@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { isolatedBuildEnvironment } from './build-environment.js';
 import { parseDeliveryConfig } from '../../core/src/delivery-config.js';
+import { dispatchWorkflow, encodeRepositoryPath } from '../../core/src/release-workflow.js';
 import { join } from 'node:path';
 import { downloadNativeArtifact } from './native-artifact-download.js';
 import { nativeJobOrigins, withinNativeJobWindow } from '../../core/src/native-job-origins.js';
@@ -92,23 +93,23 @@ export function productBusinessResults(context: EvidenceContext, request: CycleR
 }
 
 type Dispatch = CycleRecord['dispatches'][number];
-export function verifyDispatchWorkflow(bytes:Uint8Array,request:Pick<Dispatch,'purpose'|'inputs'>) {
+export function verifyDispatchWorkflow(bytes:Uint8Array,request:Pick<Dispatch,'purpose'|'inputs'|'buildWorkflow'>) {
   const document=parseDocument(new TextDecoder('utf-8',{fatal:true}).decode(bytes),{uniqueKeys:true});
   if(document.errors.length)fail('dispatch workflow YAML');
   const workflow=document.toJS({maxAliasCount:0}),inputs=workflow?.on?.workflow_dispatch?.inputs;
-  if(!inputs||Object.keys(inputs).sort().join(',')!==Object.keys(request.inputs).sort().join(',')
-    ||Object.values(inputs).some((input:any)=>input?.type!=='string'||input.required!==true)
+  const required=Object.keys(request.inputs);
+  if(!inputs||required.some(key=>inputs[key]?.type!=='string'||inputs[key].required!==true)
+    ||Object.entries(inputs).some(([key,input]:[string,any])=>!required.includes(key)&&(request.buildWorkflow===undefined||input?.required===true))
     ||typeof workflow['run-name']!=='string'||!workflow['run-name'].includes(request.purpose==='build'?'${{ inputs.operation_key }}':'${{ inputs.request_key }}'))fail('dispatch workflow interface');
 }
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
 const validId = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value)>0;
-const workflowPath = (request: Dispatch) => `.github/workflows/steward-release-${request.purpose==='build'?'publish':'channels'}.yml`;
 /** A title is only a search filter. Native IDs, source, actor and immutable binding are checked separately. */
 export function verifyExecutionSource(actualRun: NativeRun, requestIdentity: EvidenceContext & { request: Dispatch }, frozenEvidence?: { canonicalRunId: number }) {
   const {request,repositoryId,appBotId}=requestIdentity;
   if(!validId(actualRun.id) || !validId(actualRun.runAttempt) || !validId(actualRun.triggeringActorId)
     || actualRun.repositoryId!==repositoryId || actualRun.headRepositoryId!==repositoryId || actualRun.workflowId!==request.workflowId
-    || actualRun.path!==workflowPath(request) || actualRun.event!=='workflow_dispatch' || actualRun.headSha!==request.executionSha
+    || actualRun.path!==dispatchWorkflow(request) || actualRun.event!=='workflow_dispatch' || actualRun.headSha!==request.executionSha
     || actualRun.headBranch!==request.ref || actualRun.actorId!==appBotId
     || !Number.isFinite(Date.parse(actualRun.createdAt)) || Date.parse(actualRun.createdAt)<Math.floor(Date.parse(request.sentAt)/1000)*1000
     || typeof actualRun.displayTitle!=='string' || !actualRun.displayTitle.includes(request.purpose==='build'?request.operationKey:request.requestKey)
@@ -119,10 +120,11 @@ export function verifyExecutionSource(actualRun: NativeRun, requestIdentity: Evi
 export function prepareBuildDispatch(context: EvidenceContext, workflowId: number, sentAt: string): Dispatch {
   if(!validId(workflowId) || !Number.isFinite(Date.parse(sentAt)))fail('dispatch preparation');
   const cycle=parseReleaseRecord('cycle',context.cycle);
+  const {buildWorkflow}=cycle;
   const request:Dispatch={requestKey:'0'.repeat(64),operationKey:'0'.repeat(64),purpose:'build',workflowId,ref:`steward/build/${cycle.id}`,
     sourceSha:cycle.sourceSha,targetKey:'pending',inputs:{cycle_id:cycle.id,operation_key:'0'.repeat(64),source_sha:cycle.sourceSha,controller_sha:cycle.controllerSha},
     inputDigest:'0'.repeat(64),executionSha:cycle.sourceSha,sentAt:new Date(Math.floor(Date.parse(sentAt)/1000)*1000).toISOString(),searchWindows:[],canonicalRunId:null,
-    nativeResponseEvidencePath:null,continuationOfRunId:null,retryLimitEvidencePath:null};
+    nativeResponseEvidencePath:null,continuationOfRunId:null,retryLimitEvidencePath:null,...(buildWorkflow===undefined?{}:{buildWorkflow})};
   Object.assign(request,nativeRequestIdentity(context.repositoryId,cycle,request));request.inputs.operation_key=request.operationKey;
   return request;
 }
@@ -242,6 +244,8 @@ export async function nativeOrasRead(args:readonly string[]):Promise<string> {
   } finally {await rm(home,{recursive:true,force:true});}
 }
 export async function readDirectChannelTargets(context:EvidenceContext,targets:ChannelTarget[],io:EvidenceTransport,now:string,oras:OrasRead=nativeOrasRead,history:ChannelRecord[]=[]) {
+  // The direct evidence format binds legacy delivery.json. Workflow-owned targets still need the native product probe.
+  if(!targets.length||context.cycle.workflowDelivery)return {files:[] as ArchiveFile[],reads:[] as ChannelReadItem[]};
   const reader=new NativeEvidenceReader(io,context.repository);let source:any,legacy:ReturnType<typeof verifyNormalizedDelivery>|undefined;
   try {source=await reader.json(`contents/.github/delivery.json?ref=${context.cycle.sourceSha}`);}catch(error) {
     if ((error instanceof EvidenceReadError) && error.status === 404) {
@@ -254,7 +258,7 @@ export async function readDirectChannelTargets(context:EvidenceContext,targets:C
     }
   }
   const bytes=legacy?Buffer.from(JSON.stringify(legacy)):Buffer.from(source.content??'','base64');
-  if(!legacy&&(source.type!=='file'||source.encoding!=='base64'||source.size!==bytes.length||source.sha!==context.cycle.deliveryConfigSha
+  if(!legacy&&(source.path!=='.github/delivery.json'||source.type!=='file'||source.encoding!=='base64'||source.size!==bytes.length||source.sha!==context.cycle.deliveryConfigSha
     ||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==source.sha))fail('direct delivery source');
   const delivery=legacy?.normalizedDelivery??parseDeliveryConfig(JSON.parse(bytes.toString('utf8'))),sources:NativeChannelRead['sources']=[];
   for(const target of targets) {
@@ -360,6 +364,7 @@ export function selectChannelDispatch(context:EvidenceContext,reads:ChannelReadI
   const submit:ChannelTarget[]=[],verify:ChannelTarget[]=[];
   for(const channel of context.cycle.requiredChannels) {
     const unit=context.cycle.units.find(unit=>unit.id===channel.unitId)!, matches=reads.filter(read=>read.unitId===channel.unitId&&read.channelId===channel.channelId);
+    if(context.cycle.workflowDelivery&&!unit.channelDeliveries?.some(receipt=>receipt.channelId===channel.channelId))continue;
     if(matches.length!==1)return {kind:'unknown' as const};const read=matches[0]!;
     if(['AUTH_UNKNOWN','TRANSIENT','CONFLICT'].includes(read.readStatus))return {kind:'unknown' as const};
     const target={...channel,version:unit.version,releaseId:unit.releaseId!,manifestDigest:unit.manifestDigest!};channelTargets(context,[target]);
@@ -396,9 +401,12 @@ export interface DispatchHistory { complete: boolean; observations:NativeDispatc
   publication?:NonNullable<import('./native-release-evidence.js').ReadHistory['publication']> }
 
 /** Download and verify the original formal bytes; continuation never selects a build. */
-export async function verifyContinuationReleases(context:EvidenceContext,io:EvidenceTransport) {
+export async function verifyContinuationReleases(context:EvidenceContext,io:EvidenceTransport,unitIds?:ReadonlySet<string>) {
+  const units=githubUnits(context.cycle).filter(unit=>!unitIds||unitIds.has(unit.id));
+  if(unitIds&&units.length!==unitIds.size)fail('unknown formal release unit');
+  if(!units.length)return;
   const reader=await formalReleaseReader(context,io);
-  for(const unit of githubUnits(context.cycle)) {
+  for(const unit of units) {
     if(unit.releaseId===null||!unit.assets.length||unit.manifestDigest===null||unit.notesDigest===null)fail('frozen release required');
     const release=await reader.json(`releases/${unit.releaseId}`),assets=await reader.pages(`releases/${unit.releaseId}/assets`,'');
     if(release.id!==unit.releaseId||release.tag_name!==unit.tag||release.author?.id!==context.appBotId||release.draft!==false||release.immutable!==true
@@ -406,6 +414,7 @@ export async function verifyContinuationReleases(context:EvidenceContext,io:Evid
           sourceSha: context.cycle.sourceSha, tag: unit.tag, frozenDigest: unit.notesDigest }, release.body, path => reader.json(path))||(await reader.json(`commits/${encodeURIComponent(unit.tag)}`)).sha!==context.cycle.sourceSha
       ||assets.length!==unit.assets.length||new Set(assets.map(asset=>asset.name)).size!==assets.length)fail('formal release identity');
     for(const asset of assets) {
+      if(unit.githubDelivery&&asset.state!=='uploaded')fail('formal release asset');
       const actual=await reader.downloadDigest(`releases/assets/${asset.id}`);
       if(actual.size!==asset.size||!unit.assets.some(expected=>expected.path===asset.name&&expected.size===actual.size&&expected.sha256===actual.digest))fail('formal release bytes');
     }
@@ -492,8 +501,8 @@ export async function readChannelSourceRejections(context:EvidenceContext,histor
       return match?[JSON.parse(match[1]!)]:[];
     });
     if(markers.length!==1||JSON.stringify(markers[0])!==JSON.stringify({status:'REJECTED',reason:'SOURCE_REF_MOVED'}))continue;
-    const workflow=await reader.json(`contents/${run.path}?ref=${run.headSha}`),bytes=Buffer.from(workflow.content??'','base64');
-    if(workflow.type!=='file'||workflow.encoding!=='base64'||workflow.size!==bytes.length||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==workflow.sha)fail('source rejection workflow');
+    const workflow=await reader.json(`contents/${encodeRepositoryPath(run.path)}?ref=${run.headSha}`),bytes=Buffer.from(workflow.content??'','base64');
+    if(workflow.path!==run.path||workflow.type!=='file'||workflow.encoding!=='base64'||workflow.size!==bytes.length||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==workflow.sha)fail('source rejection workflow');
     verifyDispatchWorkflow(bytes,request);
     const value:NativeSourceRejection={schemaVersion:1,repositoryId:context.repositoryId,cycleId:context.cycle.id,requestKey:request.requestKey,
       expectedExecutionSha:request.executionSha,observedAt,workflowBlobSha:workflow.sha,run,jobs,logDigest:createHash('sha256').update(logs).digest('hex'),reason:'SOURCE_REF_MOVED'};
@@ -534,7 +543,7 @@ export async function dispatchNativeRun(input:EvidenceContext, requestKey:string
     const repo=await reader.json('');
     if(repo.id!==context.repositoryId || repo.full_name!==context.repository || repo.archived || repo.disabled)fail('dispatch repository');
     const workflow=await reader.json(`actions/workflows/${request.workflowId}`);
-    if(workflow.id!==request.workflowId || workflow.path!==workflowPath(request) || workflow.state!=='active')fail('dispatch workflow');
+    if(workflow.id!==request.workflowId || workflow.path!==dispatchWorkflow(request) || workflow.state!=='active')fail('dispatch workflow');
     const ref=await reader.json(`git/ref/heads/${request.ref}`);
     if(ref.ref!==`refs/heads/${request.ref}` || ref.object?.type!=='commit' || ref.object.sha!==request.executionSha)fail('SOURCE_REF_MOVED');
     // A previously archived 200 response remains authoritative after a lost binding write.
@@ -561,6 +570,10 @@ export async function dispatchNativeRun(input:EvidenceContext, requestKey:string
     } else if(observations.some(value=>value.kind!=='READ_FAILURE'))fail('dispatch preparation missing');
     const deferred=Math.max(0,...observations.map(value=>Date.parse(value.nextCheckAt??'')||0));
     if(Date.parse(observedAt)<deferred)return result('WAIT','NATIVE_RETRY_AFTER',new Date(deferred).toISOString());
+    if(cycle.workflowDelivery&&request.purpose!=='build') {
+      const units=new Set(channelTargets(context,JSON.parse(request.inputs.targets_json!)).map(target=>target.unitId));
+      await verifyContinuationReleases(context,io,units);
+    }
     const preparedValue=observation('PREPARED');
     // UNCHANGED means another caller may already own this exact attempt. It cannot grant a second send.
     if(await save(preparedValue)!=='APPLIED')return result('UNKNOWN','DISPATCH_INTENT_NOT_NEW');
@@ -665,7 +678,8 @@ export async function observeNativeChannels(context:EvidenceContext,history:Chan
   root:string,controllerDirectory:string,token:string,io:EvidenceTransport,now:string,oras:OrasRead=nativeOrasRead, allowProbeDispatch=true) {
   const reader=new NativeEvidenceReader(io,context.repository),repository=await reader.json('');
   if(repository.id!==context.repositoryId||repository.full_name!==context.repository||repository.archived!==false||repository.disabled!==false)fail('channel repository');
-  const allTargets=channelTargets(context,context.cycle.requiredChannels.map(channel=>{
+  const allTargets=channelTargets(context,context.cycle.requiredChannels.filter(channel=>!context.cycle.workflowDelivery
+    ||context.cycle.units.find(unit=>unit.id===channel.unitId)?.channelDeliveries?.some(receipt=>receipt.channelId===channel.channelId)).map(channel=>{
     const unit=context.cycle.units.find(unit=>unit.id===channel.unitId)!;return {...channel,version:unit.version,releaseId:unit.releaseId!,manifestDigest:unit.manifestDigest!};
   }));
   const files:ArchiveFile[]=[],results:{item:ChannelResultItem;evidence:NativeChannelEvidence;path:string}[]=[],runs:NativeRun[]=[];

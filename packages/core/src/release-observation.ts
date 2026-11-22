@@ -10,6 +10,7 @@ import addFormatsModule from 'ajv-formats';
 import schema from '../../../schema/release-state.schema.json' with { type: 'json' };
 import historicalRepositorySchema from '../../../schema/repository-state-v2.schema.json' with { type: 'json' };
 import { assertDeliveryPath } from './delivery-config.js';
+import { isBuildWorkflow } from './release-workflow.js';
 import { decodeBuildJson } from './build-manifest.js';
 import { sha256Hex } from './fingerprint.js';
 import { decodeNativeArchive, decodeNativeReadObservation, decodeNativeDispatchObservation, decodeNativeRetryLimit, decodeNativePublication, decodeNativeChannel, decodeNativeChannelRead, decodeNormalizedDelivery, decodeNativeSourceRejection } from './native-evidence.js';
@@ -47,14 +48,23 @@ export function assertRepositoryWrite(value: RepositoryRecord, previous?: Reposi
   if(!value||value.schemaVersion!==3)throw new Error('RELEASE_OBSERVATION: historical repository is read-only');
   if(previous?.schemaVersion===3&&(value.releaseAdoption.sourceSha!==previous.releaseAdoption.sourceSha||value.releaseAdoption.prNumber!==previous.releaseAdoption.prNumber))fail('release adoption changed');
 }
-export interface CycleUnit { id: string; version: string; tag: string; releaseId: number | null; assets: { id: string; path: string; size: number; sha256: string }[]; notesDigest: string | null; manifestDigest: string | null }
+export interface WorkflowDeliveryReceipt { runId: number; attempt: number; buildAttempt?: number; artifactId: number; digest: string }
+export function sameWorkflowDelivery(a:WorkflowDeliveryReceipt,b:WorkflowDeliveryReceipt):boolean {
+  return a.runId===b.runId&&a.attempt===b.attempt&&a.buildAttempt===b.buildAttempt&&a.artifactId===b.artifactId&&a.digest===b.digest;
+}
+export interface CycleAsset { id:string; path:string; size:number; sha256:string }
+export interface WorkflowChannelReceipt { channelId:'ghcr-assets'|'winget'; delivery:WorkflowDeliveryReceipt; assets:CycleAsset[] }
+export interface CycleUnit { id: string; version: string; tag: string; releaseId: number | null; assets: CycleAsset[]; notesDigest: string | null; manifestDigest: string | null; githubDelivery?: WorkflowDeliveryReceipt; githubDisabled?: true; channelDeliveries?: WorkflowChannelReceipt[] }
 export function githubUnits(cycle: Pick<CycleRecord,'units'|'freezeOnly'>): CycleRecord['units'] {
-  return cycle.units.filter(unit=>!cycle.freezeOnly?.some(receipt=>receipt.unitId===unit.id));
+  return cycle.units.filter(unit=>!unit.githubDisabled&&!cycle.freezeOnly?.some(receipt=>receipt.unitId===unit.id));
 }
 export interface CycleRecord {
   id: string; prNumber: number; sourceSha: string; controllerSha: string; deliveryConfigSha: string; units: CycleUnit[];
+  buildWorkflow?: string;
+  workflowDelivery?: true;
   requiredChannels: { unitId: string; channelId: string }[];
   dispatches: { requestKey: string; operationKey: string; purpose: 'build' | 'channel-submit' | 'channel-verify'; workflowId: number;
+    buildWorkflow?: string;
     ref: string; sourceSha: string; targetKey: string; inputs: Record<string, string>; inputDigest: string; executionSha: string;
     sentAt: string; searchWindows: { start: string; end: string; observedAt: string; complete: boolean }[]; canonicalRunId: number | null;
     nativeResponseEvidencePath: string | null; continuationOfRunId: number | null; retryLimitEvidencePath: string | null }[];
@@ -64,6 +74,7 @@ export interface CycleRecord {
   executionEvidence: { waveKey: string; runId: number; runAttempt: number; workflowId: number; jobIds: number[]; executorControllerSha: string; nativeEvidencePath: string; outcomeEvidencePath: string | null; observedAt: string }[];
   completionObservations: { inputSetDigest: string; evidenceSetDigest: string; observedAt: string; evidencePath: string }[];
   freezeCompletedAt?: string;
+  freezeBuildAttempt?: number;
   freezeOnly?: {unitId:string; runId:number; attempt:number; producerAttempt:number; artifactId:number; archiveDigest:string}[];
   completedEvidencePath: string | null; repairOf: string | null; approvedRepairDecision: { cycleId: string; sourceSha: string; [key: string]: unknown } | null;
 }
@@ -93,18 +104,36 @@ export function parseReleaseRecord<K extends keyof RecordKinds>(kind: K, value: 
   }
   if (kind === 'cycle') {
     const record = value as CycleRecord;
+    if (record.buildWorkflow !== undefined && !isBuildWorkflow(record.buildWorkflow)) fail('cycle workflow');
     if (record.id !== `pr-${record.prNumber}-${record.sourceSha}` || !record.units.length || !unique(record.units.map(unit => unit.id))) fail('cycle identity');
     const pair = (value: { unitId: string; channelId: string }) => JSON.stringify([value.unitId, value.channelId]);
     if (!unique(record.requiredChannels.map(pair)) || record.requiredChannels.some(item => !record.units.some(unit => unit.id === item.unitId))) fail('required channels');
     for (const unit of record.units) if (!unique(unit.assets.map(asset => asset.id)) || !unique(unit.assets.map(asset => asset.path.toLowerCase()))) fail('duplicate asset');
-    if (record.freezeCompletedAt && (!record.freezeOnly || githubUnits(record).length || !Number.isFinite(Date.parse(record.freezeCompletedAt)))) fail('freeze-only completion');
+    if (record.freezeCompletedAt && (!record.freezeOnly&&(record.requiredChannels.length||!record.units.every(unit=>unit.githubDisabled))
+      || githubUnits(record).length || !Number.isFinite(Date.parse(record.freezeCompletedAt)))) fail('freeze-only completion');
+    if (record.freezeBuildAttempt!==undefined && (!record.freezeCompletedAt||!record.workflowDelivery||record.freezeOnly||record.requiredChannels.length
+      ||!record.units.every(unit=>unit.githubDisabled)||record.dispatches.filter(request=>request.purpose==='build'&&request.canonicalRunId!==null).length!==1))
+      fail('freeze build attempt');
     if (record.freezeOnly && (record.requiredChannels.some(channel=>record.freezeOnly!.some(receipt=>receipt.unitId===channel.unitId))
       ||  !unique(record.freezeOnly.map(item=>item.unitId))
       || record.freezeOnly.some(receipt=>receipt.producerAttempt>receipt.attempt || !record.dispatches.some(request=>request.purpose==='build' && request.canonicalRunId===receipt.runId)
         || !record.units.some(unit=>unit.id===receipt.unitId && unit.releaseId===null && unit.manifestDigest && unit.notesDigest && unit.assets.length))))
       fail('freeze-only receipt');
     if (!unique(record.dispatches.map(item => item.requestKey))) fail('duplicate request');
+    for (const unit of record.units) {
+      const deliveries=[unit.githubDelivery,...(unit.channelDeliveries??[]).map(receipt=>receipt.delivery)];
+      if(deliveries.some(delivery=>delivery?.buildAttempt!==undefined&&(!record.workflowDelivery||delivery.buildAttempt<=delivery.attempt)))
+        fail('workflow delivery build attempt');
+      if (unit.githubDelivery && (!unit.assets.length || !unit.notesDigest || !unit.manifestDigest
+        || !record.dispatches.some(dispatch=>dispatch.purpose==='build' && dispatch.canonicalRunId===unit.githubDelivery!.runId))) fail('GitHub delivery receipt');
+      if (unit.githubDisabled && (!record.workflowDelivery || unit.releaseId!==null || unit.githubDelivery)) fail('disabled GitHub delivery');
+      if (unit.channelDeliveries && (!record.workflowDelivery || !unique(unit.channelDeliveries.map(receipt=>receipt.channelId))
+        || unit.channelDeliveries.some(receipt=>!record.requiredChannels.some(channel=>channel.unitId===unit.id&&channel.channelId===receipt.channelId)
+          || !record.dispatches.some(dispatch=>dispatch.purpose==='build'&&dispatch.canonicalRunId===receipt.delivery.runId)
+          || !unique(receipt.assets.map(asset=>asset.path.toLowerCase())) || !unique(receipt.assets.map(asset=>asset.id))))) fail('workflow channel delivery');
+    }
     for (const request of record.dispatches) {
+      if (request.buildWorkflow !== (request.purpose === 'build' ? record.buildWorkflow : undefined)) fail('dispatch workflow');
       if (request.sourceSha !== record.sourceSha || request.canonicalRunId !== null && request.nativeResponseEvidencePath === null
         || (request.continuationOfRunId === null) !== (request.retryLimitEvidencePath === null)) fail('dispatch evidence');
       const inputs=request.inputs;
