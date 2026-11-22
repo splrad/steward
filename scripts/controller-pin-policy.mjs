@@ -129,8 +129,8 @@ function readRevisionPins(workspace, revision) {
   return {controller: new Set(pins.map(pin => pin.sha)), versions: new Set(pins.map(pin => pin.version)), archiveReaders};
 }
 
-function verifyVersionLabels(policy, before, after, sha) {
-  if (before.size === 1 && before.has(null) && after.size === 1 && after.has(null)) return;
+function verifyVersionLabels(policy, before, after, sha, controllerChanged) {
+  if (!controllerChanged && before.size === 1 && before.has(null) && after.size === 1 && after.has(null)) return;
   const [version] = after;
   const number = controllerVersionNumber(version);
   if (after.size !== 1 || !number) throw Error('VALIDATION_CONTROLLER_VERSION_LABELS');
@@ -169,8 +169,9 @@ export function verifyLayerScapeControllerPins(workspace, input, policy, promote
   const after = readRevisionPins(workspace, input.head);
   if (after.controller.size !== 1) throw Error('VALIDATION_CONTROLLER_PIN_MISMATCH');
   const [candidate] = after.controller;
-  verifyVersionLabels(policy, before.versions, after.versions, candidate);
-  if (before.controller.size !== 1 || !before.controller.has(candidate)) {
+  const controllerChanged = before.controller.size !== 1 || !before.controller.has(candidate);
+  verifyVersionLabels(policy, before.versions, after.versions, candidate, controllerChanged);
+  if (controllerChanged) {
     verifyPromotion(policy, before.controller, candidate, promotedController);
   }
   for (const [key, reader] of after.archiveReaders) {

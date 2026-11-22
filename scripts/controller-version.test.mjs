@@ -15,6 +15,17 @@ function fixture({versions = 999, target = 1000, loseResponse = false} = {}) {
   const conditions = {repository_id: {repository_ids: [1296724484]}, ref_name: {include: ['refs/tags/controller-v*', 'refs/tags/controller-v*/**/*'], exclude: []}};
   const baseRule = {source: 'splrad', source_type: 'Organization', target: 'tag', enforcement: 'active', conditions};
   const rules = {
+    26970367: {id: 26970367, source: 'splrad', source_type: 'Organization', target: 'branch', enforcement: 'active',
+      conditions: {repository_id: {repository_ids: [1296724484]}, ref_name: {include: [branch], exclude: []}},
+      bypass_actors: [{actor_id: appId, actor_type: 'Integration', bypass_mode: 'always'}],
+      rules: [{type: 'creation'}, {type: 'update', parameters: {update_allows_fetch_and_merge: false}}]},
+    26970366: {id: 26970366, source: 'splrad', source_type: 'Organization', target: 'tag', enforcement: 'active',
+      conditions: {repository_id: {repository_ids: [1296724484]}, ref_name: {include: ['refs/tags/steward/validated-controller'], exclude: []}},
+      bypass_actors: [], rules: [{type: 'creation'}, {type: 'deletion'},
+        {type: 'update', parameters: {update_allows_fetch_and_merge: false}}]},
+    26970365: {id: 26970365, source: 'splrad', source_type: 'Organization', target: 'branch', enforcement: 'active',
+      conditions: {repository_id: {repository_ids: [1296724484]}, ref_name: {include: [branch], exclude: []}},
+      bypass_actors: [], rules: [{type: 'deletion'}, {type: 'non_fast_forward'}]},
     27857927: {...baseRule, id: 27857927, bypass_actors: [], rules: [
       {type: 'deletion'}, {type: 'update', parameters: {update_allows_fetch_and_merge: false}},
     ]},
@@ -81,5 +92,8 @@ test('refuses to number a moved source, a downgrade, or a namespace with widened
   data.rules[27857928].conditions.ref_name.include.push('refs/tags/controller-v*/**/*');
   data.rules[27857927].bypass_actors.push({actor_id: appId, actor_type: 'Integration', bypass_mode: 'always'});
   await assert.rejects(publish(998), /CONTROLLER_VERSION_RULE_SCOPE/);
+  data.rules[27857927].bypass_actors.pop();
+  data.rules[26970365].rules.pop();
+  await assert.rejects(publish(998), /CONTROLLER_SOURCE_RULE_TYPES/);
   assert.equal(data.history.length, 0);
 });

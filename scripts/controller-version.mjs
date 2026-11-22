@@ -1,5 +1,5 @@
 import {isDeepStrictEqual} from 'node:util';
-import {controllerSource} from './controller-source.mjs';
+import {controllerSource,createSourceGuard} from './controller-source.mjs';
 import {completeNativeRuleParameters} from './native-rule-parameters.mjs';
 
 export const controllerTagPrefix = 'refs/tags/controller-v';
@@ -65,7 +65,7 @@ async function protectedController(io) {
 
 /** Record the current protected source before its first advance, so retries retain the baseline. */
 export async function bootstrapControllerVersion(io, appId, assertCurrent, readRefs) {
-  await assertCurrent();
+  await createSourceGuard(io, appId, assertCurrent)();
   await assertVersionProtection(io, appId);
   if (latestControllerVersion(await readRefs())) return null;
   const baseline = await protectedController(io);
@@ -74,8 +74,9 @@ export async function bootstrapControllerVersion(io, appId, assertCurrent, readR
 
 export async function publishControllerVersion(io, target, appId, assertCurrent, readRefs) {
   check(sha(target), 'TARGET');
+  const sourceGuard = createSourceGuard(io, appId, assertCurrent);
   const guard = async () => {
-    await assertCurrent();
+    await sourceGuard();
     await assertVersionProtection(io, appId);
     check(await protectedController(io) === target, 'SOURCE_MOVED');
   };

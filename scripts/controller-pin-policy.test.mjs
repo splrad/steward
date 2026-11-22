@@ -75,8 +75,10 @@ test('requires forward promotion and consistent Steward references when LayerSca
   const older = upstream.commit('older');
   const promoted = upstream.commit('promoted');
   const unpromoted = upstream.commit('unpromoted');
+  const tags = new Map([[older, 'controller-v1'], [promoted, 'controller-v2'], [unpromoted, 'controller-v3']]);
+  for (const [sha, tag] of tags) git(upstream.dir, ['tag', tag, sha]);
   const product = productRepository(t);
-  const {pinFiles} = product;
+  const pinFiles = (sha, options) => product.pinFiles(sha, {version: tags.get(sha), ...options});
   const prior = pinFiles(older);
   const updated = pinFiles(promoted);
   const next = pinFiles(unpromoted);
@@ -109,7 +111,7 @@ test('requires forward promotion and consistent Steward references when LayerSca
 
   assert.doesNotThrow(() => validate(prior, updated));
   assert.doesNotThrow(() => validate(updated, updated, unpromoted));
-  assert.throws(() => validate(updated, prior), /VALIDATION_CONTROLLER_DOWNGRADE/);
+  assert.throws(() => validate(updated, prior), /VALIDATION_CONTROLLER_VERSION_DOWNGRADE/);
   assert.throws(() => validate(updated, next), /VALIDATION_CONTROLLER_NOT_PROMOTED/);
   assert.throws(() => validate(prior, mixedPages), /VALIDATION_CONTROLLER_PIN_MISMATCH/);
   assert.throws(() => validate(prior, mixedReusable), /VALIDATION_CONTROLLER_PIN_MISMATCH/);
@@ -188,6 +190,7 @@ test('binds the visible controller version to its protected tag at the four-digi
   const product = productRepository(t);
   const initial = product.pinFiles(older);
   const versioned = product.pinFiles(older, {version: 'controller-v999'});
+  const unlabeledAdvance = product.pinFiles(promoted);
   const upgraded = product.pinFiles(promoted, {version: 'controller-v1000'});
   const missing = product.pinFiles(promoted, {version: 'controller-v1000', omitLabelFrom: 'pages'});
   const wrong = product.pinFiles(promoted, {version: 'controller-v999'});
@@ -196,6 +199,7 @@ test('binds the visible controller version to its protected tag at the four-digi
     repositoryId: 1187527897, base, head, changedPaths: ['.github/workflows/pages.yml'],
   }, upstream.dir, current);
   assert.doesNotThrow(() => verify(initial, versioned));
+  assert.throws(() => verify(initial, unlabeledAdvance), /VALIDATION_CONTROLLER_VERSION_LABELS/);
   assert.doesNotThrow(() => verify(versioned, upgraded));
   assert.throws(() => verify(upgraded, versioned), /VALIDATION_CONTROLLER_VERSION_DOWNGRADE/);
   assert.throws(() => verify(versioned, missing), /VALIDATION_CONTROLLER_VERSION_LABELS/);
