@@ -142,7 +142,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     for (const path of state.currentPaths.filter(path => path.startsWith('cycles/')))
       persisted.set(path, await fileAt(state.head, path));
     let expectedHead = state.head, writes = 0, lastFacts = null, lastProtections = null, delivery = null, conditional = false, confirmedHumans, notesPaths;
-    let transferBaseDigest=null;
+    let transferBaseDigest=null,saveWithManifest=false;
     const loadDocument = async path => {
       const text = loaded.get(path); if (text === undefined) return null;
       const first = JSON.parse(text), chunks = [first];
@@ -294,7 +294,8 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       contentArchive:async(candidate,digest)=>{
         const selected=await selectContentArchive(candidate,digest,{loadDocument,controllerSha,grant:contentRecovery});
         transferBaseDigest=selected.transferBaseDigest;
-        return selected.digest;
+        saveWithManifest=transferBaseDigest!==null&&selected.digest!==candidate.contentGenerationDigest;
+        return {digest:selected.digest,saveWithManifest};
       },
       content: async (candidate, snapshot) => {
         if(observation)fail('CANDIDATE_OBSERVATION_CONTENT_FORBIDDEN');
@@ -370,9 +371,17 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
             const entryPath = `content/${candidate.id}/cache/${key}.json`; entries.push({ key, path: entryPath, digest: hash(JSON.stringify(entry)) });
             results.push(...archive('cache-entry', candidate.id, entryPath, entry));
           }
-          return persist([...archive('content', candidate.id, path, { input: work.input, payloadPaths, evidencePath,
+          const files=[...archive('content', candidate.id, path, { input: work.input, payloadPaths, evidencePath,
             ...(conditional ? { conditional: true } : {}) }),
-            ...archive('content-evidence', candidate.id, evidencePath, work.evidence), ...archive('cache', candidate.id, cachePath, { entries }), ...results]);
+            ...archive('content-evidence', candidate.id, evidencePath, work.evidence), ...archive('cache', candidate.id, cachePath, { entries }), ...results];
+          if(!saveWithManifest)return persist(files);
+          // Rebinding the pointer and creating the new manifest are one protected
+          // Git transaction. An interruption cannot strand the old release archive.
+          session.repository.revision++;
+          session.repository.lastProgressAt=now();
+          const published=await runtime.save(session,files);
+          saveWithManifest=false;
+          return published;
         };
         const result = await resumeContentBatches(work, cache, { now, repository: request.repository, recovery: contentRecovery, editing: async () => (await prs(candidate.branch)).some(p => p.number === candidate.prNumber && p.editing), ...sdk, save });
         if (result.status !== 'READY') return { status: result.status === 'EDITING' ? 'EDITING' : result.status === 'FAILED' ? 'FAILED' : 'WAIT' };
@@ -404,14 +413,14 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         }
         return { status: 'READY', files: assembleUnitNotes(work, notesPaths), actors, unitActors };
       },
-      save: async session => {
+      save: async (session,contentFiles=[]) => {
         const { repository, ...data } = session, id = repository.candidate.id;
         const files = [{ path: 'state.json', content: JSON.stringify(repository, null, 2) + '\n' }, ...archive('session', id, `generated/${id}/session.json`, data)];
         if (lastFacts) files.push(...archive('native-input', id, lastFacts.protectionsEvidencePath, { facts: lastFacts, protections: lastProtections }));
         if (session.generated) files.push(...archive('generated', id, repository.candidate.generatedSnapshotPath, session.generated));
         if (session.adoption) files.push(...archive('adoption', id, `generated/${id}/adoption.json`, session.adoption));
         if (session.preview !== null) files.push({ path: `generated/${id}/preview.md`, content: session.preview });
-        return persist(files);
+        return persist([...files,...contentFiles]);
       },
       isAncestor: async (a, b) => {
         // The proposed object may exist only in the durable write archive. The

@@ -26,7 +26,8 @@ export interface CandidateRuntime {
   pullRequests(branch: string): Promise<CandidatePullRequest[]>;
   legacyCandidate(): Promise<CandidatePullRequest | null>;
   generation(baseSha: string): Promise<{ status: 'READY'; snapshot: CandidateSnapshot; title: string; body: string } | { status: 'UNCHANGED' | 'DRIFT' }>;
-  contentArchive?(candidate: NonNullable<RepositoryRecord['candidate']>, generatedDigest: string): Promise<string>;
+  contentArchive?(candidate: NonNullable<RepositoryRecord['candidate']>, generatedDigest: string):
+    Promise<{digest:string;saveWithManifest:boolean}>;
   content(candidate: NonNullable<RepositoryRecord['candidate']>, snapshot: CandidateSnapshot): Promise<{ status: 'READY'; files: CandidateSnapshot['files']; actors: (ReleaseActor | null)[]; unitActors: Record<string, (ReleaseActor | null)[]> } | { status: 'WAIT' | 'EDITING' | 'FAILED' }>;
   /** Atomic protected state transaction. Returns the exact archive commit for preview links. */
   save(session: CandidateSession): Promise<string>;
@@ -257,8 +258,9 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   const generation = await io.generation(source.baseSha);
   if (generation.status !== 'READY') return { status: 'WAIT', reason: generation.status };
   const generatedDigest = digest([generation.snapshot.sourceDigest, generation.snapshot.configDigest, source.authorsDigest]);
-  candidate.contentGenerationDigest = io.contentArchive ? await io.contentArchive(candidate,generatedDigest) : generatedDigest;
-  await save();
+  const selectedArchive = await io.contentArchive?.(candidate,generatedDigest);
+  candidate.contentGenerationDigest = selectedArchive?.digest ?? generatedDigest;
+  if(!selectedArchive?.saveWithManifest)await save();
   const content = await io.content(candidate, generation.snapshot);
   if (content.status !== 'READY') return { status: 'WAIT', reason: `CONTENT_${content.status}` };
   const N: CandidateSnapshot = { ...generation.snapshot, files: [...generation.snapshot.files, ...content.files] };

@@ -123,12 +123,15 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   const validatorSha='e'.repeat(40);
   const head = async (branch: string) => { try { return await git('-C', remote, 'rev-parse', '--verify', `refs/heads/${branch}`); } catch { return null; } };
   let interruptPending = pinCase === 'pending-recovery' || pinCase === 'legacy-pending-cancel';
+  let interruptBeforeContentArchive=false;
   const fetcher = (async (input, init) => {
     const url = new URL(String(input)), method = init?.method ?? 'GET', path = decodeURIComponent(url.pathname), body = init?.body ? JSON.parse(String(init.body)) : null;
     if (interruptPending && method === 'GET' && path.endsWith('/pulls')) {
       const durable = JSON.parse(await git('-C', remote, 'show', 'refs/heads/steward/release-state:state.json'));
       if (durable.candidate?.pendingWrite) throw Error('FIXTURE_PENDING_INTERRUPTION');
     }
+    if(interruptBeforeContentArchive&&method==='GET'&&path.endsWith('/pulls'))
+      throw Error('FIXTURE_CONTENT_ARCHIVE_INTERRUPTION');
     requests.push({ method, path, body }); expect(url.origin).toBe('https://api.github.com'); let value: any;
     if (method === 'GET' && (path.includes('/git/ref/heads/') || path.endsWith('/pulls')))
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer fixture-read');
@@ -300,11 +303,23 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     expect(ordinary.repository.candidate.contentGenerationDigest).toBe(recovered.repository.candidate.contentGenerationDigest);
     await expect(nativeReleaseCandidate({...request,writeDirectory:join(root,'duplicate-recovery-writes')},{...options,contentRecovery:grant})).rejects.toThrow('CONTENT_RECOVERY_ARCHIVE_EXISTS');
     const newerController='a'.repeat(40);
+    const thirdDigest=hash(['content-archive-transfer/v1',candidate.contentGenerationDigest,newerController]);
+    const thirdPath=`content/${candidate.id}/${thirdDigest}/manifest.json`;
+    await expect(nativeReleaseCandidate({...request,writeDirectory:join(root,'interrupt-ordinary-new-controller')},
+      {...options,controllerSha:newerController,generator:async (input:Parameters<typeof generator>[0])=>{
+        const result=await generator(input);interruptBeforeContentArchive=true;return result;
+      }})).rejects.toThrow('FIXTURE_CONTENT_ARCHIVE_INTERRUPTION');
+    interruptBeforeContentArchive=false;
+    await refresh();
+    const afterInterruption=await readReleaseRecords({directory,targetRef:'steward/release-state',repositoryId:1});
+    expect(afterInterruption.repository.candidate.contentGenerationDigest).toBe(recovered.repository.candidate.contentGenerationDigest);
+    expect(afterInterruption.domainRecords.some((entry:any)=>entry.path===thirdPath)).toBe(false);
+    expect(await git('show',`steward/release-state:${manifestPath}`)).toBe(original);
     expect(await nativeReleaseCandidate({...request,writeDirectory:join(root,'ordinary-new-controller')},
       {...options,controllerSha:newerController})).toMatchObject({status:'READY',prNumber:9});
     await refresh();
     const advanced=await readReleaseRecords({directory,targetRef:'steward/release-state',repositoryId:1});
-    expect(advanced.repository.candidate.contentGenerationDigest).not.toBe(recovered.repository.candidate.contentGenerationDigest);
+    expect(advanced.repository.candidate.contentGenerationDigest).toBe(thirdDigest);
     const advancedPath=`content/${candidate.id}/${advanced.repository.candidate.contentGenerationDigest}/manifest.json`;
     const advancedManifest=await decodeCandidateDocument([JSON.parse(await git('show',`steward/release-state:${advancedPath}`))]);
     expect(advancedManifest.input.controllerSha).toBe(newerController);
