@@ -417,6 +417,35 @@ it.each(['edit','refresh','merge'] as const)('reclassifies a paused unclaimed of
  expect(posts).toEqual([`/repos/${CENTRAL.name}/actions/workflows/${workflow}/dispatches`]);
  expect(await f.storage.get('releaseCycle')).toMatchObject({stage:'confirm',hint:event});
 });
+it.each(['legacy-main-current','legacy-main-moved','already-adopted','adopted-after-qualification'] as const)('rechecks the protected push source when lifting handoff: %s',async mode=>{
+ const f=fixture(), posts:string[]=[];
+ f.state.promoted=pin;
+ const env={...f.env,LEGACY_RELEASE_HANDOFF_IDS:JSON.stringify([TARGET.id])};
+ let read=0,restoring=false;
+ const g:GitReader={artifact:async()=>{throw Error('unexpected artifact read');},forCandidate:async()=>{
+   read++;
+   const adopted=restoring&&(mode==='already-adopted'||(mode==='adopted-after-qualification'&&read>=3));
+   return {...g,target:{...TARGET,...(adopted?{officialCandidate:true as const,sourceSha:deployment}:{})}};
+ },json:async(id,path,method)=>{
+   if(method==='POST'){posts.push(path);return null;}
+   if(id===TARGET.id&&path.endsWith('/git/ref/heads/main'))
+     return {ref:'refs/heads/main',object:{type:'commit',sha:restoring&&mode==='legacy-main-moved'?deployment:pin}};
+   return f.g.json(id,path,method);
+ }};
+ const relay=new ReleaseRelay(f.storage as any,env as any,()=>g,()=>f.state.now);
+ const signed={name:TARGET.name,defaultBranch:TARGET.defaultBranch};
+ await relay.register(hint,signed);await relay.alarm();
+ expect(await f.storage.get('releaseCycle')).toMatchObject({paused:true,reserved:0});
+ env.LEGACY_RELEASE_HANDOFF_IDS='[]';restoring=true;
+ await relay.register(hint,signed);await relay.alarm();
+ if(mode==='legacy-main-current'){
+   expect(posts).toEqual([`/repos/${CENTRAL.name}/actions/workflows/release-cycle-event.yml/dispatches`]);
+ }else{
+   expect(posts).toEqual([]);
+   expect(await f.storage.get('releaseCycle')).toMatchObject({paused:true,reason:'LEGACY_RELEASE_HANDOFF',reserved:0});
+   expect(await f.storage.getAlarm()).toBeNull();
+ }
+});
 it('retains an existing unqualified legacy intake as a paused record for reconciliation',async()=>{
  const f=fixture();
  const reader={...f.g,forCandidate:async()=>({...f.g,target:TARGET})};

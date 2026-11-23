@@ -26,8 +26,8 @@ type Hint = {repositoryId: number; kind: 'push'; sourceSha: string}
   | {repositoryId: number; kind: 'run'; runId: number; attempt: number} | {repositoryId:number;kind:'publication';runId:number;attempt:number;productRepositoryId?:number};
 type Stage = 'prepare' | 'confirm' | 'received' | 'unknown';
 type SignedSource=Pick<ProductTarget,'name'|'defaultBranch'>;
-type ReleaseIntake={hint:Hint;source:SignedSource;tries:number;next:number};
-type Relay = {hint: Hint; stage: Stage; tries: number; next: number; policy: string; reserved: number; officialCandidate?: true; officialRelease?: true; runId?: number; reason?: string; waitingFor?:string; resumedFor?:string; paused?:boolean};
+type ReleaseIntake={hint:Hint;source:SignedSource;tries:number;next:number;handoffRedelivery?:true};
+type Relay = {hint: Hint; stage: Stage; tries: number; next: number; policy: string; reserved: number; officialCandidate?: true; officialRelease?: true; runId?: number; reason?: string; waitingFor?:string; resumedFor?:string; paused?:boolean;handoffRedelivery?:true};
 
 const ownerId = (hint: Hint) => hint.kind === 'publication' ? hint.productRepositoryId ?? TARGET.id : hint.repositoryId;
 const legacyCandidate = (hint: Hint) => hint.kind === 'candidate-head' || hint.kind === 'candidate-status';
@@ -40,6 +40,11 @@ const version3Candidate = (target: ProductTarget | undefined): target is Product
   target?.officialCandidate === true && sha(target.sourceSha);
 const officialPush = (target: ProductTarget | undefined, hint: Extract<Hint,{kind:'push'}>) =>
   version3Candidate(target) && target.sourceSha === hint.sourceSha;
+async function currentPush(g:GitReader,target:ProductTarget,hint:Extract<Hint,{kind:'push'}>){
+  if(version3Candidate(target))return officialPush(target,hint);
+  const ref=await g.json(target.id,`/repos/${target.name}/git/ref/heads/${encodeURIComponent(target.defaultBranch)}`);
+  return ref.ref==='refs/heads/'+target.defaultBranch&&ref.object?.type==='commit'&&ref.object.sha===hint.sourceSha;
+}
 const hexDigest = (v: unknown): v is string => typeof v === 'string' && v.length === 64 && /^[a-f0-9]+$/.test(v);
 function officialCycle(cycle: Awaited<ReturnType<typeof readCycle>>['cycle']): boolean {
   const receipt=cycle.officialRelease;
@@ -228,7 +233,8 @@ export class ReleaseRelay {
              this.env.BOUNDED_RECHECK_ENABLED!=='true'||relayKey(previous.hint)!==relayKey(hint))return;
           await t.delete('releaseCycle');
         }
-        const pending=await t.get<ReleaseIntake>('releaseIntake')??{hint:previous?.hint??hint,source,tries:0,next:this.now()};
+        const pending=await t.get<ReleaseIntake>('releaseIntake')??{hint:previous?.hint??hint,source,tries:0,next:this.now(),
+          ...(previous?{handoffRedelivery:true as const}:{})};
         await t.put('releaseIntake',pending);
         if(pending.tries<4 && this.env.BOUNDED_RECHECK_ENABLED==='true')await t.setAlarm(Math.max(this.now(),pending.next));
       });
@@ -277,8 +283,13 @@ export class ReleaseRelay {
       return p;
     });
     if(!pending)return;
-    let target:ProductTarget|undefined;
-    try{target=(await this.reader().forCandidate?.(pending.hint.repositoryId))?.target;}
+    let target:ProductTarget|undefined,redeliveredPushCurrent=true;
+    try{
+      const scoped=await this.reader().forCandidate?.(pending.hint.repositoryId);
+      target=scoped?.target;
+      if(pending.handoffRedelivery&&pending.hint.kind==='push'&&scoped&&target)
+        redeliveredPushCurrent=await currentPush(scoped,target,pending.hint);
+    }
     catch(error){
       const retryAt=retryAfterTime(error,this.now(),pending.next);
       if(retryAt!==undefined&&pending.tries<4&&retryAt>pending.next){
@@ -294,14 +305,21 @@ export class ReleaseRelay {
       const current=await t.get<ReleaseIntake>('releaseIntake');
       if(!current||current.tries!==pending.tries||await t.get('releaseCycle'))return;
       await t.delete('releaseIntake');
-      if(!target||target.id!==pending.hint.repositoryId||target.name!==pending.source.name||
-         target.defaultBranch!==pending.source.defaultBranch){await t.deleteAlarm();return;}
-      const kind=pending.hint.kind;
-      if(legacyReleaseHandoff(this.env,ownerId(pending.hint))&&
-         (legacyCandidate(pending.hint)||!version3Candidate(target)||(pending.hint.kind==='push'&&!officialPush(target,pending.hint)))){
+      const pause=async()=>{
         await t.put('releaseCycle',{hint:pending.hint,stage:'prepare',tries:0,next:pending.next,policy:'',reserved:0,
           reason:legacyReleaseHandoffReason,paused:true} satisfies Relay);
         await t.deleteAlarm();
+      };
+      if(!target||target.id!==pending.hint.repositoryId||target.name!==pending.source.name||
+         target.defaultBranch!==pending.source.defaultBranch){
+        if(pending.handoffRedelivery)await pause();else await t.deleteAlarm();
+        return;
+      }
+      const kind=pending.hint.kind;
+      if((legacyReleaseHandoff(this.env,ownerId(pending.hint))&&
+          (legacyCandidate(pending.hint)||!version3Candidate(target)||(pending.hint.kind==='push'&&!officialPush(target,pending.hint)))) ||
+         (pending.handoffRedelivery&&(!redeliveredPushCurrent||(officialCandidateHint(pending.hint)&&!target.officialCandidate)))){
+        await pause();
         return;
       }
       if ((!target.officialCandidate && (kind==='official-merge'||kind==='official-edit'||kind==='official-refresh')) ||
@@ -310,14 +328,15 @@ export class ReleaseRelay {
         return;
       }
       const r:Relay={hint:pending.hint,stage:'prepare',tries:0,next:this.now(),policy:'',reserved:0,
-        ...(target.officialCandidate && (kind==='push'||kind==='official-edit'||kind==='official-refresh')?{officialCandidate:true}:{})};
+        ...(target.officialCandidate && (kind==='push'||kind==='official-edit'||kind==='official-refresh')?{officialCandidate:true}:{}),
+        ...(pending.handoffRedelivery?{handoffRedelivery:true}:{})};
       await t.put('releaseCycle',r);await t.setAlarm(r.next);
     });
   }
   async alarm() {
     if(!await this.storage.get('releaseCycle'))await this.qualify();
     const r = await this.storage.get<Relay>('releaseCycle');
-    if (!r || r.stage === 'received' || r.stage === 'unknown' || r.next > this.now()) return;
+    if (!r || r.paused || r.stage === 'received' || r.stage === 'unknown' || r.next > this.now()) return;
     const g = this.reader(), key = relayKey(r.hint);
     const destination = r.officialCandidate ? candidateWorkflow : workflow;
     const title = r.officialCandidate ? 'Candidate event ' : 'Release cycle ';
@@ -349,7 +368,7 @@ export class ReleaseRelay {
       Object.assign(current,changes);
       if (changes.officialRelease===undefined && 'officialRelease' in changes) delete current.officialRelease;
       await t.put('releaseCycle',current);
-      if ((draining && current.paused && current.reason === legacyReleaseHandoffReason) ||
+      if ((current.paused && current.reason === legacyReleaseHandoffReason) ||
           current.stage === 'received' || current.stage === 'unknown') await t.deleteAlarm();
       else await t.setAlarm(current.next);
       return true;
@@ -359,9 +378,14 @@ export class ReleaseRelay {
       if (r.stage === 'prepare') {
         const stopLegacy = () => save({paused:true,reason:legacyReleaseHandoffReason});
         let candidate:GitReader|undefined;
-        if(draining&&(r.hint.kind==='push'||officialCandidateHint(r.hint))){
+        if((draining||r.handoffRedelivery)&&(r.hint.kind==='push'||officialCandidateHint(r.hint))){
           candidate=await candidateReader(g,r.hint.repositoryId);
-          if(!version3Candidate(candidate.target)||(r.hint.kind==='push'&&!officialPush(candidate.target,r.hint))){await stopLegacy();return;}
+          const target=candidate.target;
+          if(!target ||
+             (draining&&(!version3Candidate(target)||(r.hint.kind==='push'&&!officialPush(target,r.hint)))) ||
+             (r.handoffRedelivery&&(r.hint.kind==='push'?
+               ((target.officialCandidate===true)!==(r.officialCandidate===true)||!await currentPush(candidate,target,r.hint)):
+               !target.officialCandidate))){await stopLegacy();return;}
         }
         if (r.hint.kind === 'run') {
           const scoped=await candidateReader(g,r.hint.repositoryId);
