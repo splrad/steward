@@ -66,7 +66,9 @@ export function nativeEvidenceTransport(token: string | undefined, transport: ty
     const pathname=path.split('?')[0]!;
     let decoded:string;try{decoded=decodeURIComponent(pathname);}catch{throw new Error('NATIVE_EVIDENCE: API path');}
     const numericRepository = method === 'GET' && /^\/repositories\/[1-9][0-9]*$/.test(path);
-    check((path.startsWith('/repos/') || numericRepository) && !decoded.includes('..') && !decoded.includes('\\')
+    const immutableComparison = /^\/repos\/[\w.-]+\/[\w.-]+\/compare\/[a-f0-9]{40}\.\.\.[a-f0-9]{40}$/.test(pathname)
+      && pathname.split('/').slice(2, 4).every(part => part !== '.' && part !== '..');
+    check((path.startsWith('/repos/') || numericRepository) && (!decoded.includes('..') || immutableComparison) && !decoded.includes('\\')
       && !/[\x00-\x1f\x7f]/.test(decoded) && !path.includes('#'), 'API path');
     const headers = new Headers(githubHeaders(token ?? ''));
     if (!token) headers.delete('authorization');

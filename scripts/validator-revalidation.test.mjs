@@ -212,7 +212,7 @@ test('a head change while the App close is outstanding restores the PR and track
 });
 
 test('never cycles a PR with an exact pending or failed Run, a draft, merge management, or a release candidate',async()=>{
-  for(const type of ['failed','running','draft','queue','autoMerge','release','legacyRelease']){
+  for(const type of ['failed','running','draft','queue','autoMerge','release','legacyRelease','official']){
     const f=fixture();
     if(type==='failed')f.addRun(99,validator,'completed','failure');
     if(type==='running')f.addRun(99,validator,'queued',null);
@@ -221,6 +221,7 @@ test('never cycles a PR with an exact pending or failed Run, a draft, merge mana
     if(type==='autoMerge')f.pr.auto_merge={enabled_at:'record'};
     if(type==='release')f.pr.head.ref='steward/release-candidate';
     if(type==='legacyRelease')f.pr.labels=[{name:'autorelease: pending'}];
+    if(type==='official'){f.pr.head.ref='release-please--branches--'+f.pr.base.ref;f.pr.user={id:301115370};}
     const expected=type==='failed'?'failure':type==='running'?'in_progress':'waiting';
     assert.equal((await f.run()).pulls[0].status,expected);
     assert.equal((await f.run()).pulls[0].status,expected);

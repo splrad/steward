@@ -31,7 +31,6 @@ env:
   # The configuration PR writes the selected source and release unit to these fields.
   STEWARD_DOCS_SOURCE: ${{ vars.STEWARD_DOCS_SOURCE || 'default-branch' }}
   STEWARD_DOCS_UNIT: ${{ vars.STEWARD_DOCS_UNIT }}
-  STEWARD_REPOSITORY_POLICY: 'true'
   STEWARD_DOCS_APPROVED_SOURCE: ${{ vars.STEWARD_DOCS_SOURCE }}
   STEWARD_DOCS_APPROVED_UNIT: ${{ vars.STEWARD_DOCS_UNIT }}
 jobs:

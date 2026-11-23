@@ -22,7 +22,8 @@ function fixture() {
     return f.io.request(method,path);
   }};
   const store:DispatchStore={async save(next,files){if(storeStatus==='APPLIED'){cycle=structuredClone(next);for(const file of files)observations.push(decodeNativeDispatchObservation(Buffer.from(file.content)));}return {status:storeStatus,head:storeStatus==='APPLIED'?'d'.repeat(40):null};}};
-  const execute=(minutes=0,transport=io)=>dispatchNativeRun({...context,cycle},cycle.dispatches[0]!.requestKey,store,{complete:true,observations},transport,time(minutes));
+  const execute=(minutes=0,transport=io,recoverOnly=false)=>
+    dispatchNativeRun({...context,cycle},cycle.dispatches[0]!.requestKey,store,{complete:true,observations},transport,time(minutes),{recoverOnly});
   return {f,context,io,store,calls,run,execute,get cycle(){return cycle;},get observations(){return observations;},setRuns:(value:any[])=>runs=value,setLost:(value=true)=>lose=value,setStore:(value:string)=>storeStatus=value,setStatus:(value:number)=>postStatus=value};
 }
 it('binds the actual 200 response only after durable intent, response archive and native source verification',async()=>{
@@ -41,6 +42,18 @@ it('recovers a lost response to the earliest matching Run, leaving duplicates no
   f.setRuns([f.run(200),{...f.run(50),actor:{id:4243096}},f.run(70)]);
   expect(await f.execute(2)).toMatchObject({status:'BOUND',canonicalRunId:70});
   expect(f.observations.at(-1)!.matches.map(run=>run.id)).toEqual([70,200]);
+  expect(f.calls.filter(call=>call.method==='POST')).toHaveLength(1);
+});
+it('recovers a completed build without dispatching again even after the resend window',async()=>{
+  const f=fixture();
+  expect(await f.execute(0,f.io,true)).toMatchObject({status:'WAIT',canonicalRunId:null});
+  expect(f.observations).toEqual([]);
+  f.setLost();
+  await f.execute();
+  expect(await f.execute(10,f.io,true)).toMatchObject({status:'WAIT',canonicalRunId:null});
+  expect(await f.execute(25,f.io,true)).toMatchObject({status:'WAIT',canonicalRunId:null});
+  f.setRuns([f.run(100)]);
+  expect(await f.execute(26,f.io,true)).toMatchObject({status:'BOUND',canonicalRunId:100});
   expect(f.calls.filter(call=>call.method==='POST')).toHaveLength(1);
 });
 it('requires two fully empty searches five minutes apart and uses 5/15/60 minute resend spacing',async()=>{

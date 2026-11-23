@@ -25,7 +25,7 @@ export async function stageNativeProducer({api,repo,token,source,unit,target,pro
     let staged;
     const inspect=async(...args)=>{
       staged=join(await mkdtemp(join(scratch,'attempt-')),'selected');
-      return trialInventory(...args,(...readArgs)=>archive(...readArgs,false,{directory:staged,paths}));
+      return trialInventory(...args,(...readArgs)=>archive(...readArgs,{directory:staged,paths}));
     };
     const proof=await findEvidence(api,token,repo,source,source,selection,model,undefined,inspect);
     must(proof,'Complete '+producer.workflow+' / '+(producer.nativeJobName??producer.job)+' at '+source+' and upload '+producer.archive);

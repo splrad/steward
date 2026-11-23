@@ -36,17 +36,6 @@ export function qualityLocator(event:string, payload:any, installationId:number)
 type Target=NonNullable<ReturnType<typeof qualityLocator>>;
 type EventState={delivery:string;event:string;repositoryName?:string;phase:'pending'|'reserved'|'sent'|'excluded'|'unconfirmed'|'rejected';rejection?:string;policy?:string;retryAt?:number;aggregate?:boolean;expires?:number};
 type QualityRecord=EventState & {kind?:'quality';target:Target};
-type ConfigurationRecord=EventState & {kind:'configuration';target:Record<string,string>};
-type WorkflowRecord=QualityRecord|ConfigurationRecord;
-export async function submitConfiguration(env:BoundedEnv,inputs:Record<string,string>){
-  const key=digest(JSON.stringify(Object.entries(inputs).sort())).slice(7);
-  const ns=env.BOUNDED_RECHECK;ensure(ns,'CONFIGURATION_EVENT_STORAGE');
-  const stub=ns.get(ns.idFromName('configuration:v1:'+key));
-  const response=await stub.fetch(new Request('https://bounded.internal/configuration-event',{
-    method:'POST',body:JSON.stringify({kind:'configuration',event:'configuration',delivery:key,target:inputs,phase:'pending'})
-  }));
-  ensure(response.ok,'CONFIGURATION_EVENT_REGISTRATION');
-}
 const debounce=60_000,retention=30*86400_000;
 function qualityKey(r:QualityRecord){return digest(JSON.stringify([...(r.aggregate?[]:[r.delivery,r.event]),r.target.repository_id,r.target.pull_number,r.target.head_sha])).slice(7);}
 async function approvedQualityRepository(reader:GitReader,policy:string,id:string) {
@@ -74,14 +63,13 @@ export async function dispatchQualityEvent(env:BoundedEnv,event:string,payload:a
   ensure(response.ok,'QUALITY_REGISTRATION');
 }
 export class WorkflowEvent {
-  constructor(private storage:DurableObjectStorage,private env:BoundedEnv,private reader:()=>GitReader=()=>new BoundedGitHub(env),
-    private recordKey:'qualityEvent'|'configurationEvent'='qualityEvent'){}
-  async register(record:WorkflowRecord){
+  constructor(private storage:DurableObjectStorage,private env:BoundedEnv,private reader:()=>GitReader=()=>new BoundedGitHub(env)){}
+  async register(record:QualityRecord){
     if(record.aggregate){
       await this.storage.transaction(async t=>{
         const seen=await t.get<string[]>('qualityDeliveries')??[];
         const uncertain=await t.get<{delivery:string;policy?:string;expires:number}[]>('qualityUnconfirmed')??[];
-        const current=await t.get<WorkflowRecord>(this.recordKey),now=Date.now();
+        const current=await t.get<QualityRecord>('qualityEvent'),now=Date.now();
         if(current?.phase==='pending' && current.retryAt && await t.getAlarm()===null){
           await t.setAlarm(Math.max(now,current.retryAt));
         }
@@ -93,45 +81,41 @@ export class WorkflowEvent {
         }
         await t.put('qualityDeliveries',[...seen.slice(-127),record.delivery]);
         if(current?.phase==='pending' && current.retryAt){
-          await t.put(this.recordKey,{...current,expires:now+retention});return;
+          await t.put('qualityEvent',{...current,expires:now+retention});return;
         }
         const retryAt=now+debounce;
-        await t.put(this.recordKey,{...record,retryAt,expires:now+retention});
+        await t.put('qualityEvent',{...record,retryAt,expires:now+retention});
         await t.setAlarm(retryAt);
       });
       return;
     }
-    const run=await this.storage.transaction(async t=>{
-      const prior=await t.get<WorkflowRecord>(this.recordKey),now=Date.now();
+    await this.storage.transaction(async t=>{
+      const prior=await t.get<QualityRecord>('qualityEvent'),now=Date.now();
       if(!prior){
-        await t.put(this.recordKey,{...record,phase:'pending',retryAt:now,...(record.kind==='configuration'?{expires:now+retention}:{})});
-        await t.setAlarm(now);return true;
+        await t.put('qualityEvent',{...record,phase:'pending',retryAt:now});
+        await t.setAlarm(now);
       }
-      // The existing locator owns its dispatch and promotion waiter.
-      if(record.kind==='configuration' && (prior.phase!=='pending'||(prior.retryAt??0)>now))return false;
-      return true;
     });
-    if(!run)return;
     await this.forward();
   }
   async alarm(){
-    const current=await this.storage.get<WorkflowRecord>(this.recordKey);
+    const current=await this.storage.get<QualityRecord>('qualityEvent');
     if(!current)return;
     const now=Date.now();
     if(current.expires && now>=current.expires){
       await this.storage.transaction(async t=>{
-        const latest=await t.get<WorkflowRecord>(this.recordKey);
+        const latest=await t.get<QualityRecord>('qualityEvent');
         if(latest?.expires && Date.now()>=latest.expires){
-          await t.delete(this.recordKey);await t.delete('qualityDeliveries');await t.delete('qualityUnconfirmed');await t.deleteAlarm();
+          await t.delete('qualityEvent');await t.delete('qualityDeliveries');await t.delete('qualityUnconfirmed');await t.deleteAlarm();
         }
       });return;
     }
     if(current.phase==='reserved'){
       await this.storage.transaction(async t=>{
-        const latest=await t.get<WorkflowRecord>(this.recordKey);
+        const latest=await t.get<QualityRecord>('qualityEvent');
         if(latest?.delivery!==current.delivery||latest.phase!=='reserved')return;
         const expires=latest.expires??now+retention;
-        await t.put(this.recordKey,{...latest,phase:'unconfirmed',expires});await t.setAlarm(expires);
+        await t.put('qualityEvent',{...latest,phase:'unconfirmed',expires});await t.setAlarm(expires);
         console.error(JSON.stringify({operation:'workflow-dispatch-unconfirmed',kind:latest.kind??'quality',target:latest.target,delivery:latest.delivery,policy:latest.policy}));
       });return;
     }
@@ -139,9 +123,9 @@ export class WorkflowEvent {
     if(this.env.BOUNDED_RECHECK_ENABLED!=='true'){
       const expires=current.expires??now+retention;
       await this.storage.transaction(async t=>{
-        const latest=await t.get<WorkflowRecord>(this.recordKey);
+        const latest=await t.get<QualityRecord>('qualityEvent');
         if(latest?.delivery!==current.delivery||latest.phase!=='pending')return;
-        await t.put(this.recordKey,{...latest,expires});await t.setAlarm(Math.min(expires,now+5*debounce));
+        await t.put('qualityEvent',{...latest,expires});await t.setAlarm(Math.min(expires,now+5*debounce));
       });return;
     }
     if(current.retryAt>Date.now()){
@@ -152,7 +136,7 @@ export class WorkflowEvent {
     await this.forward();
   }
   async forward(){
-    const record=await this.storage.get<WorkflowRecord>(this.recordKey);
+    const record=await this.storage.get<QualityRecord>('qualityEvent');
     if(!record||record.phase==='sent'||record.phase==='excluded'||record.phase==='rejected')return;
     ensure(record.phase==='pending','QUALITY_POST_UNCONFIRMED');
     ensure(!record.retryAt||Date.now()>=record.retryAt,'QUALITY_RATE_LIMIT');
@@ -167,28 +151,23 @@ export class WorkflowEvent {
       try{policy=await promotedController(reader,deployment,this.env);}
       catch(error){
         if(!(error instanceof PendingPromotion))throw error;
-        await promotionMessage(this.env,deployment,'wait',{policy:deployment,key:record.kind==='configuration'?record.delivery:qualityKey(record),kind:record.kind??'quality',generation:error.generation});
+        await promotionMessage(this.env,deployment,'wait',{policy:deployment,key:qualityKey(record),kind:'quality',generation:error.generation});
         return;
       }
-      if(record.kind!=='configuration'){
-        const name=await approvedQualityRepository(reader,policy,record.target.repository_id);
-        if(!name || (record.repositoryName!==undefined && name!==record.repositoryName)) {
-          await this.storage.transaction(async t=>{
-            const current=await t.get<WorkflowRecord>(this.recordKey);
-            if(current?.phase!=='pending'||current.delivery!==record.delivery)return;
-            await t.put(this.recordKey,{...current,phase:'excluded',policy});if(current.expires)await t.setAlarm(current.expires);else await t.deleteAlarm();
-          });
-          return;
-        }
+      const name=await approvedQualityRepository(reader,policy,record.target.repository_id);
+      if(!name || (record.repositoryName!==undefined && name!==record.repositoryName)) {
+        await this.storage.transaction(async t=>{
+          const current=await t.get<QualityRecord>('qualityEvent');
+          if(current?.phase!=='pending'||current.delivery!==record.delivery)return;
+          await t.put('qualityEvent',{...current,phase:'excluded',policy});if(current.expires)await t.setAlarm(current.expires);else await t.deleteAlarm();
+        });
+        return;
       }
-      const configuration=record.kind==='configuration';
-      const workflow=configuration?'repository-configuration-event.yml':'quality-language-summary.yml';
-      const inputs=configuration?record.target:{...record.target,policy_sha:policy};
-      await dispatchFixed(reader,CENTRAL.id,workflow,policy,inputs,async()=>{
+      await dispatchFixed(reader,CENTRAL.id,'quality-language-summary.yml',policy,{...record.target,policy_sha:policy},async()=>{
         claimed=await this.storage.transaction(async t=>{
-          const current=await t.get<WorkflowRecord>(this.recordKey);
+          const current=await t.get<QualityRecord>('qualityEvent');
           if(current?.phase!=='pending'||current.delivery!==record.delivery||(current.retryAt&&Date.now()<current.retryAt))return false;
-          await t.put(this.recordKey,{...current,phase:'reserved',policy});await t.setAlarm(Date.now()+debounce);return true;
+          await t.put('qualityEvent',{...current,phase:'reserved',policy});await t.setAlarm(Date.now()+debounce);return true;
         });
         return claimed;
       });
@@ -202,27 +181,19 @@ export class WorkflowEvent {
         const rateLimited=message==='GITHUB_HTTP_429'||retryAt!==undefined;
         const next=rateLimited ? Math.max(now+1000,retryAt??now+60000) : undefined;
         await this.storage.transaction(async t=>{
-          const current=await t.get<WorkflowRecord>(this.recordKey);
+          const current=await t.get<QualityRecord>('qualityEvent');
           if(!current || current.delivery!==record.delivery || current.phase!==(claimed?'reserved':'pending'))return;
-          if(record.kind==='configuration' && claimed && !rateLimited){
-            const expires=current.expires??now+retention;
-            await t.put(this.recordKey,{...current,phase:'rejected',rejection:message,expires});
-            await t.setAlarm(expires);
-            console.error(JSON.stringify({operation:'configuration-dispatch-rejected',target:current.target,policy:current.policy,error:message}));
-            return;
-          }
           const retryAt=next===undefined?0:Math.max(current.retryAt??0,next);
-          await t.put(this.recordKey,{...current,phase:'pending',retryAt});
+          await t.put('qualityEvent',{...current,phase:'pending',retryAt});
           if(retryAt||current.expires)await t.setAlarm(retryAt||current.expires!);else await t.deleteAlarm();
         });
-        if(record.kind==='configuration' && claimed && !rateLimited)return;
       }
       throw error;
     }
     if(claimed)await this.storage.transaction(async t=>{
-      const current=await t.get<WorkflowRecord>(this.recordKey);
+      const current=await t.get<QualityRecord>('qualityEvent');
       if(current?.delivery===record.delivery&&current.phase==='reserved'){
-        await t.put(this.recordKey,{...current,phase:'sent',policy});
+        await t.put('qualityEvent',{...current,phase:'sent',policy});
         if(current.expires)await t.setAlarm(current.expires);else await t.deleteAlarm();
       }
     });

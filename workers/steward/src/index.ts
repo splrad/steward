@@ -2,7 +2,6 @@ import {readBoundedBody} from './bounded-recheck-github.js';
 import {acceptReleasePromotion} from './release-promotion.js';
 import {acceptReleaseHint} from './release-cycle-relay.js';
 import {forwardPagesCompletion} from './pages-completion.js';
-import {APP_BOT_ID} from './bounded-winget-evidence.js';
 import {acceptWingetSubmit} from './bounded-winget-submit.js';
 import {acceptNativeCandidateEvent,acceptNativeCandidateCompletion} from './bounded-native-event.js';
 import { handleBoundedRecheckRequest } from './bounded-recheck-api.js';
@@ -15,7 +14,7 @@ import { isStewardOwnedPullRequest } from "../support/core/issues.js";
 import {selectContractAuthority} from "../support/core/workflow-contract-authority.js";
 import {evaluateRemoteWorkflowContract} from "../support/github/workflow-contract.js";
 import { createInstallationToken, GitHubClient, GitHubRequestError } from "../support/github/index.js";
-import { dispatchQualityEvent, submitConfiguration } from "./quality-event.js";
+import { dispatchQualityEvent } from "./quality-event.js";
 import repositoryCatalog from "../config/repositories.json" with { type: "json" };
 import { handleBodyWriteInternalRequest } from "./pr-body-api.js";
 
@@ -409,68 +408,6 @@ function belongsToOrganization(repository: any): boolean {
   return true;
 }
 function isManaged(repository: any): boolean { return belongsToOrganization(repository) && repositoryConfiguration(repository).managed === true; }
-function configurationRepository(env: Env, payload: any): boolean {
-  const repo = payload.repository;
-  return env.BOUNDED_RECHECK_ENABLED === 'true' &&
-    payload.installation?.id > 0 && payload.installation.id === Number(env.INSTALLATION_ID) &&
-    payload.organization?.id === Number(env.ORGANIZATION_ID) && repo?.owner?.id === Number(env.ORGANIZATION_ID) &&
-    repo?.private === false && repo.archived === false && repo.disabled === false && repo.fork === false &&
-    typeof repo.default_branch === 'string' && repo.default_branch.length > 0 && isManaged(repo);
-}
-
-export async function forwardConfigurationComment(env: Env, payload: any, submit = submitConfiguration) {
-  const {issue, comment, repository, sender} = payload;
-  if (payload.action !== 'created' || comment?.body !== '/configure' || comment.user?.type !== 'User' ||
-      !Number.isSafeInteger(comment.user.id) || comment.user.id <= 0 || sender?.type !== 'User' || sender.id !== comment.user.id ||
-      !Number.isSafeInteger(comment.id) || comment.id <= 0 || !Number.isSafeInteger(issue?.number) || issue.number <= 0 ||
-      issue.pull_request || issue.state !== 'open' || issue.user?.id !== APP_BOT_ID || issue.user.type !== 'Bot' ||
-      issue.title !== '仓库配置' || !configurationRepository(env, payload)) return;
-  const marker = '<!-- steward-configuration-dashboard ' + repository.id + ' -->';
-  if (typeof issue.body !== 'string' || issue.body.split(/\r?\n/, 1)[0] !== marker ||
-      comment.issue_url !== 'https://api.github.com/repos/' + repository.full_name + '/issues/' + issue.number) return;
-  await submit(env, {
-    repository_id: String(repository.id), issue_number: String(issue.number), comment_id: String(comment.id),
-  });
-}
-
-async function configurationAttemptJobs(env: Env, repository: any, run: any) {
-  if (!env.STEWARD_APP_PRIVATE_KEY) throw new Error('缺少应用私钥');
-  const token = await createInstallationToken({
-    appId: env.APP_ID, privateKey: env.STEWARD_APP_PRIVATE_KEY, installationId: Number(env.INSTALLATION_ID),
-    repositoryId: repository.id, permissions: {actions: 'read', metadata: 'read'}, policySha: env.POLICY_SHA,
-  });
-  const gh = new GitHubClient(token, 'https://api.github.com', fetch, env.POLICY_SHA);
-  const [owner, name] = String(repository.full_name).split('/');
-  return gh.listWorkflowAttemptJobs(owner!, name!, run.id, run.run_attempt);
-}
-
-/** The receiver re-reads the source attempt and authorizes the actor before processing its request. */
-export async function forwardConfigurationCompletion(env: Env, payload: any, submit = submitConfiguration,
-  listJobs = configurationAttemptJobs) {
-  const {repository, workflow_run: run} = payload;
-  const trial = run?.path === '.github/workflows/repository-configuration-trial.yml';
-  if (payload.action !== 'completed' || (!trial && run?.path !== '.github/workflows/repository-configuration.yml') ||
-      run.status !== 'completed' || run.conclusion !== 'success' || !configurationRepository(env, payload) ||
-      run.repository?.id !== repository.id || run.head_repository?.id !== repository.id ||
-      !Number.isSafeInteger(run.id) || run.id < 1 || !Number.isSafeInteger(run.run_attempt) || run.run_attempt < 1) return;
-  const isDefault = run.head_branch === repository.default_branch;
-  if (!trial && ['issues', 'schedule'].includes(run.event)) {
-    if (!isDefault || typeof run.head_sha !== 'string' || !/^[a-f0-9]{40}$/.test(run.head_sha)) return;
-    const jobs = await listJobs(env, repository, run);
-    const requests = jobs.filter(job => job.name === 'request');
-    if (requests.length !== 1) return;
-    const job = requests[0];
-    if (job.run_id !== run.id || job.run_attempt !== run.run_attempt || job.head_sha !== run.head_sha ||
-        job.status !== 'completed' || job.conclusion !== 'success') return;
-  } else if (!(trial ? run.event === 'workflow_dispatch' && isDefault :
-    ['workflow_dispatch', 'push'].includes(run.event) && isDefault ||
-    run.event === 'pull_request' && typeof run.head_branch === 'string' && run.head_branch.startsWith('steward/repository-configuration-') ||
-    run.event === 'pull_request_review' && typeof run.head_branch === 'string' && run.head_branch.length > 0)) return;
-  await submit(env, {
-    repository_id: String(repository.id), run_id: String(run.id), attempt: String(run.run_attempt),
-  });
-}
-
 export async function handleWebhook(request: Request, env: Env): Promise<Response> {
   const declared = Number(request.headers.get("content-length") ?? "0"); if (declared > MAX_BODY) return response(413);
   const body = await readBoundedBody(request.body, MAX_BODY);
@@ -499,10 +436,6 @@ async function handleExistingEvent(env:Env,event:string,payload:any,deliveryId:s
   try {
     if (belongsToOrganization(payload.repository)) await acceptNativeCandidateEvent(env, event, payload, deliveryId);
     await acceptNativeCandidateCompletion(env, event, payload);
-    if (event === 'issue_comment') {
-      await forwardConfigurationComment(env, payload);
-      return response(204);
-    }
     if (["issues", "sub_issues", "issue_dependencies"].includes(event)
       || (event === "installation" && action === "deleted")
       || (event === "installation_repositories" && action === "removed")) return response(204);
@@ -534,14 +467,12 @@ async function handleExistingEvent(env:Env,event:string,payload:any,deliveryId:s
     }
     if (event === "workflow_run" && ["requested", "in_progress", "completed"].includes(action)) {
       const repository = payload.repository; if (!repository || !(isManaged(repository) || (env.WORKFLOW_EVALUATOR_SHA !== undefined && belongsToOrganization(repository)))) return response(204);
-      const [validation,pages,configuration]=await Promise.allSettled([
+      const [validation,pages]=await Promise.allSettled([
         publishValidationState(env, repository, payload.workflow_run?.id),
         forwardPagesCompletion(env,event,payload),
-        forwardConfigurationCompletion(env,payload),
       ]);
       if(validation.status==='rejected')throw validation.reason;
       if(pages.status==='rejected')throw pages.reason;
-      if(configuration.status==='rejected')throw configuration.reason;
       return response(validation.value ? 202 : 204);
     }
     return response(204);

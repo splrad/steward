@@ -41,6 +41,32 @@ it('admits current canonical source without a Release, catalog or tag read; nati
   expect(JSON.stringify(f.input.state)).toBe(before);
   expect(JSON.stringify(result.record)).not.toMatch(/"(?:releaseId|policySha|observationSha|admitted|entrypoint)"/);
 });
+it('admits the official v3 root only from the protected merged cycle and its original Run',async()=>{
+  const f=productPipelineFixture(),cycle=f.context.cycle;
+  const workflow=YAML.parse(f.source[defaultBuildWorkflow]!);
+  workflow.jobs={deliver:{name:'delivery/root',steps:[
+    {id:'upload-github-release',name:'Upload GitHub release delivery',uses:'actions/upload-artifact@'+'a'.repeat(40),
+      with:{name:'delivery-github-release-${{ github.repository_id }}-root-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}',path:'dist/*'}},
+  ]}};
+  f.source[defaultBuildWorkflow]=YAML.stringify(workflow);
+  f.source['.github/delivery.json']='{"schemaVersion":3}';
+  const delivery=Buffer.from(f.source['.github/delivery.json']);
+  cycle.deliveryConfigSha=createHash('sha1').update(`blob ${delivery.length}\0`).update(delivery).digest('hex');
+  cycle.workflowDelivery=true;
+  cycle.buildWorkflow=f.request.buildWorkflow=defaultBuildWorkflow;
+  cycle.officialRelease={headSha:'a'.repeat(40),pullBodyDigest:'b'.repeat(64),bodyDigest:'c'.repeat(64)};
+  cycle.units[0]!.id='root';
+  f.input.state.domainRecords=[];
+  delete f.source['global.json'];
+  delete f.source['.github/release-template.md.mustache'];
+  Object.assign(f.request,nativeRequestIdentity(f.context.repositoryId,cycle,f.request));
+  f.input.operationKey=f.request.inputs.operation_key=f.request.operationKey;
+  f.runs.get(1).display_title='Build '+f.request.operationKey;
+  await expect(pipelineIdentity(f.input,f.environment,f.gh,f.io)).resolves.toEqual({
+    status:'SOURCE_VERIFIED',units:[{unit:'root',version:'1.0.0',packageVersion:'1.0.0',tag:'v1.0.0'}]});
+  f.source['.release-please-manifest.json']='{".":"1.0.1"}';
+  await expect(pipelineIdentity(f.input,f.environment,f.gh,f.io)).rejects.toThrow('native version source');
+});
 it('admits a Node workflow with a localized path, optional input and shared release template', async () => {
   const f = productPipelineFixture(1, false, 'package-lock.json'), path = '.github/workflows/发布 构建.yml';
   const delivery = { ...f.delivery, buildWorkflow:path };

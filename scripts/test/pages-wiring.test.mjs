@@ -7,7 +7,7 @@ import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import YAML from 'yaml';
 import {NativeEvidenceReader,decodePagesMaintenance,assertPagesProgress,pagesRecordPath} from '../../packages/runner/dist/index.js';
-import {pagesInputDigest,pagesRunName} from '../select-pages-source.mjs';
+import {pagesInputDigest,pagesRunName,workflowPagesOptions} from '../select-pages-source.mjs';
 import {pagesDefinition,currentPagesSource,preflightPages,checkPagesArtifact,pagesArtifactName,pagesDeployment} from '../pages-runtime.mjs';
 import {servicePages,pagesRunInventory,sourceOptions} from '../pages-maintenance.mjs';
 
@@ -101,26 +101,85 @@ test('a repository build-only setting disables public Pages maintenance writes',
   assert.equal(f.records.size,0);
 });
 
-test('keeps old public Pages policy and skips it for reviewed native source without a legacy marker',async()=>{
-  const fallback=fixture();
-  const paused=async()=>({adoption:'paused'});
-  assert.deepEqual(await fallback.service(undefined,paused),{status:'DISABLED'});
-  assert.equal(fallback.calls.some(call=>call.method==='POST'),false);
-  for(const legacyPolicy of [false,true]) {
+test('honors all three applicable administrator disablement states with a native source variable enabled',async()=>{
+  for(const policy of [{adoption:'paused'}, {adoption:'central',policy:{site:{mode:'build-only'}}},
+    {adoption:'central',policy:{site:null}}]) {
     const f=fixture();
-    f.state.legacyPolicy=legacyPolicy;
-    f.state.workflowBytes=Buffer.from(YAML.stringify({...workflowDoc,env:{...workflowDoc.env,STEWARD_DOCS_SOURCE:'default-branch'}}));
-    let authorityReads=0;
-    const result=await f.service(undefined,async()=>{authorityReads++;return paused();});
-    assert.equal(result.status,legacyPolicy?'DISABLED':'ACCEPTED');
-    assert.equal(authorityReads,legacyPolicy?1:0);
-    assert.equal(f.calls.some(call=>call.method==='POST'),!legacyPolicy);
+    f.state.mode='default-branch';
+    f.state.runs.push(f.run);
+    let reads=0;
+    const readPolicy=async()=>{reads++;return policy;};
+    assert.deepEqual(await f.service(undefined,readPolicy),{status:'DISABLED'});
+    assert.deepEqual(await f.service({repositoryId:10,workflowId:5,runId:12,attempt:1},readPolicy),{status:'DISABLED'});
+    assert.equal(reads,2);
+    assert.equal(f.calls.some(call=>call.method==='POST'),false);
+    assert.equal(f.records.size,0);
   }
-  const old=fixture();
-  await assert.rejects(old.service(undefined,async()=>({adoption:'central',policy:{site:{
-    mode:'build-and-deploy',workflow:'.github/workflows/pages.yml',source:'release',unit:'maps',
-  }}})),/PAGES_REPOSITORY_POLICY_CONFLICT/);
-  assert.equal(old.calls.some(call=>call.method==='POST'),false);
+});
+
+test('native public Pages without a marker uses its declared workflow; a marked or private site uses admin policy',async()=>{
+  const paused=async()=>({adoption:'paused'});
+  for(const existing of [undefined,'marker','private']) {
+    const f=fixture();
+    f.state.workflowBytes=Buffer.from(YAML.stringify({...workflowDoc,env:{...workflowDoc.env,STEWARD_DOCS_SOURCE:'default-branch'}}));
+    f.state.legacyPolicy=existing==='marker';
+    f.repo.private=existing==='private';
+    let reads=0;
+    assert.deepEqual(await f.service(undefined,async()=>{reads++;return paused();}),
+      {status:existing?'DISABLED':'ACCEPTED'});
+    assert.equal(f.calls.some(call=>call.method==='POST'),!existing);
+    assert.equal(reads,existing?1:0);
+  }
+});
+
+test('a repository without native Pages or a source variable stays disabled after its marker is removed',async()=>{
+  const f=fixture();
+  f.repo.has_pages=false;
+  f.state.mode='';
+  assert.deepEqual(await f.service(undefined,async()=>assert.fail('no candidate Pages source')),
+    {status:'DISABLED'});
+  assert.equal(f.calls.some(call=>call.method==='POST'),false);
+  assert.equal(f.records.size,0);
+});
+
+test('an unregistered product and an approved site preserve native dispatch and retry',async()=>{
+  const approved={adoption:'central',policy:{site:{mode:'build-and-deploy',workflow:'.github/workflows/pages.yml',source:'default-branch'}}};
+  const f=fixture();
+  const legacy=async()=>({adoption:'legacy',policy:null});
+  assert.deepEqual(await f.service(undefined,legacy),{status:'ACCEPTED'});
+  assert.equal(f.calls.filter(call=>call.method==='POST').length,1);
+
+  const retry=fixture();
+  retry.state.runs.push(retry.run);
+  await assert.rejects(retry.service(undefined,async()=>({...approved,policy:{site:{...approved.policy.site,source:'release',unit:'maps'}}})),
+    /PAGES_REPOSITORY_POLICY_CONFLICT/);
+  assert.deepEqual(await retry.service(undefined,async()=>approved),{status:'ACCEPTED'});
+  assert.deepEqual(retry.calls.filter(call=>call.method==='POST').map(call=>call.path),['/repos/fixture/product/actions/runs/12/rerun']);
+});
+
+test('administrator pause after a reservation prevents a Pages dispatch or rerun',async()=>{
+  for(const hasRun of [false,true]) {
+    const f=fixture();
+    if(hasRun)f.state.runs.push(f.run);
+    let policy={adoption:'legacy',policy:null};
+    f.state.onSave=record=>{if(record.requests.length)policy={adoption:'paused',policy:null};};
+    assert.deepEqual(await f.service(undefined,async()=>policy),{status:'STALE'});
+    assert.equal(f.calls.some(call=>call.method==='POST'),false);
+  }
+});
+
+test('workflow Pages selection requires the approved native source and release unit for deployment',()=>{
+  const env={GITHUB_REPOSITORY_ID:'10',STEWARD_CONTROLLER_SHA:pin};
+  const settings=(mode,unit)=>({...env,STEWARD_DOCS_SOURCE:mode,STEWARD_DOCS_UNIT:unit});
+  const select=settings=>workflowPagesOptions(fixture().reader,settings).publicAllowed;
+  assert.equal(select(env),false);
+  assert.equal(select(settings('default-branch','')),true);
+  assert.equal(select(settings('release','')),false);
+  const release=settings('release','maps');
+  assert.equal(select(release),true);
+  assert.equal(select({...release,STEWARD_DOCS_APPROVED_UNIT:'other'}),false);
+  assert.equal(select({...release,STEWARD_PAGES_BUILD_ONLY:'true'}),false);
+  assert.equal(select({...settings('default-branch',''),STEWARD_DOCS_APPROVED_SOURCE:''}),false);
 });
 
 test('native YAML separates source, secret-free build and Pages deployment with same-Run artifacts',()=>{
@@ -142,7 +201,6 @@ test('site build takes its output from the product and public deployment require
   assert.equal(deploy.if,"needs.select.outputs.ready == 'true' && needs.select.outputs.public_source == 'true'");
   assert.equal(workflowDoc.jobs.select.if,undefined);
   assert.equal(workflowDoc.jobs.select.outputs.public_source,'${{ steps.source.outputs.public_source || steps.authorization.outputs.matches }}');
-  assert.equal(workflowDoc.env.STEWARD_REPOSITORY_POLICY,'true');
   assert.equal(workflowDoc.env.STEWARD_DOCS_APPROVED_SOURCE,'${{ vars.STEWARD_DOCS_SOURCE }}');
   assert.equal(workflowDoc.jobs.select.steps.find(step=>step.id==='source').env.STEWARD_PAGES_BUILD_ONLY,
     "${{ steps.authorization.outputs.matches != 'true' }}");

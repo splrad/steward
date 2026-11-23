@@ -6,7 +6,7 @@ import { readFile, writeFile, appendFile, realpath } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { assertRegisteredAdapters, pipelineRecoverCycleFinal, pipelineIdentity, pipelineChannelIdentity, pipelineChannelDownload, pipelineProducers, pipelineDownloadProducers, pipelineCollect, pipelineInspect, pipelineNotes, pipelineExpectedNotes, pipelinePublish, pipelineVerifyPublished, pipelineDownloadPhase } from './release-pipeline.js';
+import { assertRegisteredAdapters, pipelineRecoverCycleFinal, pipelineIdentity, pipelineChannelIdentity, pipelineChannelDownload, pipelineProducers, pipelineDownloadProducers, pipelineCollect, pipelineInspect, pipelineNotes, pipelineExpectedNotes, pipelineVerifyPublished, pipelineDownloadPhase } from './release-pipeline.js';
 import { generateReleaseSbom } from './release-sbom.js';
 import { assertReleaseJobResults, productBusinessResults, channelBusinessResults, channelReadyTargets, channelPreparationResults, type ChannelProbe } from './release-run.js';
 import { nativePages, findFrozenFinal } from './release-pipeline.js';
@@ -35,7 +35,6 @@ const allowed: Record<string, string[]> = {
   'release-pipeline inspect': ['record', 'unit', 'source-dir', 'controller-dir', 'state-dir', 'selection', 'directory', 'home', 'staging', 'sbom-home', 'output'],
   'release-pipeline download': ['record', 'unit', 'source-dir', 'controller-dir', 'state-dir', 'artifact-id', 'digest', 'phase', 'directory', 'home', 'output'],
   'release-pipeline seal': ['record', 'unit', 'source-dir', 'controller-dir', 'state-dir', 'directory', 'manifest', 'output'],
-  'release-pipeline publish': ['record', 'unit', 'app-bot-id', 'directory', 'output'],
   'release-pipeline verify': ['record', 'unit', 'app-bot-id', 'directory', 'output'],
   'release-pipeline channel-source': ['inputs', 'state-dir', 'controller-dir', 'stage', 'output'],
   'release-pipeline channel-download': ['inputs', 'state-dir', 'controller-dir', 'unit', 'channel', 'directory', 'output'],
@@ -147,11 +146,10 @@ export async function nativeReleaseCli(argv: readonly string[]) {
   }
   if (command.startsWith('release-pipeline ')) {
     let result: unknown;
-    if (command === 'release-pipeline publish' || command === 'release-pipeline verify') {
+    if (command === 'release-pipeline verify') {
       const record = parsePipelineRecord(await json(required('record')));
       if (record.kind !== 'publish' || !/^[1-9][0-9]*$/.test(required('app-bot-id'))) throw new Error('NATIVE_CLI: publish identity');
-      result = command.endsWith(' publish') ? await pipelinePublish(record, required('unit'), required('directory'), Number(required('app-bot-id')))
-        : await pipelineVerifyPublished(record, required('unit'), required('directory'), Number(required('app-bot-id')));
+      result = await pipelineVerifyPublished(record, required('unit'), required('directory'), Number(required('app-bot-id')));
     } else if (command === 'release-pipeline gates') {
       const mode = required('mode'); if (!['build', 'verify', 'product'].includes(mode)) throw new Error('NATIVE_CLI: invalid release mode');
       const needs = JSON.parse(required('results'));

@@ -2,11 +2,14 @@ import {posix} from 'node:path';
 import YAML from 'yaml';
 import {git} from './validation-input.mjs';
 import {controllerTagPrefix,controllerVersionNumber} from './controller-version.mjs';
+import {applyWorkflowDelivery,assertProductDelivery,decodeBuildJson,defaultBuildWorkflow,
+  parseDeliveryConfig,verifyDispatchWorkflow} from '../packages/runner/dist/index.js';
 
 const layerScapeId = 1187527897;
 const controllerRepository = 'splrad/steward';
 const controllerWorkflowPrefix = controllerRepository + '/.github/workflows/';
-const publishWorkflow = '.github/workflows/steward-release-publish.yml';
+const deliveryFile = '.github/delivery.json';
+const releasePleaseFile = 'release-please-config.json';
 const controllerPath = 'controller';
 const archiveReaderPath = 'configuration-controller';
 const archiveReaderCommand = 'node scripts/configuration-native-artifact.mjs';
@@ -15,7 +18,7 @@ const managedWorkflows = [
   '.github/workflows/channel-preflight.yml',
   '.github/workflows/pages.yml',
   '.github/workflows/steward-release-channels.yml',
-  publishWorkflow,
+  defaultBuildWorkflow,
 ];
 const isPin = value => typeof value === 'string' && /^[0-9a-f]{40}$/.test(value);
 
@@ -77,9 +80,118 @@ function archiveReaderKey(checkout, install, collect) {
   return guard;
 }
 
-function readWorkflowPins(repo, revision, path, archiveReaders) {
-  const value = git(repo, ['cat-file', 'blob', revision + ':' + path]).toString('utf8');
-  const document = YAML.parseDocument(value);
+function publisherAt(repo, revision) {
+  const entry = git(repo, ['ls-tree', revision, '--', deliveryFile]);
+  if (!entry.length) return {path: defaultBuildWorkflow};
+  if (!entry.toString().startsWith('100644 blob ')) throw Error('VALIDATION_CONTROLLER_DELIVERY_DECLARATION');
+  const raw = decodeBuildJson(git(repo, ['cat-file', 'blob', revision + ':' + deliveryFile]));
+  if (raw?.schemaVersion !== 3) {
+    const path = raw?.schemaVersion === 2 && raw.buildWorkflow !== undefined
+      ? parseDeliveryConfig(raw).buildWorkflow : defaultBuildWorkflow;
+    return {path};
+  }
+  const settings = decodeBuildJson(git(repo, ['cat-file', 'blob', revision + ':' + releasePleaseFile]));
+  const delivery = parseDeliveryConfig(raw, settings);
+  return {path: delivery.buildWorkflow, delivery};
+}
+
+const successOnly = entry => !entry['continue-on-error'] &&
+  (entry.if === undefined || entry.if === true ||
+    /^(?:success\(\)|\$\{\{\s*success\(\)\s*\}\})$/.test(entry.if));
+const artifactPaths = input => typeof input === 'string' ? input.split(/\r?\n/).map(path => path.trim()).filter(Boolean).sort().join('\n') : '';
+const buildInputs = {cycle_id: '', operation_key: '', source_sha: '', controller_sha: ''};
+const jobNeeds = job => typeof job.needs === 'string' ? [job.needs] : job.needs ?? [];
+const admissionCommand = 'node controller/packages/runner/dist/index.js release-pipeline identity ' +
+  Object.keys(buildInputs).map(input => '--' + input.replaceAll('_', '-') + ' "$env:' + input.toUpperCase() + '"').join(' ') +
+  ' --source-dir product --controller-dir controller --state-dir state --output ';
+// Match the supported PowerShell forms end to end so an identity-looking line cannot authorize a job.
+const guardedRetry = String.raw`
+  for ($n = 0; $n -lt 20; $n++) {
+  ${admissionCommand}"identity-$n.json"
+  if ($LASTEXITCODE -eq 0) {
+  $identity = Get-Content -LiteralPath "identity-$n.json" -Raw | ConvertFrom-Json
+  $units = @($identity.units)
+  if ($identity.status -cne 'SOURCE_VERIFIED' -or $units.Count -ne 1 -or $units[0].unit -cne 'root') {
+  throw 'Expected an admitted root release unit.'
+  }
+  $version = $units[0].version
+  if ($version -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' -or
+  $units[0].tag -cne "v$version" -or $units[0].packageVersion -cne $version) {
+  throw 'Admitted version, package version and tag must agree.'
+  }
+  "version=$version" >> $env:GITHUB_OUTPUT
+  exit 0
+  }
+  if ($LASTEXITCODE -ne 75) { exit $LASTEXITCODE }
+  Start-Sleep -Seconds 30
+  git -C state fetch --no-tags origin refs/heads/steward/release-state
+  if ($LASTEXITCODE) { exit $LASTEXITCODE }
+  git -C state update-ref refs/heads/steward/release-state FETCH_HEAD
+  if ($LASTEXITCODE) { exit $LASTEXITCODE }
+  }
+  exit 75
+`;
+const normalizedScript = run => run.trim().split(/\r?\n/).map(line => line.trim()).join('\n');
+const identityScripts = new Set([
+  normalizedScript(guardedRetry),
+  admissionCommand + 'identity.json\nif ($LASTEXITCODE) { exit $LASTEXITCODE }',
+]);
+
+function verifyNativePublisher(workflow, bytes, {path, delivery}) {
+  verifyDispatchWorkflow(bytes, {purpose: 'build', inputs: buildInputs, buildWorkflow: path});
+  const handoff = applyWorkflowDelivery(delivery, bytes);
+  if (delivery.units.some(unit => !handoff.units.get(unit.id)?.has('github-release'))) {
+    throw Error('VALIDATION_CONTROLLER_NATIVE_DELIVERY ' + path);
+  }
+  assertProductDelivery(delivery);
+  const jobs = new Map(Object.entries(workflow.jobs));
+  const admission = [...jobs].find(([, job]) => successOnly(job) && jobNeeds(job).length === 0 && job.steps?.some((step, index) => {
+    const shell = step.shell ?? job.defaults?.run?.shell ?? workflow.defaults?.run?.shell;
+    if (shell !== 'pwsh' || typeof step.run !== 'string' || !identityScripts.has(normalizedScript(step.run)) ||
+        !successOnly(step)) return false;
+    const binds = Object.keys(buildInputs).every(input =>
+      new RegExp('^\\x24{{\\s*inputs\\.' + input + '\\s*}}$').test(step.env?.[input.toUpperCase()] ?? ''));
+    const checkout = (mount, repository, ref) => job.steps.slice(0, index).some(step =>
+      isCheckout(step.uses) && isPin(step.uses.split('@')[1]) && successOnly(step)
+      && step.with?.path === mount && step.with.repository === repository
+      && step.with['persist-credentials'] === false && ref(step.with.ref));
+    return binds && checkout('controller', controllerRepository, isPin)
+      && checkout('product', undefined, ref => ref === '${{ github.sha }}')
+      && checkout('state', undefined, ref => ref === 'steward/release-state');
+  }));
+  if (!admission) throw Error('VALIDATION_CONTROLLER_NATIVE_ADMISSION ' + path);
+  const admitted = new Map([[admission[0], true]]);
+  const passesAdmission = id => {
+    if (admitted.has(id)) return admitted.get(id);
+    admitted.set(id, false);
+    const job = jobs.get(id), needs = job && jobNeeds(job);
+    const result = Boolean(job && successOnly(job) && Array.isArray(needs) && needs.length && needs.every(passesAdmission));
+    admitted.set(id, result);
+    return result;
+  };
+  const uploads = new Set([...handoff.units.values()].flatMap(channels =>
+    [...channels.keys()].map(channel => 'upload-' + channel)));
+  for (const [jobId, job] of jobs) {
+    for (const [index, upload] of (job.steps ?? []).entries()) {
+      if (!uploads.has(upload.id)) continue;
+      const uploadPaths = artifactPaths(upload.with.path);
+      const permissions = job.permissions ?? workflow.permissions;
+      const attests = job.steps.slice(0, index).some(step => successOnly(step)
+        && /^actions\/attest(?:-build-provenance)?@[a-f0-9]{40}$/.test(step.uses ?? '')
+        && artifactPaths(step.with?.['subject-path']) === uploadPaths);
+      if (!attests || permissions?.['id-token'] !== 'write' || permissions.attestations !== 'write') {
+        throw Error('VALIDATION_CONTROLLER_NATIVE_ATTESTATION ' + path);
+      }
+      if (!successOnly(upload) || jobId === admission[0] || !passesAdmission(jobId)) {
+        throw Error('VALIDATION_CONTROLLER_NATIVE_ADMISSION ' + path);
+      }
+    }
+  }
+}
+
+function readWorkflowPins(repo, revision, path, archiveReaders, publisher) {
+  const bytes = git(repo, ['cat-file', 'blob', revision + ':' + path]);
+  const document = YAML.parseDocument(bytes.toString('utf8'));
   if (document.errors.length) throw document.errors[0];
   const workflow = document.toJS();
   const jobs = Object.entries(workflow?.jobs ?? {});
@@ -98,7 +210,7 @@ function readWorkflowPins(repo, revision, path, archiveReaders) {
       throw Error('VALIDATION_CONTROLLER_LOCAL_USES ' + path);
     }
     for (const [index, step] of steps.entries()) {
-      if (path === publishWorkflow && jobId === 'build' && step.run === archiveReaderCommand) {
+      if (path === defaultBuildWorkflow && jobId === 'build' && step.run === archiveReaderCommand) {
         const guard = step.if;
         const directory = step['working-directory'];
         if (directory === controllerPath && jobController && typeof guard === 'string' && guard && !archiveReaders.has(guard)) {
@@ -146,7 +258,7 @@ function readWorkflowPins(repo, revision, path, archiveReaders) {
         }
         continue;
       }
-      const archiveReader = path === publishWorkflow && jobId === 'build' && mount === archiveReaderPath;
+      const archiveReader = path === defaultBuildWorkflow && jobId === 'build' && mount === archiveReaderPath;
       if (!archiveReader && mount !== controllerPath) throw Error('VALIDATION_CONTROLLER_CHECKOUT_MOUNT ' + path);
       if (!isPin(step.with.ref)) throw Error('VALIDATION_CONTROLLER_PIN_INVALID ' + path);
       if (archiveReader) {
@@ -181,7 +293,9 @@ function readWorkflowPins(repo, revision, path, archiveReaders) {
   }
   const reusable = jobs.filter(([, job]) => typeof job.uses === 'string'
     && job.uses.toLowerCase().startsWith(controllerWorkflowPrefix));
-  if (path === publishWorkflow && !reusable.some(([, job]) =>
+  if (path === publisher.path && publisher.delivery) {
+    verifyNativePublisher(workflow, bytes, publisher);
+  } else if ((path === publisher.path || path === defaultBuildWorkflow) && !reusable.some(([, job]) =>
     job.uses.toLowerCase().startsWith(controllerWorkflowPrefix + 'product-release.yml@'))) {
     throw Error('VALIDATION_CONTROLLER_REUSABLE_WORKFLOW_MISSING ' + path);
   }
@@ -190,9 +304,12 @@ function readWorkflowPins(repo, revision, path, archiveReaders) {
   return controllerPins;
 }
 
-function readRevisionPins(workspace, revision) {
+function readRevisionPins(workspace, revision, publisher) {
   const archiveReaders = new Map();
-  const pins = managedWorkflows.flatMap(path => readWorkflowPins(workspace, revision, path, archiveReaders));
+  const paths = new Set([...managedWorkflows, publisher.path]);
+  if (publisher.path !== defaultBuildWorkflow
+    && !git(workspace, ['ls-tree', revision, '--', defaultBuildWorkflow]).length) paths.delete(defaultBuildWorkflow);
+  const pins = [...paths].flatMap(path => readWorkflowPins(workspace, revision, path, archiveReaders, publisher));
   return {controller: new Set(pins.map(pin => pin.sha)), versions: new Set(pins.map(pin => pin.version)), archiveReaders};
 }
 
@@ -229,11 +346,16 @@ function verifyPromotion(policy, previousPins, candidate, promotedController) {
 }
 
 export function verifyLayerScapeControllerPins(workspace, input, policy, promotedController) {
-  if (input.repositoryId !== layerScapeId
-    || !managedWorkflows.some(path => input.changedPaths.includes(path))) return;
+  if (input.repositoryId !== layerScapeId || !input.changedPaths.some(path =>
+    path === deliveryFile || path === releasePleaseFile || /^\.github\/workflows\/[^/]+\.ya?ml$/.test(path))) return;
+  const priorPublisher = publisherAt(workspace, input.base);
+  const nextPublisher = publisherAt(workspace, input.head);
+  const watched = [...managedWorkflows, priorPublisher.path, nextPublisher.path];
+  if (priorPublisher.delivery || nextPublisher.delivery) watched.push(deliveryFile, releasePleaseFile);
+  if (!input.changedPaths.some(path => watched.includes(path))) return;
 
-  const before = readRevisionPins(workspace, input.base);
-  const after = readRevisionPins(workspace, input.head);
+  const before = readRevisionPins(workspace, input.base, priorPublisher);
+  const after = readRevisionPins(workspace, input.head, nextPublisher);
   if (after.controller.size !== 1) throw Error('VALIDATION_CONTROLLER_PIN_MISMATCH');
   const [candidate] = after.controller;
   const controllerChanged = before.controller.size !== 1 || !before.controller.has(candidate);

@@ -13,6 +13,13 @@ import copier_bridge as bridge
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def make_legacy_configuration(directory):
+    for path in bridge.LEGACY_CONFIGURATION:
+        file = directory / 'templates/repository' / path
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text('Historical generated configuration\n', encoding='utf-8')
+
+
 class CopierTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='steward-copier-test-')
@@ -179,6 +186,7 @@ class CopierTests(unittest.TestCase):
         retired = config.read_bytes()
         historic = yaml.safe_load(retired)
         del historic['_exclude']
+        make_legacy_configuration(self.central)
         config.write_text(yaml.safe_dump(historic), encoding='utf-8')
         historic_sha = self.commit(self.central, 'Historical template with repository configuration')
         self.git(self.central, 'tag', 'v2.0.0')
@@ -190,6 +198,8 @@ class CopierTests(unittest.TestCase):
         trial.unlink()
         self.commit(self.product, 'Keep repository-specific migration state')
         config.write_bytes(retired)
+        for path in bridge.LEGACY_CONFIGURATION:
+            (self.central / 'templates/repository' / path).unlink()
         current = self.commit(self.central, 'Exclude legacy configuration from delivery')
         self.git(self.central, 'tag', 'v3.0.0')
         bridge.render(self.central, self.product, current, 'update')
@@ -218,16 +228,61 @@ class CopierTests(unittest.TestCase):
         self.assertIn('.copier-answers.yml', difference['new'])
         self.assertEqual(bridge.paths_in_tree(self.product), before)
 
-    def test_release_template_already_applied_by_product(self):
-        self.copy_adopt()
+    def test_release_template_is_retired_for_existing_adopters_and_new_repositories(self):
+        config = self.central / 'copier.yml'
+        retired = config.read_bytes()
+        configuration = yaml.safe_load(retired)
         path = bridge.RELEASE_NOTES_TEMPLATE
-        replacement = b'# Release\n\nReviewed release content\n'
-        (self.product / path).write_bytes(replacement)
-        self.commit(self.product, 'Apply reviewed release text ahead of template adoption')
-        new = self.next_version(lambda template: (template / path).write_bytes(replacement))
-        result = bridge.render(self.central, self.product, new, 'update')
-        self.assertEqual((self.product / path).read_bytes(), replacement)
-        self.assertEqual(result['paths'], ['.copier-answers.yml'])
+        configuration['_exclude'].remove('/' + path)
+        config.write_text(yaml.safe_dump(configuration), encoding='utf-8')
+        historic = self.commit(self.central, 'Last template that delivered the release copy')
+        self.git(self.central, 'tag', 'v2.0.0')
+        bridge.render(self.central, self.product, historic, 'copy')
+        self.init(self.product)
+        self.commit(self.product, 'Adopt historical template')
+        document = self.product / path
+        original = document.read_bytes()
+
+        config.write_bytes(retired)
+        current = self.commit(self.central, 'Retire delivery of release copy')
+        self.git(self.central, 'tag', 'v3.0.0')
+        document.write_bytes(b'Edited product template\n')
+        self.commit(self.product, 'Keep a repository-specific change for review')
+        with self.assertRaises(bridge.TemplateConflict) as caught:
+            bridge.render(self.central, self.product, current, 'update')
+        self.assertEqual(caught.exception.paths, [path])
+        self.assertEqual(document.read_bytes(), b'Edited product template\n')
+        self.git(self.product, 'rm', '--', path)
+        self.commit(self.product, 'Remove product template')
+        document.write_bytes(original)
+        with self.assertRaisesRegex(ValueError, 'TEMPLATE_DIRTY'):
+            bridge.render(self.central, self.product, current, 'update')
+        ignore = self.product / '.git/info/exclude'
+        with ignore.open('a', encoding='utf-8') as excluded:
+            excluded.write('/' + path + '\n')
+        with self.assertRaises(bridge.TemplateConflict) as caught:
+            bridge.render(self.central, self.product, current, 'update')
+        self.assertEqual(caught.exception.paths, [path])
+        self.assertEqual(document.read_bytes(), original)
+        attributes = self.product / '.gitattributes'
+        attributes.write_text('/' + path + ' text eol=crlf\n', encoding='utf-8', newline='\n')
+        self.git(self.product, 'add', '--force', '--', path)
+        self.commit(self.product, 'Restore delivered bytes for reviewed deletion')
+        document.unlink()
+        self.git(self.product, 'checkout', 'HEAD', '--', path)
+        self.assertEqual(self.git(self.product, 'check-attr', 'eol', '--', path), path + ': eol: crlf')
+        self.assertEqual(document.read_bytes().replace(b'\r\n', b'\n'), original)
+        self.assertIn(b'\r\n', document.read_bytes())
+        self.assertEqual(self.git(self.product, 'status', '--porcelain'), '')
+        result = bridge.render(self.central, self.product, current, 'update')
+        self.assertEqual(result['paths'], ['.copier-answers.yml', path])
+        self.assertFalse(document.exists())
+        self.commit(self.product, 'Adopt template without release copy')
+        self.assertEqual(bridge.render(self.central, self.product, current, 'update')['paths'], [])
+        seed = self.root / 'seed'
+        bridge.render(self.central, seed, current, 'copy')
+        self.assertFalse((seed / path).exists())
+        self.assertEqual((self.central / 'templates/repository' / path).read_bytes(), original)
 
     def test_review_recovery_uses_a_new_template_version_and_keeps_product_changes(self):
         self.copy_adopt()

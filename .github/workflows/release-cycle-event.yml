@@ -16,12 +16,12 @@ permissions:
   contents: read
   actions: read
 concurrency:
-  group: ${{ startsWith(fromJSON(inputs.event_json).kind, 'candidate-') && format('steward-candidate-homepage-{0}-{1}', fromJSON(inputs.event_json).repositoryId, fromJSON(inputs.event_json).prNumber) || 'steward-release-coordinator' }}
+  group: ${{ contains(fromJSON('["candidate-head","candidate-status"]'), fromJSON(inputs.event_json).kind) && format('steward-candidate-homepage-{0}-{1}', fromJSON(inputs.event_json).repositoryId, fromJSON(inputs.event_json).prNumber) || 'steward-release-coordinator' }}
   cancel-in-progress: false
   queue: max
 jobs:
   release-coordinator:
-    if: github.repository_id == '1296724484' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.policy_sha == github.sha && github.workflow_sha == github.sha
+    if: github.actor_id == '301115370' && github.repository_id == '1296724484' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.policy_sha == github.sha && github.workflow_sha == github.sha
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment:
@@ -51,6 +51,52 @@ jobs:
           npm ci --ignore-scripts --no-audit --no-fund
           npm ci --prefix tools/quality-language --ignore-scripts --no-audit --no-fund
           uv sync --project tools/template --frozen --only-group release-inspection --no-build
+      - name: Verify the original product Run and freeze its delivery
+        if: ${{ fromJSON(inputs.event_json).kind == 'run' && (vars.STEWARD_OFFICIAL_RELEASE == 'true' || (vars.STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID != '' && format('{0}', fromJSON(inputs.event_json).repositoryId) == vars.STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID)) }}
+        id: official_plan
+        env:
+          STEWARD_CENTRAL_TOKEN: ${{ github.token }}
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          STEWARD_CONTROLLER_SHA: ${{ github.workflow_sha }}
+          BOUNDED_MODE: cycle
+          BOUNDED_POLICY_SHA: ${{ inputs.policy_sha }}
+          BOUNDED_EVENT_JSON: ${{ inputs.event_json }}
+          BOUNDED_REQUEST_KEY: ${{ inputs.request_key }}
+          OFFICIAL_RELEASE_ENABLED: ${{ vars.STEWARD_OFFICIAL_RELEASE }}
+          STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID: ${{ vars.STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID }}
+          OFFICIAL_RELEASE_PHASE: prepare
+        run: node scripts/release-cycle-event.mjs
+      - name: Issue the product release installation token
+        if: ${{ steps.official_plan.outputs.ready == 'true' }}
+        id: official_token
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc
+        with:
+          client-id: Iv23liuSr0qd4WLJdZhH
+          private-key: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          owner: ${{ steps.official_plan.outputs.owner }}
+          repositories: ${{ steps.official_plan.outputs.repo }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+      - name: Check the official branch-wide release scope
+        if: ${{ steps.official_plan.outputs.ready == 'true' }}
+        id: official_preflight
+        env:
+          OFFICIAL_RELEASE_TOKEN: ${{ steps.official_token.outputs.token }}
+        run: node scripts/official-release.mjs
+      - name: Create the official tag and draft
+        if: ${{ steps.official_preflight.outputs.create == 'true' }}
+        id: official_draft
+        # GitHub object readback decides whether a partial Action can be resumed.
+        continue-on-error: true
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7
+        with:
+          repo-url: ${{ steps.official_plan.outputs.owner }}/${{ steps.official_plan.outputs.repo }}
+          target-branch: ${{ steps.official_plan.outputs.target_branch }}
+          token: ${{ steps.official_token.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          skip-github-pull-request: true
       - name: business-release-coordinator
         env:
           STEWARD_CENTRAL_TOKEN: ${{ github.token }}
@@ -61,6 +107,12 @@ jobs:
           BOUNDED_POLICY_SHA: ${{ inputs.policy_sha }}
           BOUNDED_EVENT_JSON: ${{ inputs.event_json }}
           BOUNDED_REQUEST_KEY: ${{ inputs.request_key }}
+          OFFICIAL_RELEASE_ENABLED: ${{ vars.STEWARD_OFFICIAL_RELEASE }}
+          STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID: ${{ vars.STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID }}
+          OFFICIAL_RELEASE_TOKEN: ${{ steps.official_token.outputs.token }}
+          OFFICIAL_RELEASE_ACTION_ID: ${{ steps.official_draft.outputs.id }}
+          OFFICIAL_RELEASE_ACTION_TAG: ${{ steps.official_draft.outputs.tag_name }}
+          OFFICIAL_RELEASE_ACTION_SHA: ${{ steps.official_draft.outputs.sha }}
         run: node scripts/release-cycle-event.mjs
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -69,5 +121,5 @@ jobs:
           if-no-files-found: error
           retention-days: 90
       - name: Report candidate preview failure
-        if: ${{ startsWith(fromJSON(inputs.event_json).kind, 'candidate-') }}
+        if: ${{ contains(fromJSON('["candidate-head","candidate-status"]'), fromJSON(inputs.event_json).kind) }}
         run: node -e "if (require('./result.json').status === 'FAILED') process.exitCode = 1"
