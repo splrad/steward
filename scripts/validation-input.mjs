@@ -10,6 +10,7 @@ import {parseRegistration,registrationPath,registrationWorkflow} from './reposit
 import {assertLifecycleScope} from './private-lifecycle-policy.mjs';
 import {assertRepositoryPolicyMarker,repositoryPolicyAdoptionPath} from './repository-policy-projection.mjs';
 import {parseReleasePauses,releasePausesPath} from './release-pauses.mjs';
+import {settingsRepositoryId} from './steward-settings-read.mjs';
 const check=(ok,code)=>{if(!ok)throw Error('VALIDATION_'+code);};
 export function git(workspace,args) {
   return execFileSync('git',['--no-replace-objects','-c','core.hooksPath=','-c','credential.helper=',...args],
@@ -156,7 +157,9 @@ export async function validationFileInputs(workspace,env=process.env) {
     }
     for(const path of changedPaths.filter(path=>registrationPath.test(path)&&!files.includes(path))) {
       const previous=parseRegistration(git(workspace,['show',base+':'+path]),Number(registrationPath.exec(path)[1]));
-      check(!previous.adoption||previous.adoption==='legacy','REPOSITORY_POLICY_ROLLBACK_REQUIRED');
+      const centralRetirement=repositoryId===settingsRepositoryId&&event.repository.full_name==='splrad/steward-settings'
+        &&previous.adoption==='central';
+      check(!previous.adoption||previous.adoption==='legacy'||centralRetirement,'REPOSITORY_POLICY_ROLLBACK_REQUIRED');
     }
   }
   // Reject product inputs before scope outputs can schedule any candidate build.
@@ -191,7 +194,8 @@ export async function validationInput(workspace,env=process.env) {
 }
 export async function main(env=process.env) {
   const workspace=resolve(env.VALIDATION_WORKSPACE??'target'),value=await validationInput(workspace,env);
-  if(value.dependencyMode==='private-administrator'&&env.GITHUB_EVENT_NAME==='pull_request') {
+  const registrationRemoved=value.input.changedPaths.some(path=>registrationPath.test(path)&&!value.files.includes(path));
+  if(value.dependencyMode==='private-administrator'&&(env.GITHUB_EVENT_NAME==='pull_request'||registrationRemoved)) {
     const {validateRegistrationPreview}=await import('./repository-registration-preview.mjs');
     await validateRegistrationPreview(workspace,value,env);
   }
