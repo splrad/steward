@@ -113,12 +113,17 @@ it('checks published signature and exact download bytes from the protected recei
   const names=f.adapter.names(f.target);
   const assets=await Promise.all(names.map(async name=>({id:name,...await fileDigest(f.target.directory,name)})));
   const context={repository:'fixture/product',repositoryId:1,appBotId:42,cycle:{
+    sourceSha:f.target.manifest.sourceSha,
     officialRelease:{headSha:'a'.repeat(40),pullBodyDigest:'b'.repeat(64),bodyDigest:'c'.repeat(64)},
     units:[{id:'app',releaseId:20,tag:'v1.2.3',assets,githubDelivery:{runId:10,attempt:2,artifactId:30,digest:'sha256:'+'d'.repeat(64)}}],
   }} as EvidenceContext;
   await expect(verifyOfficialPublicationProof(context,'app',f.gh,f.download)).resolves.toHaveLength(names.length+1);
   expect(f.downloads.every(item=>item.anonymous)).toBe(true);
   expect(f.calls.some(args=>args.some(arg=>arg.includes('/actions/runs')))).toBe(false);
+  f.state.annotated=true;
+  f.state.source='9'.repeat(40);
+  await expect(verifyOfficialPublicationProof(context,'app',f.gh,f.download)).rejects.toThrow('tag source changed');
+  f.state.source=f.target.manifest.sourceSha;
   f.state.corruptDownload=true;
   await expect(verifyOfficialPublicationProof(context,'app',f.gh,f.download)).rejects.toThrow('official published bytes');
   expect(writes(f)).toHaveLength(0);

@@ -57,6 +57,28 @@ export function nativeReleaseDownload(token: string | undefined): ReleaseDownloa
 const absent = (error: unknown) => (error as { status?: number }).status === 404 || /\(HTTP 404\)/.test(String((error as { stderr?: string }).stderr));
 function reject(reason: string): never { throw new Error(`GH_RELEASE: ${reason}`); }
 
+async function tagSource(json: (args:string[])=>Promise<any>, repository: string, tag: string, sourceSha: string) {
+  const base = `repos/${repository}`; let ref;
+  try { ref = await json(['api', `${base}/git/ref/tags/${encodeURIComponent(tag)}`]); }
+  catch (error) {
+    if (!absent(error)) throw error;
+    const matches = await json(['api', `${base}/git/matching-refs/tags/${encodeURIComponent(tag)}`]);
+    if (!Array.isArray(matches) || matches.some(item => item.ref === `refs/tags/${tag}`)) reject('tag absence unknown');
+    return null;
+  }
+  if (ref.ref !== `refs/tags/${tag}`) reject('tag ref identity');
+  let object = ref.object; const seen = new Set<string>();
+  while (object?.type === 'tag') {
+    if (!/^[a-f0-9]{40}$/.test(object.sha) || seen.has(object.sha) || seen.size >= 8) reject('tag chain');
+    seen.add(object.sha);
+    const annotated = await json(['api', `${base}/git/tags/${object.sha}`]);
+    if (annotated.sha !== object.sha) reject('annotated tag identity');
+    object = annotated.object;
+  }
+  if (object?.type !== 'commit' || object.sha !== sourceSha) reject('tag source changed');
+  return object.sha;
+}
+
 /** Verify an already published official Release from the protected receipt and public download bytes. */
 export async function verifyOfficialPublicationProof(context: EvidenceContext, unitId: string,
   gh: GhCommand = nativeGhCommand, download: ReleaseDownload = nativeReleaseDownload(process.env.GH_TOKEN)) {
@@ -65,6 +87,9 @@ export async function verifyOfficialPublicationProof(context: EvidenceContext, u
     reject('official published receipt required');
   const repository = context.repository, releaseId = unit.releaseId;
   const json = async (args: string[]) => JSON.parse(await gh(args));
+  const verifyTag = async () => {
+    if (!await tagSource(json,repository,unit.tag,context.cycle.sourceSha)) reject('tag missing');
+  };
   const inventory = async (): Promise<Asset[]> => {
     const pages = await json(['api', '--paginate', '--slurp', `repos/${repository}/releases/${releaseId}/assets?per_page=100`]);
     if (!Array.isArray(pages) || !pages.length || pages.some(page=>!Array.isArray(page))) reject('official published asset pages');
@@ -75,6 +100,7 @@ export async function verifyOfficialPublicationProof(context: EvidenceContext, u
     return assets.map(({id,name,size,digest,state})=>({id,name,size,digest,state})).sort((first,second)=>first.id-second.id);
   };
   const initial = await inventory();
+  await verifyTag();
   const anonymous = await releaseReadIsAnonymous(gh, repository, context.repositoryId);
   const nativeEvidence = [await json(['release','verify',unit.tag,'--repo',repository,'--format','json'])];
   const directory = await mkdtemp(join(tmpdir(),'steward-official-proof-'));
@@ -91,6 +117,7 @@ export async function verifyOfficialPublicationProof(context: EvidenceContext, u
       nativeEvidence.push(await json(['release','verify-asset',unit.tag,path,'--repo',repository,'--format','json']));
     }
     if (JSON.stringify(initial)!==JSON.stringify(await inventory())) reject('official published assets changed during proof');
+    await verifyTag();
   } finally {
     await rm(directory,{recursive:true,force:true});
   }
@@ -117,24 +144,6 @@ export class NativeGitHubRelease {
     if (repository.id !== m.repositoryId || repository.full_name !== m.fullName || repository.archived !== false || repository.disabled !== false
       || typeof repository.private !== 'boolean') reject('repository identity or disabled');
     return repository;
-  }
-  private async tagSource(target: ReleaseIntent): Promise<string | null> {
-    const m = target.manifest, base = `repos/${m.fullName}`; let ref;
-    try { ref = await this.json(['api', `${base}/git/ref/tags/${encodeURIComponent(m.tag)}`]); }
-    catch (error) {
-      if (!absent(error)) throw error;
-      const matches = await this.json(['api', `${base}/git/matching-refs/tags/${encodeURIComponent(m.tag)}`]);
-      if (!Array.isArray(matches) || matches.some(item => item.ref === `refs/tags/${m.tag}`)) reject('tag absence unknown');
-      return null;
-    }
-    if (ref.ref !== `refs/tags/${m.tag}`) reject('tag ref identity');
-    let object = ref.object; const seen = new Set<string>();
-    while (object?.type === 'tag') {
-      if (!/^[a-f0-9]{40}$/.test(object.sha) || seen.has(object.sha) || seen.size >= 8) reject('tag chain');
-      seen.add(object.sha); object = (await this.json(['api', `${base}/git/tags/${object.sha}`])).object;
-    }
-    if (object?.type !== 'commit' || object.sha !== m.sourceSha) reject('tag source changed');
-    return object.sha;
   }
   private async uploadIntent(target: ReleaseTarget) {
     const m = target.manifest, digest = await publicationManifestDigest(target.directory,m);
@@ -171,7 +180,7 @@ export class NativeGitHubRelease {
     const release = await this.json(['api', `repos/${m.fullName}/releases/${releaseId}`]);
     if (release.author?.id !== target.appBotId) reject('untrusted release creator');
     if (release.id !== releaseId || release.tag_name !== m.tag || typeof release.draft !== 'boolean') reject('release identity');
-    if (!await this.tagSource(target)) reject('tag missing');
+    if (!await tagSource(args=>this.json(args),m.fullName,m.tag,m.sourceSha)) reject('tag missing');
     return { id: release.id, tag_name: release.tag_name, draft: release.draft, immutable: release.immutable,
       body: release.body, html_url: release.html_url, upload_url: release.upload_url, target_commitish: release.target_commitish,
       ...(typeof release.prerelease === 'boolean' ? { prerelease: release.prerelease } : {}) };

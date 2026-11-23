@@ -55,7 +55,7 @@ export async function ghReleaseFixture(sourceShaOverride?:string, notesBody?:str
           if (!state.tag) throw Object.assign(new Error('not found'), { status: 404 });
           return JSON.stringify({ ref: 'refs/tags/v1.2.3', object: { type: state.annotated ? 'tag' : 'commit', sha: state.annotated ? 'f'.repeat(40) : state.source } });
         }
-        if (endpoint.includes('/git/tags/')) return JSON.stringify({ object: { type: 'commit', sha: state.source } });
+        if (endpoint.includes('/git/tags/')) return JSON.stringify({ sha:'f'.repeat(40), object: { type: 'commit', sha: state.source } });
         if (endpoint.includes('/git/matching-refs/')) return '[]';
         if (endpoint.endsWith('/releases?per_page=100')) return JSON.stringify([[...releases.values()]]);
         if (/\/releases\/\d+$/.test(endpoint)) {
