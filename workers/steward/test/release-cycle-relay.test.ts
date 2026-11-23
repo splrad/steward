@@ -288,9 +288,16 @@ it.each(['official-merge','stored-proof','stored-proof-unrelated-delivery','hist
  const rejected=mode==='historical-unrelated-dispatch'||wrongDelivery;
  await acceptReleaseHint(env,'workflow_run',webhook);
  expect(intake).toHaveLength(1);
- await relay.register(h);await relay.alarm();
+ await relay.register({...h,productRepositoryId:TARGET.id});await relay.alarm();
  expect(posts).toBe(rejected?0:1);
  expect(historicalReads>0).toBe(mode.startsWith('stored-proof')||mode.startsWith('historical'));
+});
+it('stops an old unbound publication relay before creating any dispatch',async()=>{
+ const f=fixture();
+ const h={repositoryId:CENTRAL.id,kind:'publication',runId:52,attempt:1} as const;
+ await f.relay.register(h);await f.relay.alarm();
+ expect(f.state.posts).toBe(0);
+ expect(await f.storage.get('releaseCycle')).toMatchObject({stage:'unknown',reason:'RELEASE_SOURCE_NOT_ADOPTED',reserved:0});
 });
 it('quiesces an unconfirmed POST and resumes its existing confirmation budget on redelivery',async()=>{
  const f=fixture();f.state.promoted=pin;await f.relay.register(hint);await f.tick();

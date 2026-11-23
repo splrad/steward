@@ -39,7 +39,8 @@ it('allows only protected fixed central missing refs, never product 404 or forbi
   status=404;protectedWriter=false;await expect(fetchState('',repository,'fixture','steward/release-state',{fetcher,centralFirstUse:true})).rejects.toThrow();
 });
 it('excludes proven unconfigured governance repositories while retaining missing or damaged product obligations',async()=>{
-  let productState=false,centralMaintenance=false,partial=false,truncated=false,status=200,oldRelease=false;
+  const candidateRef='refs/heads/release-please--branches--main';
+  let productState=false,centralMaintenance=false,partial=false,truncated=false,status=200,oldRelease=false,candidateBranch='';
   const io={request:async(_method:string,path:string)=>{
     let value:any;
     if(path===`/repos/${repository.full_name}`)value=repository;
@@ -47,6 +48,7 @@ it('excludes proven unconfigured governance repositories while retaining missing
     else if(path.includes('matching-refs/heads/steward/release-state'))value=productState||centralMaintenance?[{ref:'refs/heads/steward/release-state',object:{type:'commit',sha:head}}]:[];
     else if(path.includes(`git/trees/${head}`))value={truncated:false,tree:[...(centralMaintenance?[{path:'maintenance',type:'tree',mode:'040000',sha}]:[]),{path:centralMaintenance?'maintenance/12.json':'state.json',type:'blob',mode:'100644',sha}]};
     else if(path.includes('git/trees/'))value={truncated,tree:partial?[{path:'release-please-config.json',type:'blob',mode:'100644',sha}]:[]};
+    else if(path.includes('matching-refs/heads/release-please--branches--main'))value=candidateBranch?[{ref:candidateBranch,object:{type:'commit',sha}}]:[];
     else if(path.includes('matching-refs'))value=[];
     else if(path.includes('releases?'))value=oldRelease?[{id:1}]:[];
     else throw Error('unexpected read');
@@ -57,6 +59,8 @@ it('excludes proven unconfigured governance repositories while retaining missing
   productState=true;await expect(releaseParticipation(repository,io)).rejects.toThrow('CONFIGURATION_REQUIRED');productState=false;
   partial=true;await expect(releaseParticipation(repository,io)).rejects.toThrow('CONFIGURATION_REQUIRED');partial=false;
   oldRelease=true;await expect(releaseParticipation(repository,io)).rejects.toThrow('CONFIGURATION_REQUIRED');oldRelease=false;
+  candidateBranch=candidateRef+'--components--app';expect((await releaseParticipation(repository,io)).status).toBe('NOT_APPLICABLE');
+  candidateBranch=candidateRef;await expect(releaseParticipation(repository,io)).rejects.toThrow('CONFIGURATION_REQUIRED');candidateBranch='';
   truncated=true;await expect(releaseParticipation(repository,io)).rejects.toThrow('INCOMPLETE');truncated=false;
   status=403;await expect(releaseParticipation(repository,io)).rejects.toThrow('UNAVAILABLE');
 });
@@ -143,14 +147,17 @@ it('rejects an array SHA in the default ref before reading trees',async()=>{
   }};
   await expect(releaseParticipation(repository,io)).rejects.toThrow('RELEASE_PARTICIPATION_IDENTITY');
 });
-it.each(['release-candidate','build/','releases'])('rejects changed absence evidence for %s',async changed=>{
+it.each(['release-please--branches--main','build/','releases'])('rejects changed absence evidence for %s',async changed=>{
   const counts=new Map<string,number>();
   const io={request:async(_method:string,path:string)=>{
     let v:any;
     if(path===`/repos/${repository.full_name}`)v=repository;
     else if(path.includes('git/ref/heads/main'))v={ref:'refs/heads/main',object:{type:'commit',sha}};
     else if(path.includes('git/trees/'))v={truncated:false,tree:[]};
-    else {const n=(counts.get(path)??0)+1;counts.set(path,n);v=n>1&&path.includes(changed)?[{id:1}]:[];}
+    else {
+      const n=(counts.get(path)??0)+1;counts.set(path,n);
+      v=n>1&&path.includes(changed)?[changed==='release-please--branches--main'?{ref:'refs/heads/'+changed,object:{type:'commit',sha}}:{id:1}]:[];
+    }
     return {status:200,bytes:Buffer.from(JSON.stringify(v))};
   }};
   await expect(releaseParticipation(repository,io)).rejects.toThrow('RELEASE_PARTICIPATION_CHANGED');

@@ -77,11 +77,8 @@ const scope=(io,repo,base)=>pages(io,`${prefix(repo)}/rules/branches/${encodeURI
   rule=>JSON.stringify([rule.ruleset_id,rule.type,rule.parameters??null]));
 const exactPull=(pr,entry)=>pr.number===entry.number&&pr.base?.ref===entry.base&&pr.base?.repo?.id===entry.repoId
   &&pr.head?.sha===entry.head&&pr.head?.repo?.id===entry.headRepo&&pr.head?.ref===entry.headRef;
-const ownedRelease=pr=>typeof pr.head?.ref==='string'&&pr.head.repo?.id===pr.base?.repo?.id
-  &&(pr.head.ref==='steward/release-candidate'||pr.user?.id===301115370 &&
-    (pr.head.ref==='release-please--branches--'+pr.base.ref || pr.head.ref.startsWith('release-please--branches--'+pr.base.ref+'--components--'))
-    ||pr.labels?.some(label=>label.name==='autorelease: pending'||label.name.startsWith('release:'))
-    ||/<!-- steward:candidate:[a-f0-9]{64} -->/.test(pr.body??''));
+const ownedRelease=pr=>pr.user?.id===301115370&&typeof pr.head?.ref==='string'&&pr.head.repo?.id===pr.base?.repo?.id
+  &&(pr.head.ref==='release-please--branches--'+pr.base.ref || pr.head.ref.startsWith('release-please--branches--'+pr.base.ref+'--components--'));
 
 function revalidationWait(pr) {
   if(ownedRelease(pr))return 'release-managed';

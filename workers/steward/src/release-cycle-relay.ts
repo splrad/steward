@@ -330,6 +330,7 @@ export class ReleaseRelay {
           }
         }
         if (r.hint.kind === 'publication') {
+          if(!positive(r.hint.productRepositoryId)){await stopIneligible();return;}
           const run = await g.json(CENTRAL.id,prefix+'/actions/runs/'+r.hint.runId+'/attempts/'+r.hint.attempt);
           const parentKey = /^Release cycle ([a-f0-9]{64})$/.exec(run.display_title)?.[1];
           ensure(parentKey && run.id === r.hint.runId && run.run_attempt === r.hint.attempt && run.status === 'completed' &&
@@ -349,7 +350,7 @@ export class ReleaseRelay {
             first.path===run.path && first.head_branch==='main' && first.event==='workflow_dispatch' &&
             Date.parse(first.created_at)>=prior.reserved-60000 && Date.parse(first.created_at)<=prior.reserved+300000,'PUBLICATION_FIRST_ATTEMPT');
           if(prior.hint.kind==='publication'){await save({stage:'received',reason:'PUBLICATION_CONSUMED'});return;}
-          ensure(prior.hint.repositoryId===(r.hint.productRepositoryId??TARGET.id),'PUBLICATION_PRODUCT_BINDING');
+          ensure(prior.hint.repositoryId===r.hint.productRepositoryId,'PUBLICATION_PRODUCT_BINDING');
           if(!await officialPublication(g,prior,this.env.INSTALLATION_ID)){await stopIneligible();return;}
           const artifact=await g.artifact(CENTRAL.id,run.id,'release-cycle-'+parentKey+'-'+run.run_attempt,'result.json');
           const v=artifact.value;
