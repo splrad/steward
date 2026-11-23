@@ -2,6 +2,8 @@ import {createHash} from 'node:crypto';
 import {it,expect,vi} from 'vitest';
 import {BoundedGitHub} from '../src/bounded-recheck-github.js';
 import {handleBoundedRecheckRequest} from '../src/bounded-recheck-api.js';
+import {objectKey,type Identity} from '../src/bounded-recheck.js';
+import * as prBodyApi from '../src/pr-body-api.js';
 
 it('rejects the retired public candidate registration before addressing a durable object',async()=>{
   let accesses=0;
@@ -10,6 +12,32 @@ it('rejects the retired public candidate registration before addressing a durabl
   }),{BOUNDED_RECHECK:{idFromName(){accesses++;throw Error('unexpected durable access');}}} as any);
   expect(response?.status).toBe(404);
   expect(accesses).toBe(0);
+});
+
+it('reads the historical candidate object with its authenticated repository and no release declaration',async()=>{
+ const identity:Identity={repositoryId:125,cycleId:'candidate1',channel:'candidate',version:'1.0.0',
+   artifactDigest:'sha256:'+'a'.repeat(64),sourceSha:'b'.repeat(40),stage:'candidate',epoch:'epoch1',upstreamPR:null};
+ const repository={id:identity.repositoryId,private:false,visibility:'public',archived:false,disabled:false,fork:false};
+ const authorize=vi.spyOn(prBodyApi,'authorizeSingleRepository').mockResolvedValue({repository,managed:true,client:null!});
+ const idFromName=vi.fn((key:string)=>key);
+ const fetchStatus=vi.fn(async(request:Request)=>{
+   expect(new URL(request.url).pathname).toBe('/status');
+   expect(await request.json()).toEqual({identity});
+   return Response.json({identity,status:'NEEDS_ATTENTION'});
+ });
+ const env={BOUNDED_RECHECK:{idFromName,get:()=>({fetch:fetchStatus})}} as any;
+ const request=()=>new Request('https://test/internal/bounded-rechecks/v1/status',{method:'POST',body:JSON.stringify({identity})});
+ try{
+   const first=request(),status=await handleBoundedRecheckRequest(first,env);
+   expect(authorize).toHaveBeenCalledWith(first,env,identity.repositoryId);
+   expect(idFromName).toHaveBeenCalledWith('recheck:v1:'+createHash('sha256').update(objectKey(identity)).digest('hex'));
+   expect(await status?.json()).toEqual({identity,status:'NEEDS_ATTENTION'});
+   authorize.mockRejectedValueOnce(Error('repository-scope'));
+   expect((await handleBoundedRecheckRequest(request(),env))?.status).toBe(403);
+   authorize.mockResolvedValueOnce({repository:{...repository,private:true,visibility:'private'},managed:true,client:null!});
+   expect((await handleBoundedRecheckRequest(request(),env))?.status).toBe(403);
+   expect(fetchStatus).toHaveBeenCalledTimes(1);
+ }finally{authorize.mockRestore();}
 });
 
 it.each(['initial','mixed','known','unknown','array'])('binds compact candidate units to configured packages with a %s Release Please manifest',async kind=>{

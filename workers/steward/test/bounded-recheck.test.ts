@@ -87,7 +87,26 @@ it('claimed confirmation can finish at exact deadline when its floor equals that
 it('late successful verification retains evidence but cannot mark an expired object DONE',async()=>{const f=fixture();let resolve!:(o:Outcome)=>void;f.effects.observe=vi.fn(()=>new Promise(r=>{resolve=r;}));await f.engine().register(input());const inFlight=f.engine().wake();await Promise.resolve();f.time(t0+120*m+1);resolve({kind:'done',evidence:'late-proof'});await inFlight;const r=await f.store.read();expect(r?.status).toBe('NEEDS_ATTENTION');expect(r?.evidence).toBe('late-proof');expect(f.store.alarm()).toBeNull();});
 
 it('confirmation editing pause retains the original unknown POST and remaining confirmations on resume',async()=>{const f=fixture({kind:'unknown'});await f.engine().register(input());await f.engine().wake();const key=(await f.store.read())!.intent!.key;f.effects.confirm=vi.fn(async()=>({kind:'pause',reason:'EDITING_PAUSED'}));f.time(t0+m);await f.engine().wake();expect((await f.store.read())?.status).toBe('PAUSED');expect((await f.store.read())?.intent?.key).toBe(key);expect((await f.store.read())?.intent?.confirmations).toBe(1);await f.engine().control('resume',2);f.effects.confirm=vi.fn(async()=>({kind:'done',evidence:'original-run'}));await f.engine().wake();expect(f.effects.observe).toHaveBeenCalledTimes(1);expect(f.effects.confirm).toHaveBeenCalledTimes(1);expect((await f.store.read())?.status).toBe('DONE');});
-it('ordinary receipt is a due-alarm hint: early receipt does no IO and terminal receipt cannot add a fourth confirmation',async()=>{let now=t0;const storage=new SqliteDurableStorage(),store=new DurableRecheckStore(storage as any),effects:Effects={observe:vi.fn(async()=>({kind:'unknown'})),confirm:vi.fn(async()=>({kind:'unknown'}))},engine=new BoundedRecheck(store,effects,()=>now),coordinator=new BoundedRecheckCoordinator({storage} as any,{BOUNDED_RECHECK_ENABLED:'true'} as any);(coordinator as any).engine=engine;await engine.register(input());await engine.wake();const requestKey=(await store.read())!.intent!.key,receipt=()=>coordinator.fetch(new Request('https://bounded.internal/receipt',{method:'POST',body:JSON.stringify({identity:input().identity,requestKey,runId:42,attempt:1,policySha:input().policySha})}));await receipt();expect(effects.confirm).not.toHaveBeenCalled();expect(await storage.get('__alarm')).toBe(t0+m);for(const n of [1,5,15]){now=t0+n*m;await coordinator.alarm();}expect(effects.confirm).toHaveBeenCalledTimes(3);await receipt();expect(effects.confirm).toHaveBeenCalledTimes(3);expect((await store.read())?.status).toBe('NEEDS_ATTENTION');expect(await storage.get('__alarm')).toBeUndefined();expect(effects.observe).toHaveBeenCalledTimes(1);});
+it('keeps the historical candidate record readable while retired writes and alarms leave it untouched',async()=>{
+ const storage=new SqliteDurableStorage(),store=new DurableRecheckStore(storage as any);
+ const effects:Effects={observe:vi.fn(async()=>({kind:'unknown'})),confirm:vi.fn(async()=>({kind:'unknown'}))};
+ const engine=new BoundedRecheck(store,effects,()=>t0);
+ const coordinator=new BoundedRecheckCoordinator({storage} as any,{BOUNDED_RECHECK_ENABLED:'true'} as any);
+ await engine.register(input());
+ await engine.wake();
+ const before=await store.read();
+ const storedAlarm=await storage.get('__alarm');
+ const request=(path:string)=>new Request('https://bounded.internal/'+path,{method:'POST',body:JSON.stringify({identity:input().identity})});
+ for(const path of ['register','receipt','pause','resume','cancel'])expect((await coordinator.fetch(request(path))).status).toBe(404);
+ await coordinator.alarm();
+ const status=await coordinator.fetch(request('status'));
+ expect(status.status).toBe(200);
+ expect(status.headers.get('cache-control')).toBe('no-store');
+ expect(await status.json()).toEqual(before);
+ expect(await storage.get('__alarm')).toBe(storedAlarm);
+ expect(effects.observe).toHaveBeenCalledTimes(1);
+ expect(effects.confirm).not.toHaveBeenCalled();
+});
 
 it.each(['duplicate','cancel','incomplete'])('reconciles an exact late receipt across %s',async scenario=>{
  const f=fixture({kind:'unknown',runId:42});

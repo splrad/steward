@@ -361,7 +361,7 @@ it.each(['eligible','unregistered','changed branch'] as const)('durably accepts 
  await receive();expect(reads).toBe(0);expect(await f.storage.get('releaseIntake')).toMatchObject({hint:pushHint,tries:0});expect(await f.storage.get('releaseCycle')).toBeUndefined();
  await coordinator().alarm();expect(f.state.posts).toBe(0);expect(await f.storage.get('__alarm')).toBe(f.state.now+180000);f.state.now=(await f.storage.get<number>('__alarm'))!;
  await coordinator().alarm();await receive();await coordinator().alarm();
- expect(f.state.posts).toBe(eligibility==='eligible'?1:0);expect(reads).toBe(eligibility==='eligible'?2:3);
+ expect(f.state.posts).toBe(eligibility==='eligible'?1:0);expect(reads).toBe(3);
 });
 
 it('rechecks the native workflow ID for a signed product completion before dispatch',async()=>{
