@@ -1,12 +1,12 @@
 _min_copier_version: '9.19.1'
 _subdirectory: templates/repository
 _answers_file: .copier-answers.yml
-# Existing installations keep their reviewed configuration until migration.
-# These sources also serve as the reference for validating existing callers.
+# The central release renderer reads the Mustache source by controller commit.
 _exclude:
   - /.github/repository-configuration.md
   - /.github/workflows/repository-configuration-trial.yml
   - /.github/workflows/repository-configuration.yml
+  - /.github/release-template.md.mustache
 product_repository:
   type: str
   default: ''

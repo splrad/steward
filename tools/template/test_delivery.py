@@ -14,6 +14,7 @@ from urllib.parse import unquote, urlparse, parse_qs
 import copier_bridge as bridge
 from delivery import deliver, NativeFailure, GitHubCLI, BRANCH, CENTRAL_ID
 from test_actions_lock import fixture_tool
+from test_copier_bridge import make_legacy_configuration
 from actions_lock import LockFailure
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -171,6 +172,7 @@ class DeliveryTests(unittest.TestCase):
         retired = config.read_bytes()
         historic = yaml.safe_load(retired)
         del historic['_exclude']
+        make_legacy_configuration(self.central)
         config.write_text(yaml.safe_dump(historic), encoding='utf-8')
         tag = self.commit(self.central, 'Historical template')
         self.git(self.central, 'tag', 'v3.0.0')
@@ -180,6 +182,8 @@ class DeliveryTests(unittest.TestCase):
         self.assertTrue(self.git(self.remote, 'show', first['head'] + ':' + bridge.LEGACY_CONFIGURATION[0]))
         self.edit(BRANCH, 'maintainer.md', 'Keep this edit\n')
         config.write_bytes(retired)
+        for path in bridge.LEGACY_CONFIGURATION:
+            (self.central / 'templates/repository' / path).unlink()
         tag = self.commit(self.central, 'Retire local configuration')
         self.git(self.central, 'tag', 'v4.0.0')
         self.api.run_sources[52] = tag

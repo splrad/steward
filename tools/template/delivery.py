@@ -13,7 +13,6 @@ import yaml
 import copier_bridge as copier
 import actions_lock
 import configuration_retirement
-from configuration_link import add_link
 
 API_VERSION = json.loads((Path(__file__).resolve().parents[2] / 'config/github-api.json').read_text(encoding='utf-8'))['version']
 BRANCH = 'steward/managed-sync'
@@ -254,6 +253,7 @@ def deliver(request, api, central_api, *, read_token=None, renderer=copier.rende
             return {'product_repository': repository} if 'product_repository' in definition else {}
 
         preserve_configuration = copier.configuration_excluded(template_definition(template_sha))
+        _, _, target_paths = copier.contract(central, template_sha, repository_inputs(template_sha), env)
         if preserve_configuration and head:
             verified = {commit}
             def bot_change(revision):
@@ -276,7 +276,9 @@ def deliver(request, api, central_api, *, read_token=None, renderer=copier.rende
         if preserve_configuration and not adopted and pending_answers:
             _, pinned, pinned_data = copier.answers(central, work, env)
             _, _, pinned_paths = copier.contract(central, pinned, pinned_data, env)
-            upgrade_pending = not pinned_paths.isdisjoint(copier.LEGACY_CONFIGURATION)
+            upgrade_pending = (not pinned_paths.isdisjoint(copier.LEGACY_CONFIGURATION)
+                               or (copier.RELEASE_NOTES_TEMPLATE in pinned_paths
+                                   and copier.RELEASE_NOTES_TEMPLATE not in target_paths))
             if upgrade_pending and (work / copier.ADOPTION_REPORT).exists():
                 # A previous first-adoption conflict must be resolved before native update.
                 # Recheck against its original seed without reintroducing retired files.
@@ -309,10 +311,6 @@ def deliver(request, api, central_api, *, read_token=None, renderer=copier.rende
                              else 'SECURITY_POLICY_CHECK_FAILED')
         policy_digest = policy_result.stdout.decode('ascii')
         require(not policy_digest or re.fullmatch(r'[0-9a-f]{64}', policy_digest), 'SECURITY_POLICY_DIGEST')
-        if not preserve_configuration and (work / '.github/repository-configuration.md').is_file() and repository_inputs(template_sha):
-            source = copier.git(central, ['show', template_sha + ':templates/repository/.github/workflows/repository-configuration.yml'], env)
-            triggers = yaml.load(source, Loader=yaml.BaseLoader)['on']
-            add_link(work, repository, retire='issues' in triggers)
         require(lock_runner is not None, 'ACTION_LOCK_RUNNER_REQUIRED')
         actions_lock.prepare(work, before_copier, lock_runner)
         if string('status', '--porcelain', '--untracked-files=all'):
