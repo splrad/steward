@@ -321,8 +321,9 @@ def render(central, target, sha, mode, data=None):
                 'TEMPLATE_GENERATED_VERSION')
         # Copier describes the SHA with any exact tag. Persist the selected template version.
         if ref != new_tag:
+            tag_value = yaml.safe_dump(new_tag).splitlines()[0].encode('utf-8')
             normalized, count = re.subn(rb'(?m)^(_commit:[ \t]+)[^\r\n]+',
-                                        lambda match: match[1] + new_tag.encode('ascii'), after[answers_path])
+                                        lambda match: match[1] + tag_value, after[answers_path])
             generated['_commit'] = new_tag
             require(count == 1 and yaml.safe_load(normalized) == generated, 'TEMPLATE_GENERATED_VERSION')
             (target / answers_path).write_bytes(normalized)
