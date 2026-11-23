@@ -5,9 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { parseFragment } from 'parse5';
 import YAML from 'yaml';
 import { EvidenceReadError } from '../../packages/runner/dist/index.js';
-import { Manifest as ActionManifest } from 'release-please-official/build/src/manifest.js';
 import { Manifest } from 'release-please';
-import { PullRequestBody as ActionPullRequestBody } from 'release-please-official/build/src/util/pull-request-body.js';
 import { PullRequestBody } from 'release-please/build/src/util/pull-request-body.js';
 import { bodyDigest, computeOfficialCandidate, draftOfficialCandidate, officialCandidateRoundId, officialMergeKey,
   officialNotes, renderOfficialHomepage, validateOfficialMergeEvent, verifyOfficialMerge } from '../official-release-candidate.mjs';
@@ -71,8 +69,7 @@ function render(upstream = upstreamBody, notes = orgNotes, contributors = [perso
     roundId });
 }
 
-test('native single-root extraction preserves every byte of rich notes and excludes the footer in both cores', async () => {
-  const versions = [ActionPullRequestBody, PullRequestBody];
+test('native single-root extraction preserves every byte of rich notes and excludes the footer', async () => {
   for (const expected of [render(), render(upstreamBody, { summary: '本版修复安装。' }, []), render().replace('支持范围', '兼容系统')]) {
     const section = officialNotes(expected);
     assert.equal(section.version, '1.1.0');
@@ -80,9 +77,7 @@ test('native single-root extraction preserves every byte of rich notes and exclu
     assert.match(section.body, /^## 1\.1\.0\n/);
     assert.equal(section.body.match(/\/compare\//g)?.length, 1);
     assert.doesNotMatch(section.body, /候选文件差异|技术变更记录|产品文件差异/);
-    for (const core of versions) {
-      assert.equal(core.parse(expected.replace(/\n/g, '\r\n'), {error() {}, warn() {}}).releaseData[0].notes, section.body);
-    }
+    assert.equal(PullRequestBody.parse(expected.replace(/\n/g, '\r\n'), {error() {}, warn() {}}).releaseData[0].notes, section.body);
   }
   const section = officialNotes(render()).body;
   const avatar = parseFragment(section).childNodes.find(node => node.nodeName === 'a');
@@ -102,35 +97,33 @@ test('native single-root extraction preserves every byte of rich notes and exclu
   assert.throws(() => officialNotes(upstreamBody.replace('\n\n---\n', '\n\n')), /BOUNDARIES/);
 });
 
-test('both cores generate the three native files and choose the same official draft notes', async () => {
-  for (const Core of [ActionManifest, Manifest]) {
-    const fileMap = { 'release-please-config.json': settings, '.release-please-manifest.json': { '.': '1.0.0' } };
-    const commits = [{ sha: sourceSha, message: 'feat: 支持新版', files: ['README.md'] },
-      { sha: previousSha, message: 'chore: release 1.0.0', files: ['VERSION'] }];
-    let pending = [];
-    const github = { repository: { owner: 'splrad', repo: 'fixture' },
-      getFileJson: async path => fileMap[path],
-      releaseIterator: async function* () { yield {tagName:'v1.0.0',sha:previousSha,notes:'',name:'v1.0.0'}; },
-      mergeCommitIterator: async function* () { yield* commits; },
-      pullRequestIterator: async function* (_branch, state) { if (state === 'MERGED') yield* pending; } };
-    const manifest = await Core.fromManifest(github, 'main');
-    const [candidate, extra] = await manifest.buildPullRequests();
-    assert.equal(extra, undefined);
-    assert.equal(candidate.version.toString(), '1.1.0');
-    assert.equal(candidate.headRefName, pr.head.ref);
-    assert.equal(candidate.title.toString(), pr.title);
-    assert.deepEqual(candidate.updates.map(update => update.path).sort(), ['.release-please-manifest.json', 'CHANGELOG.md', 'VERSION']);
-    assert.equal(await (await manifest.getStrategiesByPath())['.'].getBranchComponent(), '');
-    const rendered = render(candidate.body.toString());
-    pending = [{number:pr.number, sha:sourceSha, title:pr.title, headBranchName:pr.head.ref,
-      baseBranchName:'main', labels:candidate.labels, body:rendered}];
-    const [release] = await manifest.buildReleases();
-    assert.equal(release.notes, officialNotes(rendered).body);
-    assert.equal(release.sha, sourceSha);
-    assert.equal(release.tag.toString(), 'v1.1.0');
-    assert.equal(release.draft, true);
-    assert.equal(release.forceTag, true);
-  }
+test('the official package generates the three native files and chooses the frozen draft notes', async () => {
+  const fileMap = { 'release-please-config.json': settings, '.release-please-manifest.json': { '.': '1.0.0' } };
+  const commits = [{ sha: sourceSha, message: 'feat: 支持新版', files: ['README.md'] },
+    { sha: previousSha, message: 'chore: release 1.0.0', files: ['VERSION'] }];
+  let pending = [];
+  const github = { repository: { owner: 'splrad', repo: 'fixture' },
+    getFileJson: async path => fileMap[path],
+    releaseIterator: async function* () { yield {tagName:'v1.0.0',sha:previousSha,notes:'',name:'v1.0.0'}; },
+    mergeCommitIterator: async function* () { yield* commits; },
+    pullRequestIterator: async function* (_branch, state) { if (state === 'MERGED') yield* pending; } };
+  const manifest = await Manifest.fromManifest(github, 'main');
+  const [candidate, extra] = await manifest.buildPullRequests();
+  assert.equal(extra, undefined);
+  assert.equal(candidate.version.toString(), '1.1.0');
+  assert.equal(candidate.headRefName, pr.head.ref);
+  assert.equal(candidate.title.toString(), pr.title);
+  assert.deepEqual(candidate.updates.map(update => update.path).sort(), ['.release-please-manifest.json', 'CHANGELOG.md', 'VERSION']);
+  assert.equal(await (await manifest.getStrategiesByPath())['.'].getBranchComponent(), '');
+  const rendered = render(candidate.body.toString());
+  pending = [{number:pr.number, sha:sourceSha, title:pr.title, headBranchName:pr.head.ref,
+    baseBranchName:'main', labels:candidate.labels, body:rendered}];
+  const [release] = await manifest.buildReleases();
+  assert.equal(release.notes, officialNotes(rendered).body);
+  assert.equal(release.sha, sourceSha);
+  assert.equal(release.tag.toString(), 'v1.1.0');
+  assert.equal(release.draft, true);
+  assert.equal(release.forceTag, true);
 });
 
 test('verified merge uses the original event and exact source after the default branch has advanced', async () => {
@@ -272,7 +265,7 @@ test('records each new source only after an exact round match and skips repeated
   assert.equal(builds, 1);
 });
 
-test('renders only evidence-bound Copilot sections and validates them with both official parsers', async () => {
+test('renders only evidence-bound Copilot sections and validates the official section', async () => {
   const context = {
     unit: { id: 'root', path: '.', version: computed.version, tag: 'v1.1.0' }, tag: 'v1.1.0', contributors: [person],
     sourceLink: { label: '查看本版变更', url: 'https://github.com/splrad/fixture/compare/' + previousSha + '...' + sourceSha },
@@ -293,7 +286,6 @@ test('renders only evidence-bound Copilot sections and validates them with both 
   assert.match(section.body, /版本记录/);
   assert.doesNotMatch(section.body, /获取与使用|本次更新|候选文件差异/);
   assert.equal(PullRequestBody.parse(draft.body).releaseData[0].notes, section.body);
-  assert.equal(ActionPullRequestBody.parse(draft.body).releaseData[0].notes, section.body);
 });
 
 test('reads back unknown candidate writes across Runs and preserves manual edits after the first PR write', async () => {

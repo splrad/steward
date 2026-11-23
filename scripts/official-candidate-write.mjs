@@ -1,6 +1,6 @@
 import { EvidenceReadError } from '../packages/runner/dist/index.js';
 import { defaultHead, fitsOfficialEvent, hasLabel, officialNotes, officialPending,
-  officialRef, officialRoundMarker, pages, pullBinding, readOfficialManifest, readSourceFile,
+  officialRef, officialRoundMarker, pages, pullBinding, readOfficialConfig, readOfficialManifest, readSourceFile,
   requireCandidate, verifyOfficialPull } from './official-release-candidate.mjs';
 
 const sha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
@@ -45,6 +45,8 @@ export async function compatibleExistingCandidate({ get, pull, product, botId, c
   if (commit.sha !== pull.head.sha || commit.parents?.length !== 1 || !sha(parent) ||
     commit.message.includes('Steward-Candidate-Round:') ||
     !await verifyCandidateFiles(get, parent, pull.head.sha, candidate)) return null;
+  const previousConfig = await readOfficialConfig(get, parent);
+  if (JSON.stringify(previousConfig) !== JSON.stringify(configuration)) return null;
   let notes;
   try {
     notes = verifyOfficialPull(pull, product, pull.number, botId, configuration, await readOfficialManifest(get, pull.head.sha));
