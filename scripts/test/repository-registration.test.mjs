@@ -12,7 +12,6 @@ import { checkedRegistration,parseRegistration } from '../repository-registratio
 import { assertInputScope, assertGovernanceOnlyScope } from '../private-dependency-policy.mjs';
 import { requiresProductCI } from '../validation-input.mjs';
 import {readRepositoryPolicy} from '../repository-policy-read.mjs';
-import {main as runLegacyConfiguration} from '../repository-configuration.mjs';
 import {releasePolicyGuard} from '../release-repository-policy.mjs';
 import {projectionBytes,readRepositoryPolicySelection,readRepositoryProjection,repositoryPolicyAdoptionPath} from '../repository-policy-projection.mjs';
 import {projectMergedRepositoryPolicy} from '../repository-policy-publish.mjs';
@@ -506,21 +505,6 @@ test('the registration command reaches the native state reader for an approved p
   } finally {
     await rm(directory,{recursive:true,force:true});
   }
-});
-
-test('legacy workflow stops before acquiring product write credentials for paused and central targets',async()=>{
-  const env={REPOSITORY_ID:String(product.id),GITHUB_REPOSITORY:'splrad/steward',GITHUB_REPOSITORY_ID:'1296724484',
-    GITHUB_EVENT_NAME:'workflow_dispatch'};
-  let writes=0;
-  const app={discover:async()=>[product],forTemplateRepository:async()=>{writes++;}};
-  for(const adoption of ['paused','central','legacy'])
-    await runLegacyConfiguration(env,{openApp:async()=>app,readPolicy:async(_app,repo)=>{
-      assert.equal(repo.id,product.id);
-      return {adoption};
-    }});
-  assert.equal(writes,1);
-  await assert.rejects(runLegacyConfiguration(env,{openApp:async()=>app,readPolicy:async()=>{throw Error('Unavailable');}}),/Unavailable/);
-  assert.equal(writes,1);
 });
 
 test('new release candidates consume the approved release selections and preserve native product changes',async()=>{

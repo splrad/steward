@@ -32,9 +32,8 @@ export class BoundedRecheckCoordinator {
   if(action==='/pages-receipt'){return Response.json({confirmed:await new PagesRetry(this.state.storage,this.env).receipt(b)});}
   if(action==='/pages-watch'){await new PagesRetry(this.state.storage,this.env).watch(b);return Response.json({accepted:true});}
   if(action==='/pages-retry'){await new PagesRetry(this.state.storage,this.env).schedule(b);return Response.json({accepted:true});}
-  if(['/quality-event','/configuration-event','/quality-promoted','/configuration-promoted'].includes(action)){
-    const key=action.startsWith('/configuration-')?'configurationEvent':'qualityEvent';
-    const event=new WorkflowEvent(this.state.storage,this.env,undefined,key);
+  if(action==='/quality-event'||action==='/quality-promoted'){
+    const event=new WorkflowEvent(this.state.storage,this.env);
     if(action.endsWith('-promoted'))await event.forward();else await event.register(b);
     return Response.json({accepted:true});
   }
@@ -63,7 +62,8 @@ export class BoundedRecheckCoordinator {
  }
  async alarm(){
   if(await this.state.storage.get('pagesIntake')||await this.state.storage.get('pagesRetry')||await this.state.storage.get('pagesWatch')){await new PagesRetry(this.state.storage,this.env).alarm();return;}
-  if(await this.state.storage.get('configurationEvent')){await new WorkflowEvent(this.state.storage,this.env,undefined,'configurationEvent').alarm();return;}
+  // Existing configuration records have no active receiver.
+  if(await this.state.storage.get('configurationEvent'))return;
   if(await this.state.storage.get('qualityEvent')){await new WorkflowEvent(this.state.storage,this.env).alarm();return;}
   if(await this.state.storage.get('promotionPolicy')){await new ReleasePromotion(this.state.storage,this.env).alarm();return;}
   if(await this.state.storage.get('wingetSubmit')){await new WingetSubmit(this.state.storage,this.env).alarm();return;}

@@ -2,7 +2,6 @@ import YAML from 'yaml';
 import {readFile} from 'node:fs/promises';
 import {posix,resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {readBotComment} from './configuration-session.mjs';
 import {repositoryPolicyAdoptionPath} from './repository-policy-projection.mjs';
 import {Octokit} from '@octokit/rest';
 
@@ -45,8 +44,6 @@ export async function authorized(api, actor, base, adminOnly=false) {
 }
 
 const workflowPath=/^\.github\/workflows\/[\w.-]+\.ya?ml$/;
-const receiver='.github/workflows/repository-configuration-event.yml';
-const central=api=>api.target.owner==='splrad' && api.target.repo==='steward';
 
 // Walk immutable native directory trees. Missing paths share the same cached directory lookup.
 export function revisionReader(api,ref) {
@@ -144,7 +141,6 @@ export async function protectedChanges(api,files,base,head,decisionOnly=false) {
     for(const path of entries) ci.add(path);
   }
   const adopted=paths.includes(requestPath)||Boolean(await fileText(api,requestPath,base));
-  if(central(api))ci.add(receiver);
   const matches=()=>new Set(paths.filter(path=>ci.has(path) || adopted && (configurationPaths.has(path)||path.startsWith('.github/actions/configuration/'))));
   for(const [ref,bytes] of [[base,old],[head,next]]) {
       // The complete PR diff already establishes the authorization requirement. The manifest alone has a separate exception.
@@ -154,7 +150,6 @@ export async function protectedChanges(api,files,base,head,decisionOnly=false) {
       }
       const roots=bytes?JSON.parse(bytes):[];
       if(adopted)roots.push('.github/workflows/steward-release-publish.yml','.github/workflows/steward-release-channels.yml','.github/workflows/pages.yml');
-      if(central(api))roots.push(receiver);
       for(const path of await referencedFiles(api,roots,ref,paths)) ci.add(path);
   }
   return matches();
@@ -194,7 +189,7 @@ export async function authorizePull(api, number, expectedHead, defaultBranch, or
     if(!protectedPaths.size) return true;
   }
   const paths=[...protectedPaths];
-  const adminOnly = central(api) && paths.includes(receiver) || paths.includes(delegatesPath) || paths.includes(repositoryPolicyAdoptionPath) || paths.includes(requestPath) && !await fileText(api,requestPath,base)
+  const adminOnly = paths.includes(delegatesPath) || paths.includes(repositoryPolicyAdoptionPath) || paths.includes(requestPath) && !await fileText(api,requestPath,base)
     || paths.includes('.github/product-ci.json') && !await fileText(api,'.github/product-ci.json',base);
   if(origin?.number===number && origin.head===expectedHead && await authorized(api,origin.actor,base,adminOnly)) return true;
   const reviews = await api.paginate(api.rest.pulls.listReviews,{...api.target,pull_number:number,per_page:100});
@@ -210,14 +205,6 @@ export async function authorizePull(api, number, expectedHead, defaultBranch, or
         node.lastEditedAt && node.editor?.login!==node.author.login) continue;
     }
     if((review.state==='APPROVED' || review.state==='COMMENTED') && review.commit_id===expectedHead && await authorized(api,review.user,base,adminOnly)) return true;
-  }
-  const comments = await api.paginate(api.rest.issues.listComments,{...api.target,issue_number:number,per_page:100});
-  for(const comment of comments) {
-    if(comment.user?.id!==301115370 || !comment.body?.startsWith('<!-- steward-config-approval ')) continue;
-    const match = /^<!-- steward-config-approval ([a-f0-9]{40}) ([1-9][0-9]*) -->$/.exec((await readBotComment(api,comment))?.trim()??'');
-    if(!match || match[1]!==expectedHead) continue;
-    const actor=(await api.request('GET /user/{account_id}',{account_id:Number(match[2])})).data;
-    if(await authorized(api,actor,base,adminOnly)) return true;
   }
   throw Object.assign(Error('Configuration approval is required for '+expectedHead),{code:'CONFIGURATION_APPROVAL_REQUIRED'});
 }
