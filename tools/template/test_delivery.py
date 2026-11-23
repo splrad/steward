@@ -141,7 +141,7 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(self.run_delivery()['status'],'UNCHANGED');self.assertEqual(self.api.creates,1)
         self.api.prs[0]['title']='Reviewed title';self.api.prs[0]['body']='Reviewed body'
         adopted=(self.central/'templates/repository/AGENTS.md').read_text(encoding='utf-8')
-        human=self.edit(BRANCH,'AGENTS.md',adopted)
+        human=self.edit(BRANCH,'AGENTS.md',adopted,newline='\n')
         result=self.run_delivery();self.assertEqual(result['pullRequest'],1);self.assertEqual(self.api.creates,1)
         self.assertEqual(self.api.prs[0]['body'],'Reviewed body');self.assertEqual(self.api.prs[0]['title'],'Reviewed title')
         self.git(self.remote,'merge-base','--is-ancestor',human,result['head'])
