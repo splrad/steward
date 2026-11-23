@@ -56,11 +56,11 @@ function target(repository, id) {
   return { id, name: repository.full_name, defaultBranch: repository.default_branch };
 }
 
-export function officialCandidateRoute(event, settings, enabled, trialId) {
+export function officialCandidateRoute(settings, enabled) {
   requireCandidate(typeof settings?.['separate-pull-requests'] === 'boolean', 'ROUTE');
   const official = officialConfig(settings);
   if (!official) return { result: 'official_candidate_not_adopted' };
-  if (enabled !== 'true' && String(event.repositoryId) !== trialId) return { result: 'official_candidate_disabled' };
+  if (enabled !== 'true') return { result: 'official_candidate_disabled' };
   requireCandidate(officialRootSettings(settings), 'ROOT_CONFIG');
   return { route: 'official' };
 }
@@ -96,8 +96,7 @@ async function identify(env) {
     const source = await defaultHead(get, product.defaultBranch);
     const settings = await readOfficialConfig(get, source);
     requireCandidate(await defaultHead(get, product.defaultBranch) === source, 'SOURCE_CHANGED');
-    return officialCandidateRoute(event, settings,
-      env.STEWARD_OFFICIAL_CANDIDATES_ENABLED, env.STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID);
+    return officialCandidateRoute(settings, env.STEWARD_OFFICIAL_CANDIDATES_ENABLED);
   });
   if (route.result) return finish(route.result);
   requireCandidate((await centralReader.json('git/ref/heads/steward/validated-controller')).object?.sha === run.head_sha, 'CONTROLLER');

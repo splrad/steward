@@ -201,8 +201,7 @@ export async function main(env=process.env) {
     const processProduct=product=>cycleStage('PRODUCT_ACCESS',async()=>{
       validateEvent(event,requestKey,[product]);
       const repository={id:product.id,full_name:product.name,default_branch:product.defaultBranch};
-      const officialEnabled=env.OFFICIAL_RELEASE_ENABLED==='true' ||
-        String(product.id)===env.STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID;
+      const officialEnabled=env.OFFICIAL_RELEASE_ENABLED==='true';
       if (officialStage==='prepare' && !officialEnabled) fail('OFFICIAL_RELEASE_DISABLED');
       return app.forRepository(product.id,async token=>{
         const io=nativeEvidenceTransport(token),productReader=new NativeEvidenceReader(io,product.name);

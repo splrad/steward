@@ -38,20 +38,18 @@ const orgNotes = {
 const person = { id: 42, login: 'contributor', profileUrl: 'https://github.com/contributor',
   avatarUrl: 'https://avatars.githubusercontent.com/u/42?v=4', alt: 'contributor' };
 
-test('only the native product declaration selects a candidate writer while the official switch is off', async () => {
-  const push = { kind: 'push', repositoryId: product.id, sourceSha };
+test('requires the official switch and the native product declaration to select a candidate writer', async () => {
   const label = { repositoryId: product.id, prNumber: 29, eventId: 12 };
   const old = { 'separate-pull-requests': false };
-  assert.deepEqual(officialCandidateRoute(push, old), { result: 'official_candidate_not_adopted' });
+  assert.deepEqual(officialCandidateRoute(old, 'true'), { result: 'official_candidate_not_adopted' });
   assert.throws(() => candidateEvent(label, 'a'.repeat(64)), /OFFICIAL_CANDIDATE_EVENT/);
-  assert.deepEqual(officialCandidateRoute(push, settings), { result: 'official_candidate_disabled' });
-  assert.deepEqual(officialCandidateRoute(push, settings, 'false', '18'), { result: 'official_candidate_disabled' });
-  assert.deepEqual(officialCandidateRoute(push, settings, 'false', '17'), { route: 'official' });
-  assert.deepEqual(officialCandidateRoute(push, settings, 'true'), { route: 'official' });
+  assert.deepEqual(officialCandidateRoute(settings), { result: 'official_candidate_disabled' });
+  assert.deepEqual(officialCandidateRoute(settings, 'false'), { result: 'official_candidate_disabled' });
+  assert.deepEqual(officialCandidateRoute(settings, 'true'), { route: 'official' });
   const multi = { ...settings, packages: { ...settings.packages, tools: { 'release-type': 'simple' } } };
-  assert.throws(() => officialCandidateRoute(push, multi, 'true'), /ROOT_CONFIG/);
-  assert.deepEqual(officialCandidateRoute(push, multi, 'false'), { result: 'official_candidate_disabled' });
-  assert.throws(() => officialCandidateRoute(push, {}, 'false'), /ROUTE/);
+  assert.throws(() => officialCandidateRoute(multi, 'true'), /ROOT_CONFIG/);
+  assert.deepEqual(officialCandidateRoute(multi, 'false'), { result: 'official_candidate_disabled' });
+  assert.throws(() => officialCandidateRoute({}, 'false'), /ROUTE/);
 
   const workflow = YAML.parse(await readFile('.github/workflows/release-candidate-event.yml', 'utf8'));
   const steps = workflow.jobs.event.steps;
