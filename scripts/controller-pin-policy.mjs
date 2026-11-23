@@ -127,19 +127,24 @@ function verifyNativePublisher(workflow, bytes, {path, delivery}) {
       && checkout('state', undefined, ref => ref === 'steward/release-state');
   }));
   if (!admission) throw Error('VALIDATION_CONTROLLER_NATIVE_ADMISSION ' + path);
+  const uploads = new Set([...handoff.units.values()].flatMap(channels =>
+    [...channels.keys()].map(channel => 'upload-' + channel)));
   for (const [jobId, job] of jobs) {
-    const upload = job.steps?.findIndex(step => step.id === 'upload-github-release') ?? -1;
-    if (upload < 0) continue;
-    const needs = typeof job.needs === 'string' ? [job.needs] : job.needs;
-    const uploadPaths = artifactPaths(job.steps[upload].with.path);
-    const permissions = job.permissions ?? workflow.permissions;
-    const attests = job.steps.slice(0, upload).some(step => successOnly(step)
-      && /^actions\/attest(?:-build-provenance)?@[a-f0-9]{40}$/.test(step.uses ?? '')
-      && artifactPaths(step.with?.['subject-path']) === uploadPaths);
-    if (!attests || permissions?.['id-token'] !== 'write' || permissions.attestations !== 'write') throw Error('VALIDATION_CONTROLLER_NATIVE_ATTESTATION ' + path);
-    if (!successOnly(job) || !successOnly(job.steps[upload]) || jobId === admission[0]
-      || !Array.isArray(needs) || !needs.includes(admission[0])) {
-      throw Error('VALIDATION_CONTROLLER_NATIVE_ADMISSION ' + path);
+    for (const [index, upload] of (job.steps ?? []).entries()) {
+      if (!uploads.has(upload.id)) continue;
+      const needs = typeof job.needs === 'string' ? [job.needs] : job.needs;
+      const uploadPaths = artifactPaths(upload.with.path);
+      const permissions = job.permissions ?? workflow.permissions;
+      const attests = job.steps.slice(0, index).some(step => successOnly(step)
+        && /^actions\/attest(?:-build-provenance)?@[a-f0-9]{40}$/.test(step.uses ?? '')
+        && artifactPaths(step.with?.['subject-path']) === uploadPaths);
+      if (!attests || permissions?.['id-token'] !== 'write' || permissions.attestations !== 'write') {
+        throw Error('VALIDATION_CONTROLLER_NATIVE_ATTESTATION ' + path);
+      }
+      if (!successOnly(job) || !successOnly(upload) || jobId === admission[0]
+        || !Array.isArray(needs) || !needs.includes(admission[0])) {
+        throw Error('VALIDATION_CONTROLLER_NATIVE_ADMISSION ' + path);
+      }
     }
   }
 }

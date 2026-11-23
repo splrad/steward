@@ -326,6 +326,30 @@ test('accepts a native v3 publisher only with admitted, attested GitHub delivery
   assert.throws(() => verify(revision(doc => delete doc.jobs.delivery.needs)), /NATIVE_ADMISSION/);
   assert.throws(() => verify(revision(doc => doc.jobs.delivery.if = 'always()')), /NATIVE_ADMISSION/);
   assert.throws(() => verify(revision(doc => delete doc.jobs.delivery.needs), ['.github/delivery.json']), /NATIVE_ADMISSION/);
+  for (const [channel, name, location] of [
+    ['ghcr-assets', 'Upload GHCR assets delivery', 'ghcr.io/splrad/fixture'],
+    ['winget', 'Upload WinGet delivery', 'Fixture.Tool'],
+  ]) {
+    const paths = '${{ runner.temp }}/' + channel + '/*';
+    const deliveryStep = {
+      id: 'upload-' + channel, name, uses: 'actions/upload-artifact@' + '0'.repeat(40),
+      env: {STEWARD_CHANNEL_LOCATION: location},
+      with: {
+        name: 'delivery-' + channel + '-${{ github.repository_id }}-root-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}',
+        path: paths,
+      },
+    };
+    const attest = {uses: 'actions/attest@' + '0'.repeat(40), with: {'subject-path': paths}};
+    assert.doesNotThrow(() => verify(revision(doc => doc.jobs.delivery.steps.push(attest, deliveryStep))));
+    assert.throws(() => verify(revision(doc => doc.jobs.delivery.steps.push({
+      ...deliveryStep, env: {...deliveryStep.env, STEWARD_DELIVERY_ATTESTED: true},
+    }))), /NATIVE_ATTESTATION/);
+    assert.throws(() => verify(revision(doc => {
+      doc.jobs.unadmitted = {
+        name: 'delivery/root', permissions: {...doc.jobs.delivery.permissions}, steps: [attest, deliveryStep],
+      };
+    })), /NATIVE_ADMISSION/);
+  }
   const buildWorkflow = '.github/workflows/native-product-build.yml';
   assert.doesNotThrow(() => verify(revision(undefined, {schemaVersion: 3, buildWorkflow}), [buildWorkflow, '.github/delivery.json']));
   assert.throws(() => verify(revision(doc => delete doc.jobs.delivery.needs, {schemaVersion: 3, buildWorkflow}), [buildWorkflow]), /NATIVE_ADMISSION/);
