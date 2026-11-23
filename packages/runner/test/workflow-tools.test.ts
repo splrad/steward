@@ -269,38 +269,23 @@ it.each(['title','promotion'])('accepts a normal additional job without a duplic
   expect(result.exceptions).toHaveLength(1);
 },120000);
 
-const legacyLabelTrigger='workflow_run:\n    workflows: [SPLRAD PR Title]\n    types: [completed]';
-it.each([
-  ['.github/workflows/pr-labeler.yml', legacyLabelTrigger, 'E08-LABELER-TITLE-WORKFLOW-RUN-20261103'],
-  ['templates/repository/.github/workflows/pr-labeler.yml', legacyLabelTrigger, 'E08-LABELER-TITLE-WORKFLOW-RUN-20261103'],
-  ['.github/workflows/pr-labeler.yml', 'pull_request_target: {}', 'SPLRAD-DIRECT-PR-LABELER'],
-  ['templates/repository/.github/workflows/pr-labeler.yml', 'pull_request_target: {}', 'SPLRAD-DIRECT-PR-LABELER'],
-])('accepts the approved label metadata trigger at %s: %s',async (path,trigger,decision)=>{
-  const text=clean.replace('on: pull_request','on:\n  '+trigger);
+it.each(['.github/workflows/pr-labeler.yml','templates/repository/.github/workflows/pr-labeler.yml'])('accepts the approved label metadata trigger at %s',async path=>{
+  const text=clean.replace('on: pull_request','on:\n  workflow_run:\n    workflows: [SPLRAD PR Title]\n    types: [completed]');
   const root=await fixture(text);
   await mkdir(join(root,path,'..'),{recursive:true});
   await rename(join(root,'.github/workflows/test.yml'),join(root,path));
   const result=await scanWorkflows(root,[path]);
   expect(result.results.at(-1)?.status).toBe(14);
   expect(result.exceptions).toHaveLength(1);
-  expect(result.exceptions![0]).toMatchObject({decision,finding:{ident:'dangerous-triggers',ignored:false}});
+  expect(result.exceptions![0]).toMatchObject({decision:'E08-LABELER-TITLE-WORKFLOW-RUN-20261103',finding:{ident:'dangerous-triggers',ignored:false}});
 },120000);
 
-it.each(['legacy-other-path','direct-other-path','direct-other-finding'])('retains native labeler scan rejection: %s',async kind=>{
-  const trigger=kind==='legacy-other-path'?legacyLabelTrigger:'pull_request_target: {}';
+it.each(['other-path','pull_request_target','other-finding'])('retains native labeler scan rejection: %s',async kind=>{
+  const trigger=kind==='pull_request_target'?'pull_request_target: {}':'workflow_run:\n    workflows: [SPLRAD PR Title]\n    types: [completed]';
   const text=clean.replace('on: pull_request','on:\n  '+trigger);
-  const root=await fixture(text);
-  if(kind==='direct-other-finding'){
-    const unsafe=text.replace('      - run: echo safe', [
-      '      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
-      '        with:',
-      '          ref: ${{ github.event.pull_request.head.sha }}',
-      '          persist-credentials: false',
-      '      - run: bash candidate.sh',
-    ].join('\n'));
-    await writeFile(join(root,'.github/workflows/pr-labeler.yml'),unsafe);
-    await rm(join(root,'.github/workflows/test.yml'));
-  }
+  const root=await fixture(text),path=kind==='other-path'?'.github/workflows/test.yml':'.github/workflows/pr-labeler.yml';
+  if(kind!=='other-path')await rename(join(root,'.github/workflows/test.yml'),join(root,path));
+  if(kind==='other-finding')await writeFile(join(root,'.github/workflows/unsafe.yml'),clean.replace('echo safe','echo "${{ github.head_ref }}"'));
   await expect(scanWorkflows(root,await discoverWorkflowFiles(root))).rejects.toThrow(/zizmor.*failed|jactionlint.*failed/);
 },120000);
 

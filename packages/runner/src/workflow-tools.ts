@@ -59,11 +59,8 @@ function acceptedTrigger(root: string, finding: any, files: readonly string[], r
     && route === JSON.stringify([{ Key: 'on' }, { Key: 'workflow_run' }])) return 'E11-CENTRAL-MAINTENANCE-WORKFLOW-RUN-20261118';
   if (['.github/workflows/pr-labeler.yml', 'templates/repository/.github/workflows/pr-labeler.yml'].includes(local)
     && route === JSON.stringify([{ Key: 'on' }, { Key: 'workflow_run' }])) return 'E08-LABELER-TITLE-WORKFLOW-RUN-20261103';
-  if (['.github/workflows/pr-labeler.yml', 'templates/repository/.github/workflows/pr-labeler.yml'].includes(local)
-    && route === JSON.stringify([{ Key: 'on' }, { Key: 'pull_request_target' }])) return 'SPLRAD-DIRECT-PR-LABELER';
   return null;
 }
-
 export async function resolvePolicyTool(name: 'syft' | 'gh' | 'lychee' | 'oras' | 'uv', runtimeRoot = policyRoot): Promise<string> {
   runtimeRoot = resolve(runtimeRoot);
   const ids = { syft: 'aqua:anchore/syft', gh: 'aqua:cli/cli', lychee: 'aqua:lycheeverse/lychee', oras: 'aqua:oras-project/oras', uv: 'aqua:astral-sh/uv' };
