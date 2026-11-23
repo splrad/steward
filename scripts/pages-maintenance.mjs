@@ -69,15 +69,14 @@ export async function sourceOptions(reader,repository,controllerSha,appBotId) {
   const mode=await read('STEWARD_DOCS_SOURCE');
   const buildOnly=await read('STEWARD_PAGES_BUILD_ONLY');
   check(['','true','false'].includes(buildOnly),'BUILD_ONLY');
-  let unitId='',declared=false,defaultSha;
+  let unitId='';
   if(mode) {
     check(['default-branch','release'].includes(mode),'MODE');
     const branch=await reader.json('git/ref/heads/'+encodeURIComponent(repository.default_branch));
     check(branch.ref==='refs/heads/'+repository.default_branch && branch.object?.type==='commit' && /^[a-f0-9]{40}$/.test(branch.object.sha),'DEFAULT_HEAD');
-    defaultSha=branch.object.sha;
-    const workflow=YAML.parse((await pagesContent(reader,pagesWorkflow,defaultSha)).toString('utf8'));
+    const workflow=YAML.parse((await pagesContent(reader,pagesWorkflow,branch.object.sha)).toString('utf8'));
     const source=workflow?.env?.STEWARD_DOCS_SOURCE;
-    declared=source!==undefined && source!=='' &&
+    const declared=source!==undefined && source!=='' &&
       !['${{ vars.STEWARD_DOCS_SOURCE }}',"${{ vars.STEWARD_DOCS_SOURCE || 'default-branch' }}"].includes(source);
     if(declared && source!==mode)return {status:'SOURCE_MODE_CONFLICT'};
     if(mode==='release') {
@@ -85,11 +84,11 @@ export async function sourceOptions(reader,repository,controllerSha,appBotId) {
       if(declared && (!unitId || workflow.env.STEWARD_DOCS_UNIT!==unitId))return {status:'SOURCE_UNIT_CONFLICT'};
     }
   }
-  return {reader,repositoryId:repository.id,mode,unitId,controllerSha,appBotId,declared,defaultSha,...(buildOnly==='true'?{buildOnly:true}:{})};
+  return {reader,repositoryId:repository.id,mode,unitId,controllerSha,appBotId,...(buildOnly==='true'?{buildOnly:true}:{})};
 }
 
 /** Fixed product Pages consumer. Records and API writes remain in this repository; no release cycle mutation. */
-export async function servicePages({io,repository,store,coordinator,appBotId,token,completion,readPolicy},ports={}) {
+export async function servicePages({io,repository,store,coordinator,appBotId,token,completion},ports={}) {
   // The trusted caller selects the enrolled repository. A completion cannot select a different one.
   if(completion!==undefined)check(completion&&completion.repositoryId===repository.id&&positive(completion.workflowId)
     &&positive(completion.runId)&&positive(completion.attempt),'COMPLETION_IDENTITY');
@@ -102,31 +101,10 @@ export async function servicePages({io,repository,store,coordinator,appBotId,tok
   },...(transport.anonymous?{anonymous:()=>scopedTransport(transport.anonymous())}:{})});
   const bounded=scopedTransport(io);
   const reader=new NativeEvidenceReader(bounded,repository.full_name);
-  const sitePolicy=registration=>registration?.adoption==='central'?registration.policy.site:undefined;
-  const disabled=registration=>{
-    const site=sitePolicy(registration);
-    return registration?.adoption==='paused'||(site!==undefined && site?.mode!=='build-and-deploy');
-  };
   const current=ports.currentSource??(async()=>{
-    const publicRepository=repository.private===false;
-    let registration;
-    if(!publicRepository&&readPolicy)registration=await readPolicy();
-    if(disabled(registration))return {status:'DISABLED'};
     const options=await sourceOptions(reader,repository,coordinator.controllerSha,appBotId);
     if(options.status)return options;
     if(options.buildOnly)return {status:'BUILD_ONLY'};
-    if(publicRepository&&readPolicy&&options.mode) {
-      if(!options.declared)registration=await readPolicy();
-      else {
-        const marker=await bounded.request('GET',reader.path('contents/.github/steward-central-policy?ref='+options.defaultSha));
-        check(marker.status===200||marker.status===404,'REPOSITORY_POLICY_UNAVAILABLE');
-        if(marker.status===200)registration=await readPolicy();
-      }
-    }
-    if(disabled(registration))return {status:'DISABLED'};
-    const site=sitePolicy(registration);
-    if(site)check(site.workflow===pagesWorkflow&&site.source===options.mode
-      &&(site.unit??'')===options.unitId,'REPOSITORY_POLICY_CONFLICT');
     if(!options.mode)return {status:'DISABLED'};
     return currentPagesSource({...options,publicOnly:completion!==undefined},{
       verifyRelease:input=>verifyPagesRelease(input,{gh:args=>nativeGhCommand(args,token),download:nativeReleaseDownload(token)})});

@@ -8,9 +8,7 @@ import {pathToFileURL} from 'node:url';
 import {loadPolicy,dependencyMode,assertGovernanceOnlyScope,configurationCallers} from './private-dependency-policy.mjs';
 import {parseRegistration,registrationPath,registrationWorkflow} from './repository-registration-policy.mjs';
 import {assertLifecycleScope} from './private-lifecycle-policy.mjs';
-import {NativeEvidenceReader,nativeEvidenceTransport} from '../packages/runner/dist/index.js';
-import {assertRepositoryPolicyMarker,readRepositoryPolicySelection,
-  repositoryPolicyAdoptionPath} from './repository-policy-projection.mjs';
+import {assertRepositoryPolicyMarker,repositoryPolicyAdoptionPath} from './repository-policy-projection.mjs';
 const check=(ok,code)=>{if(!ok)throw Error('VALIDATION_'+code);};
 export function git(workspace,args) {
   return execFileSync('git',['--no-replace-objects','-c','core.hooksPath=','-c','credential.helper=',...args],
@@ -164,22 +162,14 @@ export async function validationFileInputs(workspace,env=process.env) {
 
 export async function validationInput(workspace,env=process.env) {
   const {event,input,files,dependencyMode:dependency,administrator}=await validationFileInputs(workspace,env);
-  const {repositoryId}=input;
   const declaration='.github/product-ci.json';
   // Inventory still determines whether the repository must register valid CI.
   // The exact change determines whether this gate awaits its execution.
   const declarationChanged=input.changedPaths.includes(declaration);
   const registrationRequired=declarationChanged||files.includes(declaration)||requiresProductCI(files,dependency,administrator);
-  const available=files.includes(declaration)
+  const workflows=files.includes(declaration)
     ? productWorkflows(JSON.parse(await readFile(await regular(workspace,declaration),'utf8')),files) : [];
-  const organizationRepository=event.repository.full_name.startsWith('splrad/');
-  const useOptionalProjection=event.repository.private!==false;
-  if((!organizationRepository||!useOptionalProjection)&&registrationRequired)check(available.length>0,'PRODUCT_CI_NOT_CONFIGURED');
-  if(organizationRepository&&env.GITHUB_ACTIONS==='true')check(env.REPOSITORY_POLICY_TOKEN,'REPOSITORY_POLICY_TOKEN');
-  const policyReader=env.REPOSITORY_POLICY_TOKEN&&organizationRepository
-    ? new NativeEvidenceReader(nativeEvidenceTransport(env.REPOSITORY_POLICY_TOKEN),event.repository.full_name) : null;
-  const selection=policyReader?await readRepositoryPolicySelection(policyReader,repositoryId,{useOptionalProjection}):null;
-  const workflows=selectedProductWorkflows(selection,available,registrationRequired);
+  if(registrationRequired)check(workflows.length>0,'PRODUCT_CI_NOT_CONFIGURED');
   const requested=workflows.length>0||declarationChanged||requiresProductCI(input.changedPaths,dependency,administrator);
   const productApplicable=registrationRequired&&requested&&!nativeOnlyChange(workspace,input,event,env.GITHUB_EVENT_NAME);
   const boundNames=[];
@@ -191,13 +181,7 @@ export async function validationInput(workspace,env=process.env) {
     check(!gap && workflowEvent(triggers,type,event.action),'PRODUCT_CI_TRIGGER '+path+' '+gap);
     if(workflow['run-name']===forkRunName)boundNames.push(path);
   }
-  return {input,files,productApplicable,workflows,boundNames,dependencyMode:dependency,
-    ...(selection?{repositoryPolicy:{adoption:selection.adoption,sourceDigest:selection.sourceDigest}}:{})};
-}
-export function selectedProductWorkflows(selection,available,productApplicable) {
-  if(selection?.adoption!=='central')return available;
-  check(selection.productCi.every(path=>available.includes(path))&&(!productApplicable||selection.productCi.length>0),'PRODUCT_CI_REPOSITORY_POLICY');
-  return selection.productCi;
+  return {input,files,productApplicable,workflows,boundNames,dependencyMode:dependency};
 }
 export async function main(env=process.env) {
   const workspace=resolve(env.VALIDATION_WORKSPACE??'target'),value=await validationInput(workspace,env);
