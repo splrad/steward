@@ -157,9 +157,11 @@ it('pins API version and sends only ref and inputs in the dispatch body',async()
   expect(new Headers(captured!.headers).get('x-github-api-version')).toBe(GITHUB_API_VERSION);expect(JSON.parse(String(captured!.body))).toEqual({ref:'branch',inputs:{cycle_id:'cycle'}});
 });
 it('accepts only the fixed new release commands and removes the legacy write namespace',()=>{
-  for(const entry of ['candidate','dispatch-build','publish','dispatch-channel','observe-channel','rerun']) {
+  for(const entry of ['dispatch-build','dispatch-channel','observe-channel','rerun']) {
     expect(parseNativeInvocation(['release',entry,'--context','local.json','--output','out.json']).command).toBe(`release ${entry}`);
     expect(()=>parseNativeInvocation(['release',entry,'--context','local.json','--output','out.json','--phase','execute'])).toThrow('unknown');
   }
+  for(const entry of ['candidate','publish'])
+    expect(()=>parseNativeInvocation(['release',entry,'--context','local.json','--output','out.json'])).toThrow('unknown');
   expect(nativeCommands.has('release-plan')).toBe(false);expect(()=>parseNativeInvocation(['release-plan','dispatch'])).toThrow('unknown');
 });

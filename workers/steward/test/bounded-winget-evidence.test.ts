@@ -32,14 +32,6 @@ async function submitFixture(){
  const payload={action:'completed',repository:{id:1187527897},workflow_run:run};return {g,env,payload,pull,cycle,report,store,engine,setOutcome:(v:any)=>{outcome=v;}};
 }
 describe('submit artifact to durable PR/index integration',()=>{
- it('verifies only the original native completion during handoff without starting a new observation',async()=>{
-   const f=await submitFixture(),env={...f.env,LEGACY_RELEASE_HANDOFF_IDS:'[1187527897]'};
-   expect(await registerWingetRun(env,'workflow_run',f.payload,f.g,async()=>f.pull)).toBe(true);
-   expect(await f.store.read()).toBeNull();
-   f.cycle.dispatches[0]!.canonicalRunId=999;
-   await expect(registerWingetRun(env,'workflow_run',f.payload,f.g,async()=>f.pull)).rejects.toThrow('CHANNEL_DISPATCH_PROVENANCE');
-   expect(await f.store.read()).toBeNull();
- });
  it('registers native submit evidence then preserves index time/budget on duplicate submit',async()=>{const f=await submitFixture();await registerWingetRun(f.env,'workflow_run',f.payload,f.g,async()=>f.pull);let r=(await f.store.read())!;expect(r.identity.upstreamPR).toEqual({number:33,nodeId:'PR_33'});expect(r.t0).toBe(Date.parse(f.pull.created_at));await f.engine.wake();f.setOutcome({kind:'pending'});await f.engine.wake();r=(await f.store.read())!;expect(r.identity.stage).toBe('winget-index');expect(r.t0).toBe(Date.parse(f.pull.merged_at));const original=structuredClone(r);await registerWingetRun(f.env,'workflow_run',f.payload,f.g,async()=>f.pull);expect(await f.store.read()).toEqual(original);});
  it.each(['canonicalRun','manifest','attempt','PR'] as const)('rejects forged %s before durable registration',async kind=>{const f=await submitFixture();if(kind==='canonicalRun')f.cycle.dispatches[0]!.canonicalRunId=999;if(kind==='manifest')f.report.items[0]!.manifestDigest='0'.repeat(64);if(kind==='attempt')f.report.runAttempt=2;if(kind==='PR')f.pull.head.ref='steward/SPLRAD.LayerScape.Deployer/2.0.0';await expect(registerWingetRun(f.env,'workflow_run',f.payload,f.g,async()=>f.pull)).rejects.toThrow();expect(await f.store.read()).toBeNull();});
 });

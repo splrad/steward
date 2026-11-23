@@ -35,20 +35,6 @@ describe('bounded recheck faults with actual SQLite transactions',()=>{
    expect((await f.store.read())?.reason).toBe('UNKNOWN_DELIVERY');
    expect(f.store.alarm()).toBeNull();
  });
- it.each([false,true])('legacy handoff retains an existing intent (%s) and stops new write claims',async(alreadyClaimed)=>{
-   const f=fixture({kind:'unknown'}),registration=input();
-   await f.engine().register(registration);
-   if(alreadyClaimed){await f.engine().wake();f.time(t0+m);}
-   const previous=await f.store.read();
-   const fenced=new BoundedRecheck(f.store,f.effects,()=>alreadyClaimed?t0+m:t0,undefined,undefined,
-     id=>id!==registration.identity.repositoryId);
-   await fenced.wake();
-   expect(f.effects.observe).toHaveBeenCalledTimes(alreadyClaimed?1:0);
-   expect(f.effects.confirm).toHaveBeenCalledTimes(alreadyClaimed?1:0);
-   const current=await f.store.read();
-   if(alreadyClaimed)expect(current?.intent).toMatchObject({key:previous?.intent?.key,claimedAt:previous?.intent?.claimedAt});
-   else expect(current).toMatchObject({status:'PAUSED',reason:'LEGACY_RELEASE_HANDOFF',intent:null,nextAt:null,consumed:0});
- });
  it('unknown dispatch never repeats POST and has exactly 3 read-only confirmations',async()=>{const f=fixture({kind:'unknown'});await f.engine().register(input());await f.engine().wake();for(const n of [1,5,15]){f.time(t0+n*m);await f.engine().wake();}expect(f.effects.observe).toHaveBeenCalledTimes(1);expect(f.effects.confirm).toHaveBeenCalledTimes(3);expect((await f.store.read())?.reason).toBe('UNKNOWN_DELIVERY');expect(f.store.alarm()).toBeNull();});
  it('crash during last confirmation leaves durable terminal state, not orphan pending',async()=>{const f=fixture({kind:'unknown'});await f.engine().register(input());await f.engine().wake();for(const n of [1,5]){f.time(t0+n*m);await f.engine().wake();}f.effects.confirm=vi.fn(()=>new Promise(()=>{}));f.time(t0+15*m);void f.engine().wake();await Promise.resolve();expect((await f.store.read())?.status).toBe('NEEDS_ATTENTION');expect(f.store.alarm()).toBeNull();});
  it('pause/resume retains unknown intent and original deadline',async()=>{const f=fixture({kind:'unknown'});await f.engine().register(input());await f.engine().wake();await f.engine().control('pause',1);expect(f.store.alarm()).toBeNull();f.time(t0+10*m);await f.engine().control('resume',2);await f.engine().wake();expect(f.effects.observe).toHaveBeenCalledTimes(1);expect(f.effects.confirm).toHaveBeenCalledTimes(1);expect((await f.store.read())?.deadline).toBe(t0+120*m);});

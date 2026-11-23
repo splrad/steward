@@ -30,7 +30,7 @@ const mint = '/app/installations/1/access_tokens';
 
 it('reads the target and dispatches the fixed workflow using the native Worker fetch', async () => {
   const pin = 'a'.repeat(40);
-  const workflow = 'release-candidate-event.yml';
+  const workflow = 'quality-language-summary.yml';
   const calls: string[] = [];
   const targetRef = '/repos/splrad/LayerScape/git/ref/heads/main';
   const centralRef = '/repos/splrad/steward/git/ref/heads/main';

@@ -12,7 +12,6 @@ import { checkedRegistration,parseRegistration } from '../repository-registratio
 import { assertInputScope, assertGovernanceOnlyScope } from '../private-dependency-policy.mjs';
 import { requiresProductCI } from '../validation-input.mjs';
 import {readRepositoryPolicy} from '../repository-policy-read.mjs';
-import {releasePolicyGuard} from '../release-repository-policy.mjs';
 import {projectionBytes,readRepositoryPolicySelection,readRepositoryProjection,repositoryPolicyAdoptionPath} from '../repository-policy-projection.mjs';
 import {projectMergedRepositoryPolicy} from '../repository-policy-publish.mjs';
 import {validateRegistrationPreview} from '../repository-registration-preview.mjs';
@@ -505,54 +504,6 @@ test('the registration command reaches the native state reader for an approved p
   } finally {
     await rm(directory,{recursive:true,force:true});
   }
-});
-
-test('new release candidates consume the approved release selections and preserve native product changes',async()=>{
-  const {policy}=await propose(product,productFiles);
-  let adoption='central',selection=policy,commit=base;
-  const guard=releasePolicyGuard({},product,async()=>({adoption,policy:selection,commit}));
-  await guard(async path=>productFiles.get(path));
-  await guard(async path=>{
-    commit=candidate;return productFiles.get(path);
-  });
-  await guard(async path=>{
-    selection={...policy,site:{workflow:pages,mode:'build-only',source:'default-branch'}};
-    return productFiles.get(path);
-  });
-  await assert.rejects(guard(async path=>{
-    selection={...policy,release:null};return productFiles.get(path);
-  }),/CANDIDATE_REPOSITORY_POLICY_MOVED/);
-  selection=policy;
-  await assert.rejects(guard(async path=>{
-    adoption='paused';return productFiles.get(path);
-  }),/CANDIDATE_REPOSITORY_POLICY_MOVED/);
-  adoption='central';
-  const customized=new Map(productFiles);
-  customized.set(publish,productFiles.get(publish).replace('windows-x64','custom-runner-target'));
-  await guard(async path=>customized.get(path));
-  const modified=structuredClone(policy);
-  modified.release.units[0].channels[0].artifactIds.pop();
-  selection=modified;
-  await assert.rejects(guard(async path=>productFiles.get(path)),/CANDIDATE_REPOSITORY_POLICY_CONFLICT/);
-  const declaredDelivery=JSON.parse(productFiles.get('.github/delivery.json'));
-  declaredDelivery.units[0].channels[0].artifactIds=modified.release.units[0].channels[0].artifactIds;
-  customized.set('.github/delivery.json',JSON.stringify(declaredDelivery));
-  await guard(async path=>customized.get(path));
-  selection={...policy,release:null};
-  await assert.rejects(guard(async()=>assert.fail('Disabled release should not load product inputs')),/CANDIDATE_REPOSITORY_POLICY_DISABLED/);
-  adoption='legacy';
-  await guard(async()=>assert.fail('Legacy release should continue from native inputs'));
-  adoption='paused';
-  await assert.rejects(guard(async()=>assert.fail('Disabled release should not load product inputs')),/CANDIDATE_REPOSITORY_POLICY_DISABLED/);
-  selection=policy;
-  await guard(async path=>productFiles.get(path));
-  selection=modified;
-  await assert.rejects(guard(async path=>productFiles.get(path)),/CANDIDATE_REPOSITORY_POLICY_CONFLICT/);
-});
-
-test('a native release entry ignores older unit selections and pause records',async()=>{
-  const guard=releasePolicyGuard({},product,async()=>assert.fail('native delivery must not read the old registry'));
-  await guard(async()=>assert.fail('native delivery must not read fixed legacy paths'),{nativeEntry:true});
 });
 
 test('private receiver accepts verified metadata and one ID for recovery', () => {

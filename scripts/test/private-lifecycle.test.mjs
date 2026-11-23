@@ -81,7 +81,9 @@ test('actual sample compiles, tests emitted application, checks types and verifi
 });
 
 test('only the trusted release reusable workflow is expanded; nested and unknown workflows fail',async()=>{
- const bytes=await readFile(new URL('../../.github/workflows/product-release.yml',import.meta.url));
+ const bytes=Buffer.from(JSON.stringify({
+  on:{workflow_call:{}},jobs:{inspect:{'runs-on':'windows-2025',steps:[{run:'node inspect.mjs'}]}},
+ }));
  const value=await lifecycleReusable('splrad/steward/.github/workflows/product-release.yml@'+SHA,(sha,path)=>{assert.equal(sha,SHA);assert.equal(path,'.github/workflows/product-release.yml');return bytes;});
  assert.equal(value.sha,SHA);assert(value.bytes.equals(bytes));
  await assert.rejects(lifecycleReusable('other/repo/.github/workflows/product-release.yml@'+SHA,()=>bytes),/REUSABLE_IDENTITY/);

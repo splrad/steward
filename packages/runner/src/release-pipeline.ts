@@ -5,13 +5,12 @@ import { tmpdir } from 'node:os';
 import registrations from '../../../config/release/event-repositories.json' with { type: 'json' };
 import { nativeGhCommand, NativeGitHubRelease, nativeReleaseDownload, releaseAssetNames, releaseReadIsAnonymous, type GhCommand, type ReleaseDownload } from './gh-release.js';
 import { localGitSnapshot, safeGitPath } from './git-snapshot.js';
-import type { CandidateSession } from './release-candidate.js';
 import { readLegacyReleaseTemplate, type HistoricalTemplate } from './release-template-source.js';
 import { selectReleaseProducers, producerArtifactName } from './release-run.js';
 import { jobFact } from './native-release-evidence.js';
 import { originalJobExecutions, type NativeJobAttempt } from '../../core/src/native-job-origins.js';
 import { verifySealedArtifacts, validateReleaseManifest, fileDigest, type ReleaseManifest } from './release-artifacts.js';
-import { inspectDeclaredAsset, inspectWorkflowAsset, readNativeUnitVersion, WorkflowDeliveryValidationError } from './release-native.js';
+import { inspectWorkflowAsset, readNativeUnitVersion, WorkflowDeliveryValidationError } from './release-native.js';
 import { committedVersionNotes } from '../../core/src/release-template.js';
 import { downloadNativeArtifact, downloadWorkflowArtifact } from './native-artifact-download.js';
 import { Octokit } from '@octokit/rest';
@@ -32,7 +31,7 @@ import { parseDocument } from 'yaml';
 import { Version } from 'release-please/build/src/version.js';
 import { TagName } from 'release-please/build/src/util/tag-name.js';
 import { productReleaseTemplatePath, sharedReleaseTemplatePath, projectFrozenReleaseDownloads, renderFrozenReleaseNotes } from '../../core/src/release-template.js';
-import { inspectProductArtifacts, validateProductManifest, validateWorkflowManifest, type ProductReleaseManifest, type WorkflowReleaseManifest } from './release-artifacts.js';
+import { validateProductManifest, validateWorkflowManifest, type ProductReleaseManifest, type WorkflowReleaseManifest } from './release-artifacts.js';
 
 export interface ProductBuildInput {
   cycleId: string; operationKey: string; sourceSha: string; controllerSha: string;
@@ -607,20 +606,6 @@ async function renderPipelineNotes(record: BuildPipelineRecord, unitId: string, 
     repositoryAuthors: record.delivery.repositoryAuthors, ...(record.contributorMode ? {contributorMode:record.contributorMode} : {}),
     selectedDownloads: publicNames, assets: unit.assets.filter(asset=>publicNames.has(asset.name)).map(asset => ({ ...asset, description: delivery.assets.find(item => item.id === asset.id)?.description })), channels: delivery.channels.filter(channel=>channel.required && channel.id!=='github-release') });
 }
-export async function pipelineInspect(record: BuildPipelineRecord, unitId: string, selection: Awaited<ReturnType<typeof pipelineProducers>>,
-  directory: string, controllerDirectory: string, home: string) {
-  const source = pipelineSource(record, unitId), unit = record.delivery.units.find(unit => unit.id === unitId)!;
-  if (selection.producers.length !== source.unit.builds.length || new Set(selection.producers.map(producer => producer.buildId)).size !== source.unit.builds.length
-    || selection.producers.some(producer => !source.unit.builds.some(build => build.id === producer.buildId) || (producer.runId??record.runId)===record.runId && producer.attempt > record.runAttempt)) fail('producer set');
-  await mkdir(home, { recursive: false });
-  return inspectProductArtifacts(unit, directory, { repositoryId: record.repositoryId, fullName: record.fullName, unitId, cycleId: record.cycleId,
-    ...(record.delivery.buildWorkflow === undefined ? {} : {buildWorkflow:record.delivery.buildWorkflow}),
-    requestKey: record.requestKey, version: source.unit.version, packageVersion: source.unit.packageVersion, tag: source.unit.tag,
-    sourceSha: record.sourceSha, controllerSha: record.controllerSha, buildRef: record.buildRef, deliverySha256: record.deliverySha256,
-    templateSha256: record.templateSha256, runId: record.runId, attempt: record.runAttempt, toolLocks: record.toolLocks, producers: selection.producers },
-  (path, asset) => inspectDeclaredAsset(path, asset, source.unit.packageVersion, controllerDirectory, home));
-}
-
 function fail(reason: string): never { throw new Error(`RELEASE_PIPELINE: ${reason}`); }
 function assertReviewedNotesPath(unit: DeliveryUnit, identity: { notesPath?: string } | undefined): void {
   if (!identity || (identity.notesPath ?? `.release-notes/${unit.id}.md`) !== unit.notesPath)
@@ -1261,7 +1246,12 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
   let legacyNotesTemplate: LegacyNotesTemplate | undefined;
   const currentTemplateText = currentTemplate.bytes.toString('utf8');
   let reviewedNotesTemplate: BuildPipelineRecord['reviewedNotesTemplate'];
-  let reviewedIdentity: CandidateSession['identity'] | undefined;
+  let reviewedIdentity: {
+    authorsDigest: string;
+    noteTemplate?: string;
+    contributorMode?: 'github-authors';
+    units: (Parameters<typeof replayReleaseContributors>[0] & { id: string })[];
+  } | null | undefined;
   if(delivery.schemaVersion!==3) {
     const chunks=mergedCandidateChunks(history,cycle.id);
     if(chunks.length) {

@@ -33,7 +33,6 @@ jobs:
     permissions:
       contents: read
       actions: read
-      copilot-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -132,27 +131,9 @@ jobs:
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
           STEWARD_CANDIDATE_TOKEN: ${{ steps.candidate-token.outputs.token }}
         run: node scripts/official-candidate-event.mjs finish
-      - name: Install legacy candidate dependencies
-        if: steps.product.outputs.route == 'legacy'
-        run: |
-          npm ci --prefix tools/quality-language --ignore-scripts --no-audit --no-fund
-          uv sync --project tools/template --frozen --only-group release-inspection --no-build
-      - name: Process the legacy candidate event
-        if: steps.product.outputs.route == 'legacy'
-        env:
-          STEWARD_CENTRAL_TOKEN: ${{ github.token }}
-          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
-          STEWARD_CONTROLLER_SHA: ${{ github.workflow_sha }}
-          BOUNDED_MODE: normal
-          BOUNDED_SOURCE_SHA: ${{ inputs.source_sha }}
-          STEWARD_COPILOT_TOKEN: ${{ github.token }}
-          BOUNDED_POLICY_SHA: ${{ inputs.policy_sha }}
-          BOUNDED_EVENT_JSON: ${{ inputs.event_json }}
-          BOUNDED_REQUEST_KEY: ${{ inputs.request_key }}
-        run: node scripts/release-candidate-event.mjs
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: candidate-event-${{ inputs.request_key }}${{ steps.product.outputs.route != 'legacy' && format('-{0}', github.run_attempt) || '' }}
+          name: candidate-event-${{ inputs.request_key }}-${{ github.run_attempt }}
           path: result.json
           if-no-files-found: error
           retention-days: 90

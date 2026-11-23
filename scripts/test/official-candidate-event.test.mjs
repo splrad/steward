@@ -11,7 +11,7 @@ import { PullRequestBody as ActionPullRequestBody } from 'release-please-officia
 import { PullRequestBody } from 'release-please/build/src/util/pull-request-body.js';
 import { bodyDigest, officialMergeKey, officialNotes, renderOfficialHomepage, validateOfficialMergeEvent,
   renderOfficialPull, verifyOfficialMerge } from '../official-release-candidate.mjs';
-import { captureOfficialAction, finishOfficialPull, officialActionResult, officialActionWasSkipped,
+import { candidateEvent, captureOfficialAction, finishOfficialPull, officialActionResult, officialActionWasSkipped,
   officialCandidateRoute, prepareOfficialPush } from '../official-candidate-event.mjs';
 
 const sourceSha = 'a'.repeat(40), head = 'b'.repeat(40), controllerSha = 'c'.repeat(40), previousSha = 'd'.repeat(40);
@@ -42,9 +42,8 @@ test('only the native product declaration selects a candidate writer while the o
   const push = { kind: 'push', repositoryId: product.id, sourceSha };
   const label = { repositoryId: product.id, prNumber: 29, eventId: 12 };
   const old = { 'separate-pull-requests': false };
-  assert.deepEqual(officialCandidateRoute(push, old), { result: 'legacy_cycle_route' });
-  assert.deepEqual(officialCandidateRoute(label, old), { route: 'legacy' });
-  assert.deepEqual(officialCandidateRoute(label, settings), { result: 'official_candidate_adopted' });
+  assert.deepEqual(officialCandidateRoute(push, old), { result: 'official_candidate_not_adopted' });
+  assert.throws(() => candidateEvent(label, 'a'.repeat(64)), /OFFICIAL_CANDIDATE_EVENT/);
   assert.deepEqual(officialCandidateRoute(push, settings), { result: 'official_candidate_disabled' });
   assert.deepEqual(officialCandidateRoute(push, settings, 'false', '18'), { result: 'official_candidate_disabled' });
   assert.deepEqual(officialCandidateRoute(push, settings, 'false', '17'), { route: 'official' });
@@ -57,7 +56,10 @@ test('only the native product declaration selects a candidate writer while the o
   const workflow = YAML.parse(await readFile('.github/workflows/release-candidate-event.yml', 'utf8'));
   const steps = workflow.jobs.event.steps;
   assert.equal(steps.find(step => step.id === 'candidate-token').if, "steps.product.outputs.route == 'official'");
-  assert.equal(steps.find(step => step.run === 'node scripts/release-candidate-event.mjs').if, "steps.product.outputs.route == 'legacy'");
+  assert.equal(workflow.jobs.event.permissions['copilot-requests'], undefined);
+  const secretSteps = steps.filter(step => /secrets\./.test(JSON.stringify(step)));
+  assert.deepEqual(secretSteps.map(step => step.id), ['product', 'candidate-token', 'confirm-action-source', 'homepage']);
+  for (const step of secretSteps) assert.deepEqual(JSON.stringify(step).match(/secrets\.[A-Z_0-9]+/g), ['secrets.STEWARD_APP_PRIVATE_KEY']);
   assert.equal(steps.find(step => step.id === 'release-please').if, "steps.prepare.outputs.mode == 'action'");
 });
 
