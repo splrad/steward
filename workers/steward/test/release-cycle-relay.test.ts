@@ -372,8 +372,9 @@ it.each(['v2','stale-v3','current-v3','other-repository'] as const)('persists th
  expect(f.state.posts).toBe(expectedDispatch?1:0);
  if(!expectedDispatch)expect(await f.storage.get('releaseCycle')).toMatchObject({paused:true,reason:'LEGACY_RELEASE_HANDOFF',reserved:0});
 });
-it.each(['edit','refresh','merge'] as const)('durably stores signed official %s hints but prevents v2 dispatch during handoff',async kind=>{
- const f=fixture(), intake:unknown[]=[];
+it.each(['edit','refresh','merge'] as const)('reclassifies a paused unclaimed official %s before rollback dispatch',async kind=>{
+ const f=fixture(), posts:string[]=[];
+ f.state.promoted=pin;
  const signed={...payload,repository:{...repo,private:false,owner:{id:302208797}},number:301};
  const tagged={name:'autorelease: tagged'},pending={name:'autorelease: pending'};
  const pull={number:301,state:'closed',merged:true,merged_at:'2026-11-23T00:00:00Z',merge_commit_sha:deployment,
@@ -385,16 +386,36 @@ it.each(['edit','refresh','merge'] as const)('durably stores signed official %s 
    {...signed,action:'closed',pull_request:pull};
  const event=releaseHint('pull_request',webhook,'7')!;
  expect(event.kind).toBe('official-'+kind);
- const g={...f.g,forCandidate:async()=>({...f.g,target:{...TARGET,officialCandidate:true as const}})};
+ const g:GitReader={artifact:async()=>{throw Error('unexpected artifact read');},forCandidate:async()=>({...g,target:{...TARGET,officialCandidate:true as const}}),
+   json:async(id,path,method)=>{
+    if(method==='POST'){posts.push(path);return null;}
+    if(id===TARGET.id&&path.endsWith('/git/ref/heads/main'))return {ref:'refs/heads/main',object:{type:'commit',sha:pin}};
+    if(path.endsWith('/actions/workflows/release-candidate-event.yml'))return {state:'active',path:'.github/workflows/release-candidate-event.yml'};
+    return f.g.json(id,path,method);
+   }};
  const env={...f.env,INSTALLATION_ID:'7',LEGACY_RELEASE_HANDOFF_IDS:JSON.stringify([TARGET.id]),
-   BOUNDED_RECHECK:{idFromName:(key:string)=>key,get:()=>({fetch:async(r:Request)=>{intake.push(await r.json());return Response.json({});}})}};
- await acceptReleaseHint(env as any,'pull_request',webhook);
- expect(intake).toHaveLength(1);
+   BOUNDED_RECHECK:{idFromName:(key:string)=>key,get:()=>({fetch:async(r:Request)=>{
+    const {hint,source}=await r.json() as any;
+    await relay.register(hint,source);
+    return Response.json({});
+   }})}};
  const relay=new ReleaseRelay(f.storage as any,env as any,()=>g as any,()=>f.state.now);
- await f.storage.put('releaseCycle',{hint:event,stage:'prepare',tries:0,next:f.state.now,policy:'',reserved:0,officialCandidate:true});
+ const receive=()=>acceptReleaseHint(env as any,'pull_request',webhook);
+ await receive();
+ expect(await f.storage.get('releaseIntake')).toMatchObject({hint:event});
  await relay.alarm();
  expect(await f.storage.get('releaseCycle')).toMatchObject({paused:true,reason:'LEGACY_RELEASE_HANDOFF',reserved:0});
- expect(f.state.posts).toBe(0);
+ expect(posts).toEqual([]);
+ env.LEGACY_RELEASE_HANDOFF_IDS='[]';
+ await relay.register(event);
+ expect(await f.storage.get('releaseCycle')).toMatchObject({paused:true});
+ await receive();
+ expect(await f.storage.get('releaseCycle')).toBeUndefined();
+ expect(await f.storage.get('releaseIntake')).toMatchObject({hint:event});
+ await relay.alarm();
+ const workflow=kind==='merge'?'release-cycle-event.yml':'release-candidate-event.yml';
+ expect(posts).toEqual([`/repos/${CENTRAL.name}/actions/workflows/${workflow}/dispatches`]);
+ expect(await f.storage.get('releaseCycle')).toMatchObject({stage:'confirm',hint:event});
 });
 it('retains an existing unqualified legacy intake as a paused record for reconciliation',async()=>{
  const f=fixture();

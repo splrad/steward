@@ -34,6 +34,8 @@ const legacyCandidate = (hint: Hint) => hint.kind === 'candidate-head' || hint.k
 const officialCandidateHint = (hint: Hint) => hint.kind==='official-edit'||hint.kind==='official-refresh'||hint.kind==='official-merge';
 const legacyCandidateRelay = (relay: Relay) => legacyCandidate(relay.hint) ||
   (relay.hint.kind === 'push' && !relay.officialCandidate);
+const needsQualification = (relay: Relay) => relay.stage==='prepare' && relay.paused && !relay.reserved && !relay.policy &&
+  relay.reason===legacyReleaseHandoffReason && (relay.hint.kind==='push'||officialCandidateHint(relay.hint));
 const version3Candidate = (target: ProductTarget | undefined): target is ProductTarget & {officialCandidate:true;sourceSha:string} =>
   target?.officialCandidate === true && sha(target.sourceSha);
 const officialPush = (target: ProductTarget | undefined, hint: Extract<Hint,{kind:'push'}>) =>
@@ -220,8 +222,13 @@ export class ReleaseRelay {
     if(legacyCandidate(hint)&&legacyReleaseHandoff(this.env,ownerId(hint)))return;
     if(source){
       await this.storage.transaction(async t=>{
-        if(await t.get('releaseCycle'))return;
-        const pending=await t.get<ReleaseIntake>('releaseIntake')??{hint,source,tries:0,next:this.now()};
+        const previous=await t.get<Relay>('releaseCycle');
+        if(previous){
+          if(!needsQualification(previous)||legacyReleaseHandoff(this.env,ownerId(previous.hint))||
+             this.env.BOUNDED_RECHECK_ENABLED!=='true'||relayKey(previous.hint)!==relayKey(hint))return;
+          await t.delete('releaseCycle');
+        }
+        const pending=await t.get<ReleaseIntake>('releaseIntake')??{hint:previous?.hint??hint,source,tries:0,next:this.now()};
         await t.put('releaseIntake',pending);
         if(pending.tries<4 && this.env.BOUNDED_RECHECK_ENABLED==='true')await t.setAlarm(Math.max(this.now(),pending.next));
       });
@@ -237,7 +244,7 @@ export class ReleaseRelay {
       const old=await t.get<Relay>('releaseCycle');
       if(old){
         if(old.reason===legacyReleaseHandoffReason&&legacyReleaseHandoff(this.env,ownerId(old.hint)))return;
-        if(old.paused && this.env.BOUNDED_RECHECK_ENABLED==='true' && relayKey(old.hint)===relayKey(hint)){
+        if(old.paused && !needsQualification(old) && this.env.BOUNDED_RECHECK_ENABLED==='true' && relayKey(old.hint)===relayKey(hint)){
           delete old.paused;await t.put('releaseCycle',old);await t.setAlarm(Math.max(this.now(),old.next));
         }
         return;
