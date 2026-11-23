@@ -84,7 +84,7 @@ function publicationStarts(state,runId,attempt,sha) {
   return state.domainRecords.filter(r=>r.path.startsWith('evidence/publication/') && r.value.startEvidencePath===null
     && r.value.centralRun.id===runId && r.value.centralRun.runAttempt<=attempt && r.value.centralRun.headSha===sha);
 }
-export async function advanceEvent(event,{snapshot,get,centralGet,invoke,botId,producer,probeArtifacts,probeReport,probeWorkflow,officialStage,officialMerge,registry=registrations}) {
+export async function advanceEvent(event,{snapshot,get,centralGet,invoke,botId,producer,probeArtifacts,probeReport,probeWorkflow,officialStage,officialMerge,selectedDelivery,registry=registrations}) {
   const product=registeredRepository(event,registry);
   if (officialStage && event.kind!=='run') return wait('OFFICIAL_RELEASE_BUILD_EVENT_REQUIRED');
   if (event.kind==='official-merge') {
@@ -118,10 +118,12 @@ export async function advanceEvent(event,{snapshot,get,centralGet,invoke,botId,p
   const readyCycle=event.kind==='run'&&cycles.find(cycle=>cycle.officialRelease
     &&cycle.dispatches.some(request=>request.purpose==='build'&&request.canonicalRunId===event.runId)
     &&state.domainRecords?.some(record=>record.path===`official/draft/${cycle.id}.json`&&record.value.readyAt));
+  const selectedCallback=event.kind==='run'&&selectedDelivery?.repository===product.name
+    &&selectedDelivery.runId===event.runId&&selectedDelivery.callbackAttempt===event.attempt;
   const run=await cycleStage('SOURCE_READ',async()=>{
     const path=`actions/runs/${event.runId}`;
     const latest=nativeRunFact(await readRun(path));
-    return readyCycle&&latest.runAttempt!==event.attempt
+    return (readyCycle||selectedCallback)&&latest.runAttempt!==event.attempt
       ?nativeRunFact(await readRun(`${path}/attempts/${event.attempt}`)):latest;
   });
   if (run.id!==event.runId || run.runAttempt!==event.attempt || run.status!=='completed') fail('CYCLE_EVENT_RUN');
@@ -214,12 +216,17 @@ export async function main(env=process.env) {
         const admit=()=>assertReleaseUnpaused(app,product.id);
         const request=async(cycleId,runId,state)=>({directory:(state??await refresh()).directory,writeDirectory:await mkdtemp(join(root,'write-')),
           remote:'https://github.com/'+product.name+'.git',repository:product.name,repositoryId:product.id,defaultBranch:product.defaultBranch,appBotId:app.appBotId,cycleId,runId,identity});
-        const official={enabled:officialEnabled,stage:officialStage,attempt:event.attempt,admit,ready:Boolean(env.OFFICIAL_RELEASE_TOKEN),
+        const selectedDelivery=event.kind==='run'&&officialStage!=='select'
+          ?await readFile('official-release-delivery.json','utf8').then(JSON.parse,error=>{
+            if(error.code==='ENOENT')return null;
+            throw error;
+          }):null;
+        const official={enabled:officialEnabled,stage:officialStage,attempt:event.attempt,admit,selectedDelivery,ready:Boolean(env.OFFICIAL_RELEASE_TOKEN),
           readBody:approval=>app.forCandidateReadRepository(product.id,readToken=>readOfficialBody(approval,readToken)),
           download:async input=>{
-            const selected=JSON.parse(await readFile('official-release-delivery.json','utf8'));
+            const selected=selectedDelivery;
             const archiveDir=env.OFFICIAL_RELEASE_ARCHIVE_DIR;
-            if(!archiveDir||selected.repository!==input.fullName||selected.artifactId!==input.artifactId||selected.digest!==input.digest)
+            if(!archiveDir||!selected||selected.repository!==input.fullName||selected.artifactId!==input.artifactId||selected.digest!==input.digest)
               fail('OFFICIAL_RELEASE_ARCHIVE_IDENTITY');
             const files=await readdir(archiveDir,{withFileTypes:true});
             if(files.length!==1||!files[0].isFile()) fail('OFFICIAL_RELEASE_ARCHIVE_IDENTITY');
@@ -258,7 +265,7 @@ export async function main(env=process.env) {
             {config,delivery,workflow,controllerSha:run.head_sha,token,io,readBytes:state.readBytes,admit});
         }):undefined;
         return cycleStage('EVENT_ROUTE',()=>advanceEvent(event,{registry:[product],
-          officialStage,officialMerge,
+          officialStage,officialMerge,selectedDelivery,
           snapshot:async()=>(await refresh()).snapshot,get:path=>productReader.json(path),probeArtifacts:run=>productReader.pages('actions/runs/'+run.id+'/artifacts','artifacts'),
           probeWorkflow:()=>productReader.json('actions/workflows/steward-release-channels.yml'),
           probeReport:async artifact=>{
@@ -276,7 +283,7 @@ export async function main(env=process.env) {
       const {officialDelivery}=result;
       if(officialDelivery) {
         const [owner,repo]=officialDelivery.repository.split('/');
-        await writeFile('official-release-delivery.json',JSON.stringify(officialDelivery)+'\n',{flag:'wx'});
+        await writeFile('official-release-delivery.json',JSON.stringify({...officialDelivery,callbackAttempt:event.attempt})+'\n',{flag:'wx'});
         await appendFile(env.GITHUB_OUTPUT,`selected=true\nowner=${owner}\nrepo=${repo}\nrepository=${officialDelivery.repository}\nrun_id=${officialDelivery.runId}\nartifact_id=${officialDelivery.artifactId}\n`);
       }
       return;

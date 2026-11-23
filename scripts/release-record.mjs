@@ -1006,11 +1006,14 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
     const officialDraft=approval&&!isOfficialPreparation?(approval.releaseId===null
       ?await official.confirm(approval):await readBoundOfficialDraft(approval,reader)):null;
     const officialBody=approval?(approval.frozenBody??officialDraft?.body??await official.readBody(approval)):undefined;
+    const selected=approval?official.selectedDelivery:undefined;
+    if(approval&&(!selected||selected.repository!==request.repository||selected.cycleId!==cycle.id))
+      fail('official release original delivery selection required');
     const pending=alreadyPublished.size||unavailable.size
       ?new Set(targets.filter(unit=>!alreadyPublished.has(unit.id)&&!unavailable.has(unit.id)).map(unit=>unit.id)):undefined;
     const records=await pipelinePreparePublication(context,root,controllerDirectory,token,undefined,io,undefined,undefined,snapshot.domainRecords,
       pending,approval?official.download:undefined,cycle.workflowDelivery?unitId=>unavailable.add(unitId):undefined,
-      cycle.workflowDelivery?(unitId,reason)=>rejected.push({unitId,channelId:'github-release',reason}):undefined,officialBody);
+      cycle.workflowDelivery?(unitId,reason)=>rejected.push({unitId,channelId:'github-release',reason}):undefined,officialBody,selected);
     if(!Array.isArray(records))return records;
     if(cycle.workflowDelivery&&!targets.length)return cycle.requiredChannels.length
       ?{status:'WAIT',reason:'FORMAL_RELEASE_REQUIRED',publishInvoked:false}:confirmFrozenCycle(request,snapshot,cycle,{token,io,now});
