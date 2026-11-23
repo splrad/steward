@@ -2,11 +2,14 @@ import {posix} from 'node:path';
 import YAML from 'yaml';
 import {git} from './validation-input.mjs';
 import {controllerTagPrefix,controllerVersionNumber} from './controller-version.mjs';
+import {applyWorkflowDelivery,assertProductDelivery,decodeBuildJson,defaultBuildWorkflow,
+  parseDeliveryConfig,verifyDispatchWorkflow} from '../packages/runner/dist/index.js';
 
 const layerScapeId = 1187527897;
 const controllerRepository = 'splrad/steward';
 const controllerWorkflowPrefix = controllerRepository + '/.github/workflows/';
-const publishWorkflow = '.github/workflows/steward-release-publish.yml';
+const deliveryFile = '.github/delivery.json';
+const releasePleaseFile = 'release-please-config.json';
 const controllerPath = 'controller';
 const archiveReaderPath = 'configuration-controller';
 const archiveReaderCommand = 'node scripts/configuration-native-artifact.mjs';
@@ -15,7 +18,7 @@ const managedWorkflows = [
   '.github/workflows/channel-preflight.yml',
   '.github/workflows/pages.yml',
   '.github/workflows/steward-release-channels.yml',
-  publishWorkflow,
+  defaultBuildWorkflow,
 ];
 const isPin = value => typeof value === 'string' && /^[0-9a-f]{40}$/.test(value);
 
@@ -77,9 +80,73 @@ function archiveReaderKey(checkout, install, collect) {
   return guard;
 }
 
-function readWorkflowPins(repo, revision, path, archiveReaders) {
-  const value = git(repo, ['cat-file', 'blob', revision + ':' + path]).toString('utf8');
-  const document = YAML.parseDocument(value);
+function publisherAt(repo, revision) {
+  const entry = git(repo, ['ls-tree', revision, '--', deliveryFile]);
+  if (!entry.length) return {path: defaultBuildWorkflow};
+  if (!entry.toString().startsWith('100644 blob ')) throw Error('VALIDATION_CONTROLLER_DELIVERY_DECLARATION');
+  const raw = decodeBuildJson(git(repo, ['cat-file', 'blob', revision + ':' + deliveryFile]));
+  if (raw?.schemaVersion !== 3) return {path: defaultBuildWorkflow};
+  const settings = decodeBuildJson(git(repo, ['cat-file', 'blob', revision + ':' + releasePleaseFile]));
+  const delivery = parseDeliveryConfig(raw, settings);
+  return {path: delivery.buildWorkflow, delivery};
+}
+
+const successOnly = entry => !entry['continue-on-error'] &&
+  (entry.if === undefined || entry.if === true ||
+    /^(?:success\(\)|\$\{\{\s*success\(\)\s*\}\})$/.test(entry.if));
+const boundDirectory = (command, option, directory) =>
+  new RegExp('(?:^|\\s)--' + option + '\\s+(?:' + directory + '|"' + directory + '")(?=\\s|$)').test(command);
+const artifactPaths = input => typeof input === 'string' ? input.split(/\r?\n/).map(path => path.trim()).filter(Boolean).sort().join('\n') : '';
+const buildInputs = {cycle_id: '', operation_key: '', source_sha: '', controller_sha: ''};
+const admitCommand = /^\s*node\s+controller\/packages\/runner\/dist\/index\.js\s+release-pipeline identity\b[^\r\n]*/m;
+
+function verifyNativePublisher(workflow, bytes, {path, delivery}) {
+  verifyDispatchWorkflow(bytes, {purpose: 'build', inputs: buildInputs, buildWorkflow: path});
+  const handoff = applyWorkflowDelivery(delivery, bytes);
+  if (delivery.units.some(unit => !handoff.units.get(unit.id)?.has('github-release'))) {
+    throw Error('VALIDATION_CONTROLLER_NATIVE_DELIVERY ' + path);
+  }
+  assertProductDelivery(delivery);
+  const jobs = Object.entries(workflow.jobs);
+  const admission = jobs.find(([, job]) => successOnly(job) && job.steps?.some((step, index) => {
+    const command = admitCommand.exec(step.run ?? '')?.[0];
+    if (!command || !successOnly(step)) return false;
+    const binds = Object.keys(buildInputs).every(input => {
+      const variable = input.toUpperCase(), flag = input.replaceAll('_', '-');
+      return new RegExp('--' + flag + ' +"\\x24env:' + variable + '"(?=\\s|$)').test(command)
+        && new RegExp('^\\x24{{\\s*inputs\\.' + input + '\\s*}}$').test(step.env?.[variable] ?? '');
+    });
+    const checkout = (mount, repository, ref) => job.steps.slice(0, index).some(step =>
+      isCheckout(step.uses) && isPin(step.uses.split('@')[1]) && successOnly(step)
+      && step.with?.path === mount && step.with.repository === repository
+      && step.with['persist-credentials'] === false && ref(step.with.ref));
+    return binds && boundDirectory(command, 'source-dir', 'product')
+      && boundDirectory(command, 'controller-dir', 'controller') && boundDirectory(command, 'state-dir', 'state')
+      && checkout('controller', controllerRepository, isPin)
+      && checkout('product', undefined, ref => ref === '${{ github.sha }}')
+      && checkout('state', undefined, ref => ref === 'steward/release-state');
+  }));
+  if (!admission) throw Error('VALIDATION_CONTROLLER_NATIVE_ADMISSION ' + path);
+  for (const [jobId, job] of jobs) {
+    const upload = job.steps?.findIndex(step => step.id === 'upload-github-release') ?? -1;
+    if (upload < 0) continue;
+    const needs = typeof job.needs === 'string' ? [job.needs] : job.needs;
+    const uploadPaths = artifactPaths(job.steps[upload].with.path);
+    const permissions = job.permissions ?? workflow.permissions;
+    const attests = job.steps.slice(0, upload).some(step => successOnly(step)
+      && /^actions\/attest(?:-build-provenance)?@[a-f0-9]{40}$/.test(step.uses ?? '')
+      && artifactPaths(step.with?.['subject-path']) === uploadPaths);
+    if (!attests || permissions?.['id-token'] !== 'write' || permissions.attestations !== 'write') throw Error('VALIDATION_CONTROLLER_NATIVE_ATTESTATION ' + path);
+    if (!successOnly(job) || !successOnly(job.steps[upload]) || jobId === admission[0]
+      || !Array.isArray(needs) || !needs.includes(admission[0])) {
+      throw Error('VALIDATION_CONTROLLER_NATIVE_ADMISSION ' + path);
+    }
+  }
+}
+
+function readWorkflowPins(repo, revision, path, archiveReaders, publisher) {
+  const bytes = git(repo, ['cat-file', 'blob', revision + ':' + path]);
+  const document = YAML.parseDocument(bytes.toString('utf8'));
   if (document.errors.length) throw document.errors[0];
   const workflow = document.toJS();
   const jobs = Object.entries(workflow?.jobs ?? {});
@@ -98,7 +165,7 @@ function readWorkflowPins(repo, revision, path, archiveReaders) {
       throw Error('VALIDATION_CONTROLLER_LOCAL_USES ' + path);
     }
     for (const [index, step] of steps.entries()) {
-      if (path === publishWorkflow && jobId === 'build' && step.run === archiveReaderCommand) {
+      if (path === defaultBuildWorkflow && jobId === 'build' && step.run === archiveReaderCommand) {
         const guard = step.if;
         const directory = step['working-directory'];
         if (directory === controllerPath && jobController && typeof guard === 'string' && guard && !archiveReaders.has(guard)) {
@@ -146,7 +213,7 @@ function readWorkflowPins(repo, revision, path, archiveReaders) {
         }
         continue;
       }
-      const archiveReader = path === publishWorkflow && jobId === 'build' && mount === archiveReaderPath;
+      const archiveReader = path === defaultBuildWorkflow && jobId === 'build' && mount === archiveReaderPath;
       if (!archiveReader && mount !== controllerPath) throw Error('VALIDATION_CONTROLLER_CHECKOUT_MOUNT ' + path);
       if (!isPin(step.with.ref)) throw Error('VALIDATION_CONTROLLER_PIN_INVALID ' + path);
       if (archiveReader) {
@@ -181,7 +248,9 @@ function readWorkflowPins(repo, revision, path, archiveReaders) {
   }
   const reusable = jobs.filter(([, job]) => typeof job.uses === 'string'
     && job.uses.toLowerCase().startsWith(controllerWorkflowPrefix));
-  if (path === publishWorkflow && !reusable.some(([, job]) =>
+  if (path === publisher.path && publisher.delivery) {
+    verifyNativePublisher(workflow, bytes, publisher);
+  } else if (path === defaultBuildWorkflow && !reusable.some(([, job]) =>
     job.uses.toLowerCase().startsWith(controllerWorkflowPrefix + 'product-release.yml@'))) {
     throw Error('VALIDATION_CONTROLLER_REUSABLE_WORKFLOW_MISSING ' + path);
   }
@@ -190,9 +259,12 @@ function readWorkflowPins(repo, revision, path, archiveReaders) {
   return controllerPins;
 }
 
-function readRevisionPins(workspace, revision) {
+function readRevisionPins(workspace, revision, publisher) {
   const archiveReaders = new Map();
-  const pins = managedWorkflows.flatMap(path => readWorkflowPins(workspace, revision, path, archiveReaders));
+  const paths = new Set([...managedWorkflows, publisher.path]);
+  if (publisher.path !== defaultBuildWorkflow
+    && !git(workspace, ['ls-tree', revision, '--', defaultBuildWorkflow]).length) paths.delete(defaultBuildWorkflow);
+  const pins = [...paths].flatMap(path => readWorkflowPins(workspace, revision, path, archiveReaders, publisher));
   return {controller: new Set(pins.map(pin => pin.sha)), versions: new Set(pins.map(pin => pin.version)), archiveReaders};
 }
 
@@ -229,11 +301,16 @@ function verifyPromotion(policy, previousPins, candidate, promotedController) {
 }
 
 export function verifyLayerScapeControllerPins(workspace, input, policy, promotedController) {
-  if (input.repositoryId !== layerScapeId
-    || !managedWorkflows.some(path => input.changedPaths.includes(path))) return;
+  if (input.repositoryId !== layerScapeId || !input.changedPaths.some(path =>
+    path === deliveryFile || path === releasePleaseFile || /^\.github\/workflows\/[^/]+\.ya?ml$/.test(path))) return;
+  const priorPublisher = publisherAt(workspace, input.base);
+  const nextPublisher = publisherAt(workspace, input.head);
+  const watched = [...managedWorkflows, priorPublisher.path, nextPublisher.path];
+  if (priorPublisher.delivery || nextPublisher.delivery) watched.push(deliveryFile, releasePleaseFile);
+  if (!input.changedPaths.some(path => watched.includes(path))) return;
 
-  const before = readRevisionPins(workspace, input.base);
-  const after = readRevisionPins(workspace, input.head);
+  const before = readRevisionPins(workspace, input.base, priorPublisher);
+  const after = readRevisionPins(workspace, input.head, nextPublisher);
   if (after.controller.size !== 1) throw Error('VALIDATION_CONTROLLER_PIN_MISMATCH');
   const [candidate] = after.controller;
   const controllerChanged = before.controller.size !== 1 || !before.controller.has(candidate);
