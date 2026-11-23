@@ -90,12 +90,14 @@ export function lifecycleMiseVersions(documents){
 }
 
 export async function lifecycleReusable(uses,loadTrusted){
-  const match=/^splrad\/steward\/\.github\/workflows\/product-release\.yml@([a-f0-9]{40})$/.exec(uses??'');
+  const match=/^splrad\/steward\/\.github\/workflows\/(product-release|pr-title-reusable)\.yml@([a-f0-9]{40})$/.exec(uses??'');
   assert(match,'LIFECYCLE_REUSABLE_IDENTITY');
-  const bytes=await loadTrusted(match[1],'.github/workflows/product-release.yml');
+  const [,name,sha]=match;
+  const sourcePath='.github/workflows/'+name+'.yml';
+  const bytes=await loadTrusted(sha,sourcePath);
   const doc=YAML.parse(bytes.toString('utf8'));
-  assert(doc?.on?.workflow_call&&doc.jobs&&Object.values(doc.jobs).every(job=>!job.uses),'LIFECYCLE_REUSABLE_NESTING');
-  return {path:'.github/workflows/trusted-product-release-'+match[1]+'.yml',bytes,sha:match[1]};
+  assert(doc?.on&&Object.hasOwn(doc.on,'workflow_call')&&doc.jobs&&Object.values(doc.jobs).every(job=>!job.uses),'LIFECYCLE_REUSABLE_NESTING');
+  return {path:'.github/workflows/trusted-'+name+'-'+sha+'.yml',sourcePath,bytes,sha};
 }
 
 export function assertLifecycleMissingActionLock(paths,{side,application}){

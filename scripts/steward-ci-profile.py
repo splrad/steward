@@ -8,6 +8,7 @@ import tomllib
 PINS = re.compile(rb"(?m)^        uses: amannn/action-semantic-pull-request@([0-9a-f]{40}) # (v[0-9]+\.[0-9]+\.[0-9]+)$")
 ROOT_TITLE = ".github/workflows/pr-title.yml"
 TEMPLATE_TITLE = "templates/repository/" + ROOT_TITLE
+CENTRAL_TITLE = ".github/workflows/pr-title-reusable.yml"
 ACTION_LOCK = ".github/workflows/actions.lock"
 SECURITY_POLICY = {"SECURITY.md", "config/review/security-common.md"}
 # These entry points and their direct tests belong to the promotion workflow.
@@ -90,13 +91,13 @@ def changed_paths(base, head):
                .decode().split("\0")) - {""}
 
 
-def title_lock_update(before, after, old_pin, new_pin):
+def title_lock_update(before, after, old_pin, new_pin, path=ROOT_TITLE):
     action = b"amannn/action-semantic-pull-request@"
 
     def entries(pin):
         sha, tag = pin
         reference = action + sha
-        workflow = b"    '%s':\n        - '%s'\n" % (ROOT_TITLE.encode(), reference)
+        workflow = b"    '%s':\n        - '%s'\n" % (path.encode(), reference)
         dependency = b"    '%s':\n        ref: '%s'\n        commit: 'sha1-%s'\n" % (reference, tag, sha)
         return workflow, dependency
 
@@ -128,7 +129,8 @@ def classify(base, head):
     policy = bool(paths) and paths <= SECURITY_POLICY
     governance = (os.environ.get("GITHUB_EVENT_NAME") == "pull_request"
                   and bool(paths) and paths <= GOVERNANCE_PROMOTION)
-    if not (docs or policy or governance) and paths not in ({"mise.lock"}, {TEMPLATE_TITLE}, {ROOT_TITLE, ACTION_LOCK}):
+    title_paths = ({TEMPLATE_TITLE}, {ROOT_TITLE, ACTION_LOCK}, {CENTRAL_TITLE, ACTION_LOCK})
+    if not (docs or policy or governance) and paths not in ({"mise.lock"}, *title_paths):
         return "full"
     for path in paths:
         if not all(git("ls-tree", ref, "--", path).startswith(b"100644 blob ") for ref in (base, head)):
@@ -141,15 +143,15 @@ def classify(base, head):
         return "governance"
     if paths == {"mise.lock"}:
         return "tool" if tool_changes(blob(base, "mise.lock"), blob(head, "mise.lock")) else "full"
-    if paths not in ({TEMPLATE_TITLE}, {ROOT_TITLE, ACTION_LOCK}):
+    if paths not in title_paths:
         return "full"
-    path = TEMPLATE_TITLE if TEMPLATE_TITLE in paths else ROOT_TITLE
+    path = (paths - {ACTION_LOCK}).pop()
     old, new = (blob(ref, path) for ref in (base, head))
     old_pin, new_pin = PINS.findall(old), PINS.findall(new)
     if len(old_pin) != 1 or len(new_pin) != 1 or PINS.sub(b"PIN", old) != PINS.sub(b"PIN", new):
         return "full"
     if ACTION_LOCK in paths and not title_lock_update(
-        blob(base, ACTION_LOCK), blob(head, ACTION_LOCK), old_pin[0], new_pin[0]
+        blob(base, ACTION_LOCK), blob(head, ACTION_LOCK), old_pin[0], new_pin[0], path
     ):
         return "full"
     return "title"

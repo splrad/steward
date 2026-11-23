@@ -29,7 +29,7 @@ export async function reusableActions(uses,{loadSource,verifyLock,inventory}){
     evidence.lockSha256=digest(lock);
     const native=await verifyLock(files,nested.sha);
     evidence.stage='online-inventory';
-    const actions=await inventory(lock.toString('utf8'));
+    const actions=await inventory(lock.toString('utf8'),nested.sourcePath);
     evidence.stage='workflow-coverage';
     assertActionInputs(YAML.parse(nested.bytes.toString('utf8')),actions);
     return {...nested,actions,lockSha256:evidence.lockSha256,native};
