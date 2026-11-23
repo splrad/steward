@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "repositoryId": 1296724484,
+  "pullRequestNumber": 473,
+  "currentHead": "50b0104e0f4b12d2ade90ed57721bab73137e003",
+  "configVersion": "quality-native-comments-v1",
+  "heads": {
+    "50b0104e0f4b12d2ade90ed57721bab73137e003": {
+      "sourceSetDigest": "5a79c98ca4ec2afd8bc8f236c5f3940c7006d1d6d8f8a52d5d4af3299b872bc3",
+      "sources": [
+        {
+          "sourceCommentId": "review-comment:4665370676",
+          "sourceCommit": "dcab2b806e2ad33121af80700aa62ec184019e61",
+          "sourceUrl": "https://github.com/splrad/steward/pull/473#discussion_r4665370676",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Whitespace contradicts operator precedence\n\nWhitespace around nested operators contradicts precedence.\n\n---\n\nUse explicit parentheses to make the intended grouping unambiguous while preserving behavior.</p>\n<p>Best fix in this file/region:</p>\n<ul>\n<li>In <code>scripts/select-pages-source.mjs</code>, inside <code>workflowPagesOptions</code> where <code>publicAllowed</code> is computed (line 209 in the snippet), wrap the <code>&amp;&amp;</code> subexpression in parentheses:\n<ul>\n<li>From: <code>options.mode!=='release'||options.unitId &amp;&amp; options.unitId===approvedUnit</code></li>\n<li>To: <code>options.mode!=='release'||(options.unitId &amp;&amp; options.unitId===approvedUnit)</code></li>\n</ul>\n</li>\n</ul>\n<p>No imports, helper methods, or new definitions are needed.",
+          "updatedAt": "2026-11-23T11:47:08Z"
+        },
+        {
+          "sourceCommentId": "review-comment:4665370729",
+          "sourceCommit": "dcab2b806e2ad33121af80700aa62ec184019e61",
+          "sourceUrl": "https://github.com/splrad/steward/pull/473#discussion_r4665370729",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Unused variable, import, function or class\n\nUnused import versionsPath.\n\n---\n\nTo fix an unused named import without changing behavior, remove only the unused symbol from the import declaration and keep the rest unchanged.</p>\n<p>In <code>scripts/test/configuration-authority.test.mjs</code>, update the import from <code>../configuration-view.mjs</code> to remove <code>versionsPath</code> while retaining <code>inspectRepository</code>. No other code changes are required, and no runtime behavior is altered because unused imports are not part of execution logic.",
+          "updatedAt": "2026-11-23T11:47:08Z"
+        },
+        {
+          "sourceCommentId": "review-comment:4665370786",
+          "sourceCommit": "dcab2b806e2ad33121af80700aa62ec184019e61",
+          "sourceUrl": "https://github.com/splrad/steward/pull/473#discussion_r4665370786",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Unused variable, import, function or class\n\nUnused import prepareTarget.\n\n---\n\nTo fix this without changing behavior, remove <code>prepareTarget</code> from the named import list in <code>scripts/test/configuration-authority.test.mjs</code>.</p>\n<p>Best single fix:</p>\n<ul>\n<li>Edit the import on line 13.</li>\n<li>Keep <code>assertChannelWorkflow</code> and <code>trialKey</code>.</li>\n<li>Remove only <code>prepareTarget</code>.</li>\n</ul>\n<p>No additional methods, definitions, or packages are needed.",
+          "updatedAt": "2026-11-23T11:47:09Z"
+        }
+      ],
+      "keys": [
+        "c726f33cb6e58e74ab7feadefb446bda5029537a1a99ea8da4eb8d980d7fcd28",
+        "d65b940c9865db5c6bd094e3454038312801a438e915ef21e1fca13af34048c4",
+        "b4c873cdf98fff91f019c3fc10130dcbb48159d75a779da73cb6b1c788bcf696"
+      ],
+      "checkId": null,
+      "externalId": "splrad-quality:1296724484:473:50b0104e0f4b12d2ade90ed57721bab73137e003",
+      "observedAt": "2026-11-23T12:03:18.069Z"
+    }
+  },
+  "entries": {
+    "c726f33cb6e58e74ab7feadefb446bda5029537a1a99ea8da4eb8d980d7fcd28": {
+      "key": "c726f33cb6e58e74ab7feadefb446bda5029537a1a99ea8da4eb8d980d7fcd28",
+      "segment": {
+        "sourceCommentId": "review-comment:4665370676",
+        "sourceCommit": "dcab2b806e2ad33121af80700aa62ec184019e61",
+        "sourceUrl": "https://github.com/splrad/steward/pull/473#discussion_r4665370676",
+        "severity": "原文未说明",
+        "bodyMarkdown": "## Whitespace contradicts operator precedence\n\nWhitespace around nested operators contradicts precedence.\n\n---\n\nUse explicit parentheses to make the intended grouping unambiguous while preserving behavior.</p>\n<p>Best fix in this file/region:</p>\n<ul>\n<li>In <code>scripts/select-pages-source.mjs</code>, inside <code>workflowPagesOptions</code> where <code>publicAllowed</code> is computed (line 209 in the snippet), wrap the <code>&amp;&amp;</code> subexpression in parentheses:\n<ul>\n<li>From: <code>options.mode!=='release'||options.unitId &amp;&amp; options.unitId===approvedUnit</code></li>\n<li>To: <code>options.mode!=='release'||(options.unitId &amp;&amp; options.unitId===approvedUnit)</code></li>\n</ul>\n</li>\n</ul>\n<p>No imports, helper methods, or new definitions are needed.",
+        "segmentIndex": 0,
+        "originalIdentifiers": [
+          "<code>scripts/select-pages-source.mjs</code>",
+          "<code>workflowPagesOptions</code>",
+          "<code>publicAllowed</code>",
+          "<code>&amp;&amp;</code>",
+          "<code>options.mode!=='release'||options.unitId &amp;&amp; options.unitId===approvedUnit</code>",
+          "<code>options.mode!=='release'||(options.unitId &amp;&amp; options.unitId===approvedUnit)</code>",
+          "file/region",
+          "scripts/select-pages-source.mjs"
+        ]
+      },
+      "configVersion": "quality-native-comments-v1",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    },
+    "d65b940c9865db5c6bd094e3454038312801a438e915ef21e1fca13af34048c4": {
+      "key": "d65b940c9865db5c6bd094e3454038312801a438e915ef21e1fca13af34048c4",
+      "segment": {
+        "sourceCommentId": "review-comment:4665370729",
+        "sourceCommit": "dcab2b806e2ad33121af80700aa62ec184019e61",
+        "sourceUrl": "https://github.com/splrad/steward/pull/473#discussion_r4665370729",
+        "severity": "原文未说明",
+        "bodyMarkdown": "## Unused variable, import, function or class\n\nUnused import versionsPath.\n\n---\n\nTo fix an unused named import without changing behavior, remove only the unused symbol from the import declaration and keep the rest unchanged.</p>\n<p>In <code>scripts/test/configuration-authority.test.mjs</code>, update the import from <code>../configuration-view.mjs</code> to remove <code>versionsPath</code> while retaining <code>inspectRepository</code>. No other code changes are required, and no runtime behavior is altered because unused imports are not part of execution logic.",
+        "segmentIndex": 0,
+        "originalIdentifiers": [
+          "<code>scripts/test/configuration-authority.test.mjs</code>",
+          "<code>../configuration-view.mjs</code>",
+          "<code>versionsPath</code>",
+          "<code>inspectRepository</code>",
+          "scripts/test/configuration-authority.test.mjs",
+          "../configuration-view.mjs"
+        ]
+      },
+      "configVersion": "quality-native-comments-v1",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    },
+    "b4c873cdf98fff91f019c3fc10130dcbb48159d75a779da73cb6b1c788bcf696": {
+      "key": "b4c873cdf98fff91f019c3fc10130dcbb48159d75a779da73cb6b1c788bcf696",
+      "segment": {
+        "sourceCommentId": "review-comment:4665370786",
+        "sourceCommit": "dcab2b806e2ad33121af80700aa62ec184019e61",
+        "sourceUrl": "https://github.com/splrad/steward/pull/473#discussion_r4665370786",
+        "severity": "原文未说明",
+        "bodyMarkdown": "## Unused variable, import, function or class\n\nUnused import prepareTarget.\n\n---\n\nTo fix this without changing behavior, remove <code>prepareTarget</code> from the named import list in <code>scripts/test/configuration-authority.test.mjs</code>.</p>\n<p>Best single fix:</p>\n<ul>\n<li>Edit the import on line 13.</li>\n<li>Keep <code>assertChannelWorkflow</code> and <code>trialKey</code>.</li>\n<li>Remove only <code>prepareTarget</code>.</li>\n</ul>\n<p>No additional methods, definitions, or packages are needed.",
+        "segmentIndex": 0,
+        "originalIdentifiers": [
+          "<code>prepareTarget</code>",
+          "<code>scripts/test/configuration-authority.test.mjs</code>",
+          "<code>assertChannelWorkflow</code>",
+          "<code>trialKey</code>",
+          "scripts/test/configuration-authority.test.mjs"
+        ]
+      },
+      "configVersion": "quality-native-comments-v1",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    }
+  },
+  "cursor": 0
+}
