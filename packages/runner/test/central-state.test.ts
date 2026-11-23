@@ -161,7 +161,11 @@ it('validates exact product blobs, retains bootstrap requirements and rejects he
     '.github/delivery.json':{schemaVersion:1,repositoryAuthors:[{id:7,evidence:'Offline authorship'}],units:[{id:'app',path:'.',notesPath:'.release-notes/app.md',assets:[{id:'app',name:'app-${version}.zip',mediaType:'application/zip'}],channels:[]}]},
     'release-please-config.json':{'separate-pull-requests':false,packages:{'.':{'release-type':'simple','version-file':'VERSION'}}},'.release-please-manifest.json':{'.':'0.0.0'}};
   let heads=0,states=0,moveHead=false,moveState=false,badBlob=false;
-  const blobs=Object.fromEntries(Object.entries(values).map(([path,value])=>{const b=Buffer.from(JSON.stringify(value));return [path,{type:'file',path,encoding:'base64',size:b.length,sha:createHash('sha1').update(`blob ${b.length}\0`).update(b).digest('hex'),content:b.toString('base64')}];}));
+  const blob=(path:string,value:unknown)=>{
+    const b=Buffer.from(JSON.stringify(value));
+    return {type:'file',path,encoding:'base64',size:b.length,sha:createHash('sha1').update(`blob ${b.length}\0`).update(b).digest('hex'),content:b.toString('base64')};
+  };
+  const blobs=Object.fromEntries(Object.entries(values).map(([path,value])=>[path,blob(path,value)]));
   const io={request:async(_method:string,path:string)=>{
     let value:any;
     if(path==='/repos/test/product')value=product;
@@ -176,4 +180,23 @@ it('validates exact product blobs, retains bootstrap requirements and rejects he
   heads=states=0;moveHead=true;await expect(releaseParticipation(product,io)).rejects.toThrow('PARTICIPATION_CHANGED');
   heads=states=0;moveHead=false;moveState=true;await expect(releaseParticipation(product,io)).rejects.toThrow('PARTICIPATION_CHANGED');
   heads=states=0;moveState=false;badBlob=true;await expect(releaseParticipation(product,io)).rejects.toThrow('CONFIGURATION_INVALID');
+  badBlob=false;
+  const official={requireWorkflowGitHubDelivery:true};
+  await expect(releaseParticipation(product,io,official)).rejects.toThrow('OFFICIAL_CANDIDATE_GITHUB_DELIVERY');
+  const build='.github/workflows/steward-release-publish.yml';
+  const flow={
+    'run-name':'Build ${{ inputs.operation_key }}',
+    on:{workflow_dispatch:{inputs:Object.fromEntries(['cycle_id','operation_key','source_sha','controller_sha']
+      .map(key=>[key,{type:'string',required:true}]))}},
+    jobs:{deliver:{name:'delivery/root',steps:[{
+      id:'upload-github-release',name:'Upload GitHub release delivery',uses:'actions/upload-artifact@'+'a'.repeat(40),
+      with:{name:'delivery-github-release-${{ github.repository_id }}-root-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}',
+        path:'out/*'},
+    }]}},
+  };
+  blobs['.github/delivery.json']=blob('.github/delivery.json',{schemaVersion:3});
+  blobs[build]=blob(build,flow);
+  expect((await releaseParticipation(product,io,official)).status).toBe('APPLICABLE');
+  blobs[build]=blob(build,{...flow,jobs:{build:{steps:[{run:'exit 0'}]}}});
+  await expect(releaseParticipation(product,io,official)).rejects.toThrow('OFFICIAL_CANDIDATE_GITHUB_DELIVERY');
 });

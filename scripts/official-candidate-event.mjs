@@ -299,7 +299,7 @@ export async function main(stage, env = process.env) {
         downloadCheckpoint(centralReader, env, identity, name),
       checkBranch: () => requireRootBranch(product, token),
       prepareParticipation: () => releaseParticipation({ id: product.id, full_name: product.name,
-        default_branch: product.defaultBranch }, nativeEvidenceTransport(token)) });
+        default_branch: product.defaultBranch }, nativeEvidenceTransport(token), { requireWorkflowGitHubDelivery: true }) });
     if (plan.checkpoint) await write('before', plan.checkpoint);
     await write('plan', { mode: plan.mode ?? null, result: plan.result ?? null, waiting: plan.waiting ?? [] });
     await appendFile(env.GITHUB_OUTPUT, 'mode=' + (plan.mode ?? 'complete') + '\n');
