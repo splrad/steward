@@ -221,11 +221,3 @@ export async function nativeChannelJobs(api,repo,head,base,source,targets,token,
   }
   return found;
 }
-
-export async function commitFiles(api,repo,branch,head,changes,message,headline='chore: 配置 '+repo.name+' 仓库功能') {
-  const input={branch:{repositoryNameWithOwner:repo.full_name,branchName:branch},expectedHeadOid:head,
-    message:{headline,body:message+'\n\nSigned-off-by: splrad-steward[bot] <301115370+splrad-steward[bot]@users.noreply.github.com>'},
-    fileChanges:{additions:[...changes].map(([path,bytes])=>({path,contents:Buffer.from(bytes).toString('base64')}))}};
-  const response=await api.graphql('mutation($input:CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid}}}',{input});
-  return response.createCommitOnBranch.commit.oid;
-}
