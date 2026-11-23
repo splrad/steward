@@ -244,7 +244,7 @@ export async function captureOfficialAction({ checkpoint, product, get }) {
   return { ...before, pulls };
 }
 
-export async function finishOfficialPull({ product, get, patch, sourceSha, checkpoint, template, render = renderOfficialPull }) {
+export async function finishOfficialPull({ product, get, patch, sourceSha, checkpoint, template, admit, render = renderOfficialPull }) {
   let pull = await get('pulls/' + checkpoint.number);
   pullBinding(pull, product, checkpoint.number, botId);
   if (pull.state !== 'open' || pull.merged === true || pull.head.sha !== checkpoint.head ||
@@ -257,6 +257,7 @@ export async function finishOfficialPull({ product, get, patch, sourceSha, check
   };
   if (bodyDigest(pull.body) !== checkpoint.upstreamDigest) return validateEdit(pull);
   const proposal = await render(pull, product, get, botId, sourceSha, template);
+  await admit();
   if (await defaultHead(get, product.defaultBranch) !== sourceSha) return { number: pull.number, status: 'superseded' };
   pull = await get('pulls/' + checkpoint.number);
   pullBinding(pull, product, checkpoint.number, botId);
@@ -319,11 +320,13 @@ export async function main(stage, env = process.env) {
   const plan = JSON.parse(await readFile(stateFile('plan'), 'utf8'));
   let result = plan.result, pulls = [], waiting = plan.waiting;
   if (plan.mode) {
-    if (plan.mode === 'resume') await assertCandidateUnpaused(env, product.id);
     const checkpoint = JSON.parse(await readFile(stateFile('after'), 'utf8'));
     const after = await captureOfficialAction({ checkpoint, product, get });
     const template = await readFile(templatePath, 'utf8');
-    for (const checkpoint of after.pulls) pulls.push(await finishOfficialPull({ product, get, patch, sourceSha: identity.sourceSha, checkpoint, template }));
+    const admit = () => assertCandidateUnpaused(env, product.id);
+    for (const checkpoint of after.pulls) pulls.push(await finishOfficialPull({
+      product, get, patch, sourceSha: identity.sourceSha, checkpoint, template, admit,
+    }));
     if (!pulls.length && !checkpoint.output.length) waiting = await inspectWaiting(get, product);
     result = pulls.length ? 'candidate_observed' : waiting.length ? 'merged_pending' : 'no_candidate_change';
   }

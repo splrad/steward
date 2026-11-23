@@ -8,8 +8,8 @@ export function releasePolicyGuard(app, repository, readPolicy=mergedRepositoryP
   return async (read,{nativeEntry=false,buildWorkflow=publishPath}={})=>{
     if(nativeEntry)return;
     const selection=await readPolicy(app,repository);
-    if(selection.adoption!=='central'&&!(selection.adoption==='paused'&&selection.policy?.release))return;
-    if(!selection.policy.release)throw Error('CANDIDATE_REPOSITORY_POLICY_DISABLED');
+    if(selection.adoption!=='central'&&selection.adoption!=='paused')return;
+    if(!selection.policy?.release)throw Error('CANDIDATE_REPOSITORY_POLICY_DISABLED');
     const [delivery,workflow,versions]=await Promise.all([read(deliveryPath),read(buildWorkflow),read(versionsPath)]);
     // Registration retains the legacy publisher field. Compare its choices using the reviewed workflow.
     const files=new Map([[deliveryPath,delivery],[publishPath,workflow],[versionsPath,versions]]);

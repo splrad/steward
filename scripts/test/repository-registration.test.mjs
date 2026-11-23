@@ -542,8 +542,9 @@ test('new release candidates consume the approved release selections and preserv
   await assert.rejects(guard(async()=>assert.fail('Disabled release should not load product inputs')),/CANDIDATE_REPOSITORY_POLICY_DISABLED/);
   adoption='legacy';
   await guard(async()=>assert.fail('Legacy release should continue from native inputs'));
-  selection=policy;
   adoption='paused';
+  await assert.rejects(guard(async()=>assert.fail('Disabled release should not load product inputs')),/CANDIDATE_REPOSITORY_POLICY_DISABLED/);
+  selection=policy;
   await guard(async path=>productFiles.get(path));
   selection=modified;
   await assert.rejects(guard(async path=>productFiles.get(path)),/CANDIDATE_REPOSITORY_POLICY_CONFLICT/);

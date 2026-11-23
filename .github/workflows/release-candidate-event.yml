@@ -94,6 +94,7 @@ jobs:
           if-no-files-found: error
           retention-days: 90
       - name: Confirm the default branch and pause policy before the candidate action
+        id: confirm-action-source
         if: steps.prepare.outputs.mode == 'action'
         env:
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
@@ -125,6 +126,7 @@ jobs:
           if-no-files-found: error
           retention-days: 90
       - name: Render or verify the candidate homepage
+        id: homepage
         if: steps.product.outputs.route == 'official'
         env:
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}

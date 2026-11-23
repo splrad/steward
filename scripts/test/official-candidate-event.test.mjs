@@ -257,7 +257,7 @@ test('a delayed refresh must still match the merged PR and current terminal labe
 test('only the action-produced head is rendered and retries protect human edits and stale heads', async () => {
   const output = JSON.stringify([{ number: pr.number, headBranchName: pr.head.ref, baseBranchName: 'main', body: upstreamBody }]);
   const before = { sourceSha, initial: [] };
-  let live = { ...pr }, writes = 0;
+  let live = { ...pr }, writes = 0, pauseChecks = 0, paused = true;
   const get = async path => {
     if (path === 'pulls/29') return live;
     if (path === 'git/commits/' + head) return { sha: head, parents: [{ sha: sourceSha }] };
@@ -271,7 +271,17 @@ test('only the action-produced head is rendered and retries protect human edits 
   assert.equal(checkpoint.upstreamDigest, bodyDigest(upstreamBody));
   const proposal = render();
   const options = { product, get, patch: async (_number, body) => { writes++; live = { ...live, body }; throw Error('response lost'); },
-    sourceSha, checkpoint, template, render: () => ({ body: proposal, templateDigest: bodyDigest(template), notes: officialNotes(proposal) }) };
+    sourceSha, checkpoint, template, render: () => ({ body: proposal, templateDigest: bodyDigest(template), notes: officialNotes(proposal) }),
+    admit: async () => {
+      pauseChecks++;
+      if (paused) throw Error('RELEASE_REPOSITORY_PAUSED');
+    } };
+  await assert.rejects(finishOfficialPull(options), /RELEASE_REPOSITORY_PAUSED/);
+  assert.equal(live.body, upstreamBody);
+  assert.equal(writes, 0);
+  await assert.rejects(finishOfficialPull(options), /RELEASE_REPOSITORY_PAUSED/);
+  assert.equal(writes, 0);
+  paused = false;
   assert.equal((await finishOfficialPull(options)).status, 'rendered');
   assert.equal((await finishOfficialPull(options)).status, 'body_retained');
   live.body = live.body.replace('检查安装', '核查正式版安装');
@@ -281,4 +291,5 @@ test('only the action-produced head is rendered and retries protect human edits 
   live.head = { ...live.head, sha: controllerSha };
   assert.equal((await finishOfficialPull(options)).status, 'superseded');
   assert.equal(writes, 1);
+  assert.equal(pauseChecks, 3);
 });

@@ -27,6 +27,7 @@ const { nativeReleaseCandidate } = await import(pathToFileURL(resolve('scripts/r
 const { advanceEvent } = await import(pathToFileURL(resolve('scripts/release-cycle-event.mjs')).href);
 const { releaseParticipation } = await import(pathToFileURL(resolve('scripts/release-coordinator.mjs')).href);
 const { releasePolicyGuard } = await import(pathToFileURL(resolve('scripts/release-repository-policy.mjs')).href);
+const { assertReleaseUnpaused } = await import(pathToFileURL(resolve('scripts/release-pause-policy.mjs')).href);
 
 const { readReleaseRecords,writeReleaseRecords,releaseCommand } = await import(pathToFileURL(resolve('scripts/release-record.mjs')).href);
 const roots: string[] = [];
@@ -314,13 +315,18 @@ async function runNativeCandidate(pinCase: string) {
     expect(await releaseParticipation({id:1,full_name:request.repository,default_branch:request.defaultBranch},transport,{includeUnits:true}))
       .toEqual({status:'APPLICABLE',sourceSha:B,units:[{id:'root',path:'.',notesPath}]});
   }
-  const pausedPolicy=releasePolicyGuard({},request,async()=>({adoption:'paused',policy:null}));
+  const pauseApp={forRepository:async (id:number,read:(token:string)=>Promise<unknown>,scope:string)=>{
+    expect(id).toBe(1447987054);
+    expect(scope).toBe('registry-read');
+    return read('fixture-settings-read');
+  }};
+  const checkPaused=()=>assertReleaseUnpaused(pauseApp,request.repositoryId,async()=>({value:[request.repositoryId]}));
   const registered=(channels:typeof registeredChannels)=>({adoption:'central',policy:{
     repositoryId:1,repository:request.repository,release:{buildWorkflow:'.github/workflows/steward-release-publish.yml',units:[{id:'app',channels}]},
   }});
   if(explicitWorkflow||compactRegistered) {
     const state=await head('steward/release-state'),start=requests.length;
-    await expect(nativeReleaseCandidate(request,{...options,checkRepositoryPolicy:pausedPolicy})).rejects.toThrow('CANDIDATE_REPOSITORY_POLICY_DISABLED');
+    await expect(checkPaused().then(()=>nativeReleaseCandidate(request,options))).rejects.toThrow('RELEASE_REPOSITORY_PAUSED');
     expect(requests.slice(start).every(request=>request.method==='GET')).toBe(true);
     expect(modelCalls).toBe(0);expect(pr).toBeNull();expect(await head('steward/release-state')).toBe(state);
   }
@@ -614,9 +620,9 @@ async function runNativeCandidate(pinCase: string) {
   }
   if(explicitWorkflow) {
     const before=await head('steward/release-state'),start=requests.length;
-    await expect(releaseCommand('candidate',{...request,cycleId:null,runId:null,writeDirectory:join(root,'paused-handoff')},
-      {token:options.token,candidateReadToken:options.readToken,controllerSha:options.controllerSha,now:options.now,io,
-        candidateRuntime:{checkRepositoryPolicy:pausedPolicy}})).rejects.toThrow('CANDIDATE_REPOSITORY_POLICY_DISABLED');
+    await expect(checkPaused().then(()=>releaseCommand('candidate',{...request,cycleId:null,runId:null,writeDirectory:join(root,'paused-handoff')},
+      {token:options.token,candidateReadToken:options.readToken,controllerSha:options.controllerSha,now:options.now,io})))
+      .rejects.toThrow('RELEASE_REPOSITORY_PAUSED');
     expect(requests.slice(start).every(request=>request.method==='GET')).toBe(true);
     expect(await head('steward/release-state')).toBe(before);expect(modelCalls).toBe(firstCalls);
     const conflictingPolicy=releasePolicyGuard({},request,async()=>registered(registeredChannels.map(channel=>({...channel,artifactIds:['other']}))));
@@ -661,9 +667,9 @@ async function runNativeCandidate(pinCase: string) {
   }
   if(compactRegistered) {
     const before=await head('steward/release-state'),start=requests.length;
-    await expect(releaseCommand('candidate',{...request,cycleId:null,runId:null,writeDirectory:join(root,'paused-compact-handoff')},
-      {token:options.token,candidateReadToken:options.readToken,controllerSha:options.controllerSha,now:options.now,io,
-        candidateRuntime:{checkRepositoryPolicy:pausedPolicy}})).rejects.toThrow('CANDIDATE_REPOSITORY_POLICY_DISABLED');
+    await expect(checkPaused().then(()=>releaseCommand('candidate',{...request,cycleId:null,runId:null,writeDirectory:join(root,'paused-compact-handoff')},
+      {token:options.token,candidateReadToken:options.readToken,controllerSha:options.controllerSha,now:options.now,io})))
+      .rejects.toThrow('RELEASE_REPOSITORY_PAUSED');
     expect(requests.slice(start).every(request=>request.method==='GET')).toBe(true);
     expect(await head('steward/release-state')).toBe(before);expect(modelCalls).toBe(firstCalls);
   }
@@ -679,8 +685,8 @@ async function runNativeCandidate(pinCase: string) {
   expect(handed).toMatchObject({ status: 'CYCLE_READY', sourceSha: S, cycleId: `pr-9-${S}` });
   if(explicitWorkflow)expect(adoptedReads).toBe(2);
   if(compactRegistered) {
-    expect(compactReadsBeforeHandoff).toBeGreaterThan(0);
-    expect(compactPolicyReads).toBeGreaterThan(compactReadsBeforeHandoff);
+    expect(compactReadsBeforeHandoff).toBe(0);
+    expect(compactPolicyReads).toBe(0);
   }
   expect(modelCalls).toBe(firstCalls); await refresh();
   const merged = await readReleaseRecords({ directory, targetRef: 'steward/release-state', repositoryId: 1 });
