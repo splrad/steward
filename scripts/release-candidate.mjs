@@ -105,8 +105,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
   const checkPolicyAt=async(sha,delivery)=>{
     if(!checkRepositoryPolicy)return;
     const nativeEntry=delivery.schemaVersion===3;
-    const priorRegistration=nativeEntry&&(await fileAt(sha,'.github/steward-central-policy',true))!==null;
-    await checkRepositoryPolicy(path=>fileAt(sha,path),{nativeEntry,priorRegistration,buildWorkflow:delivery.buildWorkflow});
+    await checkRepositoryPolicy(path=>fileAt(sha,path),{nativeEntry,buildWorkflow:delivery.buildWorkflow});
   };
   const pinnedTemplate = new Map();
   const templateSourceAt = async (sha, delivery) => {

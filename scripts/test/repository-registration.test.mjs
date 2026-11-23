@@ -542,21 +542,16 @@ test('new release candidates consume the approved release selections and preserv
   await assert.rejects(guard(async()=>assert.fail('Disabled release should not load product inputs')),/CANDIDATE_REPOSITORY_POLICY_DISABLED/);
   adoption='legacy';
   await guard(async()=>assert.fail('Legacy release should continue from native inputs'));
+  selection=policy;
+  adoption='paused';
+  await guard(async path=>productFiles.get(path));
+  selection=modified;
+  await assert.rejects(guard(async path=>productFiles.get(path)),/CANDIDATE_REPOSITORY_POLICY_CONFLICT/);
 });
 
-test('a native release entry needs no central registration and honors a migrated pause',async()=>{
-  let reads=0,policy={adoption:'central',policy:{release:{units:[]}}};
-  const guard=releasePolicyGuard({},product,async()=>{reads++;return policy;});
-  const read=async()=>assert.fail('native admission must not read fixed legacy workflow paths');
-  await guard(read,{nativeEntry:true,priorRegistration:false});
-  assert.equal(reads,0);
-  await guard(read,{nativeEntry:true,priorRegistration:true});
-  assert.equal(reads,1);
-  policy={adoption:'central',policy:{release:null}};
-  await guard(read,{nativeEntry:true,priorRegistration:true});
-  await assert.rejects(guard(read),/CANDIDATE_REPOSITORY_POLICY_DISABLED/);
-  policy={adoption:'paused',policy:{release:null}};
-  await assert.rejects(guard(read,{nativeEntry:true,priorRegistration:true}),/CANDIDATE_REPOSITORY_POLICY_DISABLED/);
+test('a native release entry ignores older unit selections and pause records',async()=>{
+  const guard=releasePolicyGuard({},product,async()=>assert.fail('native delivery must not read the old registry'));
+  await guard(async()=>assert.fail('native delivery must not read fixed legacy paths'),{nativeEntry:true});
 });
 
 test('private receiver accepts verified metadata and one ID for recovery', () => {

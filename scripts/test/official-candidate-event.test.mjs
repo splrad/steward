@@ -11,7 +11,8 @@ import { PullRequestBody as ActionPullRequestBody } from 'release-please-officia
 import { PullRequestBody } from 'release-please/build/src/util/pull-request-body.js';
 import { bodyDigest, officialMergeKey, officialNotes, renderOfficialHomepage, validateOfficialMergeEvent,
   renderOfficialPull, verifyOfficialMerge } from '../official-release-candidate.mjs';
-import { captureOfficialAction, finishOfficialPull, officialActionResult, officialCandidateRoute, prepareOfficialPush } from '../official-candidate-event.mjs';
+import { captureOfficialAction, finishOfficialPull, officialActionResult, officialActionWasSkipped,
+  officialCandidateRoute, prepareOfficialPush } from '../official-candidate-event.mjs';
 
 const sourceSha = 'a'.repeat(40), head = 'b'.repeat(40), controllerSha = 'c'.repeat(40), previousSha = 'd'.repeat(40);
 const product = { id: 17, name: 'splrad/fixture', defaultBranch: 'main' }, authorId = 301115370;
@@ -41,17 +42,14 @@ test('only the native product declaration selects a candidate writer while the o
   const push = { kind: 'push', repositoryId: product.id, sourceSha };
   const label = { repositoryId: product.id, prNumber: 29, eventId: 12 };
   const old = { 'separate-pull-requests': false };
-  assert.deepEqual(officialCandidateRoute(push, old, 'legacy'), { result: 'legacy_cycle_route' });
-  assert.deepEqual(officialCandidateRoute(label, old, 'central'), { route: 'legacy' });
-  assert.deepEqual(officialCandidateRoute(label, settings, 'central'), { result: 'official_candidate_adopted' });
-  assert.deepEqual(officialCandidateRoute(push, settings, 'central'), { result: 'official_candidate_disabled' });
-  assert.deepEqual(officialCandidateRoute(push, settings, 'central', 'false', '18'), { result: 'official_candidate_disabled' });
-  assert.deepEqual(officialCandidateRoute(push, settings, 'central', 'false', '17'), { route: 'official' });
-  assert.deepEqual(officialCandidateRoute(push, settings, 'central', 'true'), { route: 'official' });
-  for (const [event, config] of [[push, settings], [push, old], [label, old]]) {
-    assert.deepEqual(officialCandidateRoute(event, config, 'paused', 'true', '17'), { result: 'paused' });
-  }
-  assert.throws(() => officialCandidateRoute(push, {}, 'legacy', 'false'), /ROUTE/);
+  assert.deepEqual(officialCandidateRoute(push, old), { result: 'legacy_cycle_route' });
+  assert.deepEqual(officialCandidateRoute(label, old), { route: 'legacy' });
+  assert.deepEqual(officialCandidateRoute(label, settings), { result: 'official_candidate_adopted' });
+  assert.deepEqual(officialCandidateRoute(push, settings), { result: 'official_candidate_disabled' });
+  assert.deepEqual(officialCandidateRoute(push, settings, 'false', '18'), { result: 'official_candidate_disabled' });
+  assert.deepEqual(officialCandidateRoute(push, settings, 'false', '17'), { route: 'official' });
+  assert.deepEqual(officialCandidateRoute(push, settings, 'true'), { route: 'official' });
+  assert.throws(() => officialCandidateRoute(push, {}, 'false'), /ROUTE/);
 
   const workflow = YAML.parse(await readFile('.github/workflows/release-candidate-event.yml', 'utf8'));
   const steps = workflow.jobs.event.steps;
@@ -208,6 +206,28 @@ test('old open candidate can coexist while the official writer uses its own bran
   assert.deepEqual(await prepareOfficialPush(options), { result: 'candidate_unchanged' });
   assert.deepEqual(await prepareOfficialPush({ ...options, restore: async () => true }), { mode: 'resume' });
   await assert.rejects(prepareOfficialPush({ ...options, restore: async name => name === 'before' }), /ACTION_RESULT_UNKNOWN/);
+  open.pop();
+  const pausedReservation = { ...options, restore: async name => name === 'before' };
+  assert.deepEqual(await prepareOfficialPush({ ...pausedReservation, actionWasSkipped: async () => true }),
+    { mode: 'action', reservation: 'existing' });
+  assert.equal(fresh.reservation, 'new');
+});
+
+test('reuses a blocked reservation only when every prior attempt proves the official action never started', async () => {
+  const runId = 14;
+  const action = { name: 'Refresh the official candidate', status: 'completed', conclusion: 'skipped' };
+  const job = attempt => ({ name: 'event', run_id: runId, run_attempt: attempt, status: 'completed',
+    conclusion: 'failure', steps: [action] });
+  const success = async attempt => [job(attempt)];
+  assert.equal(await officialActionWasSkipped(success, runId, 3), true);
+  assert.equal(await officialActionWasSkipped(success, runId, 1), false);
+  for (const drift of [{ steps: [{ ...action, conclusion: 'success' }] }, { steps: [{ ...action, conclusion: 'failure' }] },
+    { steps: [{ ...action, conclusion: 'cancelled' }] }, { steps: [] }, { name: 'spoofed' }, { run_id: 1 },
+    { run_attempt: 1 }, { status: 'in_progress' },
+    { conclusion: 'skipped', steps: [{ ...action, conclusion: 'success' }] }]) {
+    const read = async attempt => [attempt === 1 ? job(attempt) : { ...job(attempt), ...drift }];
+    assert.equal(await officialActionWasSkipped(read, runId, 3), false);
+  }
 });
 
 test('a delayed refresh must still match the merged PR and current terminal labels', async () => {

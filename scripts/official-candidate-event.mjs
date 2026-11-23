@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { downloadNativeArtifact, NativeEvidenceReader, nativeEvidenceTransport, nativeReleaseApp } from '../packages/runner/dist/index.js';
 import { entryGuard } from './bounded-release-entry.mjs';
 import { releaseParticipation } from './release-coordinator.mjs';
-import { mergedRepositoryPolicy } from './repository-policy-read.mjs';
+import { assertReleaseUnpaused, releaseIsPaused } from './release-pause-policy.mjs';
 import { bodyDigest, defaultHead, fitsOfficialEvent, hasLabel, officialConfig, officialPending, officialRef, officialTagged,
   pages, pullBinding, readOfficialConfig, readOfficialManifest, renderOfficialPull, requireCandidate,
   verifyOfficialPull } from './official-release-candidate.mjs';
@@ -55,11 +55,9 @@ function target(repository, id) {
   return { id, name: repository.full_name, defaultBranch: repository.default_branch };
 }
 
-export function officialCandidateRoute(event, settings, adoption, enabled, trialId) {
-  requireCandidate(typeof settings?.['separate-pull-requests'] === 'boolean' &&
-    ['legacy', 'central', 'paused'].includes(adoption), 'ROUTE');
+export function officialCandidateRoute(event, settings, enabled, trialId) {
+  requireCandidate(typeof settings?.['separate-pull-requests'] === 'boolean', 'ROUTE');
   const official = officialConfig(settings);
-  if (adoption === 'paused') return { result: 'paused' };
   if (!event.kind) return official ? { result: 'official_candidate_adopted' } : { route: 'legacy' };
   if (!official) return { result: event.kind === 'push' ? 'legacy_cycle_route' : 'legacy_product' };
   if (enabled !== 'true' && String(event.repositoryId) !== trialId) return { result: 'official_candidate_disabled' };
@@ -88,7 +86,6 @@ async function identify(env) {
   const repository = JSON.parse(response.bytes);
   const product = target(repository, event.repositoryId);
   const app = await nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY ?? '');
-  const policy = await mergedRepositoryPolicy(app, repository);
   const identity = { event, product, sourceSha: env.BOUNDED_SOURCE_SHA, controllerSha: run.head_sha,
     requestKey: env.BOUNDED_REQUEST_KEY, runId: run.id };
   const finish = async result => {
@@ -97,14 +94,14 @@ async function identify(env) {
     await writeFile('result.json', JSON.stringify({ schemaVersion: 1, ...identity, result }) + '\n', { flag: 'wx' });
     await appendFile(env.GITHUB_OUTPUT, 'route=complete\n');
   };
-  if (policy.adoption === 'paused') return finish('paused');
+  if (await releaseIsPaused(app, product.id)) return finish('paused');
   const route = await app.forCandidateReadRepository(product.id, async token => {
     const reader = new NativeEvidenceReader(nativeEvidenceTransport(token), product.name);
     const get = path => reader.json(path);
     const source = await defaultHead(get, product.defaultBranch);
     const settings = await readOfficialConfig(get, source);
     requireCandidate(await defaultHead(get, product.defaultBranch) === source, 'SOURCE_CHANGED');
-    return officialCandidateRoute(event, settings, policy.adoption,
+    return officialCandidateRoute(event, settings,
       env.STEWARD_OFFICIAL_CANDIDATES_ENABLED, env.STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID);
   });
   if (route.result) return finish(route.result);
@@ -113,6 +110,11 @@ async function identify(env) {
   await mkdir(stateDirectory);
   await write('identity', identity);
   await appendFile(env.GITHUB_OUTPUT, 'route=official\nrepo=' + product.name.split('/')[1] + '\nbranch=' + product.defaultBranch + '\n');
+}
+
+async function assertCandidateUnpaused(env, repositoryId) {
+  const app = await nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY ?? '');
+  await assertReleaseUnpaused(app, repositoryId);
 }
 
 async function scopedReader(token, product) {
@@ -162,7 +164,21 @@ async function downloadCheckpoint(centralReader, env, identity, name) {
   return true;
 }
 
-export async function prepareOfficialPush({ identity, get, prepareParticipation, restore }) {
+export async function officialActionWasSkipped(readJobs, runId, runAttempt) {
+  if (!Number.isSafeInteger(runAttempt) || runAttempt < 2) return false;
+  for (let attempt = 1; attempt < runAttempt; attempt++) {
+    const jobs = await readJobs(attempt);
+    if (jobs.length !== 1) return false;
+    const [job] = jobs;
+    if (job.run_id !== runId || job.run_attempt !== attempt || job.name !== 'event' || job.status !== 'completed') return false;
+    if (job.conclusion === 'skipped' && (!job.steps || job.steps.length === 0)) continue;
+    const steps = job.steps?.filter(step => step.name === 'Refresh the official candidate');
+    if (steps?.length !== 1 || steps[0].status !== 'completed' || steps[0].conclusion !== 'skipped') return false;
+  }
+  return true;
+}
+
+export async function prepareOfficialPush({ identity, get, prepareParticipation, restore, actionWasSkipped = async () => false }) {
   const { product, event, runId, requestKey, controllerSha, sourceSha } = identity;
   if (await defaultHead(get, product.defaultBranch) !== sourceSha) return { result: 'source_changed' };
   const [state, settings, manifest] = await Promise.all([
@@ -175,10 +191,9 @@ export async function prepareOfficialPush({ identity, get, prepareParticipation,
       && !(unit['skip-github-release'] ?? settings['skip-github-release'])
       && !(unit['draft-pull-request'] ?? settings['draft-pull-request'])), 'CONFIG');
   requireCandidate(await defaultHead(get, product.defaultBranch) === sourceSha, 'SOURCE_CHANGED');
-  if (await restore('before')) {
-    requireCandidate(await restore('after'), 'ACTION_RESULT_UNKNOWN');
-    return { mode: 'resume' };
-  }
+  const reserved = await restore('before');
+  if (reserved && await restore('after')) return { mode: 'resume' };
+  if (reserved) requireCandidate(await actionWasSkipped(), 'ACTION_RESULT_UNKNOWN');
   if (event.kind === 'official-refresh') {
     const released = await get('pulls/' + event.prNumber);
     pullBinding(released, product, event.prNumber, botId);
@@ -197,7 +212,8 @@ export async function prepareOfficialPush({ identity, get, prepareParticipation,
   if (initial.length && initial.every(pr => pr.sourceSha === sourceSha) &&
       initial.length === Object.keys(settings.packages).length) return { result: 'candidate_unchanged' };
   requireCandidate(await defaultHead(get, product.defaultBranch) === sourceSha, 'SOURCE_CHANGED');
-  return { mode: 'action', checkpoint: { runId, requestKey, controllerSha, sourceSha,
+  if (reserved) return { mode: 'action', reservation: 'existing' };
+  return { mode: 'action', reservation: 'new', checkpoint: { runId, requestKey, controllerSha, sourceSha,
     configDigest: bodyDigest(JSON.stringify(settings)), manifestDigest: bodyDigest(JSON.stringify(manifest)), initial } };
 }
 
@@ -284,21 +300,26 @@ export async function main(stage, env = process.env) {
     const plan = event.kind === 'official-edit' ? { result: await checkEdited(identity, get) }
       : await prepareOfficialPush({ identity, get, restore: name => Number(env.GITHUB_RUN_ATTEMPT) > 1 &&
         downloadCheckpoint(centralReader, env, identity, name),
+      actionWasSkipped: () => officialActionWasSkipped(attempt =>
+        centralReader.pages('actions/runs/' + identity.runId + '/attempts/' + attempt + '/jobs', 'jobs'),
+        identity.runId, Number(env.GITHUB_RUN_ATTEMPT)),
       prepareParticipation: () => releaseParticipation({ id: product.id, full_name: product.name,
         default_branch: product.defaultBranch }, nativeEvidenceTransport(token)) });
     if (plan.checkpoint) await write('before', plan.checkpoint);
     await write('plan', { mode: plan.mode ?? null, result: plan.result ?? null, waiting: plan.waiting ?? [] });
-    await appendFile(env.GITHUB_OUTPUT, 'mode=' + (plan.mode ?? 'complete') + '\n');
+    await appendFile(env.GITHUB_OUTPUT, 'mode=' + (plan.mode ?? 'complete') + '\nreservation=' + (plan.reservation ?? '') + '\n');
     return;
   }
   if (stage === 'check-action-source') {
     requireCandidate(await defaultHead(get, product.defaultBranch) === identity.sourceSha, 'SOURCE_CHANGED');
+    await assertCandidateUnpaused(env, product.id);
     return;
   }
   requireCandidate(stage === 'finish', 'STAGE');
   const plan = JSON.parse(await readFile(stateFile('plan'), 'utf8'));
   let result = plan.result, pulls = [], waiting = plan.waiting;
   if (plan.mode) {
+    if (plan.mode === 'resume') await assertCandidateUnpaused(env, product.id);
     const checkpoint = JSON.parse(await readFile(stateFile('after'), 'utf8'));
     const after = await captureOfficialAction({ checkpoint, product, get });
     const template = await readFile(templatePath, 'utf8');
@@ -311,7 +332,8 @@ export async function main(stage, env = process.env) {
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main(process.argv[2]).catch(error => {
-    console.error(/^OFFICIAL_CANDIDATE_[A-Z_0-9]+$/.test(error?.message) ? error.message : 'OFFICIAL_CANDIDATE_STOPPED');
+    console.error(/^OFFICIAL_CANDIDATE_[A-Z_0-9]+$/.test(error?.message) ||
+      ['RELEASE_REPOSITORY_PAUSED','RELEASE_PAUSE_POLICY_UNAVAILABLE'].includes(error?.message) ? error.message : 'OFFICIAL_CANDIDATE_STOPPED');
     process.exitCode = 1;
   });
 }

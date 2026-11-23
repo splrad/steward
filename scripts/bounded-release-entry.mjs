@@ -6,6 +6,7 @@ import { nativeReleaseApp, NativeEvidenceReader, nativeEvidenceTransport } from 
 import { fetchState } from './release-coordinator.mjs';
 import { nativeReleaseCandidate } from './release-candidate.mjs';
 import {releasePolicyGuard} from './release-repository-policy.mjs';
+import {assertReleaseUnpaused} from './release-pause-policy.mjs';
 import { candidateEvidence, validateCandidateEvent, sameIdentity, sha, key, withCandidateProduct } from './bounded-candidate-contract.mjs';
 const central='splrad/steward',centralId=1296724484;
 const botIdentity={name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'};
@@ -75,6 +76,7 @@ export async function main(env=process.env) {
       const repository={id:product.id,full_name:product.name,default_branch:product.defaultBranch};
       const state=await fetchState(root,repository,token);
       if(state.snapshot.head!==before.evidence.stateCommit)fail('BOUNDED_STATE_MOVED');
+      await assertReleaseUnpaused(app,product.id);
       const result=await nativeReleaseCandidate({directory:state.directory,writeDirectory:join(root,'writes'),remote:state.remote,repository:product.name,
         repositoryId:product.id,defaultBranch:product.defaultBranch,appBotId:app.appBotId,identity:botIdentity},{token,readToken,controllerSha:env.STEWARD_CONTROLLER_SHA,
         expectedStateSha:before.evidence.stateCommit,observation:identity,
@@ -97,4 +99,5 @@ export async function main(env=process.env) {
     }
   });}finally{await rm(root,{recursive:true,force:true});}
 }
-if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)main().catch(()=>{process.stderr.write('BOUNDED_ENTRY_STOPPED\n');process.exitCode=1;});
+if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)main().catch(()=>{process.stderr.write((['RELEASE_REPOSITORY_PAUSED','RELEASE_PAUSE_POLICY_UNAVAILABLE'].includes(error?.message)
+  ?error.message:'BOUNDED_ENTRY_STOPPED')+'\n');process.exitCode=1;});
