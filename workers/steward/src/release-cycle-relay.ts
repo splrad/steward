@@ -171,8 +171,7 @@ export function relayKey(h: Hint) {
   if (h.kind === 'candidate-status') return digest(JSON.stringify([h.repositoryId,h.kind,h.prNumber,h.commentId])).slice(7);
   return digest(JSON.stringify(h.kind === 'push' ? [h.repositoryId,h.kind,h.sourceSha] : [h.repositoryId,h.kind,h.runId,h.attempt,...(h.kind==='publication'&&h.productRepositoryId!==undefined?[h.productRepositoryId]:[])])).slice(7);
 }
-export async function acceptReleaseHint(env: BoundedEnv, event: string, payload: any, deliveryId='',
-    reader: () => GitReader = () => new BoundedGitHub(env)) {
+export async function acceptReleaseHint(env: BoundedEnv, event: string, payload: any, deliveryId='') {
   if (env.BOUNDED_RECHECK_ENABLED !== 'true') return;
   const repo=payload.repository, run=payload.workflow_run;
   let source:SignedSource|undefined;
@@ -188,7 +187,7 @@ export async function acceptReleaseHint(env: BoundedEnv, event: string, payload:
       (prior.runId===undefined||prior.runId===run.id),'PUBLICATION_RESERVATION');
     if(prior.hint.kind==='publication'||prior.hint.kind==='candidate-head'||prior.hint.kind==='candidate-status')return;
     hint={...hint,productRepositoryId:prior.hint.repositoryId};
-    if(legacyReleaseHandoff(env,ownerId(hint))&&!await officialPublication(reader(),prior,env.INSTALLATION_ID))return;
+    if(legacyReleaseHandoff(env,ownerId(hint))&&prior.hint.kind!=='official-merge'&&prior.hint.kind!=='run')return;
   }else{
     if(event!=='push' && !(event==='pull_request'&&(['opened','synchronize','edited','closed'].includes(payload.action) ||
       completesOfficialLabels(payload.action,payload.label?.name)))
@@ -206,16 +205,10 @@ export async function acceptReleaseHint(env: BoundedEnv, event: string, payload:
     hint=releaseHint(event,payload,env.INSTALLATION_ID,product,deliveryId);
   }
   if (!hint) return;
-  if (legacyReleaseHandoff(env,ownerId(hint))) {
-    if (legacyCandidate(hint)) return;
-    if (hint.kind === 'push' || hint.kind === 'run' || officialCandidateHint(hint)) {
-      if (hint.kind === 'run' && run.path === channelPath) return;
-      const scoped = await reader().forCandidate?.(hint.repositoryId);
-      if (!scoped || !version3Candidate(scoped.target)) return;
-      if (hint.kind === 'push' && !officialPush(scoped.target,hint)) return;
-      if (hint.kind === 'run' && !officialCycle(await boundBuildCycle(scoped,run))) return;
-    }
-  }
+  // Signed receipts are durable before GitHub eligibility reads. The same object
+  // verifies v3 adoption and frozen dispatch provenance before reserving work.
+  if (legacyReleaseHandoff(env,ownerId(hint)) &&
+      (legacyCandidate(hint)||(hint.kind==='run'&&run.path===channelPath))) return;
   ensure(env.BOUNDED_RECHECK,'RELEASE_RELAY_NAMESPACE');
   const stub = env.BOUNDED_RECHECK.get(env.BOUNDED_RECHECK.idFromName('cycle:v1:' + relayKey(hint)));
   const response = await stub.fetch(new Request('https://bounded.internal/release-cycle',{method:'POST',body:JSON.stringify(source?{hint,source}:hint)}));
