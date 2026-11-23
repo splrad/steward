@@ -96,6 +96,38 @@ class LockContractTest(unittest.TestCase):
 
         self.assertFalse(matches(shared(before, old_pin[0]), shared(after, new_pin[0]), old_pin, new_pin))
 
+    def test_central_title_pin_and_lock_select_title_profile(self):
+        rules = candidate["rules"]
+        workflow = Path(rules.CENTRAL_TITLE).read_bytes()
+        (old_pin,) = rules.PINS.findall(workflow)
+        new_pin = (b"b" * 40, b"v99.0.0")
+        updated = workflow.replace(b"@%s # %s" % old_pin, b"@%s # %s" % new_pin)
+
+        def locked(pin):
+            sha, tag = pin
+            reference = b"amannn/action-semantic-pull-request@" + sha
+            return (
+                b"version: 'v0.0.3'\nworkflows:\n    '%s':\n        - '%s'\n"
+                b"    '.github/workflows/steward-source.yml': []\n"
+                b"dependencies:\n    '%s':\n        ref: '%s'\n        commit: 'sha1-%s'\n"
+                b"        owner_id: 4038316\n        repo_id: 220418983\n"
+            ) % (rules.CENTRAL_TITLE.encode(), reference, reference, tag, sha)
+
+        snapshots = {
+            ("base", rules.CENTRAL_TITLE): workflow,
+            ("head", rules.CENTRAL_TITLE): updated,
+            ("base", rules.ACTION_LOCK): locked(old_pin),
+            ("head", rules.ACTION_LOCK): locked(new_pin),
+        }
+        with (patch.dict(os.environ, {"GITHUB_EVENT_NAME": "pull_request"}),
+              patch.object(rules, "git", return_value=b"100644 blob fixture"),
+              patch.object(rules.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)),
+              patch.object(rules, "changed_paths", return_value={rules.CENTRAL_TITLE, rules.ACTION_LOCK}),
+              patch.object(rules, "blob", side_effect=lambda ref, path: snapshots[ref, path])):
+            self.assertEqual(rules.classify("base", "head"), "title")
+            snapshots["head", rules.ACTION_LOCK] = locked(old_pin)
+            self.assertEqual(rules.classify("base", "head"), "full")
+
     def test_changed_paths_and_push_parent(self):
         with tempfile.TemporaryDirectory() as directory, chdir(directory):
             repo = Path("target")
