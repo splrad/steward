@@ -363,6 +363,7 @@ it.each(['legacy','conditional','reviewed-conditional'])('prepares a native Node
   const artifact={id:810,name:['delivery','github-release',context.repositoryId,'app',S,100,1].join('-'),expired:false,
     digest:'sha256:'+digest('node archive'),workflow_run:{id:100,head_sha:S},created_at:'2026-10-26T00:00:30.000Z'};
   let deliveryConclusion='success',wrongSourcePath=false,notesStatus=200;
+  let externalArtifact=false;
   let repeatedDelivery:'none'|'retained'|'replacement'='none';
   const deliveryJob=()=>({id:1100,name:'delivery/app',run_id:100,run_attempt:1,head_sha:S,status:'completed',conclusion:deliveryConclusion,
     started_at:START,completed_at:END,steps:[{number:1,name:'Upload GitHub release delivery',status:'completed',conclusion:'success',started_at:START,completed_at:END}]});
@@ -383,7 +384,10 @@ it.each(['legacy','conditional','reviewed-conditional'])('prepares a native Node
     if(path.endsWith('/runs/100'))return f.response(f.runs.get(2));
     if(path.endsWith('/runs/100/attempts/1'))return f.response(originalBuild);
     if(path.endsWith('/runs/100/attempts/2'))return f.response(successfulRerun);
-    if(path.includes('/artifacts?'))return f.response({total_count:1,artifacts:[artifact]});
+    if(path.includes('/artifacts?')) {
+      const artifacts=externalArtifact?[artifact,{...artifact,id:811,name:artifact.name.replace('github-release','ghcr-assets')}]:[artifact];
+      return f.response({total_count:artifacts.length,artifacts});
+    }
     if(path.includes('/attempts/1/jobs?'))return f.response({total_count:1,jobs:[deliveryJob()]});
     if(path.includes('/attempts/2/jobs?')) {
       const jobs=repeatedDelivery==='none'?[]:[{...deliveryJob(),run_attempt:2,id:2100,
@@ -454,11 +458,17 @@ it.each(['legacy','conditional','reviewed-conditional'])('prepares a native Node
     context.cycle.officialRelease={headSha:'a'.repeat(40),pullBodyDigest:digest('full body'),bodyDigest:digest(officialBody)};
     const notes=source[notesPath]!;
     delete source[notesPath];
-    await expect(prepare('official',initial,undefined,officialBody)).resolves.toMatchObject([{publicBody:officialBody,githubDelivery:{artifactId:810,runId:100,attempt:1}}]);
+    externalArtifact=true;
+    await expect(prepare('official',initial,undefined,officialBody)).resolves.toMatchObject([{publicBody:officialBody,
+      githubDelivery:{artifactId:810,runId:100,attempt:1},manifest:{artifacts:[{path:'fixture-cli.tgz'}]}}]);
     const stale=officialBody.replace('/fixture-cli.tgz>', '/private.tgz>');
     await expect(prepare('official-body-drift',initial,undefined,stale)).rejects.toThrow('official release body');
     context.cycle.officialRelease.bodyDigest=digest(stale);
     await expect(prepare('official-unselected-link',initial,undefined,stale)).rejects.toThrow('outside GitHub delivery');
+    const metadata=officialBody.replace('/fixture-cli.tgz>', '/SHA256SUMS>');
+    context.cycle.officialRelease.bodyDigest=digest(metadata);
+    await expect(prepare('official-unselected-metadata-link',initial,undefined,metadata)).rejects.toThrow('outside GitHub delivery');
+    externalArtifact=false;
     delete context.cycle.officialRelease;
     source[notesPath]=notes;
   }
