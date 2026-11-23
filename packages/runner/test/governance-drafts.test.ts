@@ -29,6 +29,7 @@ it('separates the sole approval exception from non-bypassable default-branch pro
   expect(d.independent.bypass_actors).toEqual([{actor_id:91,actor_type:'Team',bypass_mode:'pull_request'}]);
   expect(d.foundation.rules.find((r:any)=>r.type==='required_status_checks').parameters.required_status_checks).toEqual([{context:'existing-check',integration_id:9},{context:'SPLRAD Validation',integration_id:15368}]);
   expect(d.title.conditions).toEqual({repository_name:{include:['~ALL'],exclude:['steward'],protected:false},ref_name:{include:['~DEFAULT_BRANCH'],exclude:[]}});
+  expect(d.title.name).toBe('默认分支 PR 标题检查（Steward 除外）');
   expect(d.title.bypass_actors).toEqual([]);
   expect(d.title.rules).toEqual([{type:'required_status_checks',parameters:{strict_required_status_checks_policy:true,required_status_checks:[{context:'SPLRAD PR Title',integration_id:15368}]}}]);
   const workflows=d.foundation.rules.find((r:any)=>r.type==='workflows').parameters;

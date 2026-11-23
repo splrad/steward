@@ -64,7 +64,7 @@ export function prepareGovernance(snapshot) {
     ...(status?.parameters ?? {}), strict_required_status_checks_policy: true,
     required_status_checks: checks.filter(check => check.context !== 'SPLRAD PR Title'),
   } }, { type: 'workflows', parameters: { ...(workflows?.parameters ?? {}), do_not_enforce_on_create: true, workflows: workflowRows } });
-  const title = nativeRule('SPLRAD PR Title for default branches except Steward', ['~DEFAULT_BRANCH'], [], []);
+  const title = nativeRule('默认分支 PR 标题检查（Steward 除外）', ['~DEFAULT_BRANCH'], [], []);
   title.conditions.repository_name.exclude.push('steward');
   title.rules = [{ type: 'required_status_checks', parameters: {
     ...(status?.parameters ?? {}), strict_required_status_checks_policy: true,

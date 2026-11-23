@@ -206,6 +206,7 @@ export async function main(env=process.env,resolveController=validationControlle
             assert(title||lifecycle,'REUSABLE_WORKFLOW_UNCOVERED');
             if(!reusableSeen.has(job.uses)){
               const nested=await reusableActions(job.uses,{
+                workflow:title?'pr-title-reusable':'product-release',
                 loadSource:sha=>{
                   git(controller,['merge-base','--is-ancestor',sha,approvedController]);
                   const sourceEntries=tree(controller,sha);

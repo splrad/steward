@@ -89,9 +89,9 @@ export function lifecycleMiseVersions(documents){
   return [...versions].sort();
 }
 
-export async function lifecycleReusable(uses,loadTrusted){
+export async function lifecycleReusable(uses,loadTrusted,workflow='product-release'){
   const match=/^splrad\/steward\/\.github\/workflows\/(product-release|pr-title-reusable)\.yml@([a-f0-9]{40})$/.exec(uses??'');
-  assert(match,'LIFECYCLE_REUSABLE_IDENTITY');
+  assert(match&&match[1]===workflow,'LIFECYCLE_REUSABLE_IDENTITY');
   const [,name,sha]=match;
   const sourcePath='.github/workflows/'+name+'.yml';
   const bytes=await loadTrusted(sha,sourcePath);

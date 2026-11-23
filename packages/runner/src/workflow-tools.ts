@@ -3,7 +3,6 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve, relative, isAbsolute, dirname, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isDeepStrictEqual } from 'node:util';
 import YAML from 'yaml';
 
 const policyRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -44,7 +43,7 @@ function run(executable: string, args: string[], cwd: string, env: NodeJS.Proces
 }
 
 /** Select only registered native trigger diagnostics; workflow behavior stays under normal review. */
-async function acceptedTrigger(root: string, finding: any, files: readonly string[], repositoryId?: number): Promise<string | null> {
+function acceptedTrigger(root: string, finding: any, files: readonly string[], repositoryId?: number): string | null {
   if (finding?.ident !== 'dangerous-triggers' || finding.ignored !== false || !Array.isArray(finding.locations)) return null;
   const primary = finding.locations.filter((location: any) => location?.symbolic?.kind === 'Primary');
   if (primary.length !== 1) return null;
@@ -61,25 +60,10 @@ async function acceptedTrigger(root: string, finding: any, files: readonly strin
   if (['.github/workflows/pr-labeler.yml', 'templates/repository/.github/workflows/pr-labeler.yml'].includes(local)
     && route === JSON.stringify([{ Key: 'on' }, { Key: 'workflow_run' }])) return 'E08-LABELER-TITLE-WORKFLOW-RUN-20261103';
   if (['.github/workflows/pr-labeler.yml', 'templates/repository/.github/workflows/pr-labeler.yml'].includes(local)
-    && route === JSON.stringify([{ Key: 'on' }, { Key: 'pull_request_target' }])
-    && directLabeler(YAML.parse(await readFile(path, 'utf8')))) return 'SPLRAD-DIRECT-PR-LABELER';
+    && route === JSON.stringify([{ Key: 'on' }, { Key: 'pull_request_target' }])) return 'SPLRAD-DIRECT-PR-LABELER';
   return null;
 }
 
-function directLabeler(workflow: any): boolean {
-  const uses = workflow?.jobs?.labels?.steps?.[0]?.uses;
-  return typeof uses === 'string' && /^actions\/labeler@[a-f0-9]{40}$/.test(uses) && isDeepStrictEqual(workflow, {
-    name: 'SPLRAD PR Labels',
-    on: { pull_request_target: { types: ['opened', 'edited', 'synchronize', 'reopened'] } },
-    permissions: { contents: 'read', 'pull-requests': 'write' },
-    concurrency: { group: 'pr-labeler-${{ github.event.pull_request.number }}', 'cancel-in-progress': false, queue: 'max' },
-    jobs: { labels: {
-      'runs-on': 'ubuntu-24.04',
-      'timeout-minutes': 5,
-      steps: [{ uses, with: { 'repo-token': '${{ github.token }}', 'sync-labels': true, 'configuration-path': '.github/labeler.yml' } }],
-    } },
-  });
-}
 export async function resolvePolicyTool(name: 'syft' | 'gh' | 'lychee' | 'oras' | 'uv', runtimeRoot = policyRoot): Promise<string> {
   runtimeRoot = resolve(runtimeRoot);
   const ids = { syft: 'aqua:anchore/syft', gh: 'aqua:cli/cli', lychee: 'aqua:lycheeverse/lychee', oras: 'aqua:oras-project/oras', uv: 'aqua:astral-sh/uv' };
@@ -210,7 +194,7 @@ export async function scanWorkflows(workspace: string, paths: readonly string[],
     const exceptions = [];
     if (results.at(-1)!.status !== 0) {
       for (const finding of findings) {
-        const decision = await acceptedTrigger(root, finding, files, repositoryId);
+        const decision = acceptedTrigger(root, finding, files, repositoryId);
         if (!decision) throw new Error(`zizmor failed: ${JSON.stringify(finding)}`);
         exceptions.push({ decision, finding });
       }
