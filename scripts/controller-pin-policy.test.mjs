@@ -298,11 +298,11 @@ test('accepts a native v3 publisher only with admitted, attested GitHub delivery
       },
     },
   };
-  function revision(change = () => {}, delivery = {schemaVersion: 3}) {
+  function revision(change = () => {}, delivery = {schemaVersion: 3}, settings = {packages:{'.':{}}}) {
     const candidate = structuredClone(workflow);
     change(candidate);
     writeFileSync(join(product.dir, '.github/delivery.json'), JSON.stringify(delivery));
-    writeFileSync(join(product.dir, 'release-please-config.json'), '{"packages":{".":{}}}');
+    writeFileSync(join(product.dir, 'release-please-config.json'), JSON.stringify(settings));
     const bytes = YAML.stringify(candidate);
     if (delivery.buildWorkflow) writeFileSync(join(product.dir, delivery.buildWorkflow), bytes);
     return product.pinFiles(pin, {publishBytes: delivery.buildWorkflow ? undefined : bytes});
@@ -310,6 +310,24 @@ test('accepts a native v3 publisher only with admitted, attested GitHub delivery
   function verify(head, changedPaths = [publishPath, '.github/delivery.json']) {
     verifyLayerScapeControllerPins(product.dir, {repositoryId: 1187527897, base: before, head, changedPaths}, upstream.dir, pin);
   }
+
+  const releaseConfig='release-please-config.json';
+  const adopted=revision(undefined,{schemaVersion:3},{packages:{'.':{draft:true,'force-tag-creation':true}}});
+  function verifyOfficialDraft(head,changedPaths=[releaseConfig],repositoryId=1187527897) {
+    verifyLayerScapeControllerPins(product.dir,{repositoryId,base:adopted,head,changedPaths},upstream.dir,pin);
+  }
+  const inherited={draft:true,'force-tag-creation':true,packages:{'.':{}}};
+  assert.doesNotThrow(()=>verifyOfficialDraft(revision(undefined,{schemaVersion:3},inherited)));
+  for(const setting of ['draft','force-tag-creation']) {
+    const head=revision(undefined,{schemaVersion:3},{...inherited,packages:{'.':{[setting]:false}}});
+    assert.throws(()=>verifyOfficialDraft(head),/VALIDATION_CONTROLLER_OFFICIAL_DRAFT_REQUIRED/);
+    assert.doesNotThrow(()=>verifyOfficialDraft(head,['src/widget.cs']));
+    assert.doesNotThrow(()=>verifyOfficialDraft(head,[releaseConfig],123));
+  }
+  const downgraded=revision(undefined,{schemaVersion:2},{packages:{'.':{draft:false}}});
+  assert.throws(()=>verifyOfficialDraft(downgraded,[releaseConfig,'.github/delivery.json']),/VALIDATION_CONTROLLER_OFFICIAL_DRAFT_REQUIRED/);
+  const additional=revision(undefined,{schemaVersion:3},{packages:{'.':{draft:true,'force-tag-creation':true},tools:{draft:false}}});
+  assert.throws(()=>verifyOfficialDraft(additional),/VALIDATION_CONTROLLER_OFFICIAL_DRAFT_REQUIRED/);
 
   assert.doesNotThrow(() => verify(revision()));
   assert.throws(() => verify(revision(undefined, {schemaVersion: 2})), /REUSABLE_WORKFLOW_MISSING/);
