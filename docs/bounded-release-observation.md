@@ -57,6 +57,8 @@ index 复用 `probe-<cycleId>-<targetsDigest>-<runId>-<attempt>/report.json`，�
 
 新发行的逐仓暂停由受审 `release-pauses.json` 管理。目标仓已完成受保护的原生采用、所有旧对象均终态并已退役原写路由后，在同一受审变更中删除临时变量和专用判断。已知有外部副作用的运行按原对象回读再决定恢复入口。
 
+采用前如须回退，解除停收后可通过同一经验证的原生事件重投恢复尚有时限和确认额度的旧候选回执。恢复沿用原 Run 预约，只重做确认。写入恢复前须验证主支仍选择旧候选入口。已用尽时限或确认额度的事件应按原对象对账，再由维护者决定是否发起新的原生事件。
+
 ## 人工完成稿的冻结事实
 
 正常真实事件可在原候选已纳入准确 current main、仍未合并且没有 editing/pending 时，验证现有人工稿并冻结 `session.manualValidation`。该可选字段使用 `kind: validated-manual-candidate`；旧六字段 session 保持可读。旧 generated、baseSha、publishedHead、conflict 和失败记录不改。验证不调用模型、push、build 或 mergedSnapshot/verifyHandoff。

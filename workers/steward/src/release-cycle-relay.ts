@@ -33,14 +33,49 @@ const ownerId = (hint: Hint) => hint.kind === 'publication' ? hint.productReposi
 const legacyCandidate = (hint: Hint) => hint.kind === 'candidate-head' || hint.kind === 'candidate-status';
 const legacyCandidateRelay = (relay: Relay) => legacyCandidate(relay.hint) ||
   (relay.hint.kind === 'push' && !relay.officialCandidate);
-const officialPublication = (parent: Relay) => parent.hint.kind === 'official-merge' || parent.officialRelease === true;
 const officialPush = (target: ProductTarget | undefined, hint: Extract<Hint,{kind:'push'}>) =>
   target?.officialCandidate === true && target.sourceSha === hint.sourceSha;
-const officialCycle = (cycle: {officialRelease?: {headSha?: unknown; pullBodyDigest?: string; bodyDigest?: string}}) => {
+const hexDigest = (v: unknown): v is string => typeof v === 'string' && v.length === 64 && /^[a-f0-9]+$/.test(v);
+function officialCycle(cycle: Awaited<ReturnType<typeof readCycle>>['cycle']): boolean {
   const receipt=cycle.officialRelease;
-  return Boolean(receipt&&sha(receipt.headSha)&&/^[a-f0-9]{64}$/.test(receipt.pullBodyDigest??'')&&
-    /^[a-f0-9]{64}$/.test(receipt.bodyDigest??''));
-};
+  if (!receipt || Object.keys(receipt).sort().join(',') !== 'bodyDigest,headSha,pullBodyDigest' ||
+      !sha(receipt.headSha) || !hexDigest(receipt.pullBodyDigest) || !hexDigest(receipt.bodyDigest) ||
+      cycle.workflowDelivery !== true || !Array.isArray(cycle.units) || cycle.units.length !== 1 ||
+      !positive(cycle.prNumber) || !sha(cycle.sourceSha) || cycle.id !== `pr-${cycle.prNumber}-${cycle.sourceSha}`) return false;
+  const unit=cycle.units[0];
+  if (!unit || unit.githubDisabled !== undefined || (unit.notesDigest !== null && unit.notesDigest !== receipt.bodyDigest)) return false;
+  if (cycle.officialDraftScopeDigest === undefined) return unit.releaseId === null;
+  const delivery=unit.githubDelivery;
+  return hexDigest(cycle.officialDraftScopeDigest) && (unit.releaseId === null || positive(unit.releaseId)) &&
+    Boolean(delivery && positive(delivery.runId) && positive(delivery.attempt) && positive(delivery.artifactId) &&
+      typeof delivery.digest === 'string' && delivery.digest.startsWith('sha256:') && hexDigest(delivery.digest.slice(7)));
+}
+
+async function boundBuildCycle(g:GitReader,run:any) {
+  const cycleId=run.head_branch.slice('steward/build/'.length),{cycle}=await readCycle(g,cycleId);
+  const matches=cycle.dispatches?.filter((d:any)=>d.purpose==='build' && d.ref===run.head_branch &&
+    d.executionSha===run.head_sha && d.sourceSha===cycle.sourceSha && cycle.sourceSha===run.head_sha &&
+    d.workflowId===run.workflow_id && dispatchWorkflow(d)===run.path && (d.canonicalRunId===null || d.canonicalRunId===run.id) &&
+    (d.buildWorkflow===undefined?run.display_title==='Build '+d.operationKey:run.display_title.includes(d.operationKey)) &&
+    Date.parse(run.created_at)>=Math.floor(Date.parse(d.sentAt)/1000)*1000);
+  ensure(matches?.length===1,'RELEASE_BUILD_DISPATCH');
+  return cycle;
+}
+
+async function officialPublication(g:GitReader,parent:Relay,installation:string|undefined):Promise<boolean> {
+  const hint=parent.hint;
+  if (hint.kind==='official-merge') return true;
+  if (hint.kind!=='run') return false;
+  if (parent.officialRelease===true) return true;
+  const scoped=await candidateReader(g,hint.repositoryId),target=scoped.target;
+  if (!target?.officialCandidate) return false;
+  const run=await scoped.json(target.id,`/repos/${target.name}/actions/runs/${hint.runId}/attempts/${hint.attempt}`);
+  if (!isBuildWorkflow(run?.path) || run.repository?.id!==target.id || !sha(run.head_sha)) return false;
+  const product=await workflowProduct(scoped,target,run.path);
+  const observed=releaseHint('workflow_run',{action:'completed',repository:{id:target.id,full_name:target.name,
+    default_branch:target.defaultBranch,fork:false,archived:false},installation:{id:Number(installation)},workflow_run:run},installation,product);
+  return Boolean(observed && relayKey(observed)===relayKey(hint) && officialCycle(await boundBuildCycle(scoped,run)));
+}
 
 type RelayProduct=ProductTarget & {publishWorkflowId?:number;channelWorkflowId?:number;buildWorkflow?:string};
 const legacyWorkflowTarget={...TARGET,publishWorkflowId:410998652,channelWorkflowId:410998651};
@@ -150,7 +185,7 @@ export async function acceptReleaseHint(env: BoundedEnv, event: string, payload:
       (prior.runId===undefined||prior.runId===run.id),'PUBLICATION_RESERVATION');
     if(prior.hint.kind==='publication'||prior.hint.kind==='candidate-head'||prior.hint.kind==='candidate-status')return;
     hint={...hint,productRepositoryId:prior.hint.repositoryId};
-    if(legacyReleaseHandoff(env,ownerId(hint))&&!officialPublication(prior))return;
+    if(legacyReleaseHandoff(env,ownerId(hint))&&!await officialPublication(reader(),prior,env.INSTALLATION_ID))return;
   }else{
     if(event!=='push' && !(event==='pull_request'&&(['opened','synchronize','edited','closed'].includes(payload.action) ||
       completesOfficialLabels(payload.action,payload.label?.name)))
@@ -175,10 +210,7 @@ export async function acceptReleaseHint(env: BoundedEnv, event: string, payload:
       const scoped = await reader().forCandidate?.(hint.repositoryId);
       if (!scoped?.target?.officialCandidate) return;
       if (hint.kind === 'push' && !officialPush(scoped.target,hint)) return;
-      if (hint.kind === 'run') {
-        const cycleId = run.head_branch.slice('steward/build/'.length);
-        if (!officialCycle((await readCycle(scoped,cycleId)).cycle)) return;
-      }
+      if (hint.kind === 'run' && !officialCycle(await boundBuildCycle(scoped,run))) return;
     }
   }
   ensure(env.BOUNDED_RECHECK,'RELEASE_RELAY_NAMESPACE');
@@ -312,6 +344,7 @@ export class ReleaseRelay {
       const current = await t.get<Relay>('releaseCycle');
       if (!current || current.stage !== r.stage || current.tries !== r.tries || current.next !== r.next) return false;
       Object.assign(current,changes);
+      if (changes.officialRelease===undefined && 'officialRelease' in changes) delete current.officialRelease;
       await t.put('releaseCycle',current);
       if ((draining && current.paused && current.reason === legacyReleaseHandoffReason) ||
           current.stage === 'received' || current.stage === 'unknown') await t.deleteAlarm();
@@ -332,14 +365,7 @@ export class ReleaseRelay {
           ensure(run.repository?.id===target.id && sha(run.head_sha) && repeated && relayKey(repeated)===key,'RELEASE_PRODUCT_RUN');
           if(draining&&run.path===channelPath){await stopLegacy();return;}
           if(run.path!==channelPath){
-            const cycleId=run.head_branch.slice('steward/build/'.length),{cycle}=await readCycle(scoped,cycleId);
-            const matches=cycle.dispatches?.filter((d:any)=>d.purpose==='build' && d.ref===run.head_branch &&
-              d.executionSha===run.head_sha && d.sourceSha===cycle.sourceSha && cycle.sourceSha===run.head_sha &&
-              d.workflowId===run.workflow_id && dispatchWorkflow(d)===run.path && (d.canonicalRunId===null || d.canonicalRunId===run.id) &&
-              (d.buildWorkflow===undefined?run.display_title==='Build '+d.operationKey:run.display_title.includes(d.operationKey)) &&
-              Date.parse(run.created_at)>=Math.floor(Date.parse(d.sentAt)/1000)*1000);
-            ensure(matches?.length===1,'RELEASE_BUILD_DISPATCH');
-            officialRelease=officialCycle(cycle);
+            officialRelease=officialCycle(await boundBuildCycle(scoped,run));
             if(draining&&!officialRelease){await stopLegacy();return;}
           }
         }
@@ -364,8 +390,7 @@ export class ReleaseRelay {
             Date.parse(first.created_at)>=prior.reserved-60000 && Date.parse(first.created_at)<=prior.reserved+300000,'PUBLICATION_FIRST_ATTEMPT');
           if(prior.hint.kind==='publication'){await save({stage:'received',reason:'PUBLICATION_CONSUMED'});return;}
           ensure(prior.hint.repositoryId===(r.hint.productRepositoryId??TARGET.id),'PUBLICATION_PRODUCT_BINDING');
-          officialRelease=officialPublication(prior);
-          if(draining&&!officialRelease){await stopLegacy();return;}
+          if(draining&&!await officialPublication(g,prior,this.env.INSTALLATION_ID)){await stopLegacy();return;}
           const artifact=await g.artifact(CENTRAL.id,run.id,'release-cycle-'+parentKey+'-'+run.run_attempt,'result.json');
           const v=artifact.value;
           ensure(v?.schemaVersion===1 && v.requestKey===parentKey && v.producer?.repositoryId===CENTRAL.id &&
@@ -400,7 +425,7 @@ export class ReleaseRelay {
         await g.prepareDispatch?.(CENTRAL.id);
         const reserved = this.now();
         if (!await save({stage:'confirm',tries:0,policy,reserved,next:reserved+60000,
-          ...(draining&&officialRelease?{officialRelease:true}:{})})) return;
+          ...(r.hint.kind==='run'?{officialRelease:officialRelease?true:undefined}:{})})) return;
         try{
           await g.json(CENTRAL.id,prefix+'/actions/workflows/'+destination+'/dispatches','POST',{ref:'main',inputs});
         }catch(error){

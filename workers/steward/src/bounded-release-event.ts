@@ -26,20 +26,36 @@ export async function acceptBoundedCandidateEvent(env:BoundedEnv,event:string,pa
 /** A finite bootstrap intent for one verified candidate event, not a generic work queue. */
 export class CandidateEventCoordinator {
  constructor(private storage:DurableObjectStorage,private env:BoundedEnv,private g:()=>GitReader=()=>new BoundedGitHub(env),private clock:()=>number=Date.now){}
+ private async legacyStillSelected(g:GitReader,repositoryId:number){
+  const target=(await g.forCandidate?.(repositoryId))?.target;
+  return target?.id===repositoryId&&target.officialCandidate!==true;
+ }
  async register(input:Omit<EventIntent,'schemaVersion'|'deadline'|'checks'|'status'|'nextAt'|'reason'>){
   if(legacyReleaseHandoff(this.env,input.event.repositoryId))return;
   const now=this.clock();ensure(input.event.repositoryId===TARGET.id&&input.policySha===this.env.BOUNDED_CONTROLLER_SHA&&Number.isFinite(input.createdAt)&&input.createdAt<=now,'EVENT_IDENTITY');
+  const paused=await this.storage.get<EventIntent>('event');
+  const recoverable=(r:EventIntent|undefined)=>r?.status==='PAUSED'&&r.reason===legacyReleaseHandoffReason&&r.nextAt===null&&r.checks<3&&this.clock()<r.deadline;
+  let resume=false;
+  if(recoverable(paused)&&paused?.requestKey===input.requestKey&&paused.policySha===input.policySha&&this.env.BOUNDED_RECHECK_ENABLED==='true'){
+   resume=await this.legacyStillSelected(this.g(),input.event.repositoryId);
+  }
   let claimed=false;
-  await this.storage.transaction(async t=>{const old=await t.get<EventIntent>('event');if(old){ensure(old.requestKey===input.requestKey&&JSON.stringify(old.event)===JSON.stringify(input.event)&&old.policySha===input.policySha&&old.createdAt===input.createdAt,'EVENT_CONFLICT');return;}
+  await this.storage.transaction(async t=>{const old=await t.get<EventIntent>('event');if(old){ensure(old.requestKey===input.requestKey&&JSON.stringify(old.event)===JSON.stringify(input.event)&&old.policySha===input.policySha&&old.createdAt===input.createdAt,'EVENT_CONFLICT');
+   if(resume&&recoverable(old)&&old.checks===paused?.checks&&await t.get<number>('eventClaimedAt')!==undefined){
+    old.status='PENDING';old.reason='VERIFIED_NATIVE_REDELIVERY_RESUME';old.nextAt=this.clock();
+    await t.put('event',old);await t.setAlarm(old.nextAt);
+   }
+   return;}
    const deadline=input.createdAt+2*60*60_000;const r:EventIntent={...input,schemaVersion:1,deadline,checks:0,status:now>deadline?'NEEDS_ATTENTION':'PENDING',nextAt:now>deadline?null:Math.min(now+60_000,deadline),reason:'BRIDGE_INTENT'};
    // Reuse createdAt as the original event T0; confirmations use dispatch intent time separately.
    await t.put('event',r);await t.put('eventClaimedAt',now);if(r.nextAt!==null)await t.setAlarm(r.nextAt);claimed=r.status==='PENDING';});
   if(claimed){try{await dispatchFixed(this.g(),CENTRAL.id,'bounded-release-event.yml',input.policySha,{request_key:input.requestKey,event_json:JSON.stringify(input.event),policy_sha:input.policySha});}catch{/* The committed intent is recoverable by GET only; never POST again. */}}
  }
  async alarm(){
-  const now=this.clock();let claimed:EventIntent|null=null;
+  const now=this.clock();let claimed:EventIntent|null=null,rollbackConfirmation=false;
   await this.storage.transaction(async t=>{const r=await t.get<EventIntent>('event');if(!r||r.status!=='PENDING'||r.nextAt===null||r.nextAt>now)return;
    if(this.env.BOUNDED_RECHECK_ENABLED!=='true'||now>r.deadline||r.checks>=3){r.status=this.env.BOUNDED_RECHECK_ENABLED!=='true'?'PAUSED':'NEEDS_ATTENTION';r.reason='EVENT_WINDOW_STOPPED';r.nextAt=null;await t.put('event',r);await t.deleteAlarm();return;}
+   rollbackConfirmation=r.reason==='VERIFIED_NATIVE_REDELIVERY_RESUME';
    const at=await t.get<number>('eventClaimedAt');ensure(at!==undefined,'EVENT_CLAIM');r.checks++;const offset=[1,5,15][r.checks];r.nextAt=offset===undefined?null:Math.min(at+offset*60_000,r.deadline);if(offset===undefined){r.status='NEEDS_ATTENTION';r.reason='UNKNOWN_DELIVERY';}
    await t.put('event',r);if(r.nextAt===null)await t.deleteAlarm();else await t.setAlarm(r.nextAt);claimed=r;});
   if(!claimed)return;const r=claimed as EventIntent;
@@ -51,7 +67,8 @@ export class CandidateEventCoordinator {
    if(run.status!=='completed'||run.conclusion!=='success')return;
    const a=await g.artifact(CENTRAL.id,run.id,`bounded-recheck-registration-${r.requestKey}`,'registration.json');
    const verified=await verifiedProducer(g,this.env,{registration:a.value.registration,producer:{repositoryId:CENTRAL.id,runId:run.id,attempt:run.run_attempt,requestKey:r.requestKey}});
-   if(legacyReleaseHandoff(this.env,r.event.repositoryId)){
+   if(legacyReleaseHandoff(this.env,r.event.repositoryId) ||
+      (rollbackConfirmation&&!await this.legacyStillSelected(g,r.event.repositoryId))){
     await this.storage.transaction(async t=>{
      const latest=await t.get<EventIntent>('event');
      if(latest?.requestKey!==r.requestKey||latest.status==='PAUSED')return;
