@@ -50,7 +50,7 @@ test('a paused merge cannot claim a cycle and a previously claimed merge drains 
   }]}}}));
   const receipt = { repositoryId:product.id,repository:product.name,defaultBranch:product.defaultBranch,authorId:bot,
     prNumber:192,sourceSha:source,candidateHead:later,path:'.',version:'1.0.0',tag:'v1.0.0',
-    configDigest:sha256(config),pullBodyDigest:sha256(body),bodyDigest:sha256(body),body };
+    mergedAt:'2026-11-23T00:00:00Z',configDigest:sha256(config),pullBodyDigest:sha256(body),bodyDigest:sha256(body),body };
   const cycle=mergedBuildCycle({prNumber:receipt.prNumber,sourceSha:source,controllerSha:controller,
     repository:product.name,repositoryId:product.id,deliveryBlobSha:createHash('sha1').update('blob '+delivery.length+'\0').update(delivery).digest('hex'),
     delivery:JSON.parse(delivery),releasePlease:JSON.parse(config),workflow,
@@ -173,6 +173,25 @@ test('a rerun after a lost publication receipt verifies the original attempt wit
   status='UNKNOWN';
   assert.equal((await advanceEvent(event,ports)).publishInvoked,false);
   assert.deepEqual(calls,['reconcile-publication','reconcile-publication']);
+});
+
+test('a delayed callback returns the same ready draft after the product Run advances to another attempt',async()=>{
+  const request={purpose:'build',operationKey:'e'.repeat(64),canonicalRunId:83,workflowId:410998652,
+    ref:'steward/build/pr-192-'+source,executionSha:source,sentAt:'2026-11-19T01:00:00Z'};
+  const run={id:83,run_attempt:1,status:'completed',conclusion:'success',repository:{id:product.id},head_repository:{id:product.id},
+    head_sha:source,head_branch:request.ref,actor:{id:301115370},triggering_actor:{id:301115370},event:'workflow_dispatch',workflow_id:410998652,
+    path:'.github/workflows/steward-release-publish.yml',created_at:'2026-11-19T01:00:00Z',updated_at:'2026-11-19T01:01:00Z',
+    display_title:'Build '+request.operationKey};
+  const cycle={id:'cycle',officialRelease:{},dispatches:[request]},reads=[],calls=[];
+  const draft={releaseId:10,url:'https://github.com/splrad/LayerScape/releases/tag/v1.2.3'};
+  const ports={botId:301115370,snapshot:async()=>({cycles:[{value:cycle}],
+    domainRecords:[{path:'official/draft/cycle.json',value:{readyAt:'2026-11-19T01:02:00Z'}}]}),
+    get:async path=>{reads.push(path);return path.endsWith('/attempts/1')?run:{...run,run_attempt:2};},
+    invoke:async command=>{calls.push(command);return {status:'DRAFT_READY',draft,publishInvoked:false};}};
+  const event={repositoryId:product.id,kind:'run',runId:83,attempt:1};
+  assert.deepEqual(await advanceEvent(event,ports),{status:'DRAFT_READY',cycleId:'cycle',draft,publishInvoked:false});
+  assert.deepEqual(reads,['actions/runs/83','actions/runs/83/attempts/1']);
+  assert.deepEqual(calls,['publish']);
 });
 
 test('official draft preparation recovers a lost canonical build binding on the original completed Run',async()=>{

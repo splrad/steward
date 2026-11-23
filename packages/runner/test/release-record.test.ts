@@ -7,8 +7,9 @@ import { pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 import { registerOfflineFixtureRoot } from './offline-fixtures.js';
 import { isolatedBuildEnvironment } from '../src/build-environment.js';
+import { createHash } from 'node:crypto';
 
-const {readReleaseRecords,main}=await import(pathToFileURL(resolve('scripts/release-record.mjs')).href);
+const {readReleaseRecords,readOfficialCandidateRound,findOfficialCandidateRound,main}=await import(pathToFileURL(resolve('scripts/release-record.mjs')).href);
 const S='a'.repeat(40),C='b'.repeat(40),D='c'.repeat(40),cycleId=`pr-12-${S}`;
 const repository={schemaVersion:2,repositoryId:1,defaultBranch:'main',revision:0,lastObservedDefaultSha:null,lastCompletedCycleId:null,activeCycleId:null,candidate:null,nextCheckAt:null,lastProgressAt:null,lastErrorCode:null};
 const cycle={id:cycleId,prNumber:12,sourceSha:S,controllerSha:C,deliveryConfigSha:D,units:[{id:'app',version:'1.2.3',tag:'v1.2.3',releaseId:null,assets:[],notesDigest:null,manifestDigest:null}],requiredChannels:[],dispatches:[],publications:[],channelFacts:[],executionEvidence:[],completionObservations:[],completedEvidencePath:null,repairOf:null,approvedRepairDecision:null};
@@ -29,6 +30,27 @@ it('reads exact Git blobs and leaves the working tree, branch and source bytes u
   const f=await fixture(),before=await f.git('status','--porcelain');const result=await readReleaseRecords(f.input);
   expect(result.head).toBe(f.head);expect(result.repository).toEqual(repository);expect(result.cycles[0].value).toEqual(cycle);expect(result.completion.result).toBe('UNKNOWN');
   expect(await f.git('rev-parse','HEAD')).toBe(f.head);expect(await f.git('status','--porcelain')).toBe(before);
+},nativeGitTestTimeout);
+it('recovers a fragmented official round before recalculation and binds the exact source and baseline',async()=>{
+  const f=await fixture(),roundId='1'.repeat(64),dir=join(f.root,'candidates',roundId);
+  const source={sourceSha:S,baseline:{tag:'v1.0.0',sha:C},candidate:{base:'main',files:[{path:'CHANGELOG.md',mode:'100644',
+    content:'修改\n'.repeat(75_000)}]}};
+  const payload=Buffer.from(JSON.stringify(source));
+  const payloadDigest=createHash('sha256').update(payload).digest('hex'),width=256*1024;
+  const count=Math.ceil(payload.length/width);
+  await mkdir(dir,{recursive:true});
+  for(let index=0;index<count;index++)await writeFile(join(dir,`source-${index}.json`),JSON.stringify({
+    schemaVersion:1,repositoryId:1,roundId,phase:'source',index,count,payloadDigest,
+    ...(index===0?{lookup:{sourceSha:S,defaultBranch:'main',baseline:source.baseline}}:{}),
+    content:payload.subarray(index*width,(index+1)*width).toString('base64'),
+  }));
+  await f.git('add','--','candidates');await f.git('commit','--signoff','-m','Store original candidate');
+  const input={directory:f.root,repositoryId:1,defaultBranch:'main',sourceSha:S,baseline:source.baseline};
+  expect(await findOfficialCandidateRound(input)).toMatchObject({roundId,source,draft:null,branch:null,pull:null});
+  expect(await findOfficialCandidateRound({...input,baseline:{tag:'v1.1.0',sha:D}})).toBeNull();
+  await f.git('rm','--','candidates/'+roundId+'/source-1.json');
+  await f.git('commit','--signoff','-m','Missing candidate fragment');
+  await expect(readOfficialCandidateRound({directory:f.root,repositoryId:1,roundId})).rejects.toThrow('checkpoint coverage');
 },nativeGitTestTimeout);
 it('recovers missing state/cycle caches from Git ancestors without resetting them or declaring completion',async()=>{
   const f=await fixture();await rm(join(f.root,'state.json'));await rm(join(f.root,'cycles',cycleId+'.json'));await f.git('add','-u');await f.git('commit','--signoff','-m','Offline cache loss');

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { appendFile, readFile, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { EvidenceReadError, NativeEvidenceReader, nativeEvidenceTransport, nativeGhCommand } from '../packages/runner/dist/index.js';
-import { officialRef, officialRootSettings } from './official-release-candidate.mjs';
+import { officialRef, officialRootSettings, verifyOfficialPull } from './official-release-candidate.mjs';
 
 const pending = 'autorelease: pending';
 const tagged = 'autorelease: tagged';
@@ -12,6 +12,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 const sha = /^[a-f0-9]{40}$/;
 const id = value => Number.isSafeInteger(value) && value > 0;
 const requireFact = (value, code) => { if (!value) throw new Error('OFFICIAL_RELEASE_' + code); };
+const c4ScopeError = /^OFFICIAL_RELEASE_BRANCH_SCOPE prs=(?:[1-9][0-9]*)(?:,[1-9][0-9]*)*$/;
 const logger = Object.fromEntries(['trace','debug','info','warn','error'].map(level => [level, () => {}]));
 const releaseIsPrerelease = (config, version) =>
   (config.packages?.['.']?.prerelease ?? config.prerelease) === true && (version.includes('-') || version.startsWith('0.'));
@@ -24,21 +25,35 @@ async function officialCore() {
 
 /** Use the same body parser as the single-root official release strategy. */
 export async function approvedOfficialBody(pullBody) {
+  return (await parseOfficialSection(pullBody)).body;
+}
+
+async function parseOfficialSection(pullBody) {
   await officialCore();
   const { PullRequestBody } = await import('release-please-official/build/src/util/pull-request-body.js');
   const parsed = PullRequestBody.parse(pullBody, logger);
   const [section] = parsed?.releaseData ?? [];
   requireFact(parsed?.useComponents === false && parsed.releaseData.length === 1 && !section.component && section.version
     && section.notes.trim(), 'BODY_FORMAT');
-  return section.notes;
+  return {body:section.notes,version:section.version.toString()};
 }
 
-async function buildReleases(approval, token) {
+async function pendingOfficialPulls(approval, token, facts) {
   const { GitHub, Manifest } = await officialCore();
   const [owner, repo] = approval.repository.split('/');
   const github = await GitHub.create({ owner, repo, token, defaultBranch: approval.defaultBranch, logger });
   const manifest = await Manifest.fromManifest(github, approval.defaultBranch, configPath, manifestPath, { logger });
-  return manifest.buildReleases();
+  const pulls = [];
+  for await (const pull of manifest.findMergedReleasePullRequests()) pulls.push(pull);
+  if(pulls.length>1) throw new Error('OFFICIAL_RELEASE_BRANCH_SCOPE prs='+pulls.map(pull=>pull.number).join(','));
+  if(!pulls.length) return [];
+  const [pull]=pulls;
+  if(pull.number!==approval.prNumber || pull.sha!==approval.sourceSha || pull.title!==facts.title
+    || !officialRef(pull.headBranchName,approval.defaultBranch)) throw new Error(`OFFICIAL_RELEASE_BRANCH_SCOPE prs=${pull.number}`);
+  const parsed=await parseOfficialSection(pull.body);
+  requireFact(parsed.version===approval.version && parsed.body===facts.body, 'BRANCH_SCOPE');
+  return [{path:'.',pullRequest:{number:pull.number},sha:pull.sha,notes:parsed.body,draft:true,forceTag:true,
+    tag:{toString:()=>facts.tag,version:{toString:()=>parsed.version}},prerelease:facts.prerelease}];
 }
 
 export function approvedCycleTarget({ repository, repositoryId, appBotId, cycle }, defaultBranch) {
@@ -82,9 +97,9 @@ async function approvalFacts(approval, reader, parseBody, compare) {
     && pull.base?.ref === defaultBranch && pull.base?.repo?.id === repositoryId && pull.head?.repo?.id === repositoryId
     && officialRef(pull.head?.ref, defaultBranch) && pull.head?.sha === headSha
     && pull.user?.id === appBotId && pull.user?.type === 'Bot' && pull.merge_commit_sha === sourceSha, 'MERGED_PULL');
-  requireFact(typeof pull.body === 'string' && hash(pull.body) === approval.pullBodyDigest, 'PULL_BODY_DRIFT');
+  requireFact(typeof pull.body === 'string' && (approval.frozenBody!==undefined || hash(pull.body)===approval.pullBodyDigest), 'PULL_BODY_DRIFT');
   const body = await parseBody(pull.body);
-  requireFact(hash(body) === approval.bodyDigest, 'BODY_DIGEST');
+  requireFact(hash(body) === approval.bodyDigest && (approval.frozenBody===undefined||body===approval.frozenBody), 'BODY_DIGEST');
   requireFact(branch.ref === `refs/heads/${defaultBranch}` && branch.object?.type === 'commit' && sha.test(branch.object.sha)
     && ['ahead', 'identical'].includes(comparison.status) && comparison.merge_base_commit?.sha === sourceSha, 'SOURCE_ANCESTRY');
   const [merged, live, mergedManifest, liveManifest] = await Promise.all([
@@ -95,10 +110,15 @@ async function approvalFacts(approval, reader, parseBody, compare) {
   const config = live.value;
   requireFact(officialRootSettings(config)
     && liveManifest.value?.['.'] === approval.version && Object.keys(liveManifest.value).length === 1, 'ROOT_CONFIG');
+  const root=officialRootSettings(config);
+  requireFact(!root['include-component-in-tag'], 'ROOT_TAG_CONFIG');
+  const candidate=verifyOfficialPull(pull,{id:repositoryId,defaultBranch},prNumber,appBotId,config,liveManifest.value);
+  requireFact(candidate.version===approval.version && candidate.body===body
+    && (approval.tag===undefined||candidate.tag===approval.tag), 'RELEASE_VERSION');
   const prerelease = releaseIsPrerelease(config, approval.version);
   requireFact(Array.isArray(pull.labels) && pull.labels.every(label => typeof label.name === 'string'), 'LABELS');
   const labels = pull.labels.map(label => label.name);
-  return { body, prerelease, configDigest: live.digest, manifestDigest: liveManifest.digest,
+  return { body, prerelease, configDigest: live.digest, manifestDigest: liveManifest.digest, title:pull.title, tag:candidate.tag,
     pending: labels.includes(pending), tagged: labels.includes(tagged) };
 }
 
@@ -182,8 +202,10 @@ export async function inspectOfficialRelease(approval, { reader, scan, compare, 
       && before.configDigest === previous.configDigest && before.manifestDigest === previous.manifestDigest
       && (previous.releaseId === null || previous.releaseId === before.releaseId), 'AFTER_ACTION_DRIFT');
     officialActionOutput(output, approval, before.releaseId);
-  } else if (!before.releaseId) requireFact(before.pending && !before.tagged, 'PENDING_LIFECYCLE');
-  enumerate(approval, before, await scan(), before.releaseId !== null);
+  } else if (!before.releaseId) {
+    requireFact(before.pending && !before.tagged, 'PENDING_LIFECYCLE');
+    enumerate(approval, before, await scan(before), false);
+  }
   requireFact(JSON.stringify(before) === JSON.stringify(await snapshot()), 'SCAN_DRIFT');
   return before;
 }
@@ -195,7 +217,15 @@ function compareSource(approval, token) {
 
 export async function readOfficialBody(approval, token) {
   const reader = await scopedReader(approval, token);
-  return (await approvalFacts(approval, reader, approvedOfficialBody, compareSource(approval, token))).body;
+  const [pull, source]=await Promise.all([reader.json(`pulls/${approval.prNumber}`),nativeFile(reader,manifestPath,approval.sourceSha)]);
+  requireFact(pull.number===approval.prNumber && pull.merged===true && pull.state==='closed' && pull.head?.sha===approval.headSha
+    && pull.merge_commit_sha===approval.sourceSha && pull.base?.ref===approval.defaultBranch && pull.base?.repo?.id===approval.repositoryId
+    && pull.head?.repo?.id===approval.repositoryId && pull.user?.id===approval.appBotId && pull.user?.type==='Bot'
+    && officialRef(pull.head.ref,approval.defaultBranch) && typeof pull.body==='string'
+    && hash(pull.body)===approval.pullBodyDigest, 'PULL_BODY_DRIFT');
+  const parsed=await parseOfficialSection(pull.body);
+  requireFact(parsed.version===approval.version && source.value?.['.']===approval.version && hash(parsed.body)===approval.bodyDigest, 'BODY_DIGEST');
+  return parsed.body;
 }
 
 export async function readOfficialScope(approval, token, body) {
@@ -228,10 +258,18 @@ export async function prepareOfficialAction(approval, token, stateHead, scopeDig
       && state.object?.type === 'commit' && state.object.sha === stateHead, 'STATE_DRIFT');
   };
   await verifyState();
-  const facts = await inspectOfficialRelease(approval, { reader, compare: compareSource(approval, token), scan: () => buildReleases(approval, token),
-    ...(approval.releaseId===null?{scopeDigest}:{}) });
+  const config=await nativeFile(reader,configPath,approval.sourceSha);
+  const body=approval.frozenBody??await readOfficialBody(approval,token);
+  requireFact(hash(body)===approval.bodyDigest,'BODY_DIGEST');
+  const existing=await releaseInventory(approval,{body,prerelease:releaseIsPrerelease(config.value,approval.version)},reader);
+  if(existing.releaseId!==null) {
+    await verifyState();
+    return {...existing,body,prerelease:releaseIsPrerelease(config.value,approval.version)};
+  }
+  const facts = await inspectOfficialRelease(approval, { reader, compare: compareSource(approval, token), scan: facts=>pendingOfficialPulls(approval, token, facts),
+    ...(approval.releaseId===null&&approval.frozenBody===undefined?{scopeDigest}:{}) });
   await verifyState();
-  return { ...facts, body: undefined };
+  return facts;
 }
 
 export async function reconcileOfficialLifecycle(read, removePending, addTagged) {
@@ -252,7 +290,18 @@ export async function reconcileOfficialLifecycle(read, removePending, addTagged)
 export async function finishOfficialAction(approval, token, previous, output) {
   requireFact(previous, 'PREFLIGHT_REQUIRED');
   const reader = await scopedReader(approval, token);
-  const read = () => inspectOfficialRelease(approval, { reader, compare: compareSource(approval, token), scan: () => buildReleases(approval, token), previous, output });
+  const read = async () => {
+    const [observed,pull]=await Promise.all([
+      releaseInventory(approval,previous,reader),reader.json(`pulls/${approval.prNumber}`),
+    ]);
+    requireFact(observed.releaseId!==null && (previous.releaseId===null||observed.releaseId===previous.releaseId)
+      && observed.othersDigest===previous.othersDigest && hash(previous.body)===approval.bodyDigest, 'AFTER_ACTION_DRIFT');
+    requireFact(pull.number===approval.prNumber&&pull.state==='closed'&&pull.merged===true&&pull.merge_commit_sha===approval.sourceSha
+      &&pull.head?.sha===approval.headSha&&Array.isArray(pull.labels), 'MERGED_PULL');
+    officialActionOutput(output,approval,observed.releaseId);
+    return {...observed,body:previous.body,prerelease:previous.prerelease,
+      pending:pull.labels.some(label=>label.name===pending),tagged:pull.labels.some(label=>label.name===tagged)};
+  };
   const path = `repos/${approval.repository}/issues/${approval.prNumber}/labels`;
   const facts=await reconcileOfficialLifecycle(read,
     ()=>nativeGhCommand(['api','--method','DELETE',`${path}/${encodeURIComponent(pending)}`], token),
@@ -267,7 +316,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     await writeFile('official-release-preflight.json', JSON.stringify({ approval, facts }) + '\n', { flag: 'wx' });
     await appendFile(process.env.GITHUB_OUTPUT, `create=${facts.releaseId === null}\n`);
   } catch (error) {
-    console.error(/^OFFICIAL_RELEASE_[A-Z_]+$/.test(error?.message) ? error.message : 'OFFICIAL_RELEASE_PREFLIGHT_UNAVAILABLE');
+    console.error(/^OFFICIAL_RELEASE_[A-Z_]+$/.test(error?.message)||c4ScopeError.test(error?.message) ? error.message : 'OFFICIAL_RELEASE_PREFLIGHT_UNAVAILABLE');
     process.exitCode = 1;
   }
 }

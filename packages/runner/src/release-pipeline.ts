@@ -967,6 +967,22 @@ async function readWorkflowBuild(context:EvidenceContext,request:CycleRecord['di
 }
 const successfulBuild=(run:Awaited<ReturnType<typeof readWorkflowBuild>>)=>run.status==='completed'&&run.conclusion==='success';
 
+export async function selectWorkflowGithubDelivery(context:EvidenceContext,reader:NativeEvidenceReader,pages:NativePages,successAttempt?:number) {
+  const {cycle}=context,units=githubUnits(cycle),requests=cycle.dispatches.filter(dispatch=>dispatch.purpose==='build');
+  const request=requests[0];
+  if(!cycle.officialRelease||units.length!==1||requests.length!==1||!request?.canonicalRunId)
+    fail('official GitHub delivery binding');
+  const unit=units[0]!,frozen=unit.githubDelivery;
+  const run=await readWorkflowBuild(context,request,reader,frozen?(frozen.buildAttempt??frozen.attempt):successAttempt);
+  if(!successfulBuild(run)) fail('completed product Run required');
+  const jobName='delivery/'+unit.id;
+  const receipt=await githubDeliveryArtifact({fullName:context.repository,repositoryId:context.repositoryId,
+    sourceSha:cycle.sourceSha,runId:run.id,attempt:run.runAttempt},unit.id,jobName,pages,frozen?.attempt,
+    workflowDeliveryBuildAttempt(context,request,reader,run,jobName,pages,Boolean(frozen)));
+  if(frozen&&!sameWorkflowDelivery(receipt,frozen)) fail('workflow delivery receipt changed');
+  return {...receipt, name:['delivery','github-release',context.repositoryId,unit.id,cycle.sourceSha,receipt.runId,receipt.attempt].join('-')};
+}
+
 function workflowDeliveryBuildAttempt(context:EvidenceContext,request:CycleRecord['dispatches'][number],reader:NativeEvidenceReader,
   build:Awaited<ReturnType<typeof readWorkflowBuild>>,jobName:string,pages:NativePages,retained:boolean):DeliveryBuildAttempt {
   const ref='repos/'+context.repository+'/actions/runs/'+build.id;

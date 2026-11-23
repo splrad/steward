@@ -190,6 +190,9 @@ export function stateRecordOwner(targetRef: string, path: string): 'release' | '
   if(path.split('/').some(part=>/^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(part))) return fail('state device path');
   if (targetRef==='steward/release-state') {
     if (path==='state.json' || /^cycles\/pr-[1-9][0-9]*-[a-f0-9]{40}\.json$/.test(path)
+      || /^candidates\/[a-f0-9]{64}\/(source|draft|branch|pull)-(0|[1-9][0-9]*)\.json$/.test(path)
+      || /^candidates\/[a-f0-9]{64}\/seen-[a-f0-9]{40}\.json$/.test(path)
+      || /^official\/(merged|draft)\/pr-[1-9][0-9]*-[a-f0-9]{40}\.json$/.test(path)
       || /^(?:generated|content)\/[A-Za-z0-9_/-]+\.md$/.test(path)
       || /^(?:generated|content)\/[A-Za-z0-9_/-]+\.json$/.test(path)
       || /^evidence\/executions\/[a-f0-9]{64}\.json$/.test(path)
@@ -219,6 +222,63 @@ export function decodeStateFile(targetRef: string, path: string, bytes: Uint8Arr
   if (path.endsWith('.md')) return text;
   if (owner==='release') {
     if(path.startsWith('generated/') || path.startsWith('content/')) return decodeCandidateArchive(bytes,repositoryId);
+    if(path.startsWith('official/')) {
+      const value = decodeBuildJson(bytes) as {
+        schemaVersion: number; repositoryId: number; cycleId: string; mergedAt: string;
+        bodyBase64: string; releaseId: number; url: string; assets: { assetId: number; name: string }[]; readyAt: string | null;
+      };
+      if(value?.schemaVersion!==1||value.repositoryId!==repositoryId
+        || path.split('/').at(-1)!==`${value.cycleId}.json`) return fail('official receipt identity');
+      const common=['schemaVersion','repositoryId','cycleId'];
+      if(path.startsWith('official/merged/')) {
+        exact(value,[...common,'mergedAt','bodyBase64']);
+        time(value.mergedAt);
+        if(typeof value.bodyBase64!=='string'||!(/^[A-Za-z0-9+/]+={0,2}$/).test(value.bodyBase64)
+          ||value.bodyBase64.length%4!==0) return fail('official merged body');
+      } else {
+        exact(value,[...common,'releaseId','url','assets','readyAt']);
+        if(!integer(value.releaseId)||typeof value.url!=='string'||!/^https:\/\/github\.com\/splrad\/[\w.-]+\/releases\/\S+$/.test(value.url)
+          ||!Array.isArray(value.assets)) return fail('official draft identity');
+        for(const asset of value.assets) {
+          exact(asset,['assetId','name']);
+          if(!integer(asset.assetId)) return fail('official draft asset ID');
+          assertDeliveryPath(asset.name);
+        }
+        if(!unique(value.assets.map(asset=>asset.name))||!unique(value.assets.map(asset=>asset.assetId))) return fail('official draft asset identity');
+        if(value.readyAt!==null) time(value.readyAt);
+      }
+      return value;
+    }
+    if(path.startsWith('candidates/')) {
+      const record = decodeBuildJson(bytes) as {
+        schemaVersion: number; repositoryId: number; roundId: string; phase: string;
+        index: number; count: number; payloadDigest: string; content: string;
+        sourceSha?: string;
+        lookup?: { sourceSha: string; defaultBranch: string; baseline: { tag: string | null; sha: string | null } };
+      };
+      if(path===`candidates/${record?.roundId}/seen-${record?.sourceSha}.json`) {
+        exact(record,['schemaVersion','repositoryId','roundId','sourceSha']);
+        if(record.schemaVersion!==1||record.repositoryId!==repositoryId||!sha(record.sourceSha!)) return fail('official candidate source alias');
+        return record;
+      }
+      const indexed=record?.index===0&&['source','branch'].includes(record.phase);
+      exact(record, ['schemaVersion','repositoryId','roundId','phase','index','count','payloadDigest','content',...(indexed?['lookup']:[])]);
+      if(record.schemaVersion!==1 || record.repositoryId!==repositoryId
+        || path!==`candidates/${record.roundId}/${record.phase}-${record.index}.json`
+        || !Number.isSafeInteger(record.index) || !integer(record.count) || record.index>=record.count
+        || !digest(record.payloadDigest) || typeof record.content!=='string'
+        || !/^[A-Za-z0-9+/]+={0,2}$/.test(record.content) || record.content.length%4!==0
+        || record.content.length>4*Math.ceil(256*1024/3)) return fail('official candidate checkpoint');
+      if(indexed) {
+        const lookup=record.lookup!;
+        exact(lookup,['sourceSha','defaultBranch','baseline']);
+        exact(lookup.baseline,['tag','sha']);
+        if(!sha(lookup.sourceSha)||typeof lookup.defaultBranch!=='string'||!lookup.defaultBranch
+          || lookup.baseline.sha!==null&&!sha(lookup.baseline.sha)
+          || lookup.baseline.tag!==null&&typeof lookup.baseline.tag!=='string') return fail('official candidate lookup');
+      }
+      return record;
+    }
     if(path.startsWith('evidence/completion/')) {
       const record=decodeCompletionArchive(bytes);
       if(record.repositoryId!==repositoryId)return fail('completion repository');
