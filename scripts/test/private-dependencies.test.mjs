@@ -127,8 +127,10 @@ test('upstream source is immutable and unique; path collisions and unrecognized 
  assert.equal(upstreamReference(YAML.stringify(document),item),OTHER);
  document.jobs.sync.steps[0].with.ref='main';assert.throws(()=>upstreamReference(YAML.stringify(document),item),/UPSTREAM_SHA/);
  document.jobs.sync.steps[0].with.ref=OTHER;document.jobs.sync.steps.push(structuredClone(document.jobs.sync.steps[0]));assert.throws(()=>upstreamReference(YAML.stringify(document),item),/UPSTREAM_REFERENCE/);
- assertInputScope(['mise.lock','safe-settings/settings.yml','.mise/locks/npm/12.2.1/aube-lock.yaml']);
- for(const file of ['package.json','requirements.txt','.npmrc','safe-settings/validator.js','.github/workflows/extra.yml'])assert.throws(()=>assertInputScope([file]),/INPUT_UNCOVERED/);
+ assertInputScope(['mise.lock','safe-settings/settings.yml','.mise/locks/npm/12.2.1/aube-lock.yaml','release-pauses.json']);
+ for(const file of ['package.json','requirements.txt','.npmrc','safe-settings/validator.js','.github/workflows/extra.yml',
+   'other/release-pauses.json','release-pauses.js'])assert.throws(()=>assertInputScope([file]),/INPUT_UNCOVERED/);
+ assert.throws(()=>assertGovernanceOnlyScope(['release-pauses.json']),/GOVERNANCE_INPUT_UNCOVERED/);
 });
 test('official supplier ranges use semver, preserve severity, and reject unknown data',()=>{
  const feed={one:{vulnerable:'<26.12.1',patched:'>=26.12.1',severity:'high',cve:'CVE-fixture'}};

@@ -2,6 +2,7 @@ import {readFile} from 'node:fs/promises';
 import YAML from 'yaml';
 import {registrationPath,registrationWorkflow} from './repository-registration-policy.mjs';
 import {repositoryPolicyAdoptionPath} from './repository-policy-projection.mjs';
+import {releasePausesPath} from './release-pauses.mjs';
 export const assert=(ok,code)=>{if(!ok)throw Error('PRIVATE_DEPENDENCY_'+code);};
 export async function loadPolicy(){
   const policy=JSON.parse(await readFile(new URL('../config/private-dependency-security.json',import.meta.url),'utf8'));
@@ -118,7 +119,8 @@ const configurationTemplatePaths=[...configurationCallers,'.github/repository-co
 export function assertInputScope(paths){
   const allowed=/^(?:SECURITY\.md|AGENTS\.md|CONTRIBUTING\.md|README\.md|\.copier-answers\.yml|\.gitignore|mise\.(?:toml|lock)|\.github\/(?:labeler\.yml|dependabot\.yml|renovate\.json|release-template\.md\.mustache|workflows\/(?:actions\.lock|pr-labeler\.yml|pr-title\.yml|settings-sync\.yml))|\.mise\/locks\/npm\/\d+\.\d+\.\d+\/(?:aube-lock\.yaml|package\.json)|acceptance\/bootstrap-target\.json|safe-settings\/(?:deployment-settings\.yml|settings\.yml|upstream-lock-exception\.json|upstream-package-lock\.patch|repos\/[^/]+\.ya?ml))$/;
   assert(paths.every(path=>allowed.test(path)||configurationTemplatePaths.includes(path)||
-    path===repositoryPolicyAdoptionPath||path===registrationWorkflow||registrationPath.test(path)),'INPUT_UNCOVERED');
+    path===repositoryPolicyAdoptionPath||path===registrationWorkflow||path===releasePausesPath||
+    registrationPath.test(path)),'INPUT_UNCOVERED');
 }
 
 export function licenseFacts(base,head){
