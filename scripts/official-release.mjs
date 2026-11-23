@@ -17,20 +17,13 @@ const logger = Object.fromEntries(['trace','debug','info','warn','error'].map(le
 const releaseIsPrerelease = (config, version) =>
   (config.packages?.['.']?.prerelease ?? config.prerelease) === true && (version.includes('-') || version.startsWith('0.'));
 
-async function officialCore() {
-  const core = await import('release-please-official');
-  requireFact(core.VERSION === '17.6.0', 'CORE_VERSION');
-  return core;
-}
-
 /** Use the same body parser as the single-root official release strategy. */
 export async function approvedOfficialBody(pullBody) {
   return (await parseOfficialSection(pullBody)).body;
 }
 
 async function parseOfficialSection(pullBody) {
-  await officialCore();
-  const { PullRequestBody } = await import('release-please-official/build/src/util/pull-request-body.js');
+  const { PullRequestBody } = await import('release-please/build/src/util/pull-request-body.js');
   const parsed = PullRequestBody.parse(pullBody, logger);
   const [section] = parsed?.releaseData ?? [];
   requireFact(parsed?.useComponents === false && parsed.releaseData.length === 1 && !section.component && section.version
@@ -39,7 +32,7 @@ async function parseOfficialSection(pullBody) {
 }
 
 async function pendingOfficialPulls(approval, token, facts) {
-  const { GitHub, Manifest } = await officialCore();
+  const { GitHub, Manifest } = await import('release-please');
   const [owner, repo] = approval.repository.split('/');
   const github = await GitHub.create({ owner, repo, token, defaultBranch: approval.defaultBranch, logger });
   const manifest = await Manifest.fromManifest(github, approval.defaultBranch, configPath, manifestPath, { logger });
@@ -169,7 +162,13 @@ async function releaseInventory(approval, facts, reader) {
       && release.target_commitish === approval.sourceSha && release.body === facts.body && release.prerelease === facts.prerelease
       && release.draft === true && release.immutable === false, 'DRAFT_IDENTITY');
   }
-  return { releaseId: release?.id ?? null, existingTag: tag, othersDigest: hash(JSON.stringify([unrelated, otherTags])) };
+  return { releaseId:release?.id??null,existingTag:tag,
+    othersDigest:hash(JSON.stringify([unrelated.map(([id,tag])=>[id,tag]),otherTags])),
+    legacyOthersDigest:hash(JSON.stringify([unrelated,otherTags])) };
+}
+
+function verifyRecordedScope(facts,scopeDigest) {
+  requireFact(scopeDigest===facts.othersDigest||scopeDigest===facts.legacyOthersDigest,'RECORDED_SCOPE_DRIFT');
 }
 
 function enumerate(approval, facts, releases, existing) {
@@ -196,7 +195,7 @@ export async function inspectOfficialRelease(approval, { reader, scan, compare, 
     return { ...facts, ...await releaseInventory(approval, facts, reader) };
   };
   const before = await snapshot();
-  if (scopeDigest !== undefined) requireFact(before.othersDigest === scopeDigest, 'RECORDED_SCOPE_DRIFT');
+  if (scopeDigest !== undefined) verifyRecordedScope(before,scopeDigest);
   if (previous) {
     requireFact(before.releaseId !== null && before.othersDigest === previous.othersDigest
       && before.configDigest === previous.configDigest && before.manifestDigest === previous.manifestDigest
@@ -262,12 +261,13 @@ export async function prepareOfficialAction(approval, token, stateHead, scopeDig
   const body=approval.frozenBody??await readOfficialBody(approval,token);
   requireFact(hash(body)===approval.bodyDigest,'BODY_DIGEST');
   const existing=await releaseInventory(approval,{body,prerelease:releaseIsPrerelease(config.value,approval.version)},reader);
+  verifyRecordedScope(existing,scopeDigest);
   if(existing.releaseId!==null) {
     await verifyState();
     return {...existing,body,prerelease:releaseIsPrerelease(config.value,approval.version)};
   }
   const facts = await inspectOfficialRelease(approval, { reader, compare: compareSource(approval, token), scan: facts=>pendingOfficialPulls(approval, token, facts),
-    ...(approval.releaseId===null&&approval.frozenBody===undefined?{scopeDigest}:{}) });
+    scopeDigest });
   await verifyState();
   return facts;
 }
@@ -291,14 +291,19 @@ export async function finishOfficialAction(approval, token, previous, output) {
   requireFact(previous, 'PREFLIGHT_REQUIRED');
   const reader = await scopedReader(approval, token);
   const read = async () => {
-    const [observed,pull]=await Promise.all([
-      releaseInventory(approval,previous,reader),reader.json(`pulls/${approval.prNumber}`),
-    ]);
+    // Creation can observe a moved target branch. Recovery of an existing draft
+    // uses its original merged config and object identity.
+    const live=previous.releaseId===null
+      ?await approvalFacts(approval,reader,approvedOfficialBody,compareSource(approval,token)):null;
+    if(live) requireFact(live.configDigest===previous.configDigest&&live.manifestDigest===previous.manifestDigest,'AFTER_ACTION_DRIFT');
+    const observed=await releaseInventory(approval,previous,reader);
     requireFact(observed.releaseId!==null && (previous.releaseId===null||observed.releaseId===previous.releaseId)
       && observed.othersDigest===previous.othersDigest && hash(previous.body)===approval.bodyDigest, 'AFTER_ACTION_DRIFT');
+    officialActionOutput(output,approval,observed.releaseId);
+    if(live)return {...observed,body:live.body,prerelease:live.prerelease,pending:live.pending,tagged:live.tagged};
+    const pull=await reader.json(`pulls/${approval.prNumber}`);
     requireFact(pull.number===approval.prNumber&&pull.state==='closed'&&pull.merged===true&&pull.merge_commit_sha===approval.sourceSha
       &&pull.head?.sha===approval.headSha&&Array.isArray(pull.labels), 'MERGED_PULL');
-    officialActionOutput(output,approval,observed.releaseId);
     return {...observed,body:previous.body,prerelease:previous.prerelease,
       pending:pull.labels.some(label=>label.name===pending),tagged:pull.labels.some(label=>label.name===tagged)};
   };

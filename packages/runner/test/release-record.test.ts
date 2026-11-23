@@ -41,13 +41,30 @@ it('recovers a fragmented official round before recalculation and binds the exac
   await mkdir(dir,{recursive:true});
   for(let index=0;index<count;index++)await writeFile(join(dir,`source-${index}.json`),JSON.stringify({
     schemaVersion:1,repositoryId:1,roundId,phase:'source',index,count,payloadDigest,
-    ...(index===0?{lookup:{sourceSha:S,defaultBranch:'main',baseline:source.baseline}}:{}),
     content:payload.subarray(index*width,(index+1)*width).toString('base64'),
   }));
+  await writeFile(join(dir,'source-lookup.json'),JSON.stringify({schemaVersion:1,repositoryId:1,roundId,phase:'source',
+    sourceSha:S,defaultBranch:'main',baseline:source.baseline,payloadDigest}));
   await f.git('add','--','candidates');await f.git('commit','--signoff','-m','Store original candidate');
   const input={directory:f.root,repositoryId:1,defaultBranch:'main',sourceSha:S,baseline:source.baseline};
   expect(await findOfficialCandidateRound(input)).toMatchObject({roundId,source,draft:null,branch:null,pull:null});
   expect(await findOfficialCandidateRound({...input,baseline:{tag:'v1.1.0',sha:D}})).toBeNull();
+  const branch={sourceSha:D,head:'e'.repeat(40)},draft={body:'Approved\nnotes'};
+  const alias='f'.repeat(40);
+  await writeFile(join(dir,`seen-${alias}.json`),JSON.stringify({schemaVersion:1,repositoryId:1,roundId,sourceSha:alias}));
+  await f.git('add','--','candidates');await f.git('commit','--signoff','-m','Record an equivalent source before branch write');
+  expect(await findOfficialCandidateRound({...input,sourceSha:alias})).toMatchObject({roundId,source,draft:null,branch:null,pull:null});
+  for(const [phase,data] of [['draft',draft],['branch',branch]] as const) {
+    const content=Buffer.from(JSON.stringify(data));
+    const phaseDigest=createHash('sha256').update(content).digest('hex');
+    await writeFile(join(dir,`${phase}-0.json`),JSON.stringify({schemaVersion:1,repositoryId:1,roundId,phase,index:0,count:1,
+      payloadDigest:phaseDigest,content:content.toString('base64')}));
+    if(phase==='branch')await writeFile(join(dir,'branch-lookup.json'),JSON.stringify({schemaVersion:1,repositoryId:1,roundId,phase,
+      sourceSha:D,defaultBranch:'main',baseline:source.baseline,payloadDigest:phaseDigest}));
+  }
+  await f.git('add','--','candidates');await f.git('commit','--signoff','-m','Record branch identity');
+  for(const sourceSha of [S,D,alias])
+    expect(await findOfficialCandidateRound({...input,sourceSha})).toMatchObject({roundId,source,draft,branch,pull:null});
   await f.git('rm','--','candidates/'+roundId+'/source-1.json');
   await f.git('commit','--signoff','-m','Missing candidate fragment');
   await expect(readOfficialCandidateRound({directory:f.root,repositoryId:1,roundId})).rejects.toThrow('checkpoint coverage');

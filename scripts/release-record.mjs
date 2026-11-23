@@ -41,9 +41,12 @@ function compatibleCycle(a,b) {
   return true;
 }
 /** Read immutable Git blobs without checkout, hooks, external diff or textconv. */
-export async function readReleaseRecords({ directory, targetRef, repositoryId, includeHistory=true, maintenanceOnly=false }) {
+export async function readReleaseRecords({ directory, targetRef, repositoryId, includeHistory=true, maintenanceOnly=false, candidateRound=null }) {
   if (!refs.has(targetRef) || !Number.isSafeInteger(repositoryId) || repositoryId<1) throw new Error('RELEASE_RECORD: target');
   if(maintenanceOnly&&(repositoryId!==1296724484||targetRef!=='steward/release-state'||!includeHistory))throw new Error('RELEASE_RECORD: central maintenance identity');
+  if(candidateRound!==null && candidateRound!=='lookup' && !digest(candidateRound))fail('official candidate lookup target');
+  const includeCandidate=path=>candidateRound==='lookup'
+    ?path.endsWith('-lookup.json')||path.includes('/seen-'):candidateRound!==null&&path.startsWith(`candidates/${candidateRound}/`);
   const home=await mkdtemp(join(tmpdir(),'steward-record-read-'));
   const env=isolatedBuildEnvironment(process.env,home);
   // These plumbing reads never apply attributes, filters or text conversion.
@@ -82,6 +85,11 @@ export async function readReleaseRecords({ directory, targetRef, repositoryId, i
         if(!match)throw new Error('RELEASE_RECORD: tree');
         const [,mode,type,oid,path]=match;
         if(maintenanceOnly&&stateRecordOwner(targetRef,path)!=='maintenance')throw new Error('RELEASE_RECORD: central maintenance history');
+        if(targetRef==='steward/release-state'&&path.startsWith('candidates/')) {
+          stateRecordOwner(targetRef,path);
+          if(mode!=='100644'||type!=='blob')fail('unsafe candidate path');
+          if(!includeCandidate(path))continue;
+        }
         if(targetRef!=='steward/release-state'||path==='state.json'||/^(cycles|generated|content|candidates|maintenance|official)\//.test(path)
           ||/^evidence\/(native|reads|dispatch|retry-limit|publication|completion|channel|channel-read|normalized-delivery|source-rejection)\//.test(path)) {
           if(mode!=='100644'||type!=='blob') {
@@ -128,6 +136,7 @@ export async function readReleaseRecords({ directory, targetRef, repositoryId, i
         if(!match)throw new Error('RELEASE_RECORD: tree');
         const [,mode,type,oid,path]=match;
         if(commit===head)currentPaths.push(path);
+        if(targetRef==='steward/release-state'&&path.startsWith('candidates/')&&!includeCandidate(path))continue;
         if(targetRef!=='steward/release-state') {
           if(mode!=='100644'||type!=='blob')throw new Error('RELEASE_RECORD: unsafe path');
           const bytes=await readBlob(oid);
@@ -152,6 +161,7 @@ export async function readReleaseRecords({ directory, targetRef, repositoryId, i
           history.push({commit,path,blobSha:oid,status:'DECODED'});continue;
         }
         if(path.startsWith('official/')) {
+          if(mode!=='100644'||type!=='blob')fail('unsafe official receipt path');
           const bytes=await readBlob(oid),value=decodeStateFile(targetRef,path,bytes,repositoryId),latest=domainRecords.get(path);
           if(latest) officialReceiptProgress(path,value,latest.value);
           else domainRecords.set(path,{commit,path,blobSha:oid,value,content:bytes.toString('utf8')});
@@ -214,7 +224,7 @@ export async function readReleaseRecords({ directory, targetRef, repositoryId, i
       || [repository.activeCycleId,repository.lastCompletedCycleId].some(id=>id&&!cycles.has(id))
       || [...cycles.values()].some(({value})=>value.completedEvidencePath&&(!domainRecords.has(value.completedEvidencePath)
         || domainRecords.get(value.completedEvidencePath).value.provenance.some(proof=>!domainRecords.has(proof.path))))))
-      return readReleaseRecords({directory,targetRef,repositoryId,includeHistory:true});
+      return readReleaseRecords({directory,targetRef,repositoryId,includeHistory:true,candidateRound});
     return {repositoryId,targetRef,head,repository,repositoryCommit,cycles:[...cycles.values()],cycleHistory,domainRecords:[...domainRecords.values()],history,repositoryHistory,currentPaths,
       completion:{result:'UNKNOWN',reason:'NATIVE_RECONCILIATION_REQUIRED'}};
   } finally { await rm(home,{recursive:true,force:true}); }
@@ -228,12 +238,20 @@ const candidateChunkBytes = 256 * 1024;
 
 function officialCandidateRound(snapshot, roundId) {
   if (!digest(roundId)) fail('official candidate round ID');
+  const currentPaths=new Set(snapshot.currentPaths);
+  const records=snapshot.domainRecords.filter(({path})=>path.startsWith(`candidates/${roundId}/`)&&currentPaths.has(path));
   const round = {head:snapshot.head,source:null,draft:null,branch:null,pull:null};
   let gap = false;
   for (const phase of candidatePhases) {
-    const chunks = snapshot.domainRecords.filter(({path})=>path.startsWith(`candidates/${roundId}/${phase}-`))
+    const prefix=`candidates/${roundId}/${phase}-`;
+    const lookup=records.find(({path})=>path===prefix+'lookup.json')?.value;
+    const chunks = records.filter(({path})=>path.startsWith(prefix)&&path!==prefix+'lookup.json')
       .map(({value})=>value).sort((a,b)=>a.index-b.index);
-    if (!chunks.length) { gap = true; continue; }
+    if (!chunks.length) {
+      if(lookup) fail('official candidate checkpoint coverage');
+      gap = true;
+      continue;
+    }
     const first = chunks[0];
     if (gap || chunks.length!==first.count || chunks.some((chunk,index)=>chunk.index!==index
       || chunk.count!==first.count || chunk.payloadDigest!==first.payloadDigest)) fail('official candidate checkpoint coverage');
@@ -247,9 +265,9 @@ function officialCandidateRound(snapshot, roundId) {
     if (!payload || typeof payload!=='object' || Array.isArray(payload)
       || !Buffer.from(JSON.stringify(payload),'utf8').equals(bytes)) fail('official candidate checkpoint payload');
     round[phase] = payload;
-    if(first.lookup) {
-      const source=round.source,{lookup}=first;
-      if(lookup.sourceSha!==payload.sourceSha||lookup.defaultBranch!==source.candidate?.base
+    if(['source','branch'].includes(phase)) {
+      const source=round.source;
+      if(!lookup||lookup.payloadDigest!==first.payloadDigest||lookup.sourceSha!==payload.sourceSha||lookup.defaultBranch!==source.candidate?.base
         ||lookup.baseline.tag!==source.baseline?.tag||lookup.baseline.sha!==source.baseline?.sha)
         fail('official candidate checkpoint lookup changed');
     }
@@ -258,25 +276,29 @@ function officialCandidateRound(snapshot, roundId) {
 }
 
 export async function readOfficialCandidateRound({directory,repositoryId,roundId}) {
-  const snapshot=await readReleaseRecords({directory,repositoryId,targetRef:'steward/release-state',includeHistory:false});
+  const snapshot=await readReleaseRecords({directory,repositoryId,targetRef:'steward/release-state',includeHistory:false,candidateRound:roundId});
   return officialCandidateRound(snapshot,roundId);
 }
 
 export async function findOfficialCandidateRound({directory,repositoryId,defaultBranch,sourceSha,baseline}) {
   if(!hash(sourceSha) || !baseline || typeof defaultBranch!=='string') fail('official candidate lookup');
-  const snapshot=await readReleaseRecords({directory,repositoryId,targetRef:'steward/release-state',includeHistory:false});
-  const sources=new Map(snapshot.domainRecords.filter(({path})=>path.startsWith('candidates/')&&path.endsWith('/source-0.json'))
-    .map(({value})=>[value.roundId,value.lookup]));
+  const snapshot=await readReleaseRecords({directory,repositoryId,targetRef:'steward/release-state',includeHistory:false,candidateRound:'lookup'});
+  const currentPaths=new Set(snapshot.currentPaths);
+  const indexes=snapshot.domainRecords.filter(({path})=>path.startsWith('candidates/')&&currentPaths.has(path));
+  const sources=new Map(indexes.filter(({path})=>path.endsWith('/source-lookup.json'))
+    .map(({value})=>[value.roundId,value]));
   const matches=new Set();
-  for(const {path,value} of snapshot.domainRecords) {
-    if(!path.startsWith('candidates/')||!path.endsWith('/source-0.json')&&!path.endsWith('/branch-0.json')&&!path.includes('/seen-')) continue;
+  for(const {value} of indexes) {
     const index=sources.get(value.roundId);
     if(index?.defaultBranch===defaultBranch&&index.baseline.tag===baseline.tag&&index.baseline.sha===baseline.sha
-      &&(value.lookup?.sourceSha??value.sourceSha)===sourceSha) matches.add(value.roundId);
+      && value.sourceSha===sourceSha) matches.add(value.roundId);
   }
   if(matches.size>1) fail('official candidate lookup ambiguous');
   const [roundId]=matches;
-  return roundId?{roundId,...officialCandidateRound(snapshot,roundId)}:null;
+  if(!roundId)return null;
+  const round=await readOfficialCandidateRound({directory,repositoryId,roundId});
+  if(round.head!==snapshot.head||!round.source)fail('official candidate lookup ref moved');
+  return {roundId,...round};
 }
 
 async function writeOfficialCandidateFacts(request,snapshot,changes,slot,{token,admit,io=nativeEvidenceTransport(token)}={}) {
@@ -301,7 +323,7 @@ async function writeOfficialCandidateFacts(request,snapshot,changes,slot,{token,
     targetRef:'steward/release-state',writer:'release',expectedHead:snapshot.head,allowedPaths:changes.map(change=>change.path),changes,
     identity},{token,beforePush:admit});
   if(!['APPLIED','UNCHANGED'].includes(written.status)) fail('official candidate checkpoint unconfirmed');
-  const verified=await readReleaseRecords({directory:output,repositoryId,targetRef:'steward/release-state',includeHistory:false});
+  const verified=await readReleaseRecords({directory:output,repositoryId,targetRef:'steward/release-state',includeHistory:false,candidateRound:roundId});
   await verifyRef(verified.head);
   if(verified.head!==written.head||changes.some(change=>!verified.domainRecords.some(record=>record.path===change.path&&record.content===change.content)))
     fail('official candidate checkpoint readback');
@@ -311,7 +333,7 @@ async function writeOfficialCandidateFacts(request,snapshot,changes,slot,{token,
 export async function writeOfficialCandidateCheckpoint(request,options) {
   const {directory,repositoryId,defaultBranch,roundId,phase,data}=request;
   if(!candidatePhases.includes(phase)||!data||typeof data!=='object'||Array.isArray(data)) fail('official candidate checkpoint request');
-  const snapshot=await readReleaseRecords({directory,repositoryId,targetRef:'steward/release-state',includeHistory:false});
+  const snapshot=await readReleaseRecords({directory,repositoryId,targetRef:'steward/release-state',includeHistory:false,candidateRound:roundId});
   const round=officialCandidateRound(snapshot,roundId);
   const bytes=Buffer.from(JSON.stringify(data),'utf8');
   const payloadDigest=sha256(bytes);
@@ -329,24 +351,36 @@ export async function writeOfficialCandidateCheckpoint(request,options) {
   const changes=Array.from({length:count},(_,index)=>{
     const path=`candidates/${roundId}/${phase}-${index}.json`;
     const content=JSON.stringify({schemaVersion:1,repositoryId,roundId,phase,index,count,payloadDigest,
-      ...(index===0&&lookup?{lookup}:{}),
       content:bytes.subarray(index*candidateChunkBytes,(index+1)*candidateChunkBytes).toString('base64')})+'\n';
     return {path,content,sha256:sha256(content),previousSha256:null};
   });
+  if(lookup) {
+    const path=`candidates/${roundId}/${phase}-lookup.json`;
+    const content=JSON.stringify({schemaVersion:1,repositoryId,roundId,phase,payloadDigest,...lookup})+'\n';
+    changes.push({path,content,sha256:sha256(content),previousSha256:null});
+  }
   return officialCandidateRound(await writeOfficialCandidateFacts(request,snapshot,changes,phase,options),roundId);
 }
 
 export async function recordOfficialCandidateSource(request,options) {
   const {directory,repositoryId,defaultBranch,roundId,sourceSha}=request;
   if(!hash(sourceSha)) fail('official candidate source alias');
-  const snapshot=await readReleaseRecords({directory,repositoryId,targetRef:'steward/release-state',includeHistory:false});
+  const snapshot=await readReleaseRecords({directory,repositoryId,targetRef:'steward/release-state',includeHistory:false,candidateRound:roundId});
   const round=officialCandidateRound(snapshot,roundId);
-  if(!round.branch||round.source.candidate?.base!==defaultBranch) fail('official candidate source alias requires a confirmed branch');
+  if(!round.source||round.source.candidate?.base!==defaultBranch) fail('official candidate source alias requires a recorded round');
   const slot=`seen-${sourceSha}`,path=`candidates/${roundId}/${slot}.json`;
   const content=JSON.stringify({schemaVersion:1,repositoryId,roundId,sourceSha})+'\n';
-  const exists=round.branch.sourceSha===sourceSha||round.source.sourceSha===sourceSha||snapshot.currentPaths.includes(path);
+  const exists=round.branch?.sourceSha===sourceSha||round.source.sourceSha===sourceSha||snapshot.currentPaths.includes(path);
   const changes=exists?[]:[{path,content,sha256:sha256(content),previousSha256:null}];
-  return officialCandidateRound(await writeOfficialCandidateFacts(request,snapshot,changes,slot,options),roundId);
+  const io=options?.io??nativeEvidenceTransport(options?.token);
+  const reader=new NativeEvidenceReader(io,request.repository);
+  const admit=async()=>{
+    await options.admit();
+    const ref=await reader.json('git/ref/heads/'+encodeURIComponent(defaultBranch));
+    if(ref.ref!==`refs/heads/${defaultBranch}`||ref.object?.type!=='commit'||ref.object.sha!==sourceSha)
+      fail('official candidate source alias HEAD changed');
+  };
+  return officialCandidateRound(await writeOfficialCandidateFacts(request,snapshot,changes,slot,{...options,io,admit}),roundId);
 }
 const exact = (value,keys) => {
   if(!value || typeof value!=='object' || Array.isArray(value) || Object.keys(value).sort().join(',')!==[...keys].sort().join(','))fail('closed input');
@@ -520,22 +554,26 @@ export async function writeReleaseRecords(input,{token,beforePush}={}) {
       try { await lstat(join(directory,'.git','shallow'));fail('incomplete fetched history'); } catch(error) { if(error.code!=='ENOENT')throw error; }
       return (await required('rev-parse','FETCH_HEAD')).toString().trim()===head;
     };
-    const verifiedTrees=new Map(),verifiedBlobs=new Map();
+    const verifiedTrees=new Map(),verifiedBlobs=new Map(),changedPaths=new Set(request.allowedPaths);
     const tree=async commit=>{
       if(verifiedTrees.has(commit))return verifiedTrees.get(commit);
       const files=new Map(),names=new Set();if(commit===null)return files;
-      const raw=new TextDecoder('utf-8',{fatal:true}).decode(await required('ls-tree','-r','-z','--full-tree',commit));
+      const raw=new TextDecoder('utf-8',{fatal:true}).decode(await required('ls-tree','-r','-l','-z','--full-tree',commit));
       let size=0;
       for(const entry of raw.split('\0').filter(Boolean)) {
-        const match=/^(100644) blob ([a-f0-9]{40})\t([^\r\n]+)$/.exec(entry);
+        const match=/^100644 blob ([a-f0-9]{40}) +([0-9]+)\t([^\r\n]+)$/.exec(entry);
         if(!match)fail('unsafe tree');
-        const [, ,oid,path]=match;
+        const [,oid,lengthText,path]=match,length=Number(lengthText);
         stateRecordOwner(request.targetRef,path);
         const cacheKey=path+'\0'+oid;
         let cached=verifiedBlobs.get(cacheKey);
-        const length=cached?.length??Number((await required('cat-file','-s',oid)).toString().trim());
         if(!Number.isSafeInteger(length) || length<0 || length>512*1024)fail('tree bound');
         if(!/^(?:generated|content|candidates)\/.+\.json$/.test(path) && (size+=length)>16*1024*1024)fail('tree bound');
+        if(names.has(path.toLowerCase()))fail('duplicate tree path');names.add(path.toLowerCase());
+        if(path.startsWith('candidates/')&&!changedPaths.has(path)) {
+          files.set(path,{oid});
+          continue;
+        }
         if(!cached) {
           const bytes=await required('cat-file','blob',oid);let value;
           try { value=decodeStateFile(request.targetRef,path,bytes,request.repositoryId); }
@@ -550,8 +588,7 @@ export async function writeReleaseRecords(input,{token,beforePush}={}) {
           if(/^evidence\/(native|reads|dispatch|retry-limit|publication|completion|channel|channel-read|normalized-delivery|source-rejection)\//.test(path) && !path.endsWith('/'+sha256(bytes)+'.json'))fail('archive content address');
           cached={length,sha256:sha256(bytes),value};verifiedBlobs.set(cacheKey,cached);
         }
-        if(names.has(path.toLowerCase()))fail('duplicate tree path');names.add(path.toLowerCase());
-        files.set(path,{sha256:cached.sha256,value:cached.value});
+        files.set(path,{oid,sha256:cached.sha256,value:cached.value});
       }
       verifiedTrees.set(commit,files);return files;
     };
@@ -591,7 +628,7 @@ export async function writeReleaseRecords(input,{token,beforePush}={}) {
       }
       if(!matches(proposed))fail('prepared bytes conflict');
       for(const path of new Set([...base.keys(),...proposed.keys()])) {
-        if(base.get(path)?.sha256!==proposed.get(path)?.sha256 && !request.allowedPaths.includes(path))fail('prepared path conflict');
+        if(base.get(path)?.oid!==proposed.get(path)?.oid && !changedPaths.has(path))fail('prepared path conflict');
       }
       return parent;
     };
@@ -892,6 +929,28 @@ async function verifyFormalPublication(context,io,token,unitIds) {
       await verifyOfficialPublicationProof(context,unit.id,args=>nativeGhCommand(args,token),nativeReleaseDownload(token));
   }
 }
+async function observeReadyDraft(request,snapshot,context,{token,io,official}) {
+  const {cycle}=context,ready=draftReadyResult(snapshot,cycle);
+  if(!ready)return null;
+  const reader=new NativeEvidenceReader(io,request.repository);
+  const release=await reader.json('releases/'+ready.draft.releaseId);
+  if(release.id!==ready.draft.releaseId||release.tag_name!==ready.draft.tag||typeof release.draft!=='boolean')
+    fail('official release ready identity');
+  if(!release.draft) {
+    if(official?.stage)return {status:'WAIT',reason:'FORMAL_RELEASE_READBACK_REQUIRED',publishInvoked:false};
+    await verifyFormalPublication(context,io,token);
+    return {status:'OBSERVED',reason:'FORMAL_RELEASES_VERIFIED',publishInvoked:false};
+  }
+  await readBoundOfficialDraft(approvedCycleTarget(context,request.defaultBranch),reader);
+  const assets=await reader.pages('releases/'+ready.draft.releaseId+'/assets','');
+  const expected=cycle.units[0].assets;
+  if(assets.length!==ready.draft.assets.length||ready.draft.assets.some(({assetId,name})=>{
+    const asset=assets.find(item=>item.id===assetId),file=expected.find(item=>item.path===name);
+    return asset?.name!==name||asset.state!=='uploaded'||asset.size!==file.size
+      || asset.digest&&asset.digest!=='sha256:'+file.sha256;
+  })) fail('official draft receipt assets changed');
+  return ready;
+}
 export async function publishNativeCycle(request,{token,io=nativeEvidenceTransport(token),centralIo,centralInvocation,controllerDirectory,official,now=()=>new Date().toISOString()}) {
   if(!token||!centralIo||!centralInvocation||!isAbsolute(controllerDirectory))fail('central publisher identity');
   const root=await mkdtemp(join(tmpdir(),'steward-publication-'));
@@ -904,7 +963,7 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
     if(official?.stage&&!cycle.officialRelease)
       return {status:'WAIT',reason:'OFFICIAL_RELEASE_NOT_ADOPTED',publishInvoked:false};
     if(cycle.officialRelease) {
-      const ready=draftReadyResult(snapshot,cycle);
+      const ready=await observeReadyDraft(request,snapshot,context,{token,io,official});
       if(ready) return ready;
     }
     const targets=githubUnits(cycle),reader=new NativeEvidenceReader(io,request.repository);
@@ -1186,6 +1245,13 @@ export async function releaseCommand(command,request,{token,io=nativeEvidenceTra
     return wait('FORMAL_RELEASE_REQUIRED');
   if(command==='reconcile-publication') {
     const context={repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle};
+    const ready=cycle.officialRelease&&draftReadyResult(snapshot,cycle);
+    if(ready) {
+      const release=await new NativeEvidenceReader(io,request.repository).json('releases/'+ready.draft.releaseId);
+      if(release.id!==ready.draft.releaseId || release.tag_name!==ready.draft.tag || typeof release.draft!=='boolean')
+        fail('official release ready identity');
+      if(release.draft) return ready;
+    }
     const history=snapshot.domainRecords.filter(r=>r.path.startsWith('evidence/publication/') && r.value.cycleId===cycle.id);
     const facts=await inspectPublications(context,history,io,centralIo,now());
     if (!facts.native.complete || facts.missing.length || !facts.files.length
@@ -1197,13 +1263,14 @@ export async function releaseCommand(command,request,{token,io=nativeEvidenceTra
   }
   if(command==='publish') {
     if(cycle.officialRelease) {
-      const ready=draftReadyResult(snapshot,cycle);
+      const ready=await observeReadyDraft(request,snapshot,{repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle},{token,io,official});
       if(ready) return ready;
     }
     if(!centralIo||!centralInvocation)return wait('CENTRAL_PUBLICATION_CONTEXT_REQUIRED');
     // Serialize central writes across registered versions. Channel Runs do not own this gate.
     for(const {value:other} of snapshot.cycles) {
       if(other.id===cycle.id)continue;
+      if(other.officialRelease&&draftReadyResult(snapshot,other))continue;
       const records=snapshot.domainRecords.filter(record=>record.path.startsWith('evidence/publication/')&&record.value.cycleId===other.id);
       if(!other.publications.length&&!records.length)continue;
       const facts=await inspectPublications({repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle:other},records,io,centralIo,now());

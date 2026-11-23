@@ -317,10 +317,23 @@ const categories=new Set([
   'NATIVE_HTTP_404','NATIVE_HTTP_429','NATIVE_HTTP_500','NATIVE_HTTP_502','NATIVE_HTTP_503','NATIVE_HTTP_504',
 ]);
 const isPublicCode=code=>publicCodes.has(code)||/^OFFICIAL_(?:RELEASE|CANDIDATE)_[A-Z_]+$/.test(code);
+const draftErrorCodes=new Map([
+  ['ARTIFACT_DOWNLOAD_IDENTITY','OFFICIAL_RELEASE_ARCHIVE_IDENTITY'],
+  ['GH_RELEASE: retained draft asset ID changed','OFFICIAL_RELEASE_ASSET_ID_CHANGED'],
+  ['GH_RELEASE: unexpected draft asset','OFFICIAL_RELEASE_ASSET_SET_CHANGED'],
+  ['GH_RELEASE: unproven starter asset','OFFICIAL_RELEASE_ASSET_STARTER_UNPROVEN'],
+  ['GH_RELEASE: same-name different bytes','OFFICIAL_RELEASE_ASSET_BYTES_CHANGED'],
+  ['GH_RELEASE: downloaded bytes mismatch','OFFICIAL_RELEASE_ASSET_BYTES_CHANGED'],
+  ['GH_RELEASE: draft asset set','OFFICIAL_RELEASE_ASSET_SET_INCOMPLETE'],
+  ['GH_RELEASE: official draft differs from approval','OFFICIAL_RELEASE_DRAFT_IDENTITY'],
+  ['GH_RELEASE: upload response identity','OFFICIAL_RELEASE_ASSET_UPLOAD_UNCONFIRMED'],
+  ['GH_RELEASE: upload not observed','OFFICIAL_RELEASE_ASSET_UPLOAD_UNCONFIRMED'],
+]);
 
 class CycleStageFailure extends Error {
   constructor(stage,error) {
-    super(isPublicCode(error?.message)?error.message:'CYCLE_EVENT_STOPPED');
+    const reason=draftErrorCodes.get(error?.message);
+    super(reason??(isPublicCode(error?.message)?error.message:'CYCLE_EVENT_STOPPED'));
     this.stage=stage;
     this.category=categories.has(error?.message)?error.message:'UNCLASSIFIED';
   }

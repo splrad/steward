@@ -171,6 +171,20 @@ test('release inventory changes between the preflight and postflight stop upload
   await assert.rejects(f.perform({previous:before}),/DRAFT_IDENTITY/);
 });
 
+test('the frozen range allows an earlier draft to go public and detects added tags with a frozen body',async()=>{
+  const f=fixture();
+  f.facts.releases[0].draft=true;
+  const before=await f.perform();
+  f.facts.releases[0].draft=false;
+  const options={scopeDigest:before.othersDigest};
+  assert.equal((await f.perform(options)).releaseId,null);
+  f.after();
+  assert.equal((await f.perform(options)).releaseId,2);
+  f.facts.otherTags.push({ref:'refs/tags/v9.0.0',object:{type:'commit',sha:newer}});
+  const compare=async()=>({status:'ahead',merge_base_commit:{sha:source}});
+  await assert.rejects(inspectOfficialRelease({...approval,frozenBody:body},{reader:f.reader,compare,...options}),/RECORDED_SCOPE_DRIFT/);
+});
+
 test('changes observed around the scan are rejected and ordinary descendant commits can continue',async()=>{
   const f=fixture();
   await assert.rejects(f.perform({scan:async()=>{f.facts.pull.labels.push({name:tagged});return [f.matching];}}),/SCAN_DRIFT/);
@@ -196,6 +210,7 @@ test('lifecycle recovery clears pending before adding tagged and resolves lost r
 
 test('the pinned Action runs only after the gated product and branch checks, in the shared coordinator queue',async()=>{
   const workflow=YAML.parse(await readFile(new URL('../../.github/workflows/release-cycle-event.yml',import.meta.url),'utf8'));
+  const lock=await readFile(new URL('../../.github/workflows/actions.lock',import.meta.url),'utf8');
   const steps=workflow.jobs['release-coordinator'].steps;
   const position=id=>steps.findIndex(step=>step.id===id);
   assert.ok(position('official_plan')<position('official_token') && position('official_token')<position('official_preflight')
@@ -204,7 +219,8 @@ test('the pinned Action runs only after the gated product and branch checks, in 
   assert.ok(position('official_delivery')<position('delivery_archive') && position('delivery_archive')<position('official_plan'));
   assert.equal(steps[position('delivery_archive')].with['skip-decompress'],true);
   const action=steps[position('official_draft')];
-  assert.equal(action.uses,'googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7');
+  assert.match(action.uses,/^googleapis\/release-please-action@[a-f0-9]{40}$/);
+  assert.ok(lock.includes(`'${action.uses}'`));
   assert.equal(action.if,"${{ steps.official_preflight.outputs.create == 'true' }}");
   assert.equal(action.with['skip-github-pull-request'],true);
   assert.equal(action.with['release-type'],undefined);

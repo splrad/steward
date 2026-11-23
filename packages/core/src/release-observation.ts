@@ -191,6 +191,7 @@ export function stateRecordOwner(targetRef: string, path: string): 'release' | '
   if (targetRef==='steward/release-state') {
     if (path==='state.json' || /^cycles\/pr-[1-9][0-9]*-[a-f0-9]{40}\.json$/.test(path)
       || /^candidates\/[a-f0-9]{64}\/(source|draft|branch|pull)-(0|[1-9][0-9]*)\.json$/.test(path)
+      || /^candidates\/[a-f0-9]{64}\/(source|branch)-lookup\.json$/.test(path)
       || /^candidates\/[a-f0-9]{64}\/seen-[a-f0-9]{40}\.json$/.test(path)
       || /^official\/(merged|draft)\/pr-[1-9][0-9]*-[a-f0-9]{40}\.json$/.test(path)
       || /^(?:generated|content)\/[A-Za-z0-9_/-]+\.md$/.test(path)
@@ -254,29 +255,30 @@ export function decodeStateFile(targetRef: string, path: string, bytes: Uint8Arr
         schemaVersion: number; repositoryId: number; roundId: string; phase: string;
         index: number; count: number; payloadDigest: string; content: string;
         sourceSha?: string;
-        lookup?: { sourceSha: string; defaultBranch: string; baseline: { tag: string | null; sha: string | null } };
+        defaultBranch?: string; baseline?: { tag: string | null; sha: string | null };
       };
+      const checkIdentity=()=>record?.schemaVersion===1&&record.repositoryId===repositoryId;
       if(path===`candidates/${record?.roundId}/seen-${record?.sourceSha}.json`) {
         exact(record,['schemaVersion','repositoryId','roundId','sourceSha']);
-        if(record.schemaVersion!==1||record.repositoryId!==repositoryId||!sha(record.sourceSha!)) return fail('official candidate source alias');
+        if(!checkIdentity()||!sha(record.sourceSha!)) return fail('official candidate source alias');
         return record;
       }
-      const indexed=record?.index===0&&['source','branch'].includes(record.phase);
-      exact(record, ['schemaVersion','repositoryId','roundId','phase','index','count','payloadDigest','content',...(indexed?['lookup']:[])]);
-      if(record.schemaVersion!==1 || record.repositoryId!==repositoryId
+      if(path===`candidates/${record?.roundId}/${record?.phase}-lookup.json`) {
+        exact(record,['schemaVersion','repositoryId','roundId','phase','sourceSha','defaultBranch','baseline','payloadDigest']);
+        const baseline=record.baseline!;
+        exact(baseline,['tag','sha']);
+        if(!checkIdentity()||!sha(record.sourceSha!)||!record.defaultBranch||typeof record.defaultBranch!=='string'||!digest(record.payloadDigest)
+          ||baseline.sha!==null&&!sha(baseline.sha)||baseline.tag!==null&&typeof baseline.tag!=='string')
+          return fail('official candidate lookup');
+        return record;
+      }
+      exact(record, ['schemaVersion','repositoryId','roundId','phase','index','count','payloadDigest','content']);
+      if(!checkIdentity()
         || path!==`candidates/${record.roundId}/${record.phase}-${record.index}.json`
         || !Number.isSafeInteger(record.index) || !integer(record.count) || record.index>=record.count
         || !digest(record.payloadDigest) || typeof record.content!=='string'
         || !/^[A-Za-z0-9+/]+={0,2}$/.test(record.content) || record.content.length%4!==0
         || record.content.length>4*Math.ceil(256*1024/3)) return fail('official candidate checkpoint');
-      if(indexed) {
-        const lookup=record.lookup!;
-        exact(lookup,['sourceSha','defaultBranch','baseline']);
-        exact(lookup.baseline,['tag','sha']);
-        if(!sha(lookup.sourceSha)||typeof lookup.defaultBranch!=='string'||!lookup.defaultBranch
-          || lookup.baseline.sha!==null&&!sha(lookup.baseline.sha)
-          || lookup.baseline.tag!==null&&typeof lookup.baseline.tag!=='string') return fail('official candidate lookup');
-      }
       return record;
     }
     if(path.startsWith('evidence/completion/')) {
