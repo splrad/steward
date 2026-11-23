@@ -21,7 +21,9 @@ export interface NativeEventRecord {
  receivedAt:number;deadline:number;nextAt:number|null;preparations:number;confirmations:number;claim:number;
  status:'PREPARING'|'CONFIRMING'|'AWAITING_RECEIPT'|'REGISTERED'|'PREVIOUSLY_COMPLETED'|'PROTECTED'|'NEEDS_ATTENTION'|'PAUSED';
  handoff?:NativeHandoff;pausedFrom?:{status:'PREPARING'|'CONFIRMING'|'AWAITING_RECEIPT';nextAt:number};reason:string;prepared:PreparedEvent|null;dispatchedAt:number|null;knownRunId:number|null;evidence:unknown;receiptConsumed?:boolean;receiptDeferred?:boolean;receiptRetryUsed?:boolean;retryAfter?:number;lateReceipt?:{runId:number;attempt:number;at:number};
+ handoffRollback?:true;
 }
+const legacyCandidateSelected=(g:GitReader,id:number)=>g.target?.id===id&&g.target.officialCandidate!==true;
 function exact(v:any,keys:string){ensure(v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join(',')===keys,'NATIVE_SCHEMA');}
 export function nativeHintKey(h:NativeHint){return digest(JSON.stringify([h.repositoryId,h.prNumber,h.actorId,h.action,h.updatedAt])).slice(7);}
 function validateHint(h:NativeHint){exact(h,'action,actorId,prNumber,repositoryId,updatedAt');ensure(Number.isSafeInteger(h.repositoryId)&&h.repositoryId>0&&Number.isSafeInteger(h.prNumber)&&h.prNumber>0&&Number.isSafeInteger(h.actorId)&&h.actorId>0&&['labeled','unlabeled','reopened'].includes(h.action)&&typeof h.updatedAt==='string'&&Number.isFinite(Date.parse(h.updatedAt)),'NATIVE_HINT');}
@@ -88,8 +90,13 @@ export class NativeCandidateCoordinator {
   validateHint(input.hint);const now=this.clock(),t0=Date.parse(input.hint.updatedAt);ensure(t0<=now&&sha(this.env.BOUNDED_CONTROLLER_SHA)&&sha(this.env.BOUNDED_DEPLOYMENT_SHA),'NATIVE_TIME_OR_PIN');
   if(legacyReleaseHandoff(this.env,input.hint.repositoryId))return null;
   const paused=await this.storage.get<NativeEventRecord>('nativeEvent');let resumeClaim:number|undefined;
-  if(paused?.status==='PAUSED'&&paused.pausedFrom&&paused.requestKey===nativeHintKey(input.hint)&&this.env.BOUNDED_RECHECK_ENABLED==='true'&&(paused.controllerAnchorSha??paused.policySha)===this.env.BOUNDED_CONTROLLER_SHA&&paused.deploymentSha===this.env.BOUNDED_DEPLOYMENT_SHA&&now<paused.deadline&&now>=(paused.retryAfter??0)){const proof=await resolveNativeEvent(this.reader(),input.hint);ensure(proof.t0===t0&&(!paused.prepared||proof.sourceSha===paused.prepared.sourceSha&&JSON.stringify(proof.event)===JSON.stringify(paused.prepared.event)),'NATIVE_RESUME_SOURCE');resumeClaim=paused.claim;}
-  return this.storage.transaction(async t=>{const old=await t.get<NativeEventRecord>('nativeEvent');if(old){ensure(old.requestKey===nativeHintKey(input.hint),'NATIVE_CONFLICT');if(old.status==='PAUSED'&&old.pausedFrom&&resumeClaim===old.claim){const at=this.clock();if(at>=old.deadline||(old.retryAfter??0)>=old.deadline){old.status='NEEDS_ATTENTION';old.reason='EVENT_WINDOW_EXHAUSTED';old.nextAt=null;}else{old.status=old.pausedFrom.status;old.nextAt=Math.min(Math.max(at,old.pausedFrom.nextAt,old.retryAfter??0),old.deadline);old.reason='VERIFIED_NATIVE_REDELIVERY_RESUME';}delete old.pausedFrom;await this.save(t,old);}return old;}
+  if(paused?.status==='PAUSED'&&paused.pausedFrom&&paused.requestKey===nativeHintKey(input.hint)&&this.env.BOUNDED_RECHECK_ENABLED==='true'&&(paused.controllerAnchorSha??paused.policySha)===this.env.BOUNDED_CONTROLLER_SHA&&paused.deploymentSha===this.env.BOUNDED_DEPLOYMENT_SHA&&now<paused.deadline&&now>=(paused.retryAfter??0)){
+   const rollback=paused.reason===legacyReleaseHandoffReason||paused.handoffRollback===true;
+   const g=rollback?await candidateReader(this.reader(),input.hint.repositoryId):this.reader();
+   if(rollback&&!legacyCandidateSelected(g,input.hint.repositoryId))return paused;
+   const proof=await resolveNativeEvent(g,input.hint);ensure(proof.t0===t0&&(!paused.prepared||proof.sourceSha===paused.prepared.sourceSha&&JSON.stringify(proof.event)===JSON.stringify(paused.prepared.event)),'NATIVE_RESUME_SOURCE');resumeClaim=paused.claim;
+  }
+  return this.storage.transaction(async t=>{const old=await t.get<NativeEventRecord>('nativeEvent');if(old){ensure(old.requestKey===nativeHintKey(input.hint),'NATIVE_CONFLICT');if(old.status==='PAUSED'&&old.pausedFrom&&resumeClaim===old.claim){const at=this.clock();if(at>=old.deadline||(old.retryAfter??0)>=old.deadline){old.status='NEEDS_ATTENTION';old.reason='EVENT_WINDOW_EXHAUSTED';old.nextAt=null;}else{if(old.reason===legacyReleaseHandoffReason)old.handoffRollback=true;old.status=old.pausedFrom.status;old.nextAt=Math.min(Math.max(at,old.pausedFrom.nextAt,old.retryAfter??0),old.deadline);old.reason='VERIFIED_NATIVE_REDELIVERY_RESUME';}delete old.pausedFrom;await this.save(t,old);}return old;}
    const r:NativeEventRecord={schemaVersion:1,hint:input.hint,requestKey:nativeHintKey(input.hint),firstDeliveryId:input.deliveryId,policySha:this.env.BOUNDED_CONTROLLER_SHA!,deploymentSha:this.env.BOUNDED_DEPLOYMENT_SHA!,receivedAt:now,deadline:t0+120*minute,nextAt:now,preparations:0,confirmations:0,claim:0,status:'PREPARING',reason:'SIGNED_EVENT_DURABLE',prepared:null,dispatchedAt:null,knownRunId:null,evidence:null};if(now>=r.deadline){r.status='NEEDS_ATTENTION';r.reason='EVENT_EXPIRED';r.nextAt=null;}await this.save(t,r);return r;});
  }
  async alarm(){
@@ -213,6 +220,15 @@ export class NativeCandidateCoordinator {
    });
    return;
   }
+  if(r.handoffRollback&&!legacyCandidateSelected(candidate,r.hint.repositoryId)){
+   await this.storage.transaction(async t=>{
+    const latest=await t.get<NativeEventRecord>('nativeEvent');
+    if(!latest||latest.claim!==r.claim||latest.dispatchedAt!==null||latest.status==='PAUSED')return;
+    latest.status='PROTECTED';latest.reason='OFFICIAL_CANDIDATE_ADOPTED';latest.nextAt=null;
+    await this.save(t,latest);
+   });
+   return;
+  }
   const policy=await promotedController(g,this.env.RELEASE_RELAY_DEPLOYMENT_SHA??this.env.BOUNDED_DEPLOYMENT_SHA??r.deploymentSha,this.env);
   const prepared=await resolveNativeEvent(candidate,r.hint);ensure(prepared.t0===Date.parse(r.hint.updatedAt),'NATIVE_ORIGINAL_TIME');
   if(prepared.priorIdentity){const current=await objectPost(this.env,prepared.priorIdentity,'status',{});await this.checkPrior(current,prepared.priorIdentity,{...r,policySha:policy},prepared.t0);if(current?.status==='PENDING')await objectPost(this.env,prepared.priorIdentity,'pause',{expectedGeneration:current.generation});}
@@ -234,7 +250,8 @@ export class NativeCandidateCoordinator {
   const run=await g.json(CENTRAL.id,`/repos/${CENTRAL.name}/actions/runs/${id}/attempts/1`);ensure(run.id===id&&run.run_attempt===1&&run.head_sha===r.policySha&&run.path==='.github/workflows/release-candidate-event.yml'&&run.display_title===`Candidate event ${r.requestKey}`&&run.actor?.id===APP_BOT_ID&&run.repository?.id===CENTRAL.id&&run.head_repository?.id===CENTRAL.id&&run.head_branch==='main'&&run.event==='workflow_dispatch','NORMAL_RUN_BINDING');
   const bound=await this.storage.transaction(async t=>{const latest=await t.get<NativeEventRecord>('nativeEvent');if(!latest||latest.claim!==r.claim||latest.status==='PAUSED')return false;latest.knownRunId=id;if(latest.confirmations>=3){latest.status='AWAITING_RECEIPT';latest.reason='KNOWN_RUN_AWAITING_RECEIPT';latest.nextAt=latest.deadline;}await this.save(t,latest);return true;});if(!bound||run.status!=='completed')return;
   const verified=await verifyNormalResult(g,r,run);const now=this.clock();if(now>=r.deadline)return;
-  const draining=legacyReleaseHandoff(this.env,r.hint.repositoryId);
+  const draining=legacyReleaseHandoff(this.env,r.hint.repositoryId) ||
+    (r.handoffRollback===true && !legacyCandidateSelected(await candidateReader(g,r.hint.repositoryId),r.hint.repositoryId));
   let previous:Awaited<ReturnType<typeof applyVerifiedCandidateEvent>>;
   if(verified.kind==='ready'&&!draining){
    if(!await this.reserveHandoff(r,verified.evidence))return;
@@ -249,7 +266,8 @@ export class NativeCandidateCoordinator {
     current.status='NEEDS_ATTENTION';current.reason='EVENT_WINDOW_EXHAUSTED';
     if(current.handoff)current.handoff.status='INDETERMINATE';
    }else if(draining&&verified.kind==='ready'){
-    current.status='PROTECTED';current.reason=legacyReleaseHandoffReason;
+    current.pausedFrom={status:current.confirmations>=confirmOffsets.length?'AWAITING_RECEIPT':'CONFIRMING',nextAt:this.clock()};
+    current.status='PAUSED';current.reason=legacyReleaseHandoffReason;current.receiptDeferred=true;
    }else{
     current.status=previous?'PREVIOUSLY_COMPLETED':verified.kind==='ready'?'REGISTERED':'PROTECTED';
     current.reason=previous?'VERIFIED_PREVIOUS_COMPLETION':verified.kind==='ready'?'VERIFIED_NORMAL_HANDOFF':'PROTECTED_NOT_READY';

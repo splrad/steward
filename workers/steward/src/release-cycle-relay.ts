@@ -31,10 +31,13 @@ type Relay = {hint: Hint; stage: Stage; tries: number; next: number; policy: str
 
 const ownerId = (hint: Hint) => hint.kind === 'publication' ? hint.productRepositoryId ?? TARGET.id : hint.repositoryId;
 const legacyCandidate = (hint: Hint) => hint.kind === 'candidate-head' || hint.kind === 'candidate-status';
+const officialCandidateHint = (hint: Hint) => hint.kind==='official-edit'||hint.kind==='official-refresh'||hint.kind==='official-merge';
 const legacyCandidateRelay = (relay: Relay) => legacyCandidate(relay.hint) ||
   (relay.hint.kind === 'push' && !relay.officialCandidate);
+const version3Candidate = (target: ProductTarget | undefined): target is ProductTarget & {officialCandidate:true;sourceSha:string} =>
+  target?.officialCandidate === true && sha(target.sourceSha);
 const officialPush = (target: ProductTarget | undefined, hint: Extract<Hint,{kind:'push'}>) =>
-  target?.officialCandidate === true && target.sourceSha === hint.sourceSha;
+  version3Candidate(target) && target.sourceSha === hint.sourceSha;
 const hexDigest = (v: unknown): v is string => typeof v === 'string' && v.length === 64 && /^[a-f0-9]+$/.test(v);
 function officialCycle(cycle: Awaited<ReturnType<typeof readCycle>>['cycle']): boolean {
   const receipt=cycle.officialRelease;
@@ -64,11 +67,10 @@ async function boundBuildCycle(g:GitReader,run:any) {
 
 async function officialPublication(g:GitReader,parent:Relay,installation:string|undefined):Promise<boolean> {
   const hint=parent.hint;
-  if (hint.kind==='official-merge') return true;
-  if (hint.kind!=='run') return false;
-  if (parent.officialRelease===true) return true;
+  if (hint.kind!=='official-merge' && hint.kind!=='run') return false;
   const scoped=await candidateReader(g,hint.repositoryId),target=scoped.target;
-  if (!target?.officialCandidate) return false;
+  if (!version3Candidate(target)) return false;
+  if (hint.kind==='official-merge' || parent.officialRelease===true) return true;
   const run=await scoped.json(target.id,`/repos/${target.name}/actions/runs/${hint.runId}/attempts/${hint.attempt}`);
   if (!isBuildWorkflow(run?.path) || run.repository?.id!==target.id || !sha(run.head_sha) || !positive(run.workflow_id)) return false;
   // A historical receipt binds to the original native Run and its frozen dispatch.
@@ -206,10 +208,10 @@ export async function acceptReleaseHint(env: BoundedEnv, event: string, payload:
   if (!hint) return;
   if (legacyReleaseHandoff(env,ownerId(hint))) {
     if (legacyCandidate(hint)) return;
-    if (hint.kind === 'push' || hint.kind === 'run') {
+    if (hint.kind === 'push' || hint.kind === 'run' || officialCandidateHint(hint)) {
       if (hint.kind === 'run' && run.path === channelPath) return;
       const scoped = await reader().forCandidate?.(hint.repositoryId);
-      if (!scoped?.target?.officialCandidate) return;
+      if (!scoped || !version3Candidate(scoped.target)) return;
       if (hint.kind === 'push' && !officialPush(scoped.target,hint)) return;
       if (hint.kind === 'run' && !officialCycle(await boundBuildCycle(scoped,run))) return;
     }
@@ -296,7 +298,7 @@ export class ReleaseRelay {
          target.defaultBranch!==pending.source.defaultBranch){await t.deleteAlarm();return;}
       const kind=pending.hint.kind;
       if(legacyReleaseHandoff(this.env,ownerId(pending.hint))&&
-         (legacyCandidate(pending.hint)||(pending.hint.kind==='push'&&!officialPush(target,pending.hint)))){
+         (legacyCandidate(pending.hint)||!version3Candidate(target)||(pending.hint.kind==='push'&&!officialPush(target,pending.hint)))){
         await t.put('releaseCycle',{hint:pending.hint,stage:'prepare',tries:0,next:pending.next,policy:'',reserved:0,
           reason:legacyReleaseHandoffReason,paused:true} satisfies Relay);
         await t.deleteAlarm();
@@ -356,6 +358,11 @@ export class ReleaseRelay {
       ensure(this.env.BOUNDED_RECHECK_ENABLED === 'true','RELEASE_RELAY_PAUSED');
       if (r.stage === 'prepare') {
         const stopLegacy = () => save({paused:true,reason:legacyReleaseHandoffReason});
+        let candidate:GitReader|undefined;
+        if(draining&&(r.hint.kind==='push'||officialCandidateHint(r.hint))){
+          candidate=await candidateReader(g,r.hint.repositoryId);
+          if(!version3Candidate(candidate.target)||(r.hint.kind==='push'&&!officialPush(candidate.target,r.hint))){await stopLegacy();return;}
+        }
         if (r.hint.kind === 'run') {
           const scoped=await candidateReader(g,r.hint.repositoryId);
           const target=scoped.target??TARGET;
@@ -364,7 +371,7 @@ export class ReleaseRelay {
           const repeated=releaseHint('workflow_run',{action:'completed',repository:{id:target.id,full_name:target.name,default_branch:target.defaultBranch,fork:false,archived:false},
             installation:{id:Number(this.env.INSTALLATION_ID)},workflow_run:run},this.env.INSTALLATION_ID,product);
           ensure(run.repository?.id===target.id && sha(run.head_sha) && repeated && relayKey(repeated)===key,'RELEASE_PRODUCT_RUN');
-          if(draining&&run.path===channelPath){await stopLegacy();return;}
+          if(draining&&(run.path===channelPath||!version3Candidate(scoped.target))){await stopLegacy();return;}
           if(run.path!==channelPath){
             officialRelease=officialCycle(await boundBuildCycle(scoped,run));
             if(draining&&!officialRelease){await stopLegacy();return;}
@@ -411,12 +418,8 @@ export class ReleaseRelay {
         const inputs = {event_json:eventJson,request_key:key,policy_sha:policy};
         if(r.officialCandidate) {
           ensure(r.hint.kind==='push'||r.hint.kind==='official-edit'||r.hint.kind==='official-refresh','RELEASE_RELAY_CANDIDATE_KIND');
-          if(draining&&r.hint.kind==='push'){
-            const scoped=await candidateReader(g,r.hint.repositoryId);
-            if(!officialPush(scoped.target,r.hint)){await stopLegacy();return;}
-          }
           if (r.hint.kind==='official-refresh') {
-            const scoped=await candidateReader(g,r.hint.repositoryId),target=scoped.target;
+            const scoped=candidate??await candidateReader(g,r.hint.repositoryId),target=scoped.target;
             ensure(target?.officialCandidate,'RELEASE_RELAY_CANDIDATE_SCOPE');
             const ref=await scoped.json(target.id,'/repos/'+target.name+'/git/ref/heads/'+encodeURIComponent(target.defaultBranch));
             ensure(ref.ref==='refs/heads/'+target.defaultBranch&&ref.object?.type==='commit'&&sha(ref.object.sha),'RELEASE_RELAY_CANDIDATE_SOURCE');

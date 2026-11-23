@@ -128,6 +128,34 @@ async function normalFixture(){
  return {f,hint,key,g,env,run,artifact,eventStorage,store,engine,coordinator,time:(n:number)=>{now=n;},clock:()=>now,missingArtifact:()=>{artifactError='ARTIFACT_UNIQUE';},artifactFailure:(s:string|null)=>{artifactError=s;},readError:(s:string|null)=>{readError=s;},unavailable:(v:boolean)=>{unavailable=v;},losePost:()=>{losePost=true;},posts:()=>posts,reads:()=>reads};
 }
 describe('durable normal candidate event chain',()=>{
+ it.each(['rollback','already-adopted','adopted-after-redelivery'] as const)('handles a verified in-flight normal receipt during handoff: %s',async mode=>{
+  const f=await normalFixture();
+  await f.coordinator().register({hint:f.hint,deliveryId:'initial'});
+  await f.coordinator().alarm();
+  expect(f.posts()).toBe(1);
+  f.env.LEGACY_RELEASE_HANDOFF_IDS=JSON.stringify([TARGET.id]);
+  f.time(f.clock()+60000);await f.coordinator().alarm();
+  const paused=await f.eventStorage.get<any>('nativeEvent');
+  expect(paused).toMatchObject({status:'PAUSED',reason:'LEGACY_RELEASE_HANDOFF',nextAt:null,knownRunId:101,
+    pausedFrom:{status:'CONFIRMING'},evidence:{runId:101},receiptDeferred:true});
+  expect(await f.store.read()).toBeNull();
+  f.env.LEGACY_RELEASE_HANDOFF_IDS='[]';
+  let official=mode==='already-adopted';
+  f.g.forCandidate=async()=>({...f.g,target:{...TARGET,...(official?{officialCandidate:true as const}:{})}});
+  await f.coordinator().register({hint:f.hint,deliveryId:'same-event'});
+  if(mode==='adopted-after-redelivery')official=true;
+  await f.coordinator().alarm();
+  const state=await f.eventStorage.get<any>('nativeEvent');
+  expect([state.dispatchedAt,state.knownRunId,state.confirmations]).toEqual([paused.dispatchedAt,101,paused.confirmations]);
+  expect(f.posts()).toBe(1);
+  if(mode==='rollback'){
+   expect(state).toMatchObject({status:'REGISTERED',handoff:{status:'COMPLETE'}});
+   expect((await f.store.read())?.status).toBe('PENDING');
+  }else{
+   expect(state).toMatchObject({status:'PAUSED',reason:'LEGACY_RELEASE_HANDOFF',nextAt:null});
+   expect(await f.store.read()).toBeNull();
+  }
+ });
  it('stops legacy candidate intake and cancels promotion wake for its unposted claim',async()=>{
   const f=await normalFixture();
   await f.coordinator().register({hint:f.hint,deliveryId:'already-registered'});

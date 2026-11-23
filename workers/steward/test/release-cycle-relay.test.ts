@@ -226,8 +226,9 @@ it.each(['ordinary','ordinary-official','handoff-legacy','handoff-official','han
  const {createHash}=await import('node:crypto');
  const bytes=Buffer.from(JSON.stringify(cycle)), blob=createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex');
  let post:any;
- const reader={json:async(id:number,path:string,method?:string,body?:unknown)=>{
+ const reader={target:{...TARGET,officialCandidate:true as const,sourceSha:pin},json:async(id:number,path:string,method?:string,body?:unknown)=>{
    if(path.endsWith('/attempts/2'))return run;
+   if(path.endsWith('/actions/workflows/steward-release-publish.yml'))return {state:'active',path:run.path,id:run.workflow_id};
    if(path.endsWith('/heads/steward/release-state'))return {ref:'refs/heads/steward/release-state',object:{type:'commit',sha:pin}};
    if(path.includes('/contents/cycles/'))return {path:'cycles/'+cycleId+'.json',type:'file',encoding:'base64',size:bytes.length,sha:blob,content:bytes.toString('base64')};
    if(path.includes('/git/ref/'))return {ref:'refs/'+path.split('/git/ref/')[1],object:{type:'commit',sha:pin}};
@@ -282,7 +283,7 @@ it.each(['ordinary','handoff-legacy','stored-proof','historical-unmarked','histo
  const {createHash}=await import('node:crypto');
  const bytes=Buffer.from(JSON.stringify(cycle)), blob=createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex');
  let posts=0, historicalReads=0;
- const g={forCandidate:async()=>({target:{...TARGET,officialCandidate:true},json:async(_id:number,path:string)=>{
+ const g={forCandidate:async()=>({target:{...TARGET,officialCandidate:true,sourceSha:pin},json:async(_id:number,path:string)=>{
    historicalReads++;
    if(path.endsWith('/runs/101/attempts/2'))return build;
    if(path.endsWith('/heads/steward/release-state'))return {ref:'refs/heads/steward/release-state',object:{type:'commit',sha:pin}};
@@ -344,6 +345,33 @@ it('allows only an adopted current official push for the handoff repository and 
  const other={...signed,repository:{...signed.repository,id:123456,full_name:'splrad/other'}};
  await acceptReleaseHint(env as any,'push',other);
  expect(keys).toEqual(['cycle:v1:'+relayKey(hint),'cycle:v1:'+relayKey({...hint,repositoryId:123456})]);
+});
+it.each(['edit','refresh','merge'] as const)('rejects v2 official %s both before durable admission and before dispatch during handoff',async kind=>{
+ const f=fixture(), intake:unknown[]=[];
+ const signed={...payload,repository:{...repo,private:false,owner:{id:302208797}},number:301};
+ const tagged={name:'autorelease: tagged'},pending={name:'autorelease: pending'};
+ const pull={number:301,state:'closed',merged:true,merged_at:'2026-11-23T00:00:00Z',merge_commit_sha:deployment,
+   user:{id:301115370},body:'Release notes',title:'chore(main): release 1.1.0',labels:[pending],
+   base:{ref:'main',repo:{id:TARGET.id}},head:{ref:'release-please--branches--main',repo:{id:TARGET.id},sha:pin}};
+ const webhook=kind==='edit'?{...signed,action:'edited',changes:{body:{from:'Old'}},sender:{id:42,type:'User'},
+     pull_request:{...pull,state:'open',merged:false}}:
+   kind==='refresh'?{...signed,action:'labeled',label:tagged,sender:{id:301115370},pull_request:{...pull,labels:[tagged]}}:
+   {...signed,action:'closed',pull_request:pull};
+ const event=releaseHint('pull_request',webhook,'7')!;
+ expect(event.kind).toBe('official-'+kind);
+ let sourceSha:string|undefined;
+ const g={...f.g,forCandidate:async()=>({...f.g,target:{...TARGET,officialCandidate:true as const,sourceSha}})};
+ const env={...f.env,INSTALLATION_ID:'7',LEGACY_RELEASE_HANDOFF_IDS:JSON.stringify([TARGET.id]),
+   BOUNDED_RECHECK:{idFromName:(key:string)=>key,get:()=>({fetch:async(r:Request)=>{intake.push(await r.json());return Response.json({});}})}};
+ const receive=()=>acceptReleaseHint(env as any,'pull_request',webhook,'',()=>g as any);
+ await receive();expect(intake).toHaveLength(0);
+ sourceSha=pin;await receive();expect(intake).toHaveLength(1);
+ sourceSha=undefined;
+ const relay=new ReleaseRelay(f.storage as any,env as any,()=>g as any,()=>f.state.now);
+ await f.storage.put('releaseCycle',{hint:event,stage:'prepare',tries:0,next:f.state.now,policy:'',reserved:0,officialCandidate:true});
+ await relay.alarm();
+ expect(await f.storage.get('releaseCycle')).toMatchObject({paused:true,reason:'LEGACY_RELEASE_HANDOFF',reserved:0});
+ expect(f.state.posts).toBe(0);
 });
 it('retains an existing unqualified legacy intake as a paused record for reconciliation',async()=>{
  const f=fixture();
