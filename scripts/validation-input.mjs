@@ -9,6 +9,7 @@ import {loadPolicy,dependencyMode,assertGovernanceOnlyScope,configurationCallers
 import {parseRegistration,registrationPath,registrationWorkflow} from './repository-registration-policy.mjs';
 import {assertLifecycleScope} from './private-lifecycle-policy.mjs';
 import {assertRepositoryPolicyMarker,repositoryPolicyAdoptionPath} from './repository-policy-projection.mjs';
+import {parseReleasePauses,releasePausesPath} from './release-pauses.mjs';
 const check=(ok,code)=>{if(!ok)throw Error('VALIDATION_'+code);};
 export function git(workspace,args) {
   return execFileSync('git',['--no-replace-objects','-c','core.hooksPath=','-c','credential.helper=',...args],
@@ -43,7 +44,7 @@ export function requiresProductCI(files,dependency,administrator) {
   if(dependency!=='private-administrator')return true;
   const managed=new Set([administrator.workflow,registrationWorkflow,administrator.lockException?.manifestPath,administrator.lockException?.patchPath,
     'safe-settings/settings.yml','safe-settings/deployment-settings.yml','.gitignore','mise.toml','mise.lock',
-    '.github/dependabot.yml','.github/renovate.json']);
+    '.github/dependabot.yml','.github/renovate.json',releasePausesPath]);
   return files.some(path=>!documentationOnly([path])&&!managed.has(path)&&!registrationPath.test(path)
     &&!/^\.mise\/locks\/npm\/\d+\.\d+\.\d+\/(?:aube-lock\.yaml|package\.json)$/.test(path));
 }
@@ -144,6 +145,11 @@ export async function validationFileInputs(workspace,env=process.env) {
   const policy=await loadPolicy();
   const dependency=dependencyMode(event,policy,env.PRIVATE_GOVERNANCE_REPOSITORY_ID);
   if(dependency==='private-administrator') {
+    if(files.includes(releasePausesPath)||changedPaths.includes(releasePausesPath)) {
+      const [record,path]=git(workspace,['ls-tree','-z',head,'--',releasePausesPath]).toString('utf8').split('\t');
+      check(/^100644 blob [a-f0-9]{40}$/.test(record)&&path===releasePausesPath+'\0','RELEASE_PAUSES_FILE');
+      parseReleasePauses(git(workspace,['show',head+':'+releasePausesPath]));
+    }
     for(const path of files) {
       const registered=registrationPath.exec(path);
       if(registered)parseRegistration(await readFile(await regular(workspace,path)),Number(registered[1]));

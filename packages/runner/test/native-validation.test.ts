@@ -454,6 +454,47 @@ it('keeps registered settings and supplier lock metadata in organizational check
   expect(requiresProductCI(files,'private-administrator',admin)).toBe(false);
   expect(requiresProductCI([...files,'server/main.go'],'private-administrator',admin)).toBe(true);
 });
+it('accepts a valid release pause list only as an ordinary administrator Git file',async()=>{
+  const {validationInput}=await script('validation-input');
+  const root=await mkdtemp(join(tmpdir(),'validation-pause-list-'));
+  registerOfflineFixtureRoot(root);
+  const git=(...args:string[])=>execFileSync('git',args,{cwd:root,encoding:'utf8'}).trim();
+  const path='release-pauses.json',file=join(root,path),eventPath=join(root,'.git','event.json');
+  const repository={id:1447987054,full_name:'splrad/steward-settings',private:true,default_branch:'main'};
+  const env={GITHUB_EVENT_PATH:eventPath,GITHUB_EVENT_NAME:'pull_request',GITHUB_REPOSITORY_ID:String(repository.id),
+    GITHUB_REPOSITORY:repository.full_name,WORKFLOW_REPOSITORY:'splrad/steward',
+    WORKFLOW_PATH:'.github/workflows/pr-validation-native.yml',WORKFLOW_SHA:S};
+  const commit=()=>{
+    git('commit','--signoff','--no-gpg-sign','-qm','validation fixture');
+    return git('rev-parse','HEAD');
+  };
+  try{
+    git('init','--initial-branch=main');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid');
+    await writeFile(join(root,'README.md'),'base\n');git('add','README.md');
+    const before=commit();
+    const evaluate=async(base:string)=>{
+      git('update-ref','refs/remotes/origin/main',base);
+      await writeFile(eventPath,JSON.stringify({repository,pull_request:{base:{repo:{id:repository.id},ref:'main',sha:base},
+        head:{sha:git('rev-parse','HEAD')}}}));
+      return validationInput(root,env);
+    };
+    const save=async(bytes:string)=>{
+      await writeFile(file,bytes);git('add',path);return commit();
+    };
+    const empty=await save('[]\n');
+    await expect(evaluate(before)).resolves.toMatchObject({productApplicable:false,dependencyMode:'private-administrator',
+      workflows:[],input:{changedPaths:[path]}});
+    const paused=await save('[1187527897]\n');
+    await expect(evaluate(empty)).resolves.toMatchObject({productApplicable:false,dependencyMode:'private-administrator'});
+    await save('[1187527897,1187527897]\n');
+    await expect(evaluate(paused)).rejects.toThrow('RELEASE_PAUSES_INVALID');
+    git('checkout','--detach',paused);
+    git('update-index','--add','--cacheinfo','100755,'+git('rev-parse','HEAD:'+path)+','+path);commit();
+    await expect(evaluate(paused)).rejects.toThrow('VALIDATION_RELEASE_PAUSES_FILE');
+    git('checkout','--detach',paused);git('rm',path);commit();
+    await expect(evaluate(paused)).rejects.toThrow('VALIDATION_RELEASE_PAUSES_FILE');
+  }finally{await rm(root,{recursive:true,force:true});}
+},30000);
 it('accepts fork fallback only with the reviewed native run name and workflow source',async()=>{
   const {boundForkRun,workflowSource}=await script('product-ci-evidence');
   const path='.github/workflows/test.yml';

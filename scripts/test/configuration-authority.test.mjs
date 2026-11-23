@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {selectWorkflow} from '../configuration-build.mjs';
 import {documentationOnly,requiresProductCI,selectableProductCI} from '../validation-input.mjs';
+import {parseReleasePauses,releasePausesPath} from '../release-pauses.mjs';
 import {mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
 import {execFileSync} from 'node:child_process';
 import {join} from 'node:path';
@@ -225,6 +226,18 @@ test('configuration callers are governance files and product CI choices match na
     assert.equal(selectableProductCI(model.workflows[0]),false);
   }
   assert.equal(selectableProductCI({path,document:{on:['push','pull_request']}}),true);
+});
+test('only the administrator pause list is managed and repository IDs must be unique positive integers',()=>{
+  const administrator={workflow:'.github/workflows/settings-sync.yml'};
+  assert.equal(requiresProductCI([releasePausesPath],'private-administrator',administrator),false);
+  assert.equal(requiresProductCI([releasePausesPath],'native'),true);
+  assert.equal(requiresProductCI(['other/'+releasePausesPath],'private-administrator',administrator),true);
+  assert.equal(requiresProductCI([releasePausesPath,'src/product.py'],'private-administrator',administrator),true);
+  assert.deepEqual(parseReleasePauses(Buffer.from('[]\n')),[]);
+  assert.deepEqual(parseReleasePauses(Buffer.from('[1187527897,1296724484]')),[1187527897,1296724484]);
+  for(const invalid of ['{}','[0]','[-1]','[1.5]','["1187527897"]','[9007199254740992]','[1,1]','[1,]'])
+    assert.throws(()=>parseReleasePauses(Buffer.from(invalid)),/^Error: RELEASE_PAUSES_INVALID$/);
+  assert.throws(()=>parseReleasePauses(Buffer.from([0xff])),/^Error: RELEASE_PAUSES_INVALID$/);
 });
 test('selects entries covering all PR bases and files and the actual default branch push',()=>{
   const choice=(push,pull_request={})=>selectableProductCI({path:'.github/workflows/build.yml',document:{on:{push,pull_request}}},'stable/v2');
