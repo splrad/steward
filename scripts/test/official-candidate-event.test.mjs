@@ -3,13 +3,15 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { parseFragment } from 'parse5';
+import YAML from 'yaml';
+import { EvidenceReadError } from '../../packages/runner/dist/index.js';
 import { Manifest as ActionManifest } from 'release-please-official/build/src/manifest.js';
 import { Manifest } from 'release-please/build/src/manifest.js';
 import { PullRequestBody as ActionPullRequestBody } from 'release-please-official/build/src/util/pull-request-body.js';
 import { PullRequestBody } from 'release-please/build/src/util/pull-request-body.js';
 import { bodyDigest, officialMergeKey, officialNotes, renderOfficialHomepage, validateOfficialMergeEvent,
   renderOfficialPull, verifyOfficialMerge } from '../official-release-candidate.mjs';
-import { captureOfficialAction, finishOfficialPull, officialActionResult, prepareOfficialPush } from '../official-candidate-event.mjs';
+import { captureOfficialAction, finishOfficialPull, officialActionResult, officialCandidateRoute, prepareOfficialPush } from '../official-candidate-event.mjs';
 
 const sourceSha = 'a'.repeat(40), head = 'b'.repeat(40), controllerSha = 'c'.repeat(40), previousSha = 'd'.repeat(40);
 const product = { id: 17, name: 'splrad/fixture', defaultBranch: 'main' }, authorId = 301115370;
@@ -34,6 +36,30 @@ const orgNotes = {
 };
 const person = { id: 42, login: 'contributor', profileUrl: 'https://github.com/contributor',
   avatarUrl: 'https://avatars.githubusercontent.com/u/42?v=4', alt: 'contributor' };
+
+test('only the native product declaration selects a candidate writer while the official switch is off', async () => {
+  const push = { kind: 'push', repositoryId: product.id, sourceSha };
+  const label = { repositoryId: product.id, prNumber: 29, eventId: 12 };
+  const old = { 'separate-pull-requests': false };
+  assert.deepEqual(officialCandidateRoute(push, old, 'legacy'), { result: 'legacy_cycle_route' });
+  assert.deepEqual(officialCandidateRoute(label, old, 'central'), { route: 'legacy' });
+  assert.deepEqual(officialCandidateRoute(label, settings, 'central'), { result: 'official_candidate_adopted' });
+  assert.deepEqual(officialCandidateRoute(push, settings, 'central'), { result: 'official_candidate_disabled' });
+  assert.deepEqual(officialCandidateRoute(push, settings, 'central', 'false', '18'), { result: 'official_candidate_disabled' });
+  assert.deepEqual(officialCandidateRoute(push, settings, 'central', 'false', '17'), { route: 'official' });
+  assert.deepEqual(officialCandidateRoute(push, settings, 'central', 'true'), { route: 'official' });
+  for (const [event, config] of [[push, settings], [push, old], [label, old]]) {
+    assert.deepEqual(officialCandidateRoute(event, config, 'paused', 'true', '17'), { result: 'paused' });
+  }
+  assert.throws(() => officialCandidateRoute(push, {}, 'legacy', 'false'), /ROUTE/);
+
+  const workflow = YAML.parse(await readFile('.github/workflows/release-candidate-event.yml', 'utf8'));
+  const steps = workflow.jobs.event.steps;
+  assert.equal(steps.find(step => step.id === 'candidate-token').if, "steps.product.outputs.route == 'official'");
+  assert.equal(steps.find(step => step.run === 'node scripts/release-candidate-event.mjs').if, "steps.product.outputs.route == 'legacy'");
+  assert.equal(steps.find(step => step.id === 'release-please').if, "steps.prepare.outputs.mode == 'action'");
+});
+
 function render(upstream = upstreamBody, notes = orgNotes, contributors = [person]) {
   return renderOfficialHomepage({ upstreamBody: upstream, template, notes, contributors,
     sourceLink: { label: '查看本版变更', url: 'https://github.com/splrad/fixture/compare/' + previousSha + '...' + sourceSha },
@@ -100,11 +126,19 @@ test('pinned central rendering needs no product Mustache and excludes committers
   const commits = [{ sha: sourceSha, commit: { message: 'fix: 修复安装' }, author, committer: { ...author, id: 555 } },
     { sha: controllerSha, commit: { message: 'docs: 更新开发说明' },
       author: { ...author, id: 19864447, login: 'web-flow' } }];
+  let delivery = { schemaVersion: 3 }, productNotes = false, notesStatus = 404;
   const get = async path => {
     if (path.startsWith('contents/release-please-config.json?ref=')) return blob('release-please-config.json', settings);
     if (path === 'contents/.release-please-manifest.json?ref=' + sourceSha) return blob('.release-please-manifest.json', { '.': '1.0.0' });
     if (path === 'contents/.release-please-manifest.json?ref=' + head) return blob('.release-please-manifest.json', { '.': '1.1.0' });
-    if (path === 'contents/.github/delivery.json?ref=' + sourceSha) return blob('.github/delivery.json', { schemaVersion: 3 });
+    if (path === 'contents/.github/delivery.json?ref=' + sourceSha) return blob('.github/delivery.json', delivery);
+    if (path === 'contents/' + (delivery.notes?.['.'] ?? '.release-notes/root.md') + '?ref=' + sourceSha) {
+      if (!productNotes) throw new EvidenceReadError(notesStatus, null);
+      const notesPath = delivery.notes?.['.'] ?? '.release-notes/root.md';
+      const bytes = Buffer.from('## 概述\n\n适用于指定安装范围。\n');
+      return { ...blob(notesPath, {}), content: bytes.toString('base64'), size: bytes.length,
+        sha: createHash('sha1').update('blob ' + bytes.length + '\0').update(bytes).digest('hex') };
+    }
     if (path === 'commits/tags%2Fv1.0.0') return { sha: previousSha };
     if (path === 'compare/' + previousSha + '...' + sourceSha + '?per_page=100&page=1')
       return { status: 'ahead', base_commit: { sha: previousSha }, merge_base_commit: { sha: previousSha }, total_commits: 2, commits };
@@ -116,6 +150,15 @@ test('pinned central rendering needs no product Mustache and excludes committers
   assert.match(homepage.notes.body, /contributor/);
   assert.doesNotMatch(homepage.notes.body, /555|web-flow|更新开发说明/);
   assert.match(homepage.notes.body, new RegExp(previousSha + '\\.\\.\\.' + sourceSha));
+  notesStatus = 403;
+  await assert.rejects(renderOfficialPull(pr, product, get, authorId, sourceSha, template), { status: 403 });
+  productNotes = true;
+  assert.match((await renderOfficialPull(pr, product, get, authorId, sourceSha, template)).notes.body, /适用于指定安装范围/);
+  delivery = { schemaVersion: 3, notes: { '.': '.release-notes/custom.md' } };
+  assert.match((await renderOfficialPull(pr, product, get, authorId, sourceSha, template)).notes.body, /适用于指定安装范围/);
+  productNotes = false;
+  notesStatus = 404;
+  await assert.rejects(renderOfficialPull(pr, product, get, authorId, sourceSha, template), { status: 404 });
 });
 
 test('verified merge uses the original event and exact source after the default branch has advanced', async () => {

@@ -55,32 +55,64 @@ function target(repository, id) {
   return { id, name: repository.full_name, defaultBranch: repository.default_branch };
 }
 
+export function officialCandidateRoute(event, settings, adoption, enabled, trialId) {
+  requireCandidate(typeof settings?.['separate-pull-requests'] === 'boolean' &&
+    ['legacy', 'central', 'paused'].includes(adoption), 'ROUTE');
+  const official = officialConfig(settings);
+  if (adoption === 'paused') return { result: 'paused' };
+  if (!event.kind) return official ? { result: 'official_candidate_adopted' } : { route: 'legacy' };
+  if (!official) return { result: event.kind === 'push' ? 'legacy_cycle_route' : 'legacy_product' };
+  if (enabled !== 'true' && String(event.repositoryId) !== trialId) return { result: 'official_candidate_disabled' };
+  return { route: 'official' };
+}
+
 async function identify(env) {
-  const event = candidateEvent(JSON.parse(env.BOUNDED_EVENT_JSON), env.BOUNDED_REQUEST_KEY);
-  requireCandidate(env.STEWARD_OFFICIAL_CANDIDATES_ENABLED === 'true' && env.GITHUB_ACTOR_ID === String(botId)
+  const supplied = JSON.parse(env.BOUNDED_EVENT_JSON);
+  const event = supplied?.kind ? candidateEvent(supplied, env.BOUNDED_REQUEST_KEY) : supplied;
+  const legacy = event && Object.keys(event).sort().join(',') === 'eventId,prNumber,repositoryId' &&
+    positive(event.repositoryId) && positive(event.eventId) && positive(event.prNumber);
+  requireCandidate((event?.kind || legacy) && /^[a-f0-9]{64}$/.test(env.BOUNDED_REQUEST_KEY)
+    && env.GITHUB_ACTOR_ID === String(botId)
     && env.STEWARD_CONTROLLER_SHA === env.BOUNDED_POLICY_SHA
-    && (event.kind === 'official-refresh' ? validSha(env.BOUNDED_SOURCE_SHA) :
+    && (legacy || event.kind === 'official-refresh' ? validSha(env.BOUNDED_SOURCE_SHA) :
       env.BOUNDED_SOURCE_SHA === (event.sourceSha ?? event.head)), 'ENTRY');
   const io = nativeEvidenceTransport(env.STEWARD_CENTRAL_TOKEN);
   const centralReader = new NativeEvidenceReader(io, central);
   const config = JSON.parse(await readFile(new URL('../config/bounded-recheck.json', import.meta.url), 'utf8'));
   const run = await entryGuard(env, path => centralReader.json(path.slice(('/repos/' + central).length).replace(/^\//, '')), config);
-  requireCandidate(run.actor?.id === botId && run.display_title === 'Candidate event ' + env.BOUNDED_REQUEST_KEY
-    && (await centralReader.json('git/ref/heads/steward/validated-controller')).object?.sha === run.head_sha, 'CONTROLLER');
+  requireCandidate(run.actor?.id === botId && run.display_title === 'Candidate event ' + env.BOUNDED_REQUEST_KEY, 'CONTROLLER');
   const repositoryPath = '/repositories/' + event.repositoryId;
   let response = await io.request('GET', repositoryPath);
   if ([403, 404].includes(response.status)) response = await io.anonymous().request('GET', repositoryPath);
   requireCandidate(response.status === 200, 'REPOSITORY');
   const repository = JSON.parse(response.bytes);
   const product = target(repository, event.repositoryId);
-  // The current registry may still carry an explicit product pause during migration.
   const app = await nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY ?? '');
   const policy = await mergedRepositoryPolicy(app, repository);
-  requireCandidate(policy.adoption !== 'paused', 'PAUSED');
+  const identity = { event, product, sourceSha: env.BOUNDED_SOURCE_SHA, controllerSha: run.head_sha,
+    requestKey: env.BOUNDED_REQUEST_KEY, runId: run.id };
+  const finish = async result => {
+    // The bounded legacy consumer can only validate its original Git-backed receipt.
+    requireCandidate(!legacy, result === 'paused' ? 'PAUSED' : 'ROUTE');
+    await writeFile('result.json', JSON.stringify({ schemaVersion: 1, ...identity, result }) + '\n', { flag: 'wx' });
+    await appendFile(env.GITHUB_OUTPUT, 'route=complete\n');
+  };
+  if (policy.adoption === 'paused') return finish('paused');
+  const route = await app.forCandidateReadRepository(product.id, async token => {
+    const reader = new NativeEvidenceReader(nativeEvidenceTransport(token), product.name);
+    const get = path => reader.json(path);
+    const source = await defaultHead(get, product.defaultBranch);
+    const settings = await readOfficialConfig(get, source);
+    requireCandidate(await defaultHead(get, product.defaultBranch) === source, 'SOURCE_CHANGED');
+    return officialCandidateRoute(event, settings, policy.adoption,
+      env.STEWARD_OFFICIAL_CANDIDATES_ENABLED, env.STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID);
+  });
+  if (route.result) return finish(route.result);
+  if (route.route === 'legacy') return appendFile(env.GITHUB_OUTPUT, 'route=legacy\n');
+  requireCandidate((await centralReader.json('git/ref/heads/steward/validated-controller')).object?.sha === run.head_sha, 'CONTROLLER');
   await mkdir(stateDirectory);
-  await write('identity', { event, product, sourceSha: env.BOUNDED_SOURCE_SHA, controllerSha: run.head_sha,
-    requestKey: env.BOUNDED_REQUEST_KEY, runId: run.id });
-  await appendFile(env.GITHUB_OUTPUT, 'repo=' + product.name.split('/')[1] + '\nbranch=' + product.defaultBranch + '\n');
+  await write('identity', identity);
+  await appendFile(env.GITHUB_OUTPUT, 'route=official\nrepo=' + product.name.split('/')[1] + '\nbranch=' + product.defaultBranch + '\n');
 }
 
 async function scopedReader(token, product) {

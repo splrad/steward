@@ -622,7 +622,7 @@ async function adoptReleaseCycle(request,snapshot,cycle,{token,io},extraFiles=[]
 }
 
 /** Bind the verified merged official PR before the existing product dispatch can acquire work. */
-export async function registerOfficialMergedCycle(request,snapshot,receipt,{config,delivery,workflow,controllerSha,token,io,readBytes}) {
+export async function registerOfficialMergedCycle(request,snapshot,receipt,{config,delivery,workflow,controllerSha,token,io,readBytes,admit}) {
   const repository=snapshot.repository;
   assertRepositoryWrite(repository);
   if(receipt.repositoryId!==request.repositoryId||receipt.repository!==request.repository||receipt.defaultBranch!==request.defaultBranch
@@ -649,6 +649,7 @@ export async function registerOfficialMergedCycle(request,snapshot,receipt,{conf
   const changes=[{path:'state.json',content:JSON.stringify(state,null,2)+'\n',previousSha256:sha256(previous)},
     {path:`cycles/${cycle.id}.json`,content:JSON.stringify(cycle,null,2)+'\n',previousSha256:null}];
   await assertReleaseWriterProtection(request.repository,'steward/release-state',io,{token});
+  await admit();
   const written=await writeReleaseRecords({directory:join(request.writeDirectory,'register-official'),remote:request.remote,
     repositoryId:request.repositoryId,defaultBranch:request.defaultBranch,targetRef:'steward/release-state',writer:'release',
     expectedHead:snapshot.head,allowedPaths:changes.map(file=>file.path),changes:changes.map(file=>({...file,sha256:sha256(file.content)})),

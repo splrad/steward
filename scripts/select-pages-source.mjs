@@ -206,7 +206,7 @@ export function workflowPagesOptions(reader,env) {
   const approvedSource=env.STEWARD_DOCS_APPROVED_SOURCE??options.mode;
   const approvedUnit=env.STEWARD_DOCS_APPROVED_UNIT??options.unitId;
   const publicAllowed=Boolean(options.mode && options.mode===approvedSource && !options.buildOnly &&
-    (options.mode!=='release'||options.unitId && options.unitId===approvedUnit));
+    (options.mode!=='release'||(options.unitId && options.unitId===approvedUnit)));
   if(options.mode==='release') {
     // Same confirmed App bot identity as nativeReleaseApp; the repository transport is deliberately repo-scoped.
     options.appBotId=301115370;

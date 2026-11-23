@@ -4,7 +4,8 @@ import { PullRequestBody } from 'release-please-official/build/src/util/pull-req
 import { PullRequestTitle } from 'release-please-official/build/src/util/pull-request-title.js';
 import { TagName } from 'release-please-official/build/src/util/tag-name.js';
 import { Version } from 'release-please-official/build/src/version.js';
-import { assertVersionAcquisitionLinks, parseConditionalNotes, renderConditionalNotes, selectReleaseContributors } from '../packages/runner/dist/index.js';
+import { assertVersionAcquisitionLinks, EvidenceReadError, parseConditionalNotes, parseDeliveryConfig,
+  renderConditionalNotes, selectReleaseContributors } from '../packages/runner/dist/index.js';
 
 export const officialPending = 'autorelease: pending';
 export const officialTagged = 'autorelease: tagged';
@@ -234,9 +235,17 @@ export async function renderOfficialPull(pull, product, get, botId, sourceSha, t
     const files = await pages(get, 'commits/' + c.sha, 'files');
     return files.some(f => f.filename?.startsWith(path + '/') || f.previous_filename?.startsWith(path + '/')) ? c : null;
   }))).filter(Boolean);
-  const notesPath = delivery.units?.find(unit => unit.path === path)?.notesPath ?? (path === '.' ? delivery.notesPath : undefined);
-  const notes = notesPath ? parseConditionalNotes((await readSourceFile(get, notesPath, sourceSha)).toString('utf8'))
-    : fallbackNotes(relevant, product.name);
+  const { units } = parseDeliveryConfig(delivery, configuration);
+  const unit = units.find(unit => unit.path === path);
+  requireCandidate(unit, 'UNIT');
+  let notes;
+  try {
+    notes = parseConditionalNotes((await readSourceFile(get, unit.notesPath, sourceSha)).toString('utf8'));
+  } catch (error) {
+    if (delivery.schemaVersion !== 3 || Object.hasOwn(delivery.notes ?? {}, path) ||
+        !(error instanceof EvidenceReadError && error.status === 404)) throw error;
+    notes = fallbackNotes(relevant, product.name);
+  }
   assertVersionAcquisitionLinks(notes, product.name, tag, sourceSha);
   const actors = relevant.map(commit => commit.author ? { id: commit.author.id, login: commit.author.login,
     type: commit.author.type, profileUrl: commit.author.html_url, avatarUrl: commit.author.avatar_url } : null);

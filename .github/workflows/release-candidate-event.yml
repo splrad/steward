@@ -53,12 +53,12 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Authorize the official candidate event
         id: product
-        if: fromJSON(inputs.event_json).kind == 'push' || fromJSON(inputs.event_json).kind == 'official-edit' || fromJSON(inputs.event_json).kind == 'official-refresh'
         env:
           STEWARD_CENTRAL_TOKEN: ${{ github.token }}
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
           STEWARD_CONTROLLER_SHA: ${{ github.workflow_sha }}
           STEWARD_OFFICIAL_CANDIDATES_ENABLED: ${{ vars.STEWARD_OFFICIAL_CANDIDATES_ENABLED }}
+          STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID: ${{ vars.STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID }}
           BOUNDED_MODE: normal
           BOUNDED_POLICY_SHA: ${{ inputs.policy_sha }}
           BOUNDED_EVENT_JSON: ${{ inputs.event_json }}
@@ -67,7 +67,7 @@ jobs:
         run: node scripts/official-candidate-event.mjs identify
       - name: Issue the product candidate token
         id: candidate-token
-        if: steps.product.outcome == 'success'
+        if: steps.product.outputs.route == 'official'
         uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc
         with:
           client-id: Iv23liuSr0qd4WLJdZhH
@@ -78,7 +78,7 @@ jobs:
           permission-pull-requests: write
           permission-issues: write
       - name: Check the source and candidate receipt
-        if: steps.product.outcome == 'success'
+        if: steps.product.outputs.route == 'official'
         id: prepare
         env:
           STEWARD_CENTRAL_TOKEN: ${{ github.token }}
@@ -124,17 +124,17 @@ jobs:
           if-no-files-found: error
           retention-days: 90
       - name: Render or verify the candidate homepage
-        if: steps.product.outcome == 'success'
+        if: steps.product.outputs.route == 'official'
         env:
           STEWARD_CANDIDATE_TOKEN: ${{ steps.candidate-token.outputs.token }}
         run: node scripts/official-candidate-event.mjs finish
       - name: Install legacy candidate dependencies
-        if: steps.product.outcome == 'skipped'
+        if: steps.product.outputs.route == 'legacy'
         run: |
           npm ci --prefix tools/quality-language --ignore-scripts --no-audit --no-fund
           uv sync --project tools/template --frozen --only-group release-inspection --no-build
       - name: Process the legacy candidate event
-        if: steps.product.outcome == 'skipped'
+        if: steps.product.outputs.route == 'legacy'
         env:
           STEWARD_CENTRAL_TOKEN: ${{ github.token }}
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
@@ -148,7 +148,7 @@ jobs:
         run: node scripts/release-candidate-event.mjs
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: candidate-event-${{ inputs.request_key }}${{ steps.product.outcome == 'success' && format('-{0}', github.run_attempt) || '' }}
+          name: candidate-event-${{ inputs.request_key }}${{ steps.product.outputs.route != 'legacy' && format('-{0}', github.run_attempt) || '' }}
           path: result.json
           if-no-files-found: error
           retention-days: 90

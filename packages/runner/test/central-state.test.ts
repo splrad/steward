@@ -10,7 +10,8 @@ it('shares adopted config validation while retaining an empty first-release mani
   const d={units:[{path:'.'}]},c={'separate-pull-requests':false,packages:{'.':{'release-type':'simple'}}};
   expect(()=>validateReleaseConfiguration(d,c,{})).not.toThrow();
   expect(()=>validateReleaseConfiguration(d,c,{'.':'0.0.0'})).not.toThrow();
-  expect(()=>validateReleaseConfiguration(d,{...c,'separate-pull-requests':true},{})).toThrow('adopted configuration');
+  expect(()=>validateReleaseConfiguration(d,{...c,'separate-pull-requests':true},{})).not.toThrow();
+  expect(()=>validateReleaseConfiguration(d,{...c,'separate-pull-requests':'true'},{})).toThrow('adopted configuration');
   for(const version of [null,7,{},'bad','v1.0.0',''])expect(()=>validateReleaseConfiguration(d,c,{'.':version})).toThrow('adopted configuration');
 });
 it('allows only protected fixed central missing refs, never product 404 or forbidden reads',async()=>{

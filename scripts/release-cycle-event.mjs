@@ -11,6 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { nativeReleaseCandidate } from './release-candidate.mjs';
 import { registerOfficialMergedCycle, releaseCommand } from './release-record.mjs';
 import { finishOfficialAction, readOfficialBody, sourceUsesOfficialRelease } from './official-release.mjs';
+import { mergedRepositoryPolicy } from './repository-policy-read.mjs';
 
 const centralId = 1296724484, central = 'splrad/steward';
 // The promoted controller binds legacy callbacks and external adapter credentials.
@@ -237,8 +238,6 @@ export async function main(env=process.env) {
   const config=JSON.parse(await readFile(new URL('../config/bounded-recheck.json',import.meta.url),'utf8'));
   const event=JSON.parse(env.BOUNDED_EVENT_JSON),requestKey=env.BOUNDED_REQUEST_KEY;
   const officialStage=env.OFFICIAL_RELEASE_PHASE;
-  const officialEnabled=env.OFFICIAL_RELEASE_ENABLED==='true';
-  if (officialStage==='prepare' && !officialEnabled) fail('OFFICIAL_RELEASE_DISABLED');
   const centralIo=nativeEvidenceTransport(env.STEWARD_CENTRAL_TOKEN),reader=new NativeEvidenceReader(centralIo,central);
   const centralGet=path=>reader.json(path);
   const run=await entryGuard(env,path=>centralGet(path.replace('/repos/'+central,'').replace(/^\//,'')),config);
@@ -251,9 +250,15 @@ export async function main(env=process.env) {
     const processProduct=product=>cycleStage('PRODUCT_ACCESS',async()=>{
       validateEvent(event,requestKey,[product]);
       const repository={id:product.id,full_name:product.name,default_branch:product.defaultBranch};
+      const officialEnabled=env.OFFICIAL_RELEASE_ENABLED==='true' ||
+        String(product.id)===env.STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID;
+      if (officialStage==='prepare' && !officialEnabled) fail('OFFICIAL_RELEASE_DISABLED');
       return app.forRepository(product.id,async token=>{
         const io=nativeEvidenceTransport(token),productReader=new NativeEvidenceReader(io,product.name);
         const refresh=()=>cycleStage('LEDGER_READ',()=>fetchState(root,repository,token));
+        const admit=async()=>{
+          if((await mergedRepositoryPolicy(app,repository)).adoption==='paused')fail('RELEASE_REPOSITORY_PAUSED');
+        };
         const request=async(cycleId,runId,state)=>({directory:(state??await refresh()).directory,writeDirectory:await mkdtemp(join(root,'write-')),
           remote:'https://github.com/'+product.name+'.git',repository:product.name,repositoryId:product.id,defaultBranch:product.defaultBranch,appBotId:app.appBotId,cycleId,runId,identity});
         const official={enabled:officialEnabled,stage:officialStage,ready:Boolean(env.OFFICIAL_RELEASE_TOKEN),
@@ -290,7 +295,7 @@ export async function main(env=process.env) {
           const buildWorkflow=JSON.parse(delivery.toString('utf8')).buildWorkflow??defaultBuildWorkflow;
           const workflow=await readSourceFile(get,buildWorkflow,receipt.sourceSha);
           return registerOfficialMergedCycle(await request(null,null,state),state.snapshot,receipt,
-            {config,delivery,workflow,controllerSha:run.head_sha,token,io,readBytes:state.readBytes});
+            {config,delivery,workflow,controllerSha:run.head_sha,token,io,readBytes:state.readBytes,admit});
         }):undefined;
         return cycleStage('EVENT_ROUTE',()=>advanceEvent(event,{registry:[product],
           officialStage,officialMerge,
@@ -298,6 +303,7 @@ export async function main(env=process.env) {
             const ref=await productReader.json('git/ref/heads/'+encodeURIComponent(product.defaultBranch));
             if(await sourceUsesOfficialRelease(productReader,ref.object?.sha))
               return wait('OFFICIAL_CANDIDATE_ROUTE_REQUIRED');
+            await admit();
             return app.forCandidateRepository(product.id, async (writer, readToken) =>
               nativeReleaseCandidate(await request(null, null), {token: writer, readToken, controllerSha: run.head_sha, homepageEvent}));
           },
@@ -311,6 +317,7 @@ export async function main(env=process.env) {
           },centralGet,botId:app.appBotId,producer,
           candidate:async(expectedSourceSha,expectedStateSha)=>{
             if(await sourceUsesOfficialRelease(productReader,expectedSourceSha))return wait('OFFICIAL_CANDIDATE_ROUTE_REQUIRED');
+            await admit();
             return app.forCandidateRepository(product.id,async(writer,candidateReadToken)=>
               releaseCommand('candidate',await request(null,null),{token:writer,io,centralIo,candidateReadToken,copilotToken:env.STEWARD_COPILOT_TOKEN,
                 controllerSha:run.head_sha,controllerDirectory:process.cwd(),
@@ -342,6 +349,7 @@ const publicCodes=new Set([
   'CYCLE_EVENT_RUN','CYCLE_EVENT_SOURCE','CYCLE_POLICY','CYCLE_POLICY_UNPROMOTED',
   'CYCLE_PROBE_ORIGIN','CYCLE_PUBLICATION_ORIGIN','CYCLE_RECORD_RECONSTRUCTION_REQUIRED',
   'CANDIDATE_HOMEPAGE_BODY_LIMIT','CANDIDATE_HOMEPAGE_MARKERS','CANDIDATE_HOMEPAGE_VERSION','CANDIDATE_HOMEPAGE_UNIT','CANDIDATE_HOMEPAGE_WRITE_REJECTED',
+  'RELEASE_REPOSITORY_PAUSED','REPOSITORY_POLICY_UNAVAILABLE',
   'BOUNDED_RUN_SOURCE','CANDIDATE_REF_DRIFT','CANDIDATE_PR_HEAD_DRIFT','CANDIDATE_STATE_CONFLICT',
 ]);
 const categories=new Set([

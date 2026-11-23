@@ -1,7 +1,9 @@
-import {channelResultUrl} from '../release-record.mjs';
+import {channelResultUrl, registerOfficialMergedCycle} from '../release-record.mjs';
+import {mergedBuildCycle} from '../../packages/runner/dist/index.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import Handlebars from 'handlebars';
 import YAML from 'yaml';
 import { advanceEvent, validateEvent, publicCycleError, withCycleCleanup } from '../release-cycle-event.mjs';
@@ -34,6 +36,56 @@ test('only the acknowledged official merge can register and dispatch a build',as
   assert.deepEqual(calls,[]);
   assert.deepEqual(await advanceEvent(event,ports),{status:'BOUND',cycleId:'exact'});
   assert.deepEqual(calls,[event,['dispatch-build','exact',null,true]]);
+});
+test('a paused merge cannot claim a cycle and a previously claimed merge drains the same cycle', async () => {
+  const bot = 301115370, controller = 'd'.repeat(40), body = 'Approved release notes';
+  const event = { kind:'official-merge',repositoryId:product.id,prNumber:192,head:later,sourceSha:source,body };
+  const request = { repositoryId:product.id,repository:product.name,defaultBranch:product.defaultBranch,appBotId:bot };
+  const config = Buffer.from(JSON.stringify({ 'separate-pull-requests':true, packages:{ '.':{'release-type':'simple'} } }));
+  const delivery = Buffer.from('{"schemaVersion":3}');
+  const name = 'delivery-github-release-' + '$' + '{{ github.repository_id }}-root-' + '$' +
+    '{{ github.sha }}-' + '$' + '{{ github.run_id }}-' + '$' + '{{ github.run_attempt }}';
+  const workflow = Buffer.from(JSON.stringify({jobs:{deliver:{name:'delivery/root',steps:[{
+    id:'upload-github-release',name:'Upload GitHub release delivery',uses:'actions/upload-artifact@'+'1'.repeat(40),
+    with:{name,path:'dist/*'},
+  }]}}}));
+  const receipt = { repositoryId:product.id,repository:product.name,defaultBranch:product.defaultBranch,authorId:bot,
+    prNumber:192,sourceSha:source,candidateHead:later,path:'.',version:'1.0.0',tag:'v1.0.0',
+    configDigest:sha256(config),pullBodyDigest:sha256(body),bodyDigest:sha256(body),body };
+  const cycle=mergedBuildCycle({prNumber:receipt.prNumber,sourceSha:source,controllerSha:controller,
+    repository:product.name,repositoryId:product.id,deliveryBlobSha:createHash('sha1').update('blob '+delivery.length+'\0').update(delivery).digest('hex'),
+    delivery:JSON.parse(delivery),releasePlease:JSON.parse(config),workflow,
+    units:[{id:'root',path:'.',version:receipt.version,tag:receipt.tag}],
+    officialRelease:{headSha:receipt.candidateHead,pullBodyDigest:receipt.pullBodyDigest,bodyDigest:receipt.bodyDigest}});
+  const ledger={repository:{schemaVersion:3,defaultBranch:product.defaultBranch,activeCycleId:null,revision:5},cycles:[]};
+  const create=['creation','update'], integrity=['deletion','non_fast_forward'];
+  let admissions=0;
+  const readers={config,delivery,workflow,controllerSha:controller,readBytes:async()=>Buffer.from('{}'),
+    admit:async()=>{admissions++;throw Error('RELEASE_REPOSITORY_PAUSED');},
+    io:{async request(method,path){
+      assert.equal(method,'GET');
+      let native;
+      if(path.includes('/rules/branches/'))native=[...create.map(type=>({type,ruleset_id:1})),...integrity.map(type=>({type,ruleset_id:2}))];
+      else {
+        const id=Number(path.split('/').at(-1));
+        assert.ok(id===1||id===2);
+        native={id,enforcement:'active',target:'branch',bypass_actors:id===2?[]:[{actor_type:'Integration',actor_id:4243096,bypass_mode:'always'}],
+          rules:(id===1?create:integrity).map(type=>({type,parameters:{update_allows_fetch_and_merge:false}}))};
+      }
+      return {status:200,bytes:Buffer.from(JSON.stringify(native))};
+    }}};
+  const register=()=>registerOfficialMergedCycle(request,ledger,receipt,readers);
+  const invokes=[];
+  const ports={officialMerge:register,invoke:async(...args)=>{invokes.push(args);return {status:'BOUND'};}};
+  await assert.rejects(advanceEvent(event,ports), /RELEASE_REPOSITORY_PAUSED/);
+  assert.deepEqual(invokes,[]);
+  assert.equal(admissions,1);
+  // A replay of the already-claimed, exact cycle remains consumable during the pause.
+  ledger.cycles.push({value:cycle});
+  ledger.repository.activeCycleId=cycle.id;
+  assert.deepEqual(await advanceEvent(event,ports), {status:'BOUND',cycleId:cycle.id});
+  assert.deepEqual(invokes,[['dispatch-build',cycle.id,null,true]]);
+  assert.equal(admissions,1);
 });
 for(const order of [[source,later],[later,source]])test('delayed merge and later push register the same source exactly once '+order[0][0],async()=>{
   const state={head:'1'.repeat(40),repository:{candidate:{prNumber:192}},cycles:[]},calls=[];

@@ -72,8 +72,8 @@ async function nativeFile(reader, path, ref) {
 export async function sourceUsesOfficialRelease(reader, ref) {
   requireFact(sha.test(ref), 'CONFIG_SOURCE');
   const {value} = await nativeFile(reader, configPath, ref);
-  const root = value.packages?.['.'];
-  return value['separate-pull-requests']===true && root?.['force-tag-creation']===true && (root.draft ?? value.draft)===true;
+  requireFact(typeof value?.['separate-pull-requests'] === 'boolean', 'CONFIG_SOURCE');
+  return value['separate-pull-requests'];
 }
 
 async function approvalFacts(approval, reader, parseBody, compare) {
