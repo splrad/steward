@@ -37,6 +37,7 @@ function fixture() {
     }
     if(p==='')return response(repo);
     if(p==='/git/ref/heads/trunk')return response({ref:'refs/heads/trunk',object:{type:'commit',sha:state.head}});
+    if(p==='/contents/.github/steward-central-policy')return state.legacyPolicy?response({type:'file'}):{...response({}),status:404};
     if(p==='/contents/.github/workflows/pages.yml') {
       const content=state.workflowBytes??bytes;
       return response({type:'file',path:'.github/workflows/pages.yml',encoding:'base64',content:content.toString('base64'),size:content.length,sha:createHash('sha1').update(`blob ${content.length}\0`).update(content).digest('hex')});
@@ -66,7 +67,7 @@ function fixture() {
   const reader=new NativeEvidenceReader(io,repo.full_name),options={reader,repositoryId:10,mode:'default-branch',controllerSha:pin};
   const store={async load(p){return structuredClone(records.get(p)??null);},async save(v,expected){const p=pagesRecordPath(v);assert.deepEqual(records.get(p)??null,expected);decodePagesMaintenance(Buffer.from(JSON.stringify(v)),10,p);if(expected)assertPagesProgress(expected,v);records.set(p,structuredClone(v));state.onSave?.(v);}};
   const coordinator={runId:900,runAttempt:1,controllerSha:pin};
-  const service=completion=>servicePages({io,repository:repo,store,coordinator,appBotId:301115370,completion},{now:()=>state.time,deployment:async()=>state.site});
+  const service=(completion,readPolicy)=>servicePages({io,repository:repo,store,coordinator,appBotId:301115370,completion,readPolicy},{now:()=>state.time,deployment:async()=>state.site});
   const successful=(id=40,sha=S)=>{state.deployments.push({id,environment:'github-pages',sha,created_at:'2026-10-30T00:00:00Z'});state.statuses.set(id,[{id:id+100,state:'success',created_at:'2026-10-30T00:10:00Z',log_url:'https://github.com/fixture/product/actions/runs/12/job/22',environment_url:'https://fixture.github.io/product/'}]);};
   return {repo,source,workflow,run,build,deploy,artifact,state,calls,records,reader,options,store,coordinator,service,successful};
 }
@@ -98,6 +99,73 @@ test('a repository build-only setting disables public Pages maintenance writes',
   assert.deepEqual(await f.service(),{status:'BUILD_ONLY'});
   assert.equal(f.calls.some(call=>call.method==='POST'),false);
   assert.equal(f.records.size,0);
+});
+
+test('honors all three applicable administrator disablement states with a native source variable enabled',async()=>{
+  for(const policy of [{adoption:'paused'}, {adoption:'central',policy:{site:{mode:'build-only'}}},
+    {adoption:'central',policy:{site:null}}]) {
+    const f=fixture();
+    f.state.mode='default-branch';
+    f.state.runs.push(f.run);
+    let reads=0;
+    const readPolicy=async()=>{reads++;return policy;};
+    assert.deepEqual(await f.service(undefined,readPolicy),{status:'DISABLED'});
+    assert.deepEqual(await f.service({repositoryId:10,workflowId:5,runId:12,attempt:1},readPolicy),{status:'DISABLED'});
+    assert.equal(reads,2);
+    assert.equal(f.calls.some(call=>call.method==='POST'),false);
+    assert.equal(f.records.size,0);
+  }
+});
+
+test('native public Pages without a marker uses its declared workflow; a marked or private site uses admin policy',async()=>{
+  const paused=async()=>({adoption:'paused'});
+  for(const existing of [undefined,'marker','private']) {
+    const f=fixture();
+    f.state.workflowBytes=Buffer.from(YAML.stringify({...workflowDoc,env:{...workflowDoc.env,STEWARD_DOCS_SOURCE:'default-branch'}}));
+    f.state.legacyPolicy=existing==='marker';
+    f.repo.private=existing==='private';
+    let reads=0;
+    assert.deepEqual(await f.service(undefined,async()=>{reads++;return paused();}),
+      {status:existing?'DISABLED':'ACCEPTED'});
+    assert.equal(f.calls.some(call=>call.method==='POST'),!existing);
+    assert.equal(reads,existing?1:0);
+  }
+});
+
+test('a repository without native Pages or a source variable stays disabled after its marker is removed',async()=>{
+  const f=fixture();
+  f.repo.has_pages=false;
+  f.state.mode='';
+  assert.deepEqual(await f.service(undefined,async()=>assert.fail('no candidate Pages source')),
+    {status:'DISABLED'});
+  assert.equal(f.calls.some(call=>call.method==='POST'),false);
+  assert.equal(f.records.size,0);
+});
+
+test('an unregistered product and an approved site preserve native dispatch and retry',async()=>{
+  const approved={adoption:'central',policy:{site:{mode:'build-and-deploy',workflow:'.github/workflows/pages.yml',source:'default-branch'}}};
+  const f=fixture();
+  const legacy=async()=>({adoption:'legacy',policy:null});
+  assert.deepEqual(await f.service(undefined,legacy),{status:'ACCEPTED'});
+  assert.equal(f.calls.filter(call=>call.method==='POST').length,1);
+
+  const retry=fixture();
+  retry.state.runs.push(retry.run);
+  await assert.rejects(retry.service(undefined,async()=>({...approved,policy:{site:{...approved.policy.site,source:'release',unit:'maps'}}})),
+    /PAGES_REPOSITORY_POLICY_CONFLICT/);
+  assert.deepEqual(await retry.service(undefined,async()=>approved),{status:'ACCEPTED'});
+  assert.deepEqual(retry.calls.filter(call=>call.method==='POST').map(call=>call.path),['/repos/fixture/product/actions/runs/12/rerun']);
+});
+
+test('administrator pause after a reservation prevents a Pages dispatch or rerun',async()=>{
+  for(const hasRun of [false,true]) {
+    const f=fixture();
+    if(hasRun)f.state.runs.push(f.run);
+    let policy={adoption:'legacy',policy:null};
+    f.state.onSave=record=>{if(record.requests.length)policy={adoption:'paused',policy:null};};
+    assert.deepEqual(await f.service(undefined,async()=>policy),{status:'STALE'});
+    assert.equal(f.calls.some(call=>call.method==='POST'),false);
+  }
 });
 
 test('workflow Pages selection requires the approved native source and release unit for deployment',()=>{
