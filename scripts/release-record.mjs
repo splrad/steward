@@ -512,7 +512,8 @@ export async function writeReleaseRecords(input,{token,beforePush}={}) {
     }
     return result('UNKNOWN',observed.head,'RETRY_FROM_PRESERVED_COMMIT');
   } catch(error) {
-    if(error instanceof Error && /^RELEASE_RECORD:/.test(error.message))throw error;
+    if(error instanceof Error && (/^RELEASE_RECORD:/.test(error.message) ||
+      ['RELEASE_REPOSITORY_PAUSED','RELEASE_PAUSE_POLICY_UNAVAILABLE'].includes(error.message)))throw error;
     throw new Error('RELEASE_RECORD: validation or local operation failed');
   } finally {
     busy.delete(directory);

@@ -85,7 +85,7 @@ jobs:
           STEWARD_CANDIDATE_TOKEN: ${{ steps.candidate-token.outputs.token }}
         run: node scripts/official-candidate-event.mjs prepare
       - name: Save the candidate action reservation
-        if: steps.prepare.outputs.mode == 'action'
+        if: steps.prepare.outputs.reservation == 'new'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: official-candidate-before-${{ github.run_id }}
@@ -93,9 +93,11 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 90
-      - name: Confirm the default branch before the candidate action
+      - name: Confirm the default branch and pause policy before the candidate action
+        id: confirm-action-source
         if: steps.prepare.outputs.mode == 'action'
         env:
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
           STEWARD_CANDIDATE_TOKEN: ${{ steps.candidate-token.outputs.token }}
         run: node scripts/official-candidate-event.mjs check-action-source
       - name: Refresh the official candidate
@@ -124,8 +126,10 @@ jobs:
           if-no-files-found: error
           retention-days: 90
       - name: Render or verify the candidate homepage
+        id: homepage
         if: steps.product.outputs.route == 'official'
         env:
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
           STEWARD_CANDIDATE_TOKEN: ${{ steps.candidate-token.outputs.token }}
         run: node scripts/official-candidate-event.mjs finish
       - name: Install legacy candidate dependencies

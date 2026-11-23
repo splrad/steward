@@ -8,6 +8,7 @@ import {candidateEvidence,validateNormalCandidateEvent,key,withCandidateProduct,
 import {fetchState} from './release-coordinator.mjs';
 import {nativeReleaseCandidate} from './release-candidate.mjs';
 import {releasePolicyGuard} from './release-repository-policy.mjs';
+import {assertReleaseUnpaused} from './release-pause-policy.mjs';
 const central='splrad/steward',centralId=1296724484;
 const botIdentity={name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'};
 const fail=code=>{throw Error(code);};
@@ -46,13 +47,20 @@ export async function main(env=process.env) {
     {get,product,invoke:async({before,sourceSha})=>{
       const repository={id:product.id,full_name:product.name,default_branch:product.defaultBranch},state=await fetchState(root,repository,token);
       if(state.snapshot.head!==before.evidence.stateCommit)fail('CANDIDATE_EVENT_STATE_MOVED');
+      const admit=()=>assertReleaseUnpaused(app,product.id);
+      await admit();
       return nativeReleaseCandidate({directory:state.directory,writeDirectory:join(root,'writes'),remote:state.remote,repository:product.name,
         repositoryId:product.id,defaultBranch:product.defaultBranch,appBotId:app.appBotId,identity:botIdentity},{token,readToken,
         copilotToken:env.STEWARD_COPILOT_TOKEN,controllerSha:env.STEWARD_CONTROLLER_SHA,expectedStateSha:before.evidence.stateCommit,expectedSourceSha:sourceSha,
-        checkRepositoryPolicy:releasePolicyGuard(app,repository),
+        checkRepositoryPolicy:releasePolicyGuard(app,repository),admit,
         reselectUnits:before.selectionChanged,manualCandidateProducer:{repositoryId:centralId,runId:run.id,attempt:run.run_attempt,controllerSha:env.STEWARD_CONTROLLER_SHA,requestKey:env.BOUNDED_REQUEST_KEY}});
     }});
     await writeFile('result.json',JSON.stringify(result)+'\n',{flag:'wx'});return result;
   });}finally {await rm(root,{recursive:true,force:true});}
 }
-if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)main().catch(()=>{process.stderr.write('CANDIDATE_EVENT_STOPPED\n');process.exitCode=1;});
+if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)main().catch(error=>{
+  const code=error?.message;
+  const reason=['RELEASE_REPOSITORY_PAUSED','RELEASE_PAUSE_POLICY_UNAVAILABLE'].includes(code)?code:'CANDIDATE_EVENT_STOPPED';
+  process.stderr.write(reason+'\n');
+  process.exitCode=1;
+});
