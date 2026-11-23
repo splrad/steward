@@ -13,7 +13,7 @@
     "test": "uv sync --project tools/template --frozen --only-group release-inspection --inexact --no-build && npm run test:pages && npm run test:private-dependencies && npm run test:settings-events && npm run test:controller-source && npm run test:bounded-release && npm run test:configuration && vitest run",
     "test:configuration": "node --test scripts/test/configuration-authority.test.mjs scripts/test/configuration-dashboard.test.mjs scripts/test/repository-configuration.test.mjs scripts/test/repository-registration.test.mjs scripts/test/security-policy.test.mjs",
     "test:bounded-release": "node --test scripts/test/bounded-release-entry.test.mjs scripts/test/manual-candidate.test.mjs scripts/test/release-cycle-event.test.mjs",
-    "test:controller-source": "node --test scripts/controller-source.test.mjs scripts/validator-revalidation.test.mjs scripts/controller-pin-policy.test.mjs",
+    "test:controller-source": "node --test scripts/controller-source.test.mjs scripts/validator-revalidation.test.mjs scripts/controller-pin-policy.test.mjs scripts/controller-version.test.mjs",
     "test:pages": "node --test scripts/test/select-pages-source.test.mjs scripts/test/pages-wiring.test.mjs scripts/test/pages-completion-native.test.mjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.runtime.json --noEmit && node scripts/verify-source-boundaries.mjs",
     "verify:config": "node scripts/verify-config.mjs",

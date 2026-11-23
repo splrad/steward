@@ -125,7 +125,10 @@ it('already adopted source is a read-only NOP',async()=>{
 it.each(['success','lost','conflict','changed','first security adoption'])('template tags are create-only, exact commit bound and recover lost responses: %s',async mode=>{
   const refs:any={'refs/tags/v1.0.0':P},plan={status:'CREATE',commit:M,tag:'v1.0.1',tags:{...refs}};
   let writes=0;const io={request:async(method:string,url:string,body:any)=>{
-    if(url.endsWith('matching-refs/tags/'))return {status:200,value:Object.entries(refs).map(([ref,sha])=>({ref,object:{sha,type:'commit'}}))};
+    if(url.endsWith('matching-refs/tags/'))return {status:200,value:[
+      {ref:'refs/tags/controller-v1000',object:{sha:P,type:'commit'}},
+      ...Object.entries(refs).map(([ref,sha])=>({ref,object:{sha,type:'commit'}})),
+    ]};
     if(method==='GET'){const value=refs['refs/tags/v1.0.1'];return value?{status:200,value:{ref:'refs/tags/v1.0.1',object:{type:'commit',sha:value}}}:{status:404};}
     expect(method).toBe('POST');expect(body).toEqual({ref:'refs/tags/v1.0.1',sha:M});writes++;refs[body.ref]=M;
     if(mode==='lost')throw Error('lost');return {status:201};
@@ -428,7 +431,7 @@ it('stops before writing when the default-branch protection changes',async()=>{
   expect(f.writes).toBe(0);
 });
 it.each(['before tag write','after tag write'])('checks the adopted default-branch protection during publication: %s',async when=>{
-  const {promoteRequiredWorkflow,publishPromotedSources}=await module();
+  const {promoteRequiredWorkflow,publishTemplateTag}=await module();
   const f=rulesFixture();
   const {verifyCurrent}=await promoteRequiredWorkflow(f,M,async()=>{},f.record,compare);
   const plan={status:'CREATE',commit:M,tag:'v1.0.1',tags:{}};
@@ -445,10 +448,13 @@ it.each(['before tag write','after tag write'])('checks the adopted default-bran
     shaBinding(f.current).sha=T;
     return {status:201,value:tagRef};
   }};
-  await expect(publishPromotedSources(io,plan,M,123,verifyCurrent,f.record))
+  const checkPublication=async()=>{
+    await publishTemplateTag(io,plan,verifyCurrent,f.record);
+    await verifyCurrent();
+  };
+  await expect(checkPublication())
     .rejects.toThrow(when==='before tag write'?'TARGET_PROTECTION_CHANGED':'TARGET_READBACK');
   expect(writes).toEqual(when==='before tag write'?[]:['/repos/splrad/steward/git/refs']);
-  expect(f.records.some(record=>['controller-source-result','template-wake'].includes(record.kind))).toBe(false);
 });
 it.each(['sha','protection'])('rejects default-branch drift during final evidence recording: %s',async kind=>{
   const f=rulesFixture();

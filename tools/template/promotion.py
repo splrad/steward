@@ -12,7 +12,8 @@ def template_tag_plan(central, commit):
     require(re.fullmatch(r'[a-f0-9]{40}',commit),'PROMOTION_COMMIT')
     with tempfile.TemporaryDirectory(prefix='template-promotion-') as profile:
         env=environment(Path(profile)); versions={}
-        tags=dict(line.split(' ',1) for line in git(central,['for-each-ref','--format=%(refname) %(objectname)','refs/tags/'],env).decode().splitlines())
+        tags=dict(line.split(' ',1) for line in git(central,['for-each-ref','--format=%(refname) %(objectname)','refs/tags/'],env).decode().splitlines()
+                  if not line.startswith('refs/tags/controller-v'))
         require(git(central,['rev-parse',commit+'^{commit}'],env).decode().strip()==commit,'PROMOTION_COMMIT')
         reachable=set(git(central,['tag','--merged',commit],env).decode().splitlines())
         for tag in git(central,['tag','--list'],env).decode().splitlines():

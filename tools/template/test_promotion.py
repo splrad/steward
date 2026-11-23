@@ -28,7 +28,8 @@ class PromotionTests(unittest.TestCase):
         self.assertEqual(self.git('show','-s','--format=%B').count('Signed-off-by: Fixture <fixture@example.invalid>'),1)
         return self.git('rev-parse','HEAD')
 
-    def test_sdk_only_commit_keeps_template_version(self):
+    def test_sdk_and_controller_versions_leave_the_template_version_unchanged(self):
+        self.git('tag','controller-v1000',self.old)
         (self.root/'sdk.txt').write_text('changed SDK\n')
         plan=template_tag_plan(self.root,self.commit())
         self.assertEqual(plan['status'],'UNCHANGED')
