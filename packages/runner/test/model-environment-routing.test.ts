@@ -43,7 +43,7 @@ it.each([
   expect(Object.keys(workflow.on).every(event => ['push', 'schedule', 'workflow_dispatch'].includes(event))).toBe(true);
   const secretSteps = job.steps.filter((step: unknown) => step !== consumers[0] && /secrets\./.test(JSON.stringify(step)));
   const approvedAppSteps: Record<string, string[]> = {
-    'release-candidate-event.yml': ['product', 'candidate-token'],
+    'release-candidate-event.yml': ['product', 'candidate-token', 'confirm-action-source', 'homepage'],
     'release-cycle-event.yml': ['official_plan', 'official_token'],
   };
   expect(secretSteps.map((step: {id: string}) => step.id)).toEqual(approvedAppSteps[file] ?? []);

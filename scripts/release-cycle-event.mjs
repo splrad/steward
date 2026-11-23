@@ -6,12 +6,12 @@ import { NativeEvidenceReader, nativeEvidenceTransport, nativeReleaseApp, native
 import { exact, sha, sha256, withParticipatingProduct } from './bounded-candidate-contract.mjs';
 import { entryGuard } from './bounded-release-entry.mjs';
 import {releasePolicyGuard} from './release-repository-policy.mjs';
+import {assertReleaseUnpaused} from './release-pause-policy.mjs';
 import { fetchState } from './release-coordinator.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { nativeReleaseCandidate } from './release-candidate.mjs';
 import { registerOfficialMergedCycle, releaseCommand } from './release-record.mjs';
 import { finishOfficialAction, readOfficialBody, sourceUsesOfficialRelease } from './official-release.mjs';
-import { mergedRepositoryPolicy } from './repository-policy-read.mjs';
 
 const centralId = 1296724484, central = 'splrad/steward';
 // The promoted controller binds legacy callbacks and external adapter credentials.
@@ -256,9 +256,7 @@ export async function main(env=process.env) {
       return app.forRepository(product.id,async token=>{
         const io=nativeEvidenceTransport(token),productReader=new NativeEvidenceReader(io,product.name);
         const refresh=()=>cycleStage('LEDGER_READ',()=>fetchState(root,repository,token));
-        const admit=async()=>{
-          if((await mergedRepositoryPolicy(app,repository)).adoption==='paused')fail('RELEASE_REPOSITORY_PAUSED');
-        };
+        const admit=()=>assertReleaseUnpaused(app,product.id);
         const request=async(cycleId,runId,state)=>({directory:(state??await refresh()).directory,writeDirectory:await mkdtemp(join(root,'write-')),
           remote:'https://github.com/'+product.name+'.git',repository:product.name,repositoryId:product.id,defaultBranch:product.defaultBranch,appBotId:app.appBotId,cycleId,runId,identity});
         const official={enabled:officialEnabled,stage:officialStage,ready:Boolean(env.OFFICIAL_RELEASE_TOKEN),
@@ -305,7 +303,7 @@ export async function main(env=process.env) {
               return wait('OFFICIAL_CANDIDATE_ROUTE_REQUIRED');
             await admit();
             return app.forCandidateRepository(product.id, async (writer, readToken) =>
-              nativeReleaseCandidate(await request(null, null), {token: writer, readToken, controllerSha: run.head_sha, homepageEvent}));
+              nativeReleaseCandidate(await request(null, null), {token: writer, readToken, controllerSha: run.head_sha, homepageEvent, admit}));
           },
           snapshot:async()=>(await refresh()).snapshot,get:path=>productReader.json(path),probeArtifacts:run=>productReader.pages('actions/runs/'+run.id+'/artifacts','artifacts'),
           probeWorkflow:()=>productReader.json('actions/workflows/steward-release-channels.yml'),
@@ -321,7 +319,7 @@ export async function main(env=process.env) {
             return app.forCandidateRepository(product.id,async(writer,candidateReadToken)=>
               releaseCommand('candidate',await request(null,null),{token:writer,io,centralIo,candidateReadToken,copilotToken:env.STEWARD_COPILOT_TOKEN,
                 controllerSha:run.head_sha,controllerDirectory:process.cwd(),
-                candidateRuntime:{expectedSourceSha,expectedStateSha,checkRepositoryPolicy:releasePolicyGuard(app,repository)}}));
+                candidateRuntime:{expectedSourceSha,expectedStateSha,checkRepositoryPolicy:releasePolicyGuard(app,repository),admit}}));
           },
           invoke:async(command,cycleId,runId,allowProbeDispatch,recoverDispatchOnly)=>releaseCommand(command,await request(cycleId,runId),{token,io,centralIo,allowProbeDispatch,controllerDirectory:process.cwd(),official,recoverDispatchOnly,
             centralInvocation:{runId:run.id,runAttempt:run.run_attempt,controllerSha:run.head_sha,defaultBranch:'main'}})}));
@@ -349,7 +347,7 @@ const publicCodes=new Set([
   'CYCLE_EVENT_RUN','CYCLE_EVENT_SOURCE','CYCLE_POLICY','CYCLE_POLICY_UNPROMOTED',
   'CYCLE_PROBE_ORIGIN','CYCLE_PUBLICATION_ORIGIN','CYCLE_RECORD_RECONSTRUCTION_REQUIRED',
   'CANDIDATE_HOMEPAGE_BODY_LIMIT','CANDIDATE_HOMEPAGE_MARKERS','CANDIDATE_HOMEPAGE_VERSION','CANDIDATE_HOMEPAGE_UNIT','CANDIDATE_HOMEPAGE_WRITE_REJECTED',
-  'RELEASE_REPOSITORY_PAUSED','REPOSITORY_POLICY_UNAVAILABLE',
+  'RELEASE_REPOSITORY_PAUSED','RELEASE_PAUSE_POLICY_UNAVAILABLE','REPOSITORY_POLICY_UNAVAILABLE',
   'BOUNDED_RUN_SOURCE','CANDIDATE_REF_DRIFT','CANDIDATE_PR_HEAD_DRIFT','CANDIDATE_STATE_CONFLICT',
 ]);
 const categories=new Set([

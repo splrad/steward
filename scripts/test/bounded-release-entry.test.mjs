@@ -3,9 +3,19 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import YAML from 'yaml';
 import {createHash} from 'node:crypto';
+import {spawnSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {candidateEvidence,validateCandidateEvent,validateNormalCandidateEvent,sha256,product} from '../bounded-candidate-contract.mjs';
 import {processNormalCandidateEvent} from '../release-candidate-event.mjs';
 import {entryGuard,resultOutcome,applyCandidateEvent} from '../bounded-release-entry.mjs';
+test('native candidate entry points retain their diagnostics on failure',()=>{
+  for(const [script,reason] of [['bounded-release-entry','BOUNDED_ENTRY_STOPPED'],['release-candidate-event','CANDIDATE_EVENT_STOPPED']]) {
+    const entry=fileURLToPath(new URL('../'+script+'.mjs',import.meta.url));
+    const result=spawnSync(process.execPath,[entry],{env:{...process.env,BOUNDED_MODE:'invalid'},encoding:'utf8'});
+    assert.equal(result.status,1);
+    assert.equal(result.stderr.trim(),reason);
+  }
+});
 const head='a'.repeat(40),id=1296724484,root='/repos/splrad/steward';
 function fixture(mode='observe') {
   const env={GITHUB_REPOSITORY:'splrad/steward',GITHUB_REPOSITORY_ID:String(id),GITHUB_REF:'refs/heads/main',

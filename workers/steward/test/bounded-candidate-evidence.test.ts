@@ -85,7 +85,7 @@ describe('candidate producer evidence and event controls',()=>{
  it('duplicate early event alarm cannot consume confirmations or call GitHub',async()=>{const record={status:'PENDING',nextAt:200,checks:1};let calls=0;const storage={transaction:async(fn:any)=>fn({get:async()=>record}),get:async()=>record};await new CandidateEventCoordinator(storage as any,{} as any,()=>{calls++;throw Error('unexpected');},()=>100).alarm();expect(calls).toBe(0);expect(record.checks).toBe(1);});
 });
 
-it('one durable event POST reaches verified candidate observation through the frozen B artifacts',async()=>{
+it.each(['normal','rollback','official-cutover','cutover-after-redelivery'] as const)('one durable event POST reaches verified candidate observation through the frozen B artifacts: %s',async mode=>{
  const f=await fixture();let now=t0;const posts:string[]=[];let observationKey='';const facts=await candidateFacts(f.g);
  const observer={...f.run,id:100,run_attempt:1,path:'.github/workflows/release-observe.yml',run_started_at:new Date(t0+1000).toISOString(),updated_at:new Date(t0+50000).toISOString()};
  const g:GitReader={async json(id,path,method,body){if(method==='POST'){posts.push(path);if(path.endsWith('/release-observe.yml/dispatches'))observationKey=(body as any).inputs.request_key;return null;}if(id===CENTRAL.id){const promoted=promotedControllerFixture(path,f.registration.policySha,f.registration.deploymentSha);if(promoted)return promoted;}if(path.endsWith('/actions/workflows/bounded-release-event.yml'))return {path:'.github/workflows/bounded-release-event.yml',state:'active'};if(path.endsWith('/actions/workflows/release-observe.yml'))return {path:'.github/workflows/release-observe.yml',state:'active'};if(path.includes('/bounded-release-event.yml/runs?'))return {total_count:1,workflow_runs:[f.run]};if(path.includes('/release-observe.yml/runs?'))return {total_count:1,workflow_runs:[{...observer,display_title:'Observe candidate '+observationKey}]};if(path.endsWith('/actions/runs/100'))return {...observer,display_title:'Observe candidate '+observationKey};return f.g.json(id,path,method,body);},async artifact(id,runId,name,file){if(runId===99)return f.g.artifact(id,runId,name,file);expect(name).toBe('candidate-observation-'+observationKey);expect(file).toBe('result.json');return {artifactId:13,digest:digest('observation'),createdAt:new Date(t0+40000).toISOString(),value:{schemaVersion:1,requestKey:observationKey,identity:f.registration.identity,runId:100,runAttempt:1,repositoryId:CENTRAL.id,controllerSha:f.registration.policySha,sourceSha:f.registration.identity.sourceSha,observedAt:new Date(t0+30000).toISOString(),stateBefore:facts.evidence,stateAfter:facts.evidence,outcome:'done',status:'READY',reason:'CACHED_OBSERVATION',projectionEvidence:{commentId:7,bodyDigest:digest(generatedStatusBody(facts,facts.session.preview,facts.evidence.stateCommit)).slice(7),previewDigest:digest(facts.session.preview).slice(7)}}};}};
@@ -93,7 +93,28 @@ it('one durable event POST reaches verified candidate observation through the fr
  const engine=new BoundedRecheck(store,new FixedRecheckEffects(env,()=>g),()=>now);
  const stub={async fetch(req:Request){const b=await req.json() as any;const action=new URL(req.url).pathname;return Response.json(action==='/status'?await store.read():await engine.register(b.registration));}};env.BOUNDED_RECHECK={idFromName:(s:string)=>s,get:()=>stub};
  const coordinator=()=>new CandidateEventCoordinator(eventStorage as any,env,()=>g,()=>now),input={event:{repositoryId:TARGET.id,prNumber:192,eventId:123},requestKey:f.producer.requestKey,policySha:f.registration.policySha,createdAt:t0};
- await coordinator().register(input);await coordinator().register(input);expect(posts).toHaveLength(1);now=t0+60000;await coordinator().alarm();expect((await eventStorage.get<any>('event')).status).toBe('REGISTERED');expect((await store.read())?.status).toBe('PENDING');await engine.wake();expect(posts).toHaveLength(2);now+=60000;await engine.wake();expect((await store.read())?.status).toBe('DONE');await coordinator().alarm();await engine.wake();expect(posts).toHaveLength(2);
+ await coordinator().register(input);await coordinator().register(input);expect(posts).toHaveLength(1);
+ if(mode!=='normal'){
+   env.LEGACY_RELEASE_HANDOFF_IDS=JSON.stringify([TARGET.id]);
+   now=t0+60000;await coordinator().alarm();
+   expect(await eventStorage.get('event')).toMatchObject({status:'PAUSED',reason:'LEGACY_RELEASE_HANDOFF',nextAt:null,checks:1});
+   expect(await store.read()).toBeNull();
+   await coordinator().register(input);
+   env.LEGACY_RELEASE_HANDOFF_IDS='[]';
+   let official=mode==='official-cutover';
+   g.forCandidate=async()=>({...g,target:{...TARGET,...(official?{officialCandidate:true as const}:{})}});
+   await coordinator().register(input);
+   expect(posts).toHaveLength(1);
+   if(mode==='official-cutover'||mode==='cutover-after-redelivery'){
+     official=true;
+     await coordinator().alarm();
+     expect(await store.read()).toBeNull();
+     expect(await eventStorage.get('event')).toMatchObject({status:'PAUSED',reason:'LEGACY_RELEASE_HANDOFF',nextAt:null,checks:mode==='official-cutover'?1:2});
+     return;
+   }
+   expect(await eventStorage.get('event')).toMatchObject({status:'PENDING',reason:'VERIFIED_NATIVE_REDELIVERY_RESUME',nextAt:now,checks:1});
+ }
+ now=t0+60000;await coordinator().alarm();expect((await eventStorage.get<any>('event')).status).toBe('REGISTERED');expect((await store.read())?.status).toBe('PENDING');await engine.wake();expect(posts).toHaveLength(2);now+=60000;await engine.wake();expect((await store.read())?.status).toBe('DONE');await coordinator().alarm();await engine.wake();expect(posts).toHaveLength(2);
 });
 
 async function normalFixture(){
@@ -107,6 +128,48 @@ async function normalFixture(){
  return {f,hint,key,g,env,run,artifact,eventStorage,store,engine,coordinator,time:(n:number)=>{now=n;},clock:()=>now,missingArtifact:()=>{artifactError='ARTIFACT_UNIQUE';},artifactFailure:(s:string|null)=>{artifactError=s;},readError:(s:string|null)=>{readError=s;},unavailable:(v:boolean)=>{unavailable=v;},losePost:()=>{losePost=true;},posts:()=>posts,reads:()=>reads};
 }
 describe('durable normal candidate event chain',()=>{
+ it.each(['rollback','already-adopted','adopted-after-redelivery'] as const)('handles a verified in-flight normal receipt during handoff: %s',async mode=>{
+  const f=await normalFixture();
+  await f.coordinator().register({hint:f.hint,deliveryId:'initial'});
+  await f.coordinator().alarm();
+  expect(f.posts()).toBe(1);
+  f.env.LEGACY_RELEASE_HANDOFF_IDS=JSON.stringify([TARGET.id]);
+  f.time(f.clock()+60000);await f.coordinator().alarm();
+  const paused=await f.eventStorage.get<any>('nativeEvent');
+  expect(paused).toMatchObject({status:'PAUSED',reason:'LEGACY_RELEASE_HANDOFF',nextAt:null,knownRunId:101,
+    pausedFrom:{status:'CONFIRMING'},evidence:{runId:101},receiptDeferred:true});
+  expect(await f.store.read()).toBeNull();
+  f.env.LEGACY_RELEASE_HANDOFF_IDS='[]';
+  let official=mode==='already-adopted';
+  f.g.forCandidate=async()=>({...f.g,target:{...TARGET,...(official?{officialCandidate:true as const}:{})}});
+  await f.coordinator().register({hint:f.hint,deliveryId:'same-event'});
+  if(mode==='adopted-after-redelivery')official=true;
+  await f.coordinator().alarm();
+  const state=await f.eventStorage.get<any>('nativeEvent');
+  expect([state.dispatchedAt,state.knownRunId,state.confirmations]).toEqual([paused.dispatchedAt,101,paused.confirmations]);
+  expect(f.posts()).toBe(1);
+  if(mode==='rollback'){
+   expect(state).toMatchObject({status:'REGISTERED',handoff:{status:'COMPLETE'}});
+   expect((await f.store.read())?.status).toBe('PENDING');
+  }else{
+   expect(state).toMatchObject({status:'PAUSED',reason:'LEGACY_RELEASE_HANDOFF',nextAt:null});
+   expect(await f.store.read()).toBeNull();
+  }
+ });
+ it('stops legacy candidate intake and cancels promotion wake for its unposted claim',async()=>{
+  const f=await normalFixture();
+  await f.coordinator().register({hint:f.hint,deliveryId:'already-registered'});
+  const before=await f.eventStorage.get<any>('nativeEvent');
+  before.waitingForPromotion=f.hint.updatedAt;await f.eventStorage.put('nativeEvent',before);
+  const scoped={...f.env,LEGACY_RELEASE_HANDOFF_IDS:JSON.stringify([TARGET.id])};
+  const coordinator=new NativeCandidateCoordinator(f.eventStorage as any,scoped,()=>f.g,()=>f.clock());
+  await coordinator.wakePromoted(before.waitingForPromotion);
+  expect(await coordinator.register({hint:f.hint,deliveryId:'late-repeat'})).toBeNull();
+  await coordinator.alarm();
+  expect(await f.eventStorage.get('nativeEvent')).toMatchObject({status:'PAUSED',reason:'LEGACY_RELEASE_HANDOFF',
+    nextAt:null,deadline:before.deadline,preparations:0,dispatchedAt:null,claim:0});
+  expect(f.posts()).toBe(0);
+ });
  it('recovers a durable hint after candidate discovery fails without redelivery or duplicate dispatch',async()=>{
   const f=await normalFixture();
   let attempts=0;
