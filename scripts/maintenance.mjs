@@ -24,10 +24,7 @@ export async function maintenanceDefinition(file) {
   check(activeMaintenanceWorkflows.includes(file),'WORKFLOW');
   const parsed=YAML.parseDocument(await readFile(join(policyRoot,'.github/workflows',file),'utf8'));
   check(!parsed.errors.length,'DEFINITION');const d=parsed.toJS({maxAliasCount:100}),keys=maintenanceJobKeys(file);
-  const registrationName=file==='sync-managed.yml'&&Object.hasOwn(d.jobs,'register')?'register':null;
-  if(registrationName)check(!d.jobs.register.name&&!d.jobs.register.needs,'REGISTRATION_DEFINITION');
   const currentKeys=keys.filter(key=>key!=='automation-health'||Object.hasOwn(d.jobs,key));
-  if(registrationName)currentKeys.push(registrationName);
   check(same(Object.keys(d.jobs).sort(),[...currentKeys].sort()),'DEFINITION_JOBS');
   const names={};
   for(const key of keys) {
@@ -43,7 +40,7 @@ export async function maintenanceDefinition(file) {
   // Runs created before retirement still occur in the maintenance lookback and saved records.
   const events = Object.keys(d.on);
   if (file === 'sync-managed.yml') events.push('push', 'schedule');
-  return {file,names,events,registrationName};
+  return {file,names,events};
 }
 function source(run,workflow,definition,branch) {
   check(positive(run.id)&&positive(run.run_attempt)&&run.repository?.id===repositoryId&&run.head_repository?.id===repositoryId
@@ -55,9 +52,9 @@ function source(run,workflow,definition,branch) {
 function jobsProjection(raw,run,definition) {
   check(Array.isArray(raw)&&raw.length>0&&new Set(raw.map(j=>j.id)).size===raw.length,'JOBS');
   for(const j of raw) check(j.run_id===run.id&&j.head_sha===run.head_sha&&positive(j.run_attempt)&&j.run_attempt<=run.run_attempt,'JOB_SOURCE');
-  // Template runs still report the skipped sibling job. Registration runs use their own recovery entry.
-  if(definition.registrationName)raw=raw.filter(j=>{
-    if(j.name!==definition.registrationName)return true;
+  // Historical Sync Runs may still report the skipped registration job.
+  if(definition.file==='sync-managed.yml')raw=raw.filter(j=>{
+    if(j.name!=='register')return true;
     check(j.status==='completed'&&j.conclusion==='skipped','REGISTRATION_ROUTE');
     return false;
   });
