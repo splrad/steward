@@ -40,6 +40,14 @@ interface Asset { id: number; name: string; size: number; digest: string | null;
 export interface ReleaseTarget { delivery?: DeliveryUnit; publicBody?: string; official?: { prerelease: boolean }; manifest: PublicationManifest; releaseId: number; directory: string; appBotId: number }
 export type ReleaseIntent = Omit<ReleaseTarget, 'releaseId'> & { releaseId: number | null };
 export type ReleaseDownload = (repository: string, assetId: number, destination: string, anonymous: boolean) => Promise<void>;
+
+export function releaseAssetNames({manifest,delivery}: Pick<ReleaseIntent,'manifest'|'delivery'>) {
+  // A v4 manifest is sealed from the GitHub delivery job's archive only.
+  if(manifest.schemaVersion===4)return manifest.artifacts.map(file=>file.path).sort();
+  if(delivery)return channelFiles(delivery,'github-release',manifest.artifacts);
+  return [...manifest.artifacts.map(asset=>asset.path),'sbom.spdx.json','release-notes.md','artifact-manifest.json','SHA256SUMS'].sort();
+}
+
 export async function releaseReadIsAnonymous(gh:GhCommand,repository:string,repositoryId:number):Promise<boolean> {
   const value=JSON.parse(await gh(['api',`repos/${repository}`]));
   if(value.id!==repositoryId||value.full_name!==repository||value.archived!==false||value.disabled!==false||typeof value.private!=='boolean')
@@ -206,9 +214,7 @@ export class NativeGitHubRelease {
     } finally { await rm(directory, { recursive: true, force: true }); }
   }
   names(target: ReleaseIntent) {
-    if(target.manifest.schemaVersion===4)return target.manifest.artifacts.map(file=>file.path).sort();
-    if (target.delivery) return channelFiles(target.delivery, 'github-release', target.manifest.artifacts);
-    return [...target.manifest.artifacts.map(asset => asset.path), 'sbom.spdx.json', 'release-notes.md', 'artifact-manifest.json', 'SHA256SUMS'].sort();
+    return releaseAssetNames(target);
   }
   private notes(target: ReleaseIntent) {
     return target.publicBody ?? readFile(join(target.directory,'release-notes.md'),'utf8');

@@ -966,7 +966,7 @@ export async function inspectRepositoryHistory(request,{token,io=nativeEvidenceT
 }
 
 /** Fixed release entry points share the protected Git snapshot and canonical Run binding. */
-export async function releaseCommand(command,request,{token,io=nativeEvidenceTransport(token),now=()=>new Date().toISOString(),centralIo,centralInvocation,publisher,completionReader,candidateReadToken,copilotToken,controllerSha,controllerDirectory,candidateRuntime,allowProbeDispatch=true,official}={}) {
+export async function releaseCommand(command,request,{token,io=nativeEvidenceTransport(token),now=()=>new Date().toISOString(),centralIo,centralInvocation,publisher,completionReader,candidateReadToken,copilotToken,controllerSha,controllerDirectory,candidateRuntime,allowProbeDispatch=true,official,recoverDispatchOnly=false}={}) {
   if(!['candidate','dispatch-build','publish','reconcile-publication','dispatch-channel','observe-channel','rerun'].includes(command))fail('release command');
   exact(request,['directory','writeDirectory','remote','repository','repositoryId','defaultBranch','appBotId','cycleId','runId','identity']);
   if(!isAbsolute(request.directory)||!isAbsolute(request.writeDirectory)||!Number.isSafeInteger(request.appBotId)||request.appBotId<1
@@ -1099,6 +1099,7 @@ export async function releaseCommand(command,request,{token,io=nativeEvidenceTra
     }
   }
   if(!dispatch) {
+    if(recoverDispatchOnly)return wait('CANONICAL_RUN_UNCONFIRMED');
     if(command!=='dispatch-build')return wait('CHANNEL_PROBE_REQUIRED');
     if(cycle.units.some(unit=>unit.releaseId!==null||unit.manifestDigest!==null))return wait('FROZEN_BUILD_CANNOT_BE_RECREATED');
     const buildWorkflow=cycle.buildWorkflow??defaultBuildWorkflow;
@@ -1121,6 +1122,7 @@ export async function releaseCommand(command,request,{token,io=nativeEvidenceTra
   }
   const original=await io.request('GET',`/repos/${request.repository}/git/ref/heads/${dispatch.ref}`);
   if(original.status===404 && dispatch.purpose==='build') {
+    if(recoverDispatchOnly)return wait('CANONICAL_RUN_UNCONFIRMED');
     const refs=await native(`git/matching-refs/heads/${dispatch.ref}`);
     if(!Array.isArray(refs)||refs.some(ref=>ref.ref===`refs/heads/${dispatch.ref}`))fail('build ref inventory');
     try {await io.request('POST',`/repos/${request.repository}/git/refs`,512*1024,{ref:`refs/heads/${dispatch.ref}`,sha:dispatch.executionSha});}catch { /* Read back this exact ref before deciding. */ }
@@ -1162,7 +1164,7 @@ export async function releaseCommand(command,request,{token,io=nativeEvidenceTra
   const dispatched=await dispatchNativeRun({repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle},dispatch.requestKey,store,
     {complete:true,observations:snapshot.domainRecords.filter(record=>record.path.startsWith('evidence/dispatch/')).map(record=>record.value),
       channelEvidence:snapshot.domainRecords.filter(record=>record.path.startsWith('evidence/channel/')||record.path.startsWith('evidence/channel-read/')),sourceRejections:snapshot.domainRecords.filter(record=>record.path.startsWith('evidence/source-rejection/')),retryLimits:snapshot.domainRecords.filter(record=>record.path.startsWith('evidence/retry-limit/')),
-      archives:snapshot.domainRecords.filter(record=>record.path.startsWith('evidence/native/')),publication},io,now());
+      archives:snapshot.domainRecords.filter(record=>record.path.startsWith('evidence/native/')),publication},io,now(),{recoverOnly:recoverDispatchOnly});
   return {...dispatched,...deliveryDetails};
 }
 

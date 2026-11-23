@@ -488,10 +488,10 @@ it('accepts a valid release pause list only as an ordinary administrator Git fil
     await expect(evaluate(empty)).resolves.toMatchObject({productApplicable:false,dependencyMode:'private-administrator'});
     await save('[1187527897,1187527897]\n');
     await expect(evaluate(paused)).rejects.toThrow('RELEASE_PAUSES_INVALID');
+    git('checkout','--detach',paused);git('rm',path);commit();
+    await expect(evaluate(paused)).rejects.toThrow('VALIDATION_RELEASE_PAUSES_FILE');
     git('checkout','--detach',paused);
     git('update-index','--add','--cacheinfo','100755,'+git('rev-parse','HEAD:'+path)+','+path);commit();
-    await expect(evaluate(paused)).rejects.toThrow('VALIDATION_RELEASE_PAUSES_FILE');
-    git('checkout','--detach',paused);git('rm',path);commit();
     await expect(evaluate(paused)).rejects.toThrow('VALIDATION_RELEASE_PAUSES_FILE');
   }finally{await rm(root,{recursive:true,force:true});}
 },30000);

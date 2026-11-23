@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, copyFile, lstat, rm } from 'node:fs/
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import registrations from '../../../config/release/event-repositories.json' with { type: 'json' };
-import { nativeGhCommand, NativeGitHubRelease, nativeReleaseDownload, releaseReadIsAnonymous, type GhCommand, type ReleaseDownload } from './gh-release.js';
+import { nativeGhCommand, NativeGitHubRelease, nativeReleaseDownload, releaseAssetNames, releaseReadIsAnonymous, type GhCommand, type ReleaseDownload } from './gh-release.js';
 import { localGitSnapshot, safeGitPath } from './git-snapshot.js';
 import type { CandidateSession } from './release-candidate.js';
 import { readLegacyReleaseTemplate, type HistoricalTemplate } from './release-template-source.js';
@@ -1200,7 +1200,7 @@ async function prepareWorkflowPublication(options:{
     validateWorkflowManifest(manifest);
     if (!contributors) {
       if (options.officialBody===undefined) fail('official release body');
-      assertSelectedReleaseDownloads(options.officialBody,context.repository,target.tag,new Set(artifacts.map(file=>file.path)));
+      assertSelectedReleaseDownloads(options.officialBody,context.repository,target.tag,new Set(releaseAssetNames({manifest,delivery:unit})));
       records.push({unitId:unit.id,directory,manifest,delivery:unit,build:null,archive:null,githubDelivery:nativeReceipt,publicBody:options.officialBody});
       continue;
     }

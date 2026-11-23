@@ -516,7 +516,7 @@ export async function readChannelSourceRejections(context:EvidenceContext,histor
 
 /** An unbound request can be sent only after its PREPARED observation is adopted in protected Git. */
 export async function dispatchNativeRun(input:EvidenceContext, requestKey:string, store:DispatchStore, history:DispatchHistory,
-  io:EvidenceTransport, observedAt=new Date().toISOString()) {
+  io:EvidenceTransport, observedAt=new Date().toISOString(), {recoverOnly=false}={}) {
   const context=validateEvidenceContext(input),cycle=context.cycle,request=cycle.dispatches.find(value=>value.requestKey===requestKey);
   if(!request || !history.complete || !Number.isFinite(Date.parse(observedAt)))fail('dispatch history required');
   const observations=history.observations.filter(value=>value.repositoryId===context.repositoryId && value.cycleId===cycle.id && value.requestKey===requestKey)
@@ -561,13 +561,17 @@ export async function dispatchNativeRun(input:EvidenceContext, requestKey:string
         return await save(value,run)?result('BOUND','EARLIEST_NATIVE_RUN_BOUND'):result('UNKNOWN','BINDING_NOT_ADOPTED');
       }
       if(!await save(value))return result('UNKNOWN','SEARCH_NOT_ADOPTED');
+      if(recoverOnly)return result('WAIT','CANONICAL_RUN_UNCONFIRMED');
       const latest=prepared.at(-1)!,empty=observations.filter(value=>value.kind==='SEARCH' && value.matches.length===0
         && value.window?.start===request.sentAt && Date.parse(value.observedAt)>=Date.parse(latest.observedAt));
       const interval=[5,15,60][Math.min(prepared.length-1,2)]!*60_000;
       const firstEmpty=empty[0],retryAt=Math.max(Date.parse(latest.observedAt)+interval,Date.parse(firstEmpty?.observedAt??observedAt)+5*60_000,
         ...observations.map(value=>Date.parse(value.nextCheckAt??'')||0));
       if(empty.length<2 || Date.parse(observedAt)<retryAt)return result('WAIT','DISPATCH_VISIBILITY_WINDOW',new Date(retryAt).toISOString());
-    } else if(observations.some(value=>value.kind!=='READ_FAILURE'))fail('dispatch preparation missing');
+    } else {
+      if(observations.some(value=>value.kind!=='READ_FAILURE'))fail('dispatch preparation missing');
+      if(recoverOnly)return result('WAIT','CANONICAL_RUN_UNCONFIRMED');
+    }
     const deferred=Math.max(0,...observations.map(value=>Date.parse(value.nextCheckAt??'')||0));
     if(Date.parse(observedAt)<deferred)return result('WAIT','NATIVE_RETRY_AFTER',new Date(deferred).toISOString());
     if(cycle.workflowDelivery&&request.purpose!=='build') {

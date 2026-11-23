@@ -8,6 +8,7 @@ import { readReleaseRecords, assertReleaseWriterProtection } from './release-rec
 import {servicePages,pagesGitStore} from './pages-maintenance.mjs';
 import {assertQualityProtection,qualityNativeIO} from './quality-language-summary.mjs';
 import {validateReleaseConfiguration} from './release-adoption.mjs';
+import {mergedRepositoryPolicy} from './repository-policy-read.mjs';
 
 const identity={name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'};
 const isGitSha=value=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
@@ -172,6 +173,7 @@ export async function serviceRepositoryPages({app,root,repository,coordinator,co
     const writeDirectory=await mkdtemp(join(root,'pages-writes-'));
     const store=pagesGitStore({repositoryId:repository.id,refresh:()=>fetchState(root,repository,token,'steward/governance-state',{governanceAppId}),
       writeDirectory,defaultBranch:repository.default_branch,token,identity});
-    return servicePages({io,repository,store,completion,appBotId:app.appBotId,token,coordinator});
+    return servicePages({io,repository,store,completion,appBotId:app.appBotId,token,coordinator,
+      readPolicy:()=>mergedRepositoryPolicy(app,repository)});
   });
 }

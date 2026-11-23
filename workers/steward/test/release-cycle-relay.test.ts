@@ -98,6 +98,7 @@ describe('release cycle relay',()=>{
   expect(releaseHint('pull_request',{...edit,sender:{id:301115370,type:'Bot'}},'7')).toBeUndefined();
  });
  it.each(['labeled','unlabeled'])('dispatches one official refresh when the terminal label event is %s',async first=>{
+  const latestDefaultSha='f'.repeat(40);
   const target={...repo,private:false,visibility:'public',disabled:false,owner:{id:302208797}};
   const pending={name:'autorelease: pending'},tagged={name:'autorelease: tagged'};
   const pull={number:301,state:'closed',merged:true,merged_at:'2026-11-23T00:00:00Z',merge_commit_sha:deployment,
@@ -127,7 +128,7 @@ describe('release cycle relay',()=>{
       return {target:{...TARGET,officialCandidate:true},async json(repoId:number,path:string){
         expect(repoId).toBe(TARGET.id);
         expect(path).toBe('/repos/'+TARGET.name+'/git/ref/heads/main');
-        return {ref:'refs/heads/main',object:{sha:pin,type:'commit'}};
+        return {ref:'refs/heads/main',object:{sha:latestDefaultSha,type:'commit'}};
       }};
     },
     async json(id:number,path:string,method?:string,body?:unknown){
@@ -160,7 +161,7 @@ describe('release cycle relay',()=>{
   expect(releaseHint('pull_request',duplicate,'7')).toEqual(expected);
   await admit(initial);
   await f.tick();
-  expect(dispatches).toEqual([{ref:'main',inputs:{event_json:JSON.stringify(expected),request_key:key,policy_sha:pin,source_sha:pin}}]);
+  expect(dispatches).toEqual([{ref:'main',inputs:{event_json:JSON.stringify(expected),request_key:key,policy_sha:pin,source_sha:latestDefaultSha}}]);
   await admit(duplicate);
   f.state.hits=[{...receipt,path:destination,display_title:'Candidate event '+key}];
   await f.tick();

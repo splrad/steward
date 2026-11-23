@@ -456,7 +456,8 @@ async function runNativeCandidate(pinCase: string) {
     await git('-C',previewDirectory,'fetch','--no-tags','--no-recurse-submodules',remote,'refs/heads/steward/release-state');
     await git('-C',previewDirectory,'checkout','--detach',stateBefore!);
     await git('init','--bare',previewRemote);
-    await git('-C',previewRemote,'fetch','--no-tags','--no-recurse-submodules',remote,'refs/heads/main:refs/heads/main');
+    await git('-C',previewRemote,'fetch','--no-tags','--no-recurse-submodules',remote,'refs/heads/main');
+    await git('-C',previewRemote,'update-ref','refs/heads/main','FETCH_HEAD');
     await git('-C',previewRemote,'fetch','--no-tags','--no-recurse-submodules',remote,'refs/heads/steward/release-candidate');
     await git('-C',previewRemote,'update-ref','refs/heads/steward/release-candidate','FETCH_HEAD');
     const stateFile = join(previewDirectory,'state.json');

@@ -137,7 +137,8 @@ export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invo
   const state=await cycleStage('LEDGER_READ',snapshot), cycles=state.cycles.map(record=>record.value);
   let cycleId=null;
   let probeReceipt=false;
-  const execute=async(command,runId=null)=>invoke(command,cycleId,runId,!probeReceipt);
+  const execute=async(command,runId=null,recoverDispatchOnly=false)=>
+    recoverDispatchOnly ? invoke(command,cycleId,runId,!probeReceipt,true) : invoke(command,cycleId,runId,!probeReceipt);
   if (event.kind==='push') {
     const head=(await cycleStage('SOURCE_READ',()=>get('git/ref/heads/'+encodeURIComponent(product.defaultBranch)))).object?.sha;
     if (!sha(head)) fail('CYCLE_EVENT_SOURCE');
@@ -206,11 +207,10 @@ export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invo
     cycleId=cycle.id;
     if (officialStage==='prepare') {
       if (!cycle.officialRelease || request.purpose!=='build' || run.conclusion!=='success') return wait('OFFICIAL_RELEASE_BUILD_EVENT_REQUIRED');
-      if (request.canonicalRunId!==run.id) return wait('CANONICAL_RUN_UNCONFIRMED');
-      return {...await execute('publish'),cycleId};
     }
     if (!request.canonicalRunId) {
-      await execute(request.purpose==='build'?'dispatch-build':'dispatch-channel');
+      await execute(request.purpose==='build'?'dispatch-build':'dispatch-channel',null,
+        Boolean(cycle.officialRelease && request.purpose==='build'));
       const bound=(await cycleStage('LEDGER_READ',snapshot)).cycles.find(c=>c.value.id===cycleId)?.value.dispatches.find(d=>d.requestKey===request.requestKey);
       if (bound?.canonicalRunId!==run.id) return {...wait('CANONICAL_RUN_UNCONFIRMED'),cycleId};
     }
@@ -321,7 +321,7 @@ export async function main(env=process.env) {
                 controllerSha:run.head_sha,controllerDirectory:process.cwd(),
                 candidateRuntime:{expectedSourceSha,expectedStateSha,checkRepositoryPolicy:releasePolicyGuard(app,repository)}}));
           },
-          invoke:async(command,cycleId,runId,allowProbeDispatch)=>releaseCommand(command,await request(cycleId,runId),{token,io,centralIo,allowProbeDispatch,controllerDirectory:process.cwd(),official,
+          invoke:async(command,cycleId,runId,allowProbeDispatch,recoverDispatchOnly)=>releaseCommand(command,await request(cycleId,runId),{token,io,centralIo,allowProbeDispatch,controllerDirectory:process.cwd(),official,recoverDispatchOnly,
             centralInvocation:{runId:run.id,runAttempt:run.run_attempt,controllerSha:run.head_sha,defaultBranch:'main'}})}));
       });
     });
