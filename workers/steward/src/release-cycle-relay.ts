@@ -69,9 +69,11 @@ export function releaseHint(event: string, p: any, installation: string | undefi
       && typeof comment.body === 'string' && /^<!-- steward:candidate-status:[a-f0-9]{64} -->/.test(comment.body))
       return {repositoryId: product.id, kind:'candidate-status', prNumber:issue.number, commentId:comment.id};
   }
-  if (event === 'pull_request' && officialBranch(p.pull_request?.head?.ref, product.defaultBranch)) {
+  if (event === 'pull_request' && typeof p.pull_request?.head?.ref === 'string' &&
+      p.pull_request.head.ref.startsWith('release-please--branches--')) {
     const pull = p.pull_request;
-    if (!positive(p.number) || pull.number !== p.number || pull.user?.id !== stewardBotId ||
+    if (pull.head.ref !== 'release-please--branches--' + product.defaultBranch ||
+        !positive(p.number) || pull.number !== p.number || pull.user?.id !== stewardBotId ||
         pull.base?.repo?.id !== product.id || pull.base.ref !== product.defaultBranch ||
         pull.head?.repo?.id !== product.id || !sha(pull.head.sha) || /^0+$/.test(pull.head.sha) ||
         !Array.isArray(pull.labels) ||
@@ -122,11 +124,6 @@ export function releaseHint(event: string, p: any, installation: string | undefi
   const publish = /^steward\/build\/[A-Za-z0-9_.-]{1,128}$/.test(run.head_branch) && run.workflow_id === product.publishWorkflowId && run.path === (product.buildWorkflow??publishPath) && buildTitle.test(run.display_title);
   const channels = run.head_branch===product.defaultBranch && run.workflow_id === product.channelWorkflowId && run.path === '.github/workflows/steward-release-channels.yml' && (/^Channels (submit|verify) [a-f0-9]{64}$/.test(run.display_title) || run.conclusion==='success' && /^Channels observe [a-f0-9]{64}$/.test(run.display_title));
   if (publish || channels) return {repositoryId: product.id, kind: 'run', runId: run.id, attempt: run.run_attempt};
-}
-function officialBranch(ref: unknown, base: string): boolean {
-  if (typeof ref !== 'string') return false;
-  const root = 'release-please--branches--' + base;
-  return ref === root || ref.startsWith(root + '--components--') && ref.length > root.length + '--components--'.length;
 }
 export function relayKey(h: Hint) {
   if (h.kind === 'official-merge') return digest(JSON.stringify([h.repositoryId,h.kind,h.prNumber,h.sourceSha,h.head])).slice(7);

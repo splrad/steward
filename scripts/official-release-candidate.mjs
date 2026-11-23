@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { BranchName } from 'release-please-official/build/src/util/branch-name.js';
 import { PullRequestBody } from 'release-please-official/build/src/util/pull-request-body.js';
 import { PullRequestTitle } from 'release-please-official/build/src/util/pull-request-title.js';
 import { TagName } from 'release-please-official/build/src/util/tag-name.js';
@@ -21,8 +20,7 @@ export function requireCandidate(value, code) {
   if (!value) throw Error('OFFICIAL_CANDIDATE_' + code);
 }
 export const hasLabel = (pull, name) => Array.isArray(pull.labels) && pull.labels.some(label => label.name === name);
-export const officialRef = (ref, base) => typeof ref === 'string' && ref.startsWith('release-please--branches--')
-  && BranchName.parse(ref, logger)?.getTargetBranch() === base;
+export const officialRef = (ref, base) => ref === 'release-please--branches--' + base;
 
 export function officialNotes(body) {
   requireCandidate(typeof body === 'string', 'BODY');
@@ -69,19 +67,24 @@ export function officialConfig(settings) {
   return settings?.['separate-pull-requests'] === true;
 }
 
+export function officialRootSettings(settings) {
+  const packages = settings?.packages;
+  const root = packages?.['.'];
+  if (!officialConfig(settings) || !root || typeof root !== 'object' || Array.isArray(root) ||
+      Object.keys(packages).length !== 1 || ['group-pull-request-title-pattern', 'label', 'release-label']
+        .some(key => settings[key] !== undefined || root[key] !== undefined)) return null;
+  if ((root.draft ?? settings.draft) !== true ||
+      (root['force-tag-creation'] ?? settings['force-tag-creation']) !== true ||
+      (root['skip-github-release'] ?? settings['skip-github-release']) ||
+      (root['draft-pull-request'] ?? settings['draft-pull-request'])) return null;
+  return { ...settings, ...root, path: '.' };
+}
+
 function officialUnit(settings, ref, base, version) {
-  requireCandidate(officialConfig(settings) && settings.packages && typeof settings.packages === 'object'
-    && !Array.isArray(settings.packages) && !settings['group-pull-request-title-pattern']
-    && !settings['release-label'] && !settings.label, 'CONFIG');
-  const branch = BranchName.parse(ref, logger);
+  const unit = officialRootSettings(settings);
+  requireCandidate(unit, 'ROOT_CONFIG');
   requireCandidate(officialRef(ref, base), 'BRANCH');
-  const options = Object.entries(settings.packages).map(([path, config]) => ({...settings, ...config, path}));
-  const matches = options.filter(o => (o.component ?? (o.path === '.' ? undefined : o.path)) === branch.getComponent());
-  requireCandidate(matches.length === 1, 'UNIT');
-  const unit = matches[0];
-  requireCandidate(unit.draft === true && unit['force-tag-creation'] === true && !unit['skip-github-release'] &&
-    !unit['draft-pull-request'], 'CONFIG');
-  const tag = value => new TagName(Version.parse(value), unit['include-component-in-tag'] === false ? undefined : branch.getComponent(), unit['tag-separator'],
+  const tag = value => new TagName(Version.parse(value), undefined, unit['tag-separator'],
     unit['include-v-in-tag'] ?? true).toString();
   return { unit, tag: tag(version) };
 }
@@ -230,11 +233,7 @@ export async function renderOfficialPull(pull, product, get, botId, sourceSha, t
   const backstop = configuration['last-release-sha'] ?? (!before[path] ? configuration['bootstrap-sha'] : null);
   const priorSha = priorTag ? (await get('commits/' + encodeURIComponent('tags/' + priorTag))).sha : backstop;
   requireCandidate(!priorSha || sha(priorSha), 'RANGE');
-  const commits = await rangeCommits(get, sourceSha, priorSha);
-  const relevant = path === '.' ? commits : (await Promise.all(commits.map(async c => {
-    const files = await pages(get, 'commits/' + c.sha, 'files');
-    return files.some(f => f.filename?.startsWith(path + '/') || f.previous_filename?.startsWith(path + '/')) ? c : null;
-  }))).filter(Boolean);
+  const relevant = await rangeCommits(get, sourceSha, priorSha);
   const { units } = parseDeliveryConfig(delivery, configuration);
   const unit = units.find(unit => unit.path === path);
   requireCandidate(unit, 'UNIT');

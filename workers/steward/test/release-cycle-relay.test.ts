@@ -115,6 +115,7 @@ describe('release cycle relay',()=>{
     {...transition,label:{name:'other'}},
     {...transition,pull_request:{...pull,merged:false}},
     {...transition,pull_request:{...pull,head:{...pull.head,ref:'steward/release-candidate'}}},
+    {...transition,pull_request:{...pull,head:{...pull.head,ref:pull.head.ref+'--components--tools'}}},
     {...transition,pull_request:{...pull,head:{...pull.head,repo:{id:3}}}},
   ])];
 

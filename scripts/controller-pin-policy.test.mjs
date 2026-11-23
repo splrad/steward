@@ -277,10 +277,11 @@ test('accepts a native v3 publisher only with admitted, attested GitHub delivery
         checkout('product', '${{ github.sha }}'),
         checkout('controller', pin, 'splrad/steward'),
         checkout('state', 'steward/release-state'),
-        {env: Object.fromEntries(inputs.map(key => [key.toUpperCase(), '${{ inputs.' + key + ' }}'])),
+        {shell: 'pwsh', env: Object.fromEntries(inputs.map(key => [key.toUpperCase(), '${{ inputs.' + key + ' }}'])),
           run: 'node controller/packages/runner/dist/index.js release-pipeline identity ' +
             inputs.map(key => '--' + key.replaceAll('_', '-') + ' "$env:' + key.toUpperCase() + '"').join(' ') +
-            ' --source-dir product --controller-dir controller --state-dir state --output identity.json'},
+            ' --source-dir product --controller-dir controller --state-dir state --output identity.json\n' +
+            'if ($LASTEXITCODE) { exit $LASTEXITCODE }'},
       ]},
       delivery: {
         name: 'delivery/root',
@@ -322,9 +323,27 @@ test('accepts a native v3 publisher only with admitted, attested GitHub delivery
   assert.throws(() => verify(revision(doc => delete doc.jobs.delivery.permissions.attestations)), /NATIVE_ATTESTATION/);
   assert.throws(() => verify(revision(doc => doc.jobs.admit.steps[3].env.CONTROLLER_SHA = pin)), /NATIVE_ADMISSION/);
   assert.throws(() => verify(revision(doc => doc.jobs.admit.steps[3]['continue-on-error'] = true)), /NATIVE_ADMISSION/);
+  assert.throws(() => verify(revision(doc => {
+    const identity = doc.jobs.admit.steps[3];
+    identity.run = 'if ($false) {\n' + identity.run + '\n}';
+  })), /NATIVE_ADMISSION/);
+  assert.throws(() => verify(revision(doc => doc.jobs.admit.steps[3].run += '\nexit 0')), /NATIVE_ADMISSION/);
+  assert.throws(() => verify(revision(doc => doc.jobs.admit.steps[3].shell = 'bash')), /NATIVE_ADMISSION/);
   assert.throws(() => verify(revision(doc => doc.jobs.admit.steps[1].with['persist-credentials'] = true)), /NATIVE_ADMISSION/);
   assert.throws(() => verify(revision(doc => delete doc.jobs.delivery.needs)), /NATIVE_ADMISSION/);
   assert.throws(() => verify(revision(doc => doc.jobs.delivery.if = 'always()')), /NATIVE_ADMISSION/);
+  assert.doesNotThrow(() => verify(revision(doc => {
+    doc.jobs.prepare = {needs: 'admit', steps: [{run: 'prepare'}]};
+    doc.jobs.delivery.needs = ['admit', 'prepare'];
+  })));
+  assert.throws(() => verify(revision(doc => {
+    doc.jobs.prepare = {steps: [{run: 'unadmitted build'}]};
+    doc.jobs.delivery.needs = ['admit', 'prepare'];
+  })), /NATIVE_ADMISSION/);
+  assert.throws(() => verify(revision(doc => {
+    doc.jobs.prepare = {needs: 'admit', if: 'always()', steps: [{run: 'unadmitted build'}]};
+    doc.jobs.delivery.needs = ['prepare'];
+  })), /NATIVE_ADMISSION/);
   assert.throws(() => verify(revision(doc => delete doc.jobs.delivery.needs), ['.github/delivery.json']), /NATIVE_ADMISSION/);
   for (const [channel, name, location] of [
     ['ghcr-assets', 'Upload GHCR assets delivery', 'ghcr.io/splrad/fixture'],
@@ -353,4 +372,21 @@ test('accepts a native v3 publisher only with admitted, attested GitHub delivery
   const buildWorkflow = '.github/workflows/native-product-build.yml';
   assert.doesNotThrow(() => verify(revision(undefined, {schemaVersion: 3, buildWorkflow}), [buildWorkflow, '.github/delivery.json']));
   assert.throws(() => verify(revision(doc => delete doc.jobs.delivery.needs, {schemaVersion: 3, buildWorkflow}), [buildWorkflow]), /NATIVE_ADMISSION/);
+  const legacy = {schemaVersion: 2, buildWorkflow, units: [{
+    id: 'layerscape', path: '.', notesPath: '.release-notes/layerscape.md',
+    assets: [{id: 'installer', name: 'Setup.exe', mediaType: 'application/vnd.microsoft.portable-executable'}],
+    channels: [{id: 'github-release', required: true, location: 'github', artifactIds: ['installer']}],
+  }]};
+  assert.throws(() => verify(revision(undefined, legacy), [buildWorkflow]), /REUSABLE_WORKFLOW_MISSING/);
+  const setLegacyReusable = ref => {
+    writeFileSync(join(product.dir, buildWorkflow), YAML.stringify({
+      jobs: {
+        select: {steps: [checkout('controller', pin, 'splrad/steward')]},
+        build: {uses: 'splrad/steward/.github/workflows/product-release.yml@' + ref},
+      },
+    }));
+    return product.pinFiles(pin);
+  };
+  assert.doesNotThrow(() => verify(setLegacyReusable(pin), [buildWorkflow]));
+  assert.throws(() => verify(setLegacyReusable('x'.repeat(40)), [buildWorkflow]), /VALIDATION_CONTROLLER_PIN_INVALID/);
 });
