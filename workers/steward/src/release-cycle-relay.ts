@@ -316,7 +316,8 @@ export class ReleaseRelay {
       if (!current || current.stage !== r.stage || current.tries !== r.tries || current.next !== r.next) return false;
       Object.assign(current,changes);
       await t.put('releaseCycle',current);
-      if (current.paused || current.stage === 'received' || current.stage === 'unknown') await t.deleteAlarm();
+      if ((draining && current.paused && current.reason === legacyReleaseHandoffReason) ||
+          current.stage === 'received' || current.stage === 'unknown') await t.deleteAlarm();
       else await t.setAlarm(current.next);
       return true;
     });
@@ -402,7 +403,7 @@ export class ReleaseRelay {
         await g.prepareDispatch?.(CENTRAL.id);
         const reserved = this.now();
         if (!await save({stage:'confirm',tries:0,policy,reserved,next:reserved+60000,
-          ...(officialRelease?{officialRelease:true}:{})})) return;
+          ...(draining&&officialRelease?{officialRelease:true}:{})})) return;
         try{
           await g.json(CENTRAL.id,prefix+'/actions/workflows/'+destination+'/dispatches','POST',{ref:'main',inputs});
         }catch(error){

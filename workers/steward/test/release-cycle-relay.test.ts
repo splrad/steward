@@ -213,13 +213,13 @@ it('recovers a never-posted event after promotion without another POST for unkno
  expect(await f.storage.get('releaseCycle')).toMatchObject({stage:'unknown',reason:'DELIVERY_UNKNOWN'});
  await f.relay.register(hint);await f.relay.wakePromoted(pin);await f.tick();expect(f.state.posts).toBe(1);
 });
-it.each(['ordinary','handoff-legacy','handoff-official'] as const)('binds build completion to its frozen cycle before dispatch: %s',async mode=>{
+it.each(['ordinary','ordinary-official','handoff-legacy','handoff-official'] as const)('binds build completion to its frozen cycle before dispatch: %s',async mode=>{
  const cycleId='pr-192-'+pin, op='a'.repeat(64), ref='steward/build/'+cycleId, f=fixture();
  const created=new Date().toISOString();
  const run={id:101,run_attempt:2,status:'completed',head_sha:pin,head_branch:ref,event:'workflow_dispatch',actor:{id:301115370},
    repository:{id:TARGET.id},head_repository:{id:TARGET.id},workflow_id:410998652,path:'.github/workflows/steward-release-publish.yml',display_title:'Build '+op,created_at:created};
  const cycle={id:cycleId,sourceSha:pin,dispatches:[{purpose:'build',ref,executionSha:pin,sourceSha:pin,workflowId:410998652,canonicalRunId:101,operationKey:op,sentAt:created}],
-   ...(mode==='handoff-official'?{officialRelease:{headSha:pin,pullBodyDigest:op,bodyDigest:op}}:{})};
+   ...(mode.endsWith('-official')?{officialRelease:{headSha:pin,pullBodyDigest:op,bodyDigest:op}}:{})};
  const {createHash}=await import('node:crypto');
  const bytes=Buffer.from(JSON.stringify(cycle)), blob=createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex');
  let post:any;
@@ -233,7 +233,7 @@ it.each(['ordinary','handoff-legacy','handoff-official'] as const)('binds build 
    return {state:'active',path:receipt.path};
  }};
  const relay=new ReleaseRelay(f.storage as any,{...f.env,INSTALLATION_ID:'7',
-   LEGACY_RELEASE_HANDOFF_IDS:JSON.stringify(mode==='ordinary'?[]:[TARGET.id])} as any,()=>reader as any,()=>f.state.now);
+   LEGACY_RELEASE_HANDOFF_IDS:JSON.stringify(mode.startsWith('ordinary')?[]:[TARGET.id])} as any,()=>reader as any,()=>f.state.now);
  const h=releaseHint('workflow_run',{...payload,action:'completed',workflow_run:run},'7')!;
  await relay.register(h);await relay.alarm();
  if(mode==='handoff-legacy'){
@@ -242,7 +242,9 @@ it.each(['ordinary','handoff-legacy','handoff-official'] as const)('binds build 
    expect(await f.storage.getAlarm()).toBeNull();
  }else{
    expect(JSON.parse(post.inputs.event_json)).toEqual({repositoryId:TARGET.id,kind:'run',runId:101,attempt:2});
-   if(mode==='handoff-official')expect(await f.storage.get('releaseCycle')).toMatchObject({stage:'confirm',officialRelease:true});
+   const stored=await f.storage.get<any>('releaseCycle');
+   expect(stored.stage).toBe('confirm');
+   expect(stored.officialRelease).toBe(mode==='handoff-official'?true:undefined);
  }
 });
 it('treats a validated custom path as a build completion and rejects the same Run with a different path',()=>{
