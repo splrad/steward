@@ -167,6 +167,30 @@ test('old open candidate can coexist while the official writer uses its own bran
   await assert.rejects(prepareOfficialPush({ ...options, restore: async name => name === 'before' }), /ACTION_RESULT_UNKNOWN/);
 });
 
+test('a delayed refresh must still match the merged PR and current terminal labels', async () => {
+  const releasedSha = previousSha;
+  const event = { kind: 'official-refresh', repositoryId: product.id, prNumber: pr.number, head, releasedSha };
+  const identity = { product, sourceSha, event, runId: 1, requestKey: 'k', controllerSha };
+  const tagged = { name: 'autorelease: tagged' };
+  const merged = { ...pr, state: 'closed', merged: true, merge_commit_sha: releasedSha, labels: [tagged] };
+  let current = merged;
+  const get = async path => {
+    if (path === 'git/ref/heads/main') return { ref: 'refs/heads/main', object: { type: 'commit', sha: sourceSha } };
+    if (path.startsWith('contents/release-please-config.json?')) return blob('release-please-config.json', settings);
+    if (path.startsWith('contents/.release-please-manifest.json?')) return blob('.release-please-manifest.json', { '.': '1.0.0' });
+    if (path === 'pulls/' + pr.number) return current;
+    if (path.startsWith('pulls?') || path.startsWith('issues?')) return [];
+    assert.fail(path);
+  };
+  const options = { identity, get, prepareParticipation: async () => ({ status: 'APPLICABLE', sourceSha }), restore: async () => false };
+  assert.equal((await prepareOfficialPush(options)).mode, 'action');
+  for (const drift of [{ labels: [tagged, ...pr.labels] }, { labels: [] }, { merge_commit_sha: controllerSha },
+    { head: { ...pr.head, sha: controllerSha } }]) {
+    current = { ...merged, ...drift };
+    await assert.rejects(prepareOfficialPush(options), /REFRESH_ORIGIN/);
+  }
+});
+
 test('only the action-produced head is rendered and retries protect human edits and stale heads', async () => {
   const output = JSON.stringify([{ number: pr.number, headBranchName: pr.head.ref, baseBranchName: 'main', body: upstreamBody }]);
   const before = { sourceSha, initial: [] };

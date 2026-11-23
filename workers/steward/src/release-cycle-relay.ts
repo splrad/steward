@@ -11,6 +11,10 @@ const prefix = '/repos/' + CENTRAL.name;
 const sha = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f]{40}$/.test(v);
 const positive = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
 const stewardBotId = 301115370;
+const pendingLabel = 'autorelease: pending', taggedLabel = 'autorelease: tagged';
+function completesOfficialLabels(action: unknown, label: unknown): boolean {
+  return (action === 'labeled' && label === taggedLabel) || (action === 'unlabeled' && label === pendingLabel);
+}
 const deliveryGuid = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
 type Hint = {repositoryId: number; kind: 'push'; sourceSha: string}
   | {repositoryId: number; kind: 'candidate-head'; prNumber: number; head: string; delivery?: string}
@@ -58,9 +62,10 @@ export function releaseHint(event: string, p: any, installation: string | undefi
         pull.head?.repo?.id !== product.id || !sha(pull.head.sha) || /^0+$/.test(pull.head.sha) ||
         !Array.isArray(pull.labels) ||
         typeof pull.body !== 'string' || typeof pull.title !== 'string') return;
-    const pending = pull.labels.some((label: any) => label?.name === 'autorelease: pending');
-    const tagged = pull.labels.some((label: any) => label?.name === 'autorelease: tagged');
-    if (p.action === 'labeled' && p.label?.name === 'autorelease: tagged' && p.sender?.id === stewardBotId &&
+    const pending = pull.labels.some((label: any) => label?.name === pendingLabel);
+    const tagged = pull.labels.some((label: any) => label?.name === taggedLabel);
+    // The official action adds tagged last. Recovery can instead remove the last pending label.
+    if (completesOfficialLabels(p.action,p.label?.name) && p.sender?.id === stewardBotId &&
         tagged && !pending && pull.state === 'closed' && pull.merged === true && sha(pull.merge_commit_sha) &&
         !/^0+$/.test(pull.merge_commit_sha))
       return {repositoryId:product.id,kind:'official-refresh',prNumber:p.number,head:pull.head.sha,releasedSha:pull.merge_commit_sha};
@@ -134,7 +139,8 @@ export async function acceptReleaseHint(env: BoundedEnv, event: string, payload:
     if(prior.hint.kind==='publication'||prior.hint.kind==='candidate-head'||prior.hint.kind==='candidate-status')return;
     hint={...hint,productRepositoryId:prior.hint.repositoryId};
   }else{
-    if(event!=='push' && !(event==='pull_request'&&['opened','synchronize','edited','closed','labeled'].includes(payload.action))
+    if(event!=='push' && !(event==='pull_request'&&(['opened','synchronize','edited','closed'].includes(payload.action) ||
+      completesOfficialLabels(payload.action,payload.label?.name)))
       && !(event==='issue_comment'&&payload.action==='created') && !(event==='workflow_run'&&payload.action==='completed'&&run?.status==='completed'&&run.event==='workflow_dispatch'&&
       run.actor?.id===301115370&&run.head_repository?.id===repo?.id&&(isBuildWorkflow(run.path)||run.path===channelPath)))return;
     if(!repo||repo.private!==false||repo.archived!==false||repo.fork!==false||repo.owner?.id!==302208797||

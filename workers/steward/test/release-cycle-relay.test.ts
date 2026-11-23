@@ -90,16 +90,86 @@ describe('release cycle relay',()=>{
   })}};
   await acceptReleaseHint(env as any,'pull_request',event);
   expect(recorded).toEqual([['cycle:v1:'+relayKey(accepted),{hint:accepted,source:{name:TARGET.name,defaultBranch:'main'}}]]);
-  const tagged={...event,action:'labeled',label:{name:'autorelease: tagged'},sender:{id:301115370},
-    pull_request:{...pull,labels:[{name:'autorelease: tagged'}]}};
-  expect(releaseHint('pull_request',tagged,'7')).toEqual({repositoryId:TARGET.id,kind:'official-refresh',prNumber:301,head:pin,releasedSha:deployment});
-  expect(releaseHint('pull_request',{...tagged,sender:{id:42}},'7')).toBeUndefined();
   for(const action of ['opened','synchronize','ready_for_review','reopened'])
     expect(releaseHint('pull_request',{...event,action,pull_request:{...pull,state:'open',merged:false}},'7')).toBeUndefined();
   const edit={...event,action:'edited',sender:{id:42,type:'User'},changes:{body:{from:'old'}},
     pull_request:{...pull,state:'open',merged:false}};
   expect(releaseHint('pull_request',edit,'7')?.kind).toBe('official-edit');
   expect(releaseHint('pull_request',{...edit,sender:{id:301115370,type:'Bot'}},'7')).toBeUndefined();
+ });
+ it.each(['labeled','unlabeled'])('dispatches one official refresh when the terminal label event is %s',async first=>{
+  const target={...repo,private:false,visibility:'public',disabled:false,owner:{id:302208797}};
+  const pending={name:'autorelease: pending'},tagged={name:'autorelease: tagged'};
+  const pull={number:301,state:'closed',merged:true,merged_at:'2026-11-23T00:00:00Z',merge_commit_sha:deployment,
+    user:{id:301115370},body:'Approved release notes',title:'chore(main): release 1.1.0',labels:[tagged],
+    base:{ref:'main',repo:{id:TARGET.id}},head:{ref:'release-please--branches--main',repo:{id:TARGET.id},sha:pin}};
+  const event={...payload,repository:target,number:pull.number,pull_request:pull,sender:{id:301115370}};
+  const labeled={...event,action:'labeled',label:tagged},unlabeled={...event,action:'unlabeled',label:pending};
+  const expected={repositoryId:TARGET.id,kind:'official-refresh',prNumber:pull.number,head:pin,releasedSha:deployment} as const;
+  const key=relayKey(expected),destination='.github/workflows/release-candidate-event.yml';
+  const staleTagged={...labeled,pull_request:{...pull,labels:[pending,tagged]}};
+  const earlyPendingRemoval={...unlabeled,pull_request:{...pull,labels:[]}};
+  const ignored=[staleTagged,earlyPendingRemoval,...[labeled,unlabeled].flatMap(transition=>[
+    {...transition,sender:{id:42,type:'User'}},
+    {...transition,label:{name:'other'}},
+    {...transition,pull_request:{...pull,merged:false}},
+    {...transition,pull_request:{...pull,head:{...pull.head,ref:'steward/release-candidate'}}},
+    {...transition,pull_request:{...pull,head:{...pull.head,repo:{id:3}}}},
+  ])];
+
+  const f=fixture();
+  f.state.promoted=pin;
+  const dispatches:unknown[]=[];
+  const centralJson=f.g.json;
+  Object.assign(f.g,{
+    async forCandidate(id:number){
+      expect(id).toBe(TARGET.id);
+      return {target:{...TARGET,officialCandidate:true},async json(repoId:number,path:string){
+        expect(repoId).toBe(TARGET.id);
+        expect(path).toBe('/repos/'+TARGET.name+'/git/ref/heads/main');
+        return {ref:'refs/heads/main',object:{sha:pin,type:'commit'}};
+      }};
+    },
+    async json(id:number,path:string,method?:string,body?:unknown){
+      if(path.endsWith('/release-candidate-event.yml/dispatches')){
+        dispatches.push(body);
+        return null;
+      }
+      if(path.endsWith('/release-candidate-event.yml'))return {state:'active',path:destination};
+      return centralJson(id,path,method);
+    },
+  });
+  const received:unknown[]=[];
+  const env={...f.env,INSTALLATION_ID:'7',BOUNDED_RECHECK:{idFromName:(name:string)=>name,get:(name:string)=>({
+    async fetch(request:Request){
+      expect(name).toBe('cycle:v1:'+key);
+      const {hint,source}=await request.json() as {hint:typeof expected;source:Pick<typeof TARGET,'name'|'defaultBranch'>};
+      received.push(hint);
+      await f.relay.register(hint,source);
+      return new Response(null,{status:204});
+    }
+  })}};
+  const admit=(snapshot:typeof labeled)=>acceptReleaseHint(env as any,'pull_request',snapshot);
+  for(const snapshot of ignored){
+    expect(releaseHint('pull_request',snapshot,'7')).toBeUndefined();
+    await admit(snapshot);
+  }
+  expect(received).toEqual([]);
+  const [initial,duplicate]=first==='labeled'?[labeled,unlabeled]:[unlabeled,labeled];
+  expect(releaseHint('pull_request',initial,'7')).toEqual(expected);
+  expect(releaseHint('pull_request',duplicate,'7')).toEqual(expected);
+  await admit(initial);
+  await f.tick();
+  expect(dispatches).toEqual([{ref:'main',inputs:{event_json:JSON.stringify(expected),request_key:key,policy_sha:pin,source_sha:pin}}]);
+  await admit(duplicate);
+  f.state.hits=[{...receipt,path:destination,display_title:'Candidate event '+key}];
+  await f.tick();
+  await admit(initial);
+  await admit(staleTagged);
+  await f.tick();
+  expect(received).toEqual([expected,expected,expected]);
+  expect(dispatches).toHaveLength(1);
+  expect(await f.storage.get('releaseCycle')).toMatchObject({stage:'received',runId:receipt.id});
  });
  it('routes only the app bot creation of a status comment on an open pull request',()=>{
   const event={...payload,action:'created',sender:{id:301115370},issue:{number:201,state:'open',pull_request:{}},comment:{
