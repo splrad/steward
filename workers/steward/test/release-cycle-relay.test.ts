@@ -285,7 +285,6 @@ it.each(['ordinary','handoff-legacy','stored-proof','historical-unmarked','histo
  const g={forCandidate:async()=>({target:{...TARGET,officialCandidate:true},json:async(_id:number,path:string)=>{
    historicalReads++;
    if(path.endsWith('/runs/101/attempts/2'))return build;
-   if(path.endsWith('/actions/workflows/steward-release-publish.yml'))return {id:410998652,path:buildPath,state:'active'};
    if(path.endsWith('/heads/steward/release-state'))return {ref:'refs/heads/steward/release-state',object:{type:'commit',sha:pin}};
    if(path.includes('/contents/cycles/'))return {path:'cycles/'+cycleId+'.json',type:'file',encoding:'base64',size:bytes.length,sha:blob,content:bytes.toString('base64')};
    throw Error(path);

@@ -70,8 +70,9 @@ async function officialPublication(g:GitReader,parent:Relay,installation:string|
   const scoped=await candidateReader(g,hint.repositoryId),target=scoped.target;
   if (!target?.officialCandidate) return false;
   const run=await scoped.json(target.id,`/repos/${target.name}/actions/runs/${hint.runId}/attempts/${hint.attempt}`);
-  if (!isBuildWorkflow(run?.path) || run.repository?.id!==target.id || !sha(run.head_sha)) return false;
-  const product=await workflowProduct(scoped,target,run.path);
+  if (!isBuildWorkflow(run?.path) || run.repository?.id!==target.id || !sha(run.head_sha) || !positive(run.workflow_id)) return false;
+  // A historical receipt binds to the original native Run and its frozen dispatch.
+  const product={...target,publishWorkflowId:run.workflow_id,buildWorkflow:run.path};
   const observed=releaseHint('workflow_run',{action:'completed',repository:{id:target.id,full_name:target.name,
     default_branch:target.defaultBranch,fork:false,archived:false},installation:{id:Number(installation)},workflow_run:run},installation,product);
   return Boolean(observed && relayKey(observed)===relayKey(hint) && officialCycle(await boundBuildCycle(scoped,run)));
