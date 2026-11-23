@@ -1,4 +1,5 @@
 name: SPLRAD Steward / Sync Managed Files
+run-name: ${{ github.event_name == 'repository_dispatch' && github.event.action == 'steward-registration-request' && 'SPLRAD Steward / Repository Registration' || '' }}
 on:
   workflow_dispatch:
     inputs:
@@ -8,7 +9,7 @@ on:
         type: boolean
         default: false
   repository_dispatch:
-    types: [steward-template-event]
+    types: [steward-template-event, steward-registration-request]
 permissions:
   contents: read
   actions: read
@@ -90,3 +91,54 @@ jobs:
           STEWARD_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           STEWARD_CONTROLLER_SHA: ${{ github.workflow_sha }}
         run: node scripts/template-delivery.mjs
+  register:
+    if: >-
+      github.event_name == 'repository_dispatch' && github.event.action == 'steward-registration-request' &&
+      vars.STEWARD_REPOSITORY_REGISTRATION == 'true' &&
+      github.repository == 'splrad/steward' && github.repository_id == '1296724484' &&
+      github.ref == 'refs/heads/main' && github.workflow_sha == github.sha &&
+      github.event.sender.id == 353238212 && github.event.sender.login == 'splrad-governance[bot]' &&
+      github.event.sender.type == 'Bot' && github.event.client_payload.schemaVersion == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    environment:
+      name: steward-automation
+      deployment: false
+    concurrency:
+      group: steward-repository-registration
+      queue: max
+      cancel-in-progress: false
+    steps:
+      - name: Verify execution commit was promoted
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXECUTION_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          promoted=$(gh api repos/splrad/steward/git/ref/heads/steward/validated-controller --jq .object.sha)
+          test "$promoted" = "$EXECUTION_SHA"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
+        env:
+          MISE_SAFE: '1'
+          MISE_NODE_COMPILE: 'false'
+        with:
+          version: 2026.10.18
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - name: Install locked libraries without credentials
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Process accepted registration request
+        env:
+          GOVERNANCE_APP_PRIVATE_KEY: ${{ secrets.GOVERNANCE_APP_PRIVATE_KEY }}
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          REGISTRATION_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          REGISTRATION_ALLOWED_IDS: ${{ vars.STEWARD_REPOSITORY_REGISTRATION_IDS }}
+        run: node scripts/repository-registration.mjs consume

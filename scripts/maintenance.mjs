@@ -25,6 +25,10 @@ export async function maintenanceDefinition(file) {
   const parsed=YAML.parseDocument(await readFile(join(policyRoot,'.github/workflows',file),'utf8'));
   check(!parsed.errors.length,'DEFINITION');const d=parsed.toJS({maxAliasCount:100}),keys=maintenanceJobKeys(file);
   const currentKeys=keys.filter(key=>key!=='automation-health'||Object.hasOwn(d.jobs,key));
+  if(file==='sync-managed.yml'&&Object.hasOwn(d.jobs,'register')){
+    check(!d.jobs.register.name&&!d.jobs.register.needs,'REGISTRATION_DEFINITION');
+    currentKeys.push('register');
+  }
   check(same(Object.keys(d.jobs).sort(),[...currentKeys].sort()),'DEFINITION_JOBS');
   const names={};
   for(const key of keys) {
