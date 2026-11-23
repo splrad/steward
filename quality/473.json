@@ -65,17 +65,49 @@
         ]
       },
       "configVersion": "quality-native-comments-v1",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4665370676",
+        "sourceCommit": "dcab2b806e2ad33121af80700aa62ec184019e61",
+        "sourceUrl": "https://github.com/splrad/steward/pull/473#discussion_r4665370676",
+        "severity": "原文未说明",
+        "originalIdentifiers": [
+          "<code>scripts/select-pages-source.mjs</code>",
+          "<code>workflowPagesOptions</code>",
+          "<code>publicAllowed</code>",
+          "<code>&amp;&amp;</code>",
+          "<code>options.mode!=='release'||options.unitId &amp;&amp; options.unitId===approvedUnit</code>",
+          "<code>options.mode!=='release'||(options.unitId &amp;&amp; options.unitId===approvedUnit)</code>",
+          "file/region",
+          "scripts/select-pages-source.mjs"
+        ],
+        "segmentIndex": 0,
+        "problemZh": "原文指出：嵌套运算符周围的空白写法与运算符优先级表达不一致，位置在 <code>scripts/select-pages-source.mjs</code> 的 <code>workflowPagesOptions</code> 中计算 <code>publicAllowed</code> 的表达式。",
+        "impactZh": "原文指出：当前写法会让分组意图不明确（存在可读性/理解上的歧义），因此建议显式表达分组。",
+        "suggestionZh": "原文建议：在该表达式中为 <code>&amp;&amp;</code> 子表达式加括号，按示例从 <code>options.mode!=='release'||options.unitId &amp;&amp; options.unitId===approvedUnit</code> 改为 <code>options.mode!=='release'||(options.unitId &amp;&amp; options.unitId===approvedUnit)</code>，以在保持行为不变的前提下消除歧义。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-23T12:03:53.299Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 3959,
+                "outputTokens": 1116
+              }
+            ],
+            "totalNanoAiu": 2255225000,
+            "aiCredits": 2.255225,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-23T12:04:53.299Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     },
     "d65b940c9865db5c6bd094e3454038312801a438e915ef21e1fca13af34048c4": {
       "key": "d65b940c9865db5c6bd094e3454038312801a438e915ef21e1fca13af34048c4",
@@ -96,17 +128,47 @@
         ]
       },
       "configVersion": "quality-native-comments-v1",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4665370729",
+        "sourceCommit": "dcab2b806e2ad33121af80700aa62ec184019e61",
+        "sourceUrl": "https://github.com/splrad/steward/pull/473#discussion_r4665370729",
+        "severity": "原文未说明",
+        "originalIdentifiers": [
+          "<code>scripts/test/configuration-authority.test.mjs</code>",
+          "<code>../configuration-view.mjs</code>",
+          "<code>versionsPath</code>",
+          "<code>inspectRepository</code>",
+          "scripts/test/configuration-authority.test.mjs",
+          "../configuration-view.mjs"
+        ],
+        "segmentIndex": 0,
+        "problemZh": "原文指出：存在未使用的导入 <code>versionsPath</code>。位置在 <code>scripts/test/configuration-authority.test.mjs</code> 从 <code>../configuration-view.mjs</code> 的导入语句。",
+        "impactZh": "原文指出：这是“未使用变量/导入/函数/类”问题；并说明移除该未使用导入不会改变运行时行为。",
+        "suggestionZh": "原文建议：仅从该命名导入中移除 <code>versionsPath</code>，并保留 <code>inspectRepository</code>，不做其他代码改动。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-23T12:03:53.299Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 3959,
+                "outputTokens": 1116
+              }
+            ],
+            "totalNanoAiu": 2255225000,
+            "aiCredits": 2.255225,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-23T12:04:53.299Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     },
     "b4c873cdf98fff91f019c3fc10130dcbb48159d75a779da73cb6b1c788bcf696": {
       "key": "b4c873cdf98fff91f019c3fc10130dcbb48159d75a779da73cb6b1c788bcf696",
@@ -126,17 +188,46 @@
         ]
       },
       "configVersion": "quality-native-comments-v1",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4665370786",
+        "sourceCommit": "dcab2b806e2ad33121af80700aa62ec184019e61",
+        "sourceUrl": "https://github.com/splrad/steward/pull/473#discussion_r4665370786",
+        "severity": "原文未说明",
+        "originalIdentifiers": [
+          "<code>prepareTarget</code>",
+          "<code>scripts/test/configuration-authority.test.mjs</code>",
+          "<code>assertChannelWorkflow</code>",
+          "<code>trialKey</code>",
+          "scripts/test/configuration-authority.test.mjs"
+        ],
+        "segmentIndex": 0,
+        "problemZh": "原文指出：存在未使用的导入 <code>prepareTarget</code>，位于 <code>scripts/test/configuration-authority.test.mjs</code>。",
+        "impactZh": "原文指出：这是“未使用变量/导入/函数/类”问题。",
+        "suggestionZh": "原文建议：在该文件第 13 行的命名导入列表中仅删除 <code>prepareTarget</code>，并保留 <code>assertChannelWorkflow</code> 和 <code>trialKey</code>；不需要新增方法、定义或包。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-23T12:03:53.299Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 3959,
+                "outputTokens": 1116
+              }
+            ],
+            "totalNanoAiu": 2255225000,
+            "aiCredits": 2.255225,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-23T12:04:53.299Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     }
   },
   "cursor": 0
