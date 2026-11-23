@@ -42,17 +42,44 @@
         ]
       },
       "configVersion": "quality-native-comments-v1",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4673517117",
+        "sourceCommit": "a62f3d80fe245fcec5b6442cab6fdcf9cb602975",
+        "sourceUrl": "https://github.com/splrad/steward/pull/485#discussion_r4673517117",
+        "severity": "原文未说明",
+        "originalIdentifiers": [
+          "<code>bodyDigest</code>",
+          "<code>scripts/official-candidate-write.mjs</code>",
+          "scripts/official-candidate-write.mjs"
+        ],
+        "segmentIndex": 0,
+        "problemZh": "原文指出存在“Unused variable, import, function or class”问题，具体为未使用的导入 `bodyDigest`。位置在 `scripts/official-candidate-write.mjs` 的解构导入中。",
+        "impactZh": "原文未说明具体运行时影响；仅表达这是未使用导入，属于代码冗余/代码质量问题。",
+        "suggestionZh": "按原文建议在 `scripts/official-candidate-write.mjs` 顶部导入块（示例片段第 2–4 行）中，仅从命名导入列表删除 `bodyDigest`；其他导入保持不变，不需要新增方法、定义或依赖。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-23T23:45:35.321Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 3274,
+                "outputTokens": 386
+              }
+            ],
+            "totalNanoAiu": 1113350000,
+            "aiCredits": 1.11335,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-23T23:46:35.321Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     }
   },
   "cursor": 0
