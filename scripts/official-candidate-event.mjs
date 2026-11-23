@@ -2,11 +2,12 @@ import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import apiVersion from '../config/github-api.json' with { type: 'json' };
 import { pathToFileURL } from 'node:url';
+import { GitHub, Manifest, VERSION } from 'release-please-official';
 import { downloadNativeArtifact, NativeEvidenceReader, nativeEvidenceTransport, nativeReleaseApp } from '../packages/runner/dist/index.js';
 import { entryGuard } from './bounded-release-entry.mjs';
 import { releaseParticipation } from './release-coordinator.mjs';
 import { assertReleaseUnpaused, releaseIsPaused } from './release-pause-policy.mjs';
-import { bodyDigest, defaultHead, fitsOfficialEvent, hasLabel, officialConfig, officialPending, officialRef, officialTagged,
+import { bodyDigest, defaultHead, fitsOfficialEvent, hasLabel, officialConfig, officialPending, officialRef, officialRootSettings, officialTagged,
   pages, pullBinding, readOfficialConfig, readOfficialManifest, renderOfficialPull, requireCandidate,
   verifyOfficialPull } from './official-release-candidate.mjs';
 
@@ -61,6 +62,7 @@ export function officialCandidateRoute(event, settings, enabled, trialId) {
   if (!event.kind) return official ? { result: 'official_candidate_adopted' } : { route: 'legacy' };
   if (!official) return { result: event.kind === 'push' ? 'legacy_cycle_route' : 'legacy_product' };
   if (enabled !== 'true' && String(event.repositoryId) !== trialId) return { result: 'official_candidate_disabled' };
+  requireCandidate(officialRootSettings(settings), 'ROOT_CONFIG');
   return { route: 'official' };
 }
 
@@ -129,9 +131,15 @@ async function scopedReader(token, product) {
   };
 }
 
+const onOfficialBranch = (pull, product) => {
+  const ref = pull.head?.ref;
+  return pull.head?.repo?.id === product.id && (officialRef(ref, product.defaultBranch) ||
+    (typeof ref === 'string' && ref.startsWith('release-please--branches--' + product.defaultBranch + '--components--')));
+};
+
 async function openOfficialPulls(get, product) {
   const pulls = await pages(get, 'pulls?state=open&base=' + encodeURIComponent(product.defaultBranch));
-  const official = pulls.filter(p => p.head?.repo?.id === product.id && officialRef(p.head.ref, product.defaultBranch));
+  const official = pulls.filter(pull => onOfficialBranch(pull, product));
   for (const pull of official) pullBinding(pull, product, pull.number, botId);
   requireCandidate(new Set(official.map(pr => pr.head.ref)).size === official.length, 'AMBIGUOUS_BRANCH');
   return official;
@@ -140,8 +148,8 @@ async function openOfficialPulls(get, product) {
 async function inspectWaiting(get, product) {
   const pending = await pages(get, 'issues?state=closed&labels=' + encodeURIComponent(officialPending));
   const pulls = await Promise.all(pending.filter(issue => issue.pull_request).map(issue => get('pulls/' + issue.number)));
-  return pulls.filter(pr => pr.merged === true && pr.base?.ref === product.defaultBranch && pr.head?.repo?.id === product.id &&
-    officialRef(pr.head?.ref, product.defaultBranch)).map(pr => {
+  return pulls.filter(pr => pr.merged === true && pr.base?.ref === product.defaultBranch &&
+    onOfficialBranch(pr, product)).map(pr => {
     pullBinding(pr, product, pr.number, botId);
     requireCandidate(hasLabel(pr, officialPending), 'PENDING_CHANGED');
     return pr.number;
@@ -178,18 +186,13 @@ export async function officialActionWasSkipped(readJobs, runId, runAttempt) {
   return true;
 }
 
-export async function prepareOfficialPush({ identity, get, prepareParticipation, restore, actionWasSkipped = async () => false }) {
+export async function prepareOfficialPush({ identity, get, prepareParticipation, restore, checkBranch, actionWasSkipped = async () => false }) {
   const { product, event, runId, requestKey, controllerSha, sourceSha } = identity;
   if (await defaultHead(get, product.defaultBranch) !== sourceSha) return { result: 'source_changed' };
   const [state, settings, manifest] = await Promise.all([
     prepareParticipation(), readOfficialConfig(get, sourceSha), readOfficialManifest(get, sourceSha),
   ]);
-  requireCandidate(state.status === 'APPLICABLE' && state.sourceSha === sourceSha && officialConfig(settings) &&
-    settings.packages && !settings.label && !settings['release-label'] && !settings['group-pull-request-title-pattern']
-    && Object.values(settings.packages).every(unit => (unit.draft ?? settings.draft) === true
-      && (unit['force-tag-creation'] ?? settings['force-tag-creation']) === true
-      && !(unit['skip-github-release'] ?? settings['skip-github-release'])
-      && !(unit['draft-pull-request'] ?? settings['draft-pull-request'])), 'CONFIG');
+  requireCandidate(state.status === 'APPLICABLE' && state.sourceSha === sourceSha && officialRootSettings(settings), 'ROOT_CONFIG');
   requireCandidate(await defaultHead(get, product.defaultBranch) === sourceSha, 'SOURCE_CHANGED');
   const reserved = await restore('before');
   if (reserved && await restore('after')) return { mode: 'resume' };
@@ -209,12 +212,22 @@ export async function prepareOfficialPush({ identity, get, prepareParticipation,
     requireCandidate(commit.sha === pr.head.sha && commit.parents?.length === 1, 'PR_PARENT');
     return { number: pr.number, head: pr.head.sha, sourceSha: commit.parents[0].sha };
   }));
-  if (initial.length && initial.every(pr => pr.sourceSha === sourceSha) &&
-      initial.length === Object.keys(settings.packages).length) return { result: 'candidate_unchanged' };
+  if (initial.length === 1 && initial[0].sourceSha === sourceSha) return { result: 'candidate_unchanged' };
+  await checkBranch();
   requireCandidate(await defaultHead(get, product.defaultBranch) === sourceSha, 'SOURCE_CHANGED');
   if (reserved) return { mode: 'action', reservation: 'existing' };
   return { mode: 'action', reservation: 'new', checkpoint: { runId, requestKey, controllerSha, sourceSha,
     configDigest: bodyDigest(JSON.stringify(settings)), manifestDigest: bodyDigest(JSON.stringify(manifest)), initial } };
+}
+
+async function requireRootBranch(product, token) {
+  requireCandidate(VERSION === '17.6.0', 'CORE_VERSION');
+  const [owner, repo] = product.name.split('/');
+  const github = await GitHub.create({ owner, repo, token, defaultBranch: product.defaultBranch });
+  const manifest = await Manifest.fromManifest(github, product.defaultBranch);
+  const strategies = await manifest.getStrategiesByPath();
+  requireCandidate(Object.keys(strategies).length === 1 && strategies['.'] &&
+    !(await strategies['.'].getBranchComponent()), 'ROOT_BRANCH');
 }
 
 export function officialActionResult(outputs, before) {
@@ -304,8 +317,9 @@ export async function main(stage, env = process.env) {
       actionWasSkipped: () => officialActionWasSkipped(attempt =>
         centralReader.pages('actions/runs/' + identity.runId + '/attempts/' + attempt + '/jobs', 'jobs'),
         identity.runId, Number(env.GITHUB_RUN_ATTEMPT)),
+      checkBranch: () => requireRootBranch(product, token),
       prepareParticipation: () => releaseParticipation({ id: product.id, full_name: product.name,
-        default_branch: product.defaultBranch }, nativeEvidenceTransport(token)) });
+        default_branch: product.defaultBranch }, nativeEvidenceTransport(token), { requireWorkflowGitHubDelivery: true }) });
     if (plan.checkpoint) await write('before', plan.checkpoint);
     await write('plan', { mode: plan.mode ?? null, result: plan.result ?? null, waiting: plan.waiting ?? [] });
     await appendFile(env.GITHUB_OUTPUT, 'mode=' + (plan.mode ?? 'complete') + '\nreservation=' + (plan.reservation ?? '') + '\n');

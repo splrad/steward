@@ -106,6 +106,21 @@ test('postmerge edits and config changes are rejected even when the official sca
   }
 });
 
+test('draft preparation inherits root defaults and rejects an explicit opt-out or another unit',async()=>{
+  const f=fixture();
+  const inherited={'separate-pull-requests':true,draft:true,'force-tag-creation':true,packages:{'.':{}}};
+  f.facts.config=f.facts.activeConfig=inherited;
+  assert.equal((await f.perform()).releaseId,null);
+  for (const rejected of [
+    {...inherited,packages:{'.':{'force-tag-creation':false}}},
+    {...inherited,'skip-github-release':true},
+    {...inherited,packages:{'.':{},tools:{}}},
+  ]) {
+    f.facts.config=f.facts.activeConfig=rejected;
+    await assert.rejects(f.perform(),/ROOT_CONFIG/);
+  }
+});
+
 test('a bound draft resumes from the recorded ID and original body after the default manifest advances',async()=>{
   const f=fixture();f.after();
   f.facts.activeConfig={...f.facts.config,draft:false};

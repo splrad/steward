@@ -49,6 +49,9 @@ test('only the native product declaration selects a candidate writer while the o
   assert.deepEqual(officialCandidateRoute(push, settings, 'false', '18'), { result: 'official_candidate_disabled' });
   assert.deepEqual(officialCandidateRoute(push, settings, 'false', '17'), { route: 'official' });
   assert.deepEqual(officialCandidateRoute(push, settings, 'true'), { route: 'official' });
+  const multi = { ...settings, packages: { ...settings.packages, tools: { 'release-type': 'simple' } } };
+  assert.throws(() => officialCandidateRoute(push, multi, 'true'), /ROOT_CONFIG/);
+  assert.deepEqual(officialCandidateRoute(push, multi, 'false'), { result: 'official_candidate_disabled' });
   assert.throws(() => officialCandidateRoute(push, {}, 'false'), /ROUTE/);
 
   const workflow = YAML.parse(await readFile('.github/workflows/release-candidate-event.yml', 'utf8'));
@@ -107,6 +110,7 @@ test('both cores generate the three native files and choose the same official dr
     assert.equal(candidate.headRefName, pr.head.ref);
     assert.equal(candidate.title.toString(), pr.title);
     assert.deepEqual(candidate.updates.map(update => update.path).sort(), ['.release-please-manifest.json', 'CHANGELOG.md', 'VERSION']);
+    assert.equal(await (await manifest.getStrategiesByPath())['.'].getBranchComponent(), '');
     const rendered = render(candidate.body.toString());
     pending = [{number:pr.number, sha:sourceSha, title:pr.title, headBranchName:pr.head.ref,
       baseBranchName:'main', labels:candidate.labels, body:rendered}];
@@ -198,7 +202,9 @@ test('old open candidate can coexist while the official writer uses its own bran
     if (path.startsWith('issues?')) return [];
     assert.fail(path);
   };
-  const options = { identity, get, prepareParticipation: async () => ({ status: 'APPLICABLE', sourceSha }), restore: async () => false };
+  let branchChecks = 0;
+  const options = { identity, get, prepareParticipation: async () => ({ status: 'APPLICABLE', sourceSha }),
+    restore: async () => false, checkBranch: async () => { branchChecks++; } };
   const fresh = await prepareOfficialPush(options);
   assert.equal(fresh.mode, 'action');
   assert.deepEqual(fresh.checkpoint.initial, []);
@@ -206,11 +212,18 @@ test('old open candidate can coexist while the official writer uses its own bran
   assert.deepEqual(await prepareOfficialPush(options), { result: 'candidate_unchanged' });
   assert.deepEqual(await prepareOfficialPush({ ...options, restore: async () => true }), { mode: 'resume' });
   await assert.rejects(prepareOfficialPush({ ...options, restore: async name => name === 'before' }), /ACTION_RESULT_UNKNOWN/);
+  assert.equal(branchChecks, 1);
   open.pop();
   const pausedReservation = { ...options, restore: async name => name === 'before' };
   assert.deepEqual(await prepareOfficialPush({ ...pausedReservation, actionWasSkipped: async () => true }),
     { mode: 'action', reservation: 'existing' });
   assert.equal(fresh.reservation, 'new');
+  assert.equal(branchChecks, 2);
+  await assert.rejects(prepareOfficialPush({ ...pausedReservation, actionWasSkipped: async () => true,
+    checkBranch: async () => { throw Error('ROOT_BRANCH'); } }), /ROOT_BRANCH/);
+  open.push(pr, { ...pr, number: 51, head: { ...pr.head, ref: pr.head.ref + '--components--tools' } });
+  await assert.rejects(prepareOfficialPush(options), /PR_IDENTITY/);
+  assert.equal(branchChecks, 2);
 });
 
 test('reuses a blocked reservation only when every prior attempt proves the official action never started', async () => {
@@ -245,7 +258,8 @@ test('a delayed refresh must still match the merged PR and current terminal labe
     if (path.startsWith('pulls?') || path.startsWith('issues?')) return [];
     assert.fail(path);
   };
-  const options = { identity, get, prepareParticipation: async () => ({ status: 'APPLICABLE', sourceSha }), restore: async () => false };
+  const options = { identity, get, prepareParticipation: async () => ({ status: 'APPLICABLE', sourceSha }),
+    restore: async () => false, checkBranch: async () => {} };
   assert.equal((await prepareOfficialPush(options)).mode, 'action');
   for (const drift of [{ labels: [tagged, ...pr.labels] }, { labels: [] }, { merge_commit_sha: controllerSha },
     { head: { ...pr.head, sha: controllerSha } }]) {
