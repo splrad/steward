@@ -95,9 +95,9 @@ it('connects native inspection to a real fast-forward Git archive and keeps the 
 });
 it('the built fixed CLI reaches the real Git bridge without depending on an emitted ncc asset',async()=>{
   const f=await gitFixture(),context=join(f.root,'context.json'),output=join(f.root,'output.json');await writeFile(context,JSON.stringify(f.input));
-  const args=[resolve('packages/runner/dist/index.js'),'release','candidate','--context',context,'--output',output];permitOfflineCommand(process.execPath,args);
+  const args=[resolve('packages/runner/dist/index.js'),'release','observe-channel','--context',context,'--output',output];permitOfflineCommand(process.execPath,args);
   await promisify(execFile)(process.execPath,args,{cwd:process.cwd(),env:isolatedBuildEnvironment(process.env,join(f.root,'profile')),windowsHide:true});
-  expect(JSON.parse(await readFile(output,'utf8'))).toMatchObject({status:'WAIT',reason:'CANDIDATE_SCOPED_READ_CREDENTIAL_REQUIRED'});
+  expect(JSON.parse(await readFile(output,'utf8'))).toMatchObject({status:'WAIT',reason:'CHANNEL_OBSERVATION_CONTEXT_REQUIRED'});
 });
 it.each([false,true])('persists canonical dispatch through real fast-forward commits without a duplicate send; concurrent=%s',async concurrent=>{
   const f=await gitFixture(true),original=f.native.io.request;let sends=0,wrongPath=false;

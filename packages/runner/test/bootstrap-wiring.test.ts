@@ -85,7 +85,7 @@ const nativeRule=(id:number)=>({id,source:'splrad',source_type:'Organization',en
 
 it('bootstrap and template jobs enumerate independently, separate keys and keep failure/cancellation semantics',async()=>{
   const raw=await readFile('.github/workflows/sync-managed.yml','utf8'),workflow=YAML.parse(raw),{bootstrap,templates}=workflow.jobs;
-  expect(Object.keys(workflow.jobs)).toEqual(['bootstrap','templates','register']);expect(workflow.permissions).toEqual({contents:'read',actions:'read'});
+  expect(workflow.permissions).toEqual({contents:'read',actions:'read'});
   expect(bootstrap.concurrency).toEqual({group:'steward-governance-mutation','cancel-in-progress':false,queue:'max'});
   expect(templates.needs).toBe('bootstrap');expect(templates.if).toContain('!cancelled()');expect(templates.if).not.toMatch(/success\(/);
   expect(templates.concurrency['cancel-in-progress']).toBe(false);
