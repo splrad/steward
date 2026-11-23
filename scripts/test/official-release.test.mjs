@@ -3,8 +3,9 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import YAML from 'yaml';
+import {Manifest} from 'release-please';
 import { EvidenceReadError } from '../../packages/runner/dist/index.js';
-import { approvedOfficialBody, inspectOfficialRelease, readBoundOfficialDraft, reconcileOfficialLifecycle } from '../official-release.mjs';
+import { approvedOfficialBody, inspectOfficialRelease, inspectPendingOfficialPulls, readBoundOfficialDraft, reconcileOfficialLifecycle } from '../official-release.mjs';
 
 const digest = value => createHash('sha256').update(value).digest('hex');
 const source = 'a'.repeat(40), head = 'b'.repeat(40), newer = 'c'.repeat(40), annotation = 'd'.repeat(40);
@@ -63,6 +64,31 @@ function fixture() {
 
 test('the pinned official parser preserves the approved Chinese body, inline HTML, and code',async()=>{
   assert.equal(await approvedOfficialBody(pullBody),body);
+});
+
+test('C4 derives the exact official candidate from the default branch and pending lifecycle',async()=>{
+  const title='chore(main): release 1.2.3';
+  const merged={number:18,sha:source,title,headBranchName:'release-please--branches--main',
+    baseBranchName:'main',labels:[pending],body:pullBody};
+  let pulls=[merged,{...merged,number:22,labels:[tagged]}];
+  const settings={'separate-pull-requests':true,'include-component-in-tag':false,
+    packages:{'.':{'release-type':'simple',draft:true,'force-tag-creation':true}}};
+  const github={
+    repository:{owner:'splrad',repo:'Example'},
+    getFileJson:async path=>path===configPath?settings:{'.':approval.version},
+    pullRequestIterator:async function*(branch,state,limit,includeFiles) {
+      assert.deepEqual([branch,state,limit,includeFiles],['main','MERGED',200,false]);
+      yield* pulls;
+    },
+  };
+  const manifest=await Manifest.fromManifest(github,'main');
+  const facts={title,body,tag:approval.tag,prerelease:false};
+  const run=()=>inspectPendingOfficialPulls(manifest.findMergedReleasePullRequests(),approval,facts);
+  const [release]=await run();
+  assert.deepEqual([release.pullRequest.number,release.tag.toString(),release.tag.version.toString(),release.notes,release.sha,release.draft,release.forceTag],
+    [18,approval.tag,approval.version,body,source,true,true]);
+  pulls=[merged,{...merged,number:23}];
+  await assert.rejects(run(),/BRANCH_SCOPE prs=18,23/);
 });
 
 test('only one exact official object can be created; no output is needed to recover its real ID',async()=>{

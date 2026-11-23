@@ -586,7 +586,7 @@ export async function writeReleaseRecords(input,{token,beforePush}={}) {
             value=null;
           }
           if(/^evidence\/(native|reads|dispatch|retry-limit|publication|completion|channel|channel-read|normalized-delivery|source-rejection)\//.test(path) && !path.endsWith('/'+sha256(bytes)+'.json'))fail('archive content address');
-          cached={length,sha256:sha256(bytes),value};verifiedBlobs.set(cacheKey,cached);
+          cached={sha256:sha256(bytes),value};verifiedBlobs.set(cacheKey,cached);
         }
         files.set(path,{oid,sha256:cached.sha256,value:cached.value});
       }
@@ -628,7 +628,8 @@ export async function writeReleaseRecords(input,{token,beforePush}={}) {
       }
       if(!matches(proposed))fail('prepared bytes conflict');
       for(const path of new Set([...base.keys(),...proposed.keys()])) {
-        if(base.get(path)?.oid!==proposed.get(path)?.oid && !changedPaths.has(path))fail('prepared path conflict');
+        const before=base.get(path),after=proposed.get(path);
+        if((before?.sha256??before?.oid)!==(after?.sha256??after?.oid)&&!changedPaths.has(path))fail('prepared path conflict');
       }
       return parent;
     };
@@ -809,7 +810,7 @@ export async function inspectReleaseEvidence(request,{token,io=nativeEvidenceTra
 }
 
 /** Persist exact frozen inputs or a native Release binding with the existing fast-forward writer. */
-async function adoptReleaseCycle(request,snapshot,cycle,{token,io},extraFiles=[]) {
+async function adoptReleaseCycle(request,snapshot,cycle,{token,io,beforePush},extraFiles=[]) {
   decodeReleaseRecord('cycle',Buffer.from(JSON.stringify(cycle)));
   await assertReleaseWriterProtection(request.repository,'steward/release-state',io,{token});
   const path=`cycles/${cycle.id}.json`,content=JSON.stringify(cycle,null,2)+'\n';
@@ -826,7 +827,7 @@ async function adoptReleaseCycle(request,snapshot,cycle,{token,io},extraFiles=[]
       const current=snapshot.domainRecords.find(record=>record.path===file.path);
       return {...file,previousSha256:snapshot.currentPaths.includes(file.path)
         ?(file.path.startsWith('official/')&&current?sha256(current.content):file.sha256):null};
-    })],identity:request.identity},{token});
+    })],identity:request.identity},{token,beforePush});
   if(!['APPLIED','UNCHANGED'].includes(written.status))fail('cycle write unconfirmed');
   const next=await readReleaseRecords({directory,targetRef:'steward/release-state',repositoryId:request.repositoryId,includeHistory:false});
   const ref=await io.request('GET',`/repos/${request.repository}/git/ref/heads/steward/release-state`);
@@ -929,7 +930,7 @@ async function verifyFormalPublication(context,io,token,unitIds) {
       await verifyOfficialPublicationProof(context,unit.id,args=>nativeGhCommand(args,token),nativeReleaseDownload(token));
   }
 }
-async function observeReadyDraft(request,snapshot,context,{token,io,official}) {
+async function observeReadyDraft(request,snapshot,context,{token,io,verifyPublic=true}) {
   const {cycle}=context,ready=draftReadyResult(snapshot,cycle);
   if(!ready)return null;
   const reader=new NativeEvidenceReader(io,request.repository);
@@ -937,7 +938,7 @@ async function observeReadyDraft(request,snapshot,context,{token,io,official}) {
   if(release.id!==ready.draft.releaseId||release.tag_name!==ready.draft.tag||typeof release.draft!=='boolean')
     fail('official release ready identity');
   if(!release.draft) {
-    if(official?.stage)return {status:'WAIT',reason:'FORMAL_RELEASE_READBACK_REQUIRED',publishInvoked:false};
+    if(!verifyPublic)return {status:'WAIT',reason:'FORMAL_RELEASE_READBACK_REQUIRED',publishInvoked:false};
     await verifyFormalPublication(context,io,token);
     return {status:'OBSERVED',reason:'FORMAL_RELEASES_VERIFIED',publishInvoked:false};
   }
@@ -963,7 +964,7 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
     if(official?.stage&&!cycle.officialRelease)
       return {status:'WAIT',reason:'OFFICIAL_RELEASE_NOT_ADOPTED',publishInvoked:false};
     if(cycle.officialRelease) {
-      const ready=await observeReadyDraft(request,snapshot,context,{token,io,official});
+      const ready=await observeReadyDraft(request,snapshot,context,{token,io,verifyPublic:!official?.stage});
       if(ready) return ready;
     }
     const targets=githubUnits(cycle),reader=new NativeEvidenceReader(io,request.repository);
@@ -1057,12 +1058,12 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
       await adapter.freezeProof(target(item,cycle.units[0].releaseId));
       await official.admit();
       cycle.officialDraftScopeDigest??=await readOfficialScope(approval,token,officialBody);
-      const adopted=await adoptReleaseCycle(request,snapshot,cycle,{token,io});
+      const adopted=await adoptReleaseCycle(request,snapshot,cycle,{token,io,beforePush:official.admit});
       return {status:'WAIT',reason:'OFFICIAL_RELEASE_PREFLIGHT_READY',publishInvoked:false,
         officialPlan:{approval,stateHead:adopted.snapshot.head,scopeDigest:cycle.officialDraftScopeDigest}};
     }
-    const save=async files=>{
-      const adopted=await adoptReleaseCycle(request,snapshot,cycle,{token,io},files);
+    const save=async (files,beforePush)=>{
+      const adopted=await adoptReleaseCycle(request,snapshot,cycle,{token,io,beforePush},files);
       snapshot=adopted.snapshot;
       request={...request,directory:adopted.directory};
     };
@@ -1080,8 +1081,10 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
     const current=officialReceipt(snapshot,cycle,'draft');
     if(current&&(current.releaseId!==unit.releaseId||current.url!==url.href))fail('official draft binding changed');
     const draft={releaseId:unit.releaseId,url:url.href,assets:current?.assets??[],readyAt:null};
-    const saveDraft=()=>save([officialReceiptFile(request,cycle,'draft',draft)]);
-    await official.admit();
+    const saveDraft=async()=>{
+      await official.admit();
+      await save([officialReceiptFile(request,cycle,'draft',draft)],official.admit);
+    };
     await saveDraft();
     const finished=await adapter.uploadDraft(bound,[...draft.assets],async asset=>{
       draft.assets.push(asset);
@@ -1245,13 +1248,8 @@ export async function releaseCommand(command,request,{token,io=nativeEvidenceTra
     return wait('FORMAL_RELEASE_REQUIRED');
   if(command==='reconcile-publication') {
     const context={repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle};
-    const ready=cycle.officialRelease&&draftReadyResult(snapshot,cycle);
-    if(ready) {
-      const release=await new NativeEvidenceReader(io,request.repository).json('releases/'+ready.draft.releaseId);
-      if(release.id!==ready.draft.releaseId || release.tag_name!==ready.draft.tag || typeof release.draft!=='boolean')
-        fail('official release ready identity');
-      if(release.draft) return ready;
-    }
+    const ready=cycle.officialRelease&&await observeReadyDraft(request,snapshot,context,{token,io,verifyPublic:false});
+    if(ready?.status==='DRAFT_READY')return ready;
     const history=snapshot.domainRecords.filter(r=>r.path.startsWith('evidence/publication/') && r.value.cycleId===cycle.id);
     const facts=await inspectPublications(context,history,io,centralIo,now());
     if (!facts.native.complete || facts.missing.length || !facts.files.length
@@ -1263,7 +1261,8 @@ export async function releaseCommand(command,request,{token,io=nativeEvidenceTra
   }
   if(command==='publish') {
     if(cycle.officialRelease) {
-      const ready=await observeReadyDraft(request,snapshot,{repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle},{token,io,official});
+      const ready=await observeReadyDraft(request,snapshot,{repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle},
+        {token,io,verifyPublic:!official?.stage});
       if(ready) return ready;
     }
     if(!centralIo||!centralInvocation)return wait('CENTRAL_PUBLICATION_CONTEXT_REQUIRED');

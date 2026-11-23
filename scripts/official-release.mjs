@@ -36,8 +36,12 @@ async function pendingOfficialPulls(approval, token, facts) {
   const [owner, repo] = approval.repository.split('/');
   const github = await GitHub.create({ owner, repo, token, defaultBranch: approval.defaultBranch, logger });
   const manifest = await Manifest.fromManifest(github, approval.defaultBranch, configPath, manifestPath, { logger });
+  return inspectPendingOfficialPulls(manifest.findMergedReleasePullRequests(),approval,facts);
+}
+
+export async function inspectPendingOfficialPulls(pendingPulls,approval,facts) {
   const pulls = [];
-  for await (const pull of manifest.findMergedReleasePullRequests()) pulls.push(pull);
+  for await (const pull of pendingPulls) pulls.push(pull);
   if(pulls.length>1) throw new Error('OFFICIAL_RELEASE_BRANCH_SCOPE prs='+pulls.map(pull=>pull.number).join(','));
   if(!pulls.length) return [];
   const [pull]=pulls;
