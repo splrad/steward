@@ -237,7 +237,7 @@ test('records each new source only after an exact round match and skips repeated
   const identity = { product, event: { kind: 'push' }, sourceSha: controllerSha };
   const saved = {
     roundId, source, draft: { body: expectedBody, templateDigest: bodyDigest(template) },
-    branch: { head, sourceSha }, pull: { number: pr.number, head, bodyDigest: officialNotes(expectedBody).bodyDigest },
+    branch: null, pull: null,
   };
   let boundSource, builds = 0;
   const get = async path => {
@@ -263,8 +263,11 @@ test('records each new source only after an exact round match and skips repeated
     buildCandidate: async () => { builds++; return computed; },
     collectEvidence: () => assert.fail('recomputed the saved evidence'),
   });
-  assert.equal((await prepare()).result, 'candidate_unchanged');
+  assert.equal((await prepare()).mode, 'write');
   assert.equal(boundSource, controllerSha);
+  assert.equal((await prepare()).mode, 'write');
+  saved.branch = { head, sourceSha };
+  saved.pull = { number: pr.number, head, bodyDigest: officialNotes(expectedBody).bodyDigest };
   assert.equal((await prepare()).result, 'candidate_unchanged');
   assert.equal(builds, 1);
 });

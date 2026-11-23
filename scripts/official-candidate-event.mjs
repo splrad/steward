@@ -20,6 +20,7 @@ const controllerDirectory = fileURLToPath(new URL('../', import.meta.url));
 const templatePath = new URL('../templates/repository/.github/release-template.md.mustache', import.meta.url);
 const validSha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 const positive = value => Number.isSafeInteger(value) && value > 0;
+const candidateStages = ['identify', 'prepare', 'generate', 'check', 'write'];
 const inputs = {
   push: 'kind,repositoryId,sourceSha',
   'official-edit': 'bodyDigest,head,kind,prNumber,repositoryId,titleDigest',
@@ -203,6 +204,8 @@ async function withCandidateState(env, identity, operation) {
       const get = path => reader.json(path);
       const admit = () => assertReleaseUnpaused(app, product.id);
       const record = await import('./release-record.mjs');
+      requireCandidate(['findOfficialCandidateRound', 'readOfficialCandidateRound', 'writeOfficialCandidateCheckpoint',
+        'recordOfficialCandidateSource'].every(name => typeof record[name] === 'function'), 'CHECKPOINTS_UNAVAILABLE');
       let snapshotDirectory;
       const directory = () => snapshotDirectory ??= fetchState(root, repository, writeToken).then(state => state.directory);
       const writeCheckpoint = async (method, fields) => {
@@ -291,10 +294,15 @@ export async function main(stage, env = process.env) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main(process.argv[2]).catch(error => {
+  const stage = process.argv[2];
+  main(stage).catch(error => {
     const message = error?.message;
-    console.error(/^(OFFICIAL_CANDIDATE|RELEASE|CONTENT)_[A-Z_0-9]+$/.test(message) ||
-      ['WAIT_AUTH', 'WAIT_QUOTA', 'RESPONSE_UNKNOWN'].includes(message) ? message : 'OFFICIAL_CANDIDATE_STOPPED');
+    const allowed = /^(OFFICIAL_CANDIDATE|RELEASE|CONTENT)_[A-Z_0-9]+$/.test(message) ||
+      ['WAIT_AUTH', 'WAIT_QUOTA', 'RESPONSE_UNKNOWN'].includes(message);
+    const status = Number.isSafeInteger(error?.status) && error.status >= 400 && error.status <= 599
+      ? ' status=' + error.status : '';
+    console.error((allowed ? message : 'OFFICIAL_CANDIDATE_STOPPED') +
+      ' stage=' + (candidateStages.includes(stage) ? stage : 'unknown') + status);
     process.exitCode = 1;
   });
 }
