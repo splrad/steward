@@ -29,9 +29,9 @@ function productRepository(t) {
   mkdirSync(workflowDir, {recursive: true});
   function pinFiles(pin, {
     pagePin = pin, reusablePin = pin, pagesJobPin, pagesStepPin, extraCheckout, publishBytes,
-    checkoutPath = 'controller', extraReusablePin, extraControllerWorkflowPin, localReference, pagesRuntime = true,
-    extraControllerActionPin, extraRun, pagesWorkdir, selectWorkdir,
-    omitPagesCheckout, omitWorkflowCheckout, nativePagesBuild = false,
+    checkoutPath = 'controller', extraReusablePin, extraControllerWorkflowPin, localReference,
+    pagesRuntime = true, extraControllerActionPin, extraRun, pagesWorkdir, selectWorkdir,
+    omitPagesCheckout, omitWorkflowCheckout, nativePagesBuild = false, version, omitLabelFrom,
   } = {}) {
     for (const name of workflows) {
       const workflow = {jobs: {sample: {steps: [
@@ -74,8 +74,9 @@ function productRepository(t) {
         };
       }
       if (name === omitWorkflowCheckout) workflow.jobs.sample.steps.shift();
-      const bytes = name === 'steward-release-publish' && publishBytes !== undefined
+      let bytes = name === 'steward-release-publish' && publishBytes !== undefined
         ? publishBytes : YAML.stringify(workflow);
+      if (version && name !== omitLabelFrom) bytes = bytes.replaceAll(pin, pin + ' # ' + version);
       writeFileSync(join(workflowDir, name + '.yml'), bytes);
     }
     return product.commit('product workflow pins');
@@ -88,8 +89,10 @@ test('requires forward promotion and consistent Steward references when LayerSca
   const older = upstream.commit('older');
   const promoted = upstream.commit('promoted');
   const unpromoted = upstream.commit('unpromoted');
+  const tags = new Map([[older, 'controller-v1'], [promoted, 'controller-v2'], [unpromoted, 'controller-v3']]);
+  for (const [sha, tag] of tags) git(upstream.dir, ['tag', tag, sha]);
   const product = productRepository(t);
-  const {pinFiles} = product;
+  const pinFiles = (sha, options) => product.pinFiles(sha, {version: tags.get(sha), ...options});
   const prior = pinFiles(older);
   const updated = pinFiles(promoted);
   const next = pinFiles(unpromoted);
@@ -144,7 +147,7 @@ test('requires forward promotion and consistent Steward references when LayerSca
 
   assert.doesNotThrow(() => validate(prior, updated));
   assert.doesNotThrow(() => validate(updated, updated, unpromoted));
-  assert.throws(() => validate(updated, prior), /VALIDATION_CONTROLLER_DOWNGRADE/);
+  assert.throws(() => validate(updated, prior), /VALIDATION_CONTROLLER_VERSION_DOWNGRADE/);
   assert.throws(() => validate(updated, next), /VALIDATION_CONTROLLER_NOT_PROMOTED/);
   assert.throws(() => validate(prior, mixedPages), /VALIDATION_CONTROLLER_PIN_MISMATCH/);
   assert.throws(() => validate(prior, mixedReusable), /VALIDATION_CONTROLLER_PIN_MISMATCH/);
@@ -226,4 +229,31 @@ test('checks independently promoted archive reader revisions from the configurat
   assert.throws(() => verify(currentReaders, secondReader, promoted), /VALIDATION_CONTROLLER_DOWNGRADE/);
   assert.throws(() => verify(base, invalidWiring, older), /VALIDATION_CONTROLLER_ARCHIVE_READER_WIRING/);
   assert.throws(() => verify(base, orphanedReader, older), /VALIDATION_CONTROLLER_ARCHIVE_READER_WIRING/);
+});
+
+test('binds the visible controller version to its protected tag at the four-digit boundary', t => {
+  const upstream = repository(t);
+  const older = upstream.commit('controller version 999');
+  const promoted = upstream.commit('controller version 1000');
+  git(upstream.dir, ['tag', 'controller-v999', older]);
+  git(upstream.dir, ['tag', 'controller-v1000', promoted]);
+  const product = productRepository(t);
+  const initial = product.pinFiles(older);
+  const versioned = product.pinFiles(older, {version: 'controller-v999'});
+  const unlabeledAdvance = product.pinFiles(promoted);
+  const upgraded = product.pinFiles(promoted, {version: 'controller-v1000'});
+  const missing = product.pinFiles(promoted, {version: 'controller-v1000', omitLabelFrom: 'pages'});
+  const wrong = product.pinFiles(promoted, {version: 'controller-v999'});
+  const unknown = product.pinFiles(promoted, {version: 'controller-v1001'});
+  const verify = (base, head, current = promoted) => verifyLayerScapeControllerPins(product.dir, {
+    repositoryId: 1187527897, base, head, changedPaths: ['.github/workflows/pages.yml'],
+  }, upstream.dir, current);
+  assert.doesNotThrow(() => verify(initial, versioned));
+  assert.throws(() => verify(initial, unlabeledAdvance), /VALIDATION_CONTROLLER_VERSION_LABELS/);
+  assert.doesNotThrow(() => verify(versioned, upgraded));
+  assert.throws(() => verify(upgraded, versioned), /VALIDATION_CONTROLLER_VERSION_DOWNGRADE/);
+  assert.throws(() => verify(versioned, missing), /VALIDATION_CONTROLLER_VERSION_LABELS/);
+  assert.throws(() => verify(versioned, initial), /VALIDATION_CONTROLLER_VERSION_LABELS/);
+  assert.throws(() => verify(versioned, wrong), /VALIDATION_CONTROLLER_VERSION_SHA_MISMATCH/);
+  assert.throws(() => verify(versioned, unknown), /VALIDATION_CONTROLLER_VERSION_TAG_MISSING/);
 });
