@@ -1,6 +1,7 @@
 import {createHash} from 'node:crypto';
 import {CENTRAL,TARGET,digest,ensure,type GitReader,type BoundedEnv} from './bounded-recheck-github.js';
 import {type Identity,type Registration,type Intent,type RecordState,objectKey} from './bounded-recheck.js';
+import {legacyReleaseHandoff} from './legacy-release-handoff.js';
 const sha=(v:any)=>typeof v==='string'&&/^[a-f0-9]{40}$/.test(v),key=(v:any)=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
 export const APP_BOT_ID=301115370;
 function exact(v:any,keys:string){ensure(v&&Object.keys(v).sort().join(',')===keys,'CHANNEL_SCHEMA');}
@@ -85,6 +86,9 @@ export async function registerWingetRun(env:BoundedEnv,event:string,payload:any,
  const current=await (await stub.fetch(new Request('https://bounded.internal/status',{method:'POST',body:'{}'}))).json() as RecordState|null;
  // A repeated submit event cannot replace the unique index stage or its clock.
  if(current){ensure(objectKey(current.identity)===objectKey(identity),'CHANNEL_OBJECT_CONFLICT');return true;}
+ // The completed native Run is bound to an existing dispatch. During handoff,
+ // recover its receipt without registering a new WinGet observation stage.
+ if(legacyReleaseHandoff(env,TARGET.id))return true;
  const result=await stub.fetch(new Request('https://bounded.internal/winget-register',{method:'POST',body:JSON.stringify({registration,executionSha:run.head_sha,anchorSha:env.BOUNDED_PRODUCT_SHA})}));ensure(result.ok,'CHANNEL_REGISTRATION');
  return true;
 }

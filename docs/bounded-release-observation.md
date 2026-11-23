@@ -49,6 +49,16 @@ index 复用 `probe-<cycleId>-<targetsDigest>-<runId>-<attempt>/report.json`，�
 切换前确认旧工作流 311600220 保持手工停用，完整读取全部原生 Run 并确认均进入终态。停用后已开始的 Run 仍可继续执行，因此有运行未结束、状态无法确认或旧工作流被重新启用时，暂停采用。2026-11-21 读回四个旧 Run 全为 completed，最后一次为 [43500446376](https://github.com/splrad/steward/actions/runs/43500446376)。审查候选提交确认旧写者和定时入口缺席，合入后通过正常 Governance Promotion 晋级控制器，在真实候选、周期和 Pages 事件中验证新来源。历史 Run 保持可读。
 
 
+## 旧发行写者交接
+
+在审查通过的 Worker 部署中，`LEGACY_RELEASE_HANDOFF_IDS` 只接受唯一的正整数 GitHub 仓库 ID 数组，默认 `[]`。切换时填入正在交接的仓库 ID，保持共享 `BOUNDED_RECHECK_ENABLED` 的现役值。对应仓的旧候选、观察与频道任务停止新领取，待晋级唤醒和已知失败的重试也受同一限制。仍可按原对象确认已派发的原生 Run，既有资源 ID 和派发意图保留。
+
+先回读 Worker 生效版本与绑定，再对账已有认领、原生 Run 各次尝试、保护状态分支、tag 及草稿。已冻结的旧周期按已认领的原对象核准处理。确认旧执行结束后，官方候选的推送仍须匹配已采用 v3 的准确主支提交，官方构建和发布回执须能回溯同一受审冻结周期。质量、Pages 和其他仓库继续使用原入口。
+
+新发行的逐仓暂停由受审 `release-pauses.json` 管理。目标仓已完成受保护的原生采用、所有旧对象均终态并已退役原写路由后，在同一受审变更中删除临时变量和专用判断。已知有外部副作用的运行按原对象回读再决定恢复入口。
+
+采用前如须回退，解除停收后可通过同一经验证的原生事件重投恢复尚有时限和确认额度的旧候选回执。恢复沿用原 Run 预约，只重做确认。写入恢复前须验证主支仍选择旧候选入口。已用尽时限或确认额度的事件应按原对象对账，再由维护者决定是否发起新的原生事件。
+
 ## 人工完成稿的冻结事实
 
 正常真实事件可在原候选已纳入准确 current main、仍未合并且没有 editing/pending 时，验证现有人工稿并冻结 `session.manualValidation`。该可选字段使用 `kind: validated-manual-candidate`；旧六字段 session 保持可读。旧 generated、baseSha、publishedHead、conflict 和失败记录不改。验证不调用模型、push、build 或 mergedSnapshot/verifyHandoff。

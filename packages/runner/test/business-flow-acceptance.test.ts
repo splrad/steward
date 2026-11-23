@@ -76,14 +76,20 @@ test('native candidate rejects a changed actual initial Git snapshot before busi
   }finally{await rm(root,{recursive:true,force:true});}
 },120000);
 
-test('manual acceptance passes organization release candidates through the central choice',async()=>{
+test('manual acceptance checks organization release pauses and legacy delivery policy',async()=>{
   const target={...plan.repository,full_name:'splrad/product'};
-  let nativeReads=0;
+  let paused=true, pauseReads=0, nativeReads=0, candidateCalls=0;
+  vi.doMock('../../../scripts/release-pause-policy.mjs',()=>({assertReleaseUnpaused:async(_app,id)=>{
+    assert.equal(id,target.id);
+    pauseReads++;
+    if(paused)throw Error('RELEASE_REPOSITORY_PAUSED');
+  }}));
   vi.doMock('../../../scripts/quality-language-summary.mjs',()=>({qualityNativeIO:fullName=>({get:async path=>({
     value:path.includes('/git/ref/')?{object:{sha}}:{...target,full_name:fullName,archived:false,disabled:false}
   })})}));
   vi.doMock('../../../scripts/release-coordinator.mjs',()=>({fetchState:async()=>({snapshot:{head:sha}})}));
   vi.doMock('../../../scripts/release-candidate.mjs',()=>({nativeReleaseCandidate:async(_request,{checkRepositoryPolicy})=>{
+    candidateCalls++;
     await checkRepositoryPolicy?.(async()=>assert.fail('Disabled choice read native declarations'));
     return {status:'READY'};
   }}));
@@ -95,14 +101,21 @@ test('manual acceptance passes organization release candidates through the centr
   const app={forCandidateRepository:async(_id,callback)=>callback('fixture-write','fixture-read')};
   const options={root:'.',controllerDirectory:process.cwd(),app,modelToken:''};
   try {
+    await assert.rejects(executePlan({...plan,repository:target},options),/RELEASE_REPOSITORY_PAUSED/);
+    assert.equal(candidateCalls,0);
+    assert.equal(nativeReads,0);
+    paused=false;
     await assert.rejects(executePlan({...plan,repository:target},options),/CANDIDATE_REPOSITORY_POLICY_DISABLED/);
     assert.deepEqual(await executePlan(plan,options),{kind:'release',calls:0,status:'READY'});
+    assert.equal(pauseReads,2);
     assert.equal(nativeReads,1);
+    assert.equal(candidateCalls,2);
   } finally {
     vi.doUnmock('../../../scripts/quality-language-summary.mjs');
     vi.doUnmock('../../../scripts/release-coordinator.mjs');
     vi.doUnmock('../../../scripts/release-candidate.mjs');
     vi.doUnmock('../../../scripts/repository-policy-read.mjs');
+    vi.doUnmock('../../../scripts/release-pause-policy.mjs');
   }
 });
 

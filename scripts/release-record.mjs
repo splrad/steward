@@ -512,7 +512,8 @@ export async function writeReleaseRecords(input,{token,beforePush}={}) {
     }
     return result('UNKNOWN',observed.head,'RETRY_FROM_PRESERVED_COMMIT');
   } catch(error) {
-    if(error instanceof Error && /^RELEASE_RECORD:/.test(error.message))throw error;
+    if(error instanceof Error && (/^RELEASE_RECORD:/.test(error.message) ||
+      ['RELEASE_REPOSITORY_PAUSED','RELEASE_PAUSE_POLICY_UNAVAILABLE'].includes(error.message)))throw error;
     throw new Error('RELEASE_RECORD: validation or local operation failed');
   } finally {
     busy.delete(directory);
@@ -653,7 +654,7 @@ export async function registerOfficialMergedCycle(request,snapshot,receipt,{conf
   const written=await writeReleaseRecords({directory:join(request.writeDirectory,'register-official'),remote:request.remote,
     repositoryId:request.repositoryId,defaultBranch:request.defaultBranch,targetRef:'steward/release-state',writer:'release',
     expectedHead:snapshot.head,allowedPaths:changes.map(file=>file.path),changes:changes.map(file=>({...file,sha256:sha256(file.content)})),
-    identity:request.identity},{token});
+    identity:request.identity},{token,beforePush:admit});
   if(!['APPLIED','UNCHANGED'].includes(written.status))fail('official merge state write');
   const adopted=await readReleaseRecords({directory:join(request.writeDirectory,'register-official'),targetRef:'steward/release-state',
     repositoryId:request.repositoryId,includeHistory:false});
