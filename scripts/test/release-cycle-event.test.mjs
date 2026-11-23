@@ -21,6 +21,20 @@ test('event key binds native identity independently of the controller revision',
   assert.throws(()=>validateEvent(push(later),sha256([product.id,'push',source])));
   assert.throws(()=>validateEvent({...push(source),cycleId:'foreign'},sha256([product.id,'push',source])));
 });
+test('only the acknowledged official merge can register and dispatch a build',async()=>{
+  const event={kind:'official-merge',repositoryId:product.id,prNumber:192,head:later,sourceSha:source,
+    mergedAt:'2026-11-23T00:00:00Z',title:'chore(main): release 1.2.3',body:'approved'};
+  const key=sha256([product.id,event.kind,event.prNumber,source,later]);
+  validateEvent(event,key);
+  assert.throws(()=>validateEvent({...event,sourceSha:later},key),/CYCLE_EVENT_KEY/);
+  const calls=[],ports={officialMerge:async value=>{calls.push(value);return {status:'CYCLE_READY',cycleId:'exact'};},
+    invoke:async(...args)=>{calls.push(args);return {status:'BOUND'};}};
+  assert.equal((await advanceEvent(event,{})).reason,'OFFICIAL_RELEASE_DISABLED');
+  assert.equal((await advanceEvent(event,{...ports,officialStage:'prepare'})).reason,'OFFICIAL_RELEASE_BUILD_EVENT_REQUIRED');
+  assert.deepEqual(calls,[]);
+  assert.deepEqual(await advanceEvent(event,ports),{status:'BOUND',cycleId:'exact'});
+  assert.deepEqual(calls,[event,['dispatch-build','exact',null,true]]);
+});
 for(const order of [[source,later],[later,source]])test('delayed merge and later push register the same source exactly once '+order[0][0],async()=>{
   const state={head:'1'.repeat(40),repository:{candidate:{prNumber:192}},cycles:[]},calls=[];
   const ports={snapshot:async()=>state,get:async path=>path==='pulls/192'?{merged:true,merge_commit_sha:source}:{object:{sha:later}},

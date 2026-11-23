@@ -411,6 +411,17 @@
           "pattern": "^\\.github/workflows/[^/\\\\:\\u0000-\\u001f\\u007f-\\u009f*!?{}()[\\]<>|\"]{1,192}\\.ya?ml$(?![\\s\\S])"
         },
         "workflowDelivery": { "const": true },
+        "officialRelease": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["headSha", "pullBodyDigest", "bodyDigest"],
+          "properties": {
+            "headSha": { "type": "string", "pattern": "^[a-f0-9]{40}$(?![\\s\\S])" },
+            "pullBodyDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$(?![\\s\\S])" },
+            "bodyDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$(?![\\s\\S])" }
+          }
+        },
+        "officialDraftScopeDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$(?![\\s\\S])" },
         "units": {
           "type": "array",
           "items": {

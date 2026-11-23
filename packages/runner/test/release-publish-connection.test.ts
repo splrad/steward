@@ -395,13 +395,13 @@ it.each(['legacy','conditional','reviewed-conditional'])('prepares a native Node
   const output=await mkdtemp(join(tmpdir(),'direct-github-delivery-'));roots.push(output);registerOfflineFixtureRoot(output);
   const packageBytes=npmPackageFixture('1.0.0');
   let delivered:Uint8Array|string=packageBytes;
-  const prepare=async (child:string,selected:string[],unavailable?:(id:string)=>void)=>{
+  const prepare=async (child:string,selected:string[],unavailable?:(id:string)=>void,officialBody?:string)=>{
     const directory=join(output,child);await mkdir(directory);
     return pipelinePreparePublication(context,directory,f.input.controllerDirectory,'fixture-token',async()=>{throw Error('unexpected gh command');},
-      io,io,undefined,history,undefined,async input=>{
+      io,io,undefined,context.cycle.officialRelease?[]:history,undefined,async input=>{
         expect(input).toMatchObject({artifactId:artifact.id,digest:artifact.digest});
         await mkdir(input.directory);for(const name of selected)await writeFile(join(input.directory,name),name.endsWith('.tgz')?delivered:'checksums\n');
-      },unavailable);
+      },unavailable,undefined,officialBody);
   };
   delete context.cycle.workflowDelivery;
   await expect(prepare('unmarked-v3',initial)).rejects.toThrow('frozen delivery mode');
@@ -449,6 +449,19 @@ it.each(['legacy','conditional','reviewed-conditional'])('prepares a native Node
     schemaVersion:4,packageVersion:'1.0.0',attested:false,artifacts:[{path:'fixture-cli.tgz'}]}});
   expect(await readdir(prepared[0]!.directory)).toEqual(initial);
   expect(prepared[0]).toHaveProperty('publicBody',expect.stringContaining('fixture-cli.tgz'));
+  if(layout==='legacy') {
+    const officialBody='## [1.0.0](https://example.com/v1)\n\n已审定正文。\n\n[下载](<https://github.com/example/product/releases/download/v1.0.0/fixture-cli.tgz>)';
+    context.cycle.officialRelease={headSha:'a'.repeat(40),pullBodyDigest:digest('full body'),bodyDigest:digest(officialBody)};
+    const notes=source[notesPath]!;
+    delete source[notesPath];
+    await expect(prepare('official',initial,undefined,officialBody)).resolves.toMatchObject([{publicBody:officialBody,githubDelivery:{artifactId:810,runId:100,attempt:1}}]);
+    const stale=officialBody.replace('/fixture-cli.tgz>', '/private.tgz>');
+    await expect(prepare('official-body-drift',initial,undefined,stale)).rejects.toThrow('official release body');
+    context.cycle.officialRelease.bodyDigest=digest(stale);
+    await expect(prepare('official-unselected-link',initial,undefined,stale)).rejects.toThrow('outside GitHub delivery');
+    delete context.cycle.officialRelease;
+    source[notesPath]=notes;
+  }
   if(conditional) {
     const body=target.publicBody;
     expect(body).toContain('~~~sh\nnpm install -g ./fixture-cli.tgz\n~~~');

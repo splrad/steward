@@ -10,7 +10,7 @@ export { githubUnits } from '../../core/src/release-observation.js';
 export { downloadNativeArtifact } from './native-artifact-download.js';
 export { assertProductDelivery, assertRegisteredAdapters } from './release-pipeline.js';
 export { parsePipelineRecord, pipelineSource } from './release-pipeline-record.js';
-export { pipelineIdentity, pipelineNotes, pipelineInspect, pipelineRecoverCycleFinal, mergedBuildCycle, findFrozenFinal, pipelineDownloadPhase, pipelineFrozenManifest, pipelinePublish, pipelineVerifyPublished, pipelinePreparePublication, readCycleDelivery, prepareNormalizedDelivery, prepareWorkflowChannelReceipts, githubDeliveryArtifact, applyWorkflowDelivery } from './release-pipeline.js';
+export { pipelineIdentity, pipelineNotes, pipelineInspect, pipelineRecoverCycleFinal, mergedBuildCycle, findFrozenFinal, pipelineDownloadPhase, pipelineFrozenManifest, pipelineVerifyPublished, pipelinePreparePublication, readCycleDelivery, prepareNormalizedDelivery, prepareWorkflowChannelReceipts, githubDeliveryArtifact, applyWorkflowDelivery } from './release-pipeline.js';
 export { inspectProductArtifacts, sealProductArtifacts, validateProductManifest } from './release-artifacts.js';
 export { renderFrozenReleaseNotes } from '../../core/src/release-template.js';
 export { decodeCompletionArchive } from '../../core/src/release-history.js';
@@ -43,7 +43,7 @@ export { retainedChannelObservations, observeNativeChannels, readChannelSourceRe
 export { nativeRunFact, jobFact, EvidenceReadError, NativeEvidenceReader } from './native-release-evidence.js';
 export { nativeJobOrigins, originalJobExecutions } from '../../core/src/native-job-origins.js';
 export { evaluateCompletion } from '../../core/src/release-observation.js';
-export { NativeGitHubRelease, nativeGhCommand, nativeReleaseDownload } from './gh-release.js';
+export { NativeGitHubRelease, nativeGhCommand, nativeReleaseDownload, verifyOfficialPublicationProof } from './gh-release.js';
 export { nativeReleaseApp } from '../../github/src/app-auth.js';
 export { completeMergedPull } from '../../github/src/merged-pull.js';
 export {activeMaintenanceWorkflows,maintenanceWorkflows,maintenanceJobKeys,maintenanceDisposition,maintenanceFailed,decodeMaintenanceRecord,assertMaintenanceProgress} from '../../core/src/maintenance.js';
