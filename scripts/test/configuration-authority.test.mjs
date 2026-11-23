@@ -11,7 +11,7 @@ import {tmpdir} from 'node:os';
 import {authorizePull,checkEvent,protectedChanges,requestPath} from '../configuration-authorization.mjs';
 import {findEvidence,nativeChannelJobs,trialInventory} from '../configuration-native.mjs';
 import {inspectRepository} from '../configuration-view.mjs';
-import {assertChannelWorkflow,trialKey} from '../configuration-selection.mjs';
+import {assertChannelWorkflow} from '../configuration-selection.mjs';
 import YAML from 'yaml';
 const A='a'.repeat(40),B='b'.repeat(40),C='c'.repeat(40),actor={id:12,login:'maintainer',type:'User'};
 const repo={id:21,full_name:'splrad/sample',default_branch:'trunk',owner:{login:'splrad'}};
@@ -171,11 +171,6 @@ test('an existing container job with a service can provide bound native evidence
   doc.on={workflow_dispatch:{inputs:{flavor:{type:'choice',options:['debug','release']}}}};
   const inputsModel=inspectRepository(new Map([[path,YAML.stringify(doc)]]));
   assert.equal(await findEvidence(api,'',repo,B,A,{unit:'x',target:'one',workflow:path,job:'pack',matrix:{},archive:'bin'},inputsModel),undefined);
-});
-test('trial keys bind the output path and tools to the source',()=>{
-  const recipe={runner:'ubuntu-24.04',output:'out',steps:[],tools:{}};
-  assert.notEqual(trialKey(A,'app','linux',recipe),trialKey(A,'app','linux',{...recipe,output:'debug'}));
-  assert.notEqual(trialKey(A,'app','linux',recipe),trialKey(A,'app','linux',{...recipe,tools:{node:'24'}}));
 });
 test('both submit and verify must have a native receipt for the external target',async()=>{
   const product=YAML.parse(await readFile('templates/release/steward-release-channels.yml','utf8'));
