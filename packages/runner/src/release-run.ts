@@ -59,19 +59,6 @@ export function selectReleaseProducers(unit: { id: string; builds: readonly { id
   return result;
 }
 
-export function assertReleaseJobResults(mode: 'build' | 'verify' | 'product', signing: 'none' | 'authenticode' | 'apple-notarized' | undefined, results: Record<string, string>) {
-  if (mode === 'product') {
-    for (const job of ['admit', 'build', 'sign', 'evidence', 'freeze']) if (results[job] !== 'success') fail(`unexpected ${job} result`);
-    return;
-  }
-  if (results.identity !== 'success') fail('identity did not succeed');
-  const production = ['build', 'collect', 'sign', 'inspect', 'attest', 'publish'];
-  for (const job of production) {
-    const expected = mode === 'verify' || (job === 'sign' && signing === 'none') ? 'skipped' : 'success';
-    if (results[job] !== expected) fail(`unexpected ${job} result`);
-  }
-}
-
 /** Post-step receipts use the actual native step timestamps and conclusions, including failure paths. */
 export function productBusinessResults(context: EvidenceContext, request: CycleRecord['dispatches'][number], run: NativeRun,
   job: NativeJob, unitId: string, observedAt: string, objects: NativeResult['objects'] = [], notStarted: readonly number[] = []): NativeResult[] {

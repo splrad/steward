@@ -1,6 +1,6 @@
 # SPLRAD 设置事件转接
 
-独立 Worker `splrad-settings-events` 验证治理 App 的真实 webhook，唤起私有设置仓的官方 full-sync 和适用的仓库登记工作流。它与承担其他职责的 `splrad-steward-runtime` 分离。
+独立 Worker `splrad-settings-events` 验证治理 App 的真实 webhook，唤起私有设置仓的官方 full-sync。它与承担其他职责的 `splrad-steward-runtime` 分离。
 
 固定目标为 `splrad/steward-settings` main、事件类型 `settings-source-event`。临时 installation token 限制单仓 `contents:write` 和 `metadata:read`；治理 App 私钥自身仍具有 App 全部既有权限。使用专用密钥和签名 secret，仅放入 Worker Secrets；构建不取得凭据。
 

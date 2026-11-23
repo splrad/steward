@@ -967,8 +967,8 @@ export async function inspectRepositoryHistory(request,{token,io=nativeEvidenceT
 }
 
 /** Fixed release entry points share the protected Git snapshot and canonical Run binding. */
-export async function releaseCommand(command,request,{token,io=nativeEvidenceTransport(token),now=()=>new Date().toISOString(),centralIo,centralInvocation,publisher,completionReader,candidateReadToken,copilotToken,controllerSha,controllerDirectory,candidateRuntime,allowProbeDispatch=true,official,recoverDispatchOnly=false}={}) {
-  if(!['candidate','dispatch-build','publish','reconcile-publication','dispatch-channel','observe-channel','rerun'].includes(command))fail('release command');
+export async function releaseCommand(command,request,{token,io=nativeEvidenceTransport(token),now=()=>new Date().toISOString(),centralIo,centralInvocation,publisher,completionReader,controllerDirectory,allowProbeDispatch=true,official,recoverDispatchOnly=false}={}) {
+  if(!['dispatch-build','publish','reconcile-publication','dispatch-channel','observe-channel','rerun'].includes(command))fail('release command');
   exact(request,['directory','writeDirectory','remote','repository','repositoryId','defaultBranch','appBotId','cycleId','runId','identity']);
   if(!isAbsolute(request.directory)||!isAbsolute(request.writeDirectory)||!Number.isSafeInteger(request.appBotId)||request.appBotId<1
     || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(request.repository)||request.repository.split('/').some(part=>part==='.'||part==='..')
@@ -983,19 +983,6 @@ export async function releaseCommand(command,request,{token,io=nativeEvidenceTra
   const recovered=await recoverReleaseCaches(request,snapshot,{token,io,centralIo,now});snapshot=recovered.snapshot;directory=recovered.directory;request={...request,directory};assertRepositoryWrite(snapshot.repository);
   if(snapshot.repository?.defaultBranch!==request.defaultBranch)fail('release repository');
   const wait=reason=>({status:'WAIT',reason,nextCheckAt:null,publishInvoked:false});
-  if(command==='candidate') {
-    const {nativeReleaseCandidate}=await import('./release-candidate.mjs');
-    return nativeReleaseCandidate(request,{...candidateRuntime,token,readToken:candidateReadToken,copilotToken,controllerSha,controllerDirectory,now,
-      verifyHandoff:async cycle=>{
-        const current=await readReleaseRecords({directory:request.directory,targetRef:'steward/release-state',repositoryId:request.repositoryId,includeHistory:false});
-        const reader=new NativeEvidenceReader(io,request.repository);
-        const defaultHead=(await reader.json(`commits/${encodeURIComponent(request.defaultBranch)}`)).sha;
-        const stateHead=(await reader.json('git/ref/heads/steward/release-state')).object?.sha;
-        const valid=stateHead===current.head&&current.repository.candidate?.prNumber===cycle.prNumber
-          &&!current.cycles.some(record=>record.value.id===cycle.id);
-        return {result:valid?'PASS':'UNKNOWN',inventoryComplete:valid,pendingHandoff:cycle.id,defaultHead,stateHead};
-      }});
-  }
   let cycle=snapshot.cycles.find(record=>record.value.id===request.cycleId)?.value;
   if(!cycle)fail('registered cycle required');
   if((cycle.freezeOnly||cycle.freezeCompletedAt) && !cycle.requiredChannels.length && !githubUnits(cycle).length)
@@ -1170,7 +1157,7 @@ export async function releaseCommand(command,request,{token,io=nativeEvidenceTra
 }
 
 export async function main(argv=process.argv.slice(2)) {
-  if(['candidate','dispatch-build','publish','dispatch-channel','observe-channel','rerun'].includes(argv[0])) {
+  if(['dispatch-build','dispatch-channel','observe-channel','rerun'].includes(argv[0])) {
     if(argv.length!==5||argv[1]!=='--input'||argv[3]!=='--output')fail('release arguments');
     const input=decodeBuildJson(await readFile(argv[2])),output=await open(argv[4],'wx',0o600);
     try {const result=await releaseCommand(argv[0],input,{token:process.env.STEWARD_STATE_TOKEN});await output.writeFile(JSON.stringify(result,null,2)+'\n');return result;}

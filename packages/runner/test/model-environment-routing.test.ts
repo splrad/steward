@@ -3,8 +3,6 @@ import { expect, it } from 'vitest';
 import { parse } from 'yaml';
 
 it.each([
-  ['release-candidate-event.yml', 'event', 'steward-release'],
-  ['release-cycle-event.yml', 'release-coordinator', 'steward-release'],
   ['quality-language-summary.yml', 'quality-summary', 'steward-release-notes'],
   ['ai-identity-acceptance.yml', 'quality', 'steward-release-notes'],
   ['ai-identity-acceptance.yml', 'release', 'steward-release'],
@@ -20,12 +18,6 @@ it.each([
       expect(job.if).toContain(guard);
     }
     expect(workflow.jobs.release.needs).toBe('quality');
-  } else if (file === 'release-candidate-event.yml' || file === 'release-cycle-event.yml') {
-    expect(Object.keys(workflow.on)).toEqual(['workflow_dispatch']);
-    for (const guard of ["github.repository_id == '1296724484'", "github.ref == 'refs/heads/main'",
-      "github.event_name == 'workflow_dispatch'", 'inputs.policy_sha == github.sha', 'github.workflow_sha == github.sha']) {
-      expect(job.if).toContain(guard);
-    }
   } else {
     expect(job.if).toContain("github.ref == format('refs/heads/{0}', github.event.repository.default_branch)");
   }
@@ -42,13 +34,7 @@ it.each([
   expect(workflow.permissions['copilot-requests']).toBeUndefined();
   expect(Object.keys(workflow.on).every(event => ['push', 'schedule', 'workflow_dispatch'].includes(event))).toBe(true);
   const secretSteps = job.steps.filter((step: unknown) => step !== consumers[0] && /secrets\./.test(JSON.stringify(step)));
-  const approvedAppSteps: Record<string, string[]> = {
-    'release-candidate-event.yml': ['product', 'candidate-token', 'confirm-action-source', 'homepage'],
-    'release-cycle-event.yml': ['official_plan', 'official_token'],
-  };
-  expect(secretSteps.map((step: {id: string}) => step.id)).toEqual(approvedAppSteps[file] ?? []);
-  for (const step of secretSteps)
-    expect(JSON.stringify(step).match(/secrets\.[A-Z_0-9]+/g)).toEqual(['secrets.STEWARD_APP_PRIVATE_KEY']);
+  expect(secretSteps).toHaveLength(0);
 });
 
 it('only the production and explicitly gated acceptance jobs receive native Copilot permission', async () => {
@@ -62,6 +48,5 @@ it('only the production and explicitly gated acceptance jobs receive native Copi
     }
   }
   expect(consumers.sort()).toEqual(['ai-identity-acceptance.yml/quality', 'ai-identity-acceptance.yml/release',
-    'business-flow-acceptance.yml/acceptance', 'quality-language-summary.yml/quality-summary',
-    'release-candidate-event.yml/event', 'release-cycle-event.yml/release-coordinator']);
+    'business-flow-acceptance.yml/acceptance', 'quality-language-summary.yml/quality-summary']);
 });

@@ -56,25 +56,20 @@ function target(repository, id) {
   return { id, name: repository.full_name, defaultBranch: repository.default_branch };
 }
 
-export function officialCandidateRoute(event, settings, enabled, trialId) {
+export function officialCandidateRoute(settings, enabled) {
   requireCandidate(typeof settings?.['separate-pull-requests'] === 'boolean', 'ROUTE');
   const official = officialConfig(settings);
-  if (!event.kind) return official ? { result: 'official_candidate_adopted' } : { route: 'legacy' };
-  if (!official) return { result: event.kind === 'push' ? 'legacy_cycle_route' : 'legacy_product' };
-  if (enabled !== 'true' && String(event.repositoryId) !== trialId) return { result: 'official_candidate_disabled' };
+  if (!official) return { result: 'official_candidate_not_adopted' };
+  if (enabled !== 'true') return { result: 'official_candidate_disabled' };
   requireCandidate(officialRootSettings(settings), 'ROOT_CONFIG');
   return { route: 'official' };
 }
 
 async function identify(env) {
-  const supplied = JSON.parse(env.BOUNDED_EVENT_JSON);
-  const event = supplied?.kind ? candidateEvent(supplied, env.BOUNDED_REQUEST_KEY) : supplied;
-  const legacy = event && Object.keys(event).sort().join(',') === 'eventId,prNumber,repositoryId' &&
-    positive(event.repositoryId) && positive(event.eventId) && positive(event.prNumber);
-  requireCandidate((event?.kind || legacy) && /^[a-f0-9]{64}$/.test(env.BOUNDED_REQUEST_KEY)
-    && env.GITHUB_ACTOR_ID === String(botId)
+  const event = candidateEvent(JSON.parse(env.BOUNDED_EVENT_JSON), env.BOUNDED_REQUEST_KEY);
+  requireCandidate(env.GITHUB_ACTOR_ID === String(botId)
     && env.STEWARD_CONTROLLER_SHA === env.BOUNDED_POLICY_SHA
-    && (legacy || event.kind === 'official-refresh' ? validSha(env.BOUNDED_SOURCE_SHA) :
+    && (event.kind === 'official-refresh' ? validSha(env.BOUNDED_SOURCE_SHA) :
       env.BOUNDED_SOURCE_SHA === (event.sourceSha ?? event.head)), 'ENTRY');
   const io = nativeEvidenceTransport(env.STEWARD_CENTRAL_TOKEN);
   const centralReader = new NativeEvidenceReader(io, central);
@@ -91,8 +86,6 @@ async function identify(env) {
   const identity = { event, product, sourceSha: env.BOUNDED_SOURCE_SHA, controllerSha: run.head_sha,
     requestKey: env.BOUNDED_REQUEST_KEY, runId: run.id };
   const finish = async result => {
-    // The bounded legacy consumer can only validate its original Git-backed receipt.
-    requireCandidate(!legacy, result === 'paused' ? 'PAUSED' : 'ROUTE');
     await writeFile('result.json', JSON.stringify({ schemaVersion: 1, ...identity, result }) + '\n', { flag: 'wx' });
     await appendFile(env.GITHUB_OUTPUT, 'route=complete\n');
   };
@@ -103,11 +96,9 @@ async function identify(env) {
     const source = await defaultHead(get, product.defaultBranch);
     const settings = await readOfficialConfig(get, source);
     requireCandidate(await defaultHead(get, product.defaultBranch) === source, 'SOURCE_CHANGED');
-    return officialCandidateRoute(event, settings,
-      env.STEWARD_OFFICIAL_CANDIDATES_ENABLED, env.STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID);
+    return officialCandidateRoute(settings, env.STEWARD_OFFICIAL_CANDIDATES_ENABLED);
   });
   if (route.result) return finish(route.result);
-  if (route.route === 'legacy') return appendFile(env.GITHUB_OUTPUT, 'route=legacy\n');
   requireCandidate((await centralReader.json('git/ref/heads/steward/validated-controller')).object?.sha === run.head_sha, 'CONTROLLER');
   await mkdir(stateDirectory);
   await write('identity', identity);

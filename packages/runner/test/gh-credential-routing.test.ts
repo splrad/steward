@@ -14,7 +14,7 @@ afterEach(() => { state.calls.length = 0; state.failure = false; vi.unstubAllEnv
 it.each([
   ['repos/splrad/steward', true], ['repos/splrad/steward/commits/main', true],
   ['repos/splrad/steward/contents/config/repositories.json?ref=' + 'a'.repeat(40), true],
-  ['repos/splrad/steward/contents/config/release/defaults.json?ref=' + 'a'.repeat(40), true],
+  ['repos/splrad/steward/contents/config/bounded-recheck.json?ref=' + 'a'.repeat(40), true],
   ['repos/splrad/LayerScape/contents/release-please-config.json?ref=' + 'a'.repeat(40), false],
   ['repos/splrad/steward/compare/' + 'a'.repeat(40) + '...' + 'b'.repeat(40), true],
   ['repos/splrad/steward/releases?per_page=100', false], ['repos/splrad/steward/releases/42', false],

@@ -4,6 +4,7 @@ import {tmpdir} from 'node:os';
 import {resolve,join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {execFileSync} from 'node:child_process';
+import {createHash} from 'node:crypto';
 import {registerOfflineFixtureRoot} from './offline-fixtures.js';
 const script=(name:string)=>import(pathToFileURL(resolve('scripts/'+name+'.mjs')).href);
 const S='a'.repeat(40);
@@ -197,7 +198,15 @@ it('the private registration PR check rejects an unsupported edit and accepts it
         units:[{id:'fixture',path:'.',notesPath:'.release-notes/fixture.md',assets:['bundle','extras'].map(asset),channels:[channel]}]})],
       [build,'jobs: {build: {strategy: {matrix: {include: [{unit: fixture, target: windows-x64}]}}}}'],
     ]);
+    const {projectionBytes}=await script('repository-policy-projection');
+    const stateCommit='d'.repeat(40),stateTree='e'.repeat(40),configuration='f'.repeat(40);
+    const projection=projectionBytes({repositoryId:product.id,adoption:'central',productCi:[ci],site:null});
+    const blobSha=(value:string)=>createHash('sha1').update('blob '+Buffer.byteLength(value)+'\0').update(value).digest('hex');
+    const projectionSha=blobSha(projection),marker='central\n',markerSha=blobSha(marker);
+    const rules=[{type:'creation',ruleset_id:26678448},{type:'update',ruleset_id:26678448},
+      {type:'non_fast_forward',ruleset_id:26678449},{type:'deletion',ruleset_id:26678449}];
     let publicReadable=true,scopeDenied=false,rateStatus=0,identityOnly=false;
+    let projectionState='no-branch',markerActive=false;
     vi.stubGlobal('fetch',vi.fn(async(url:string,request:RequestInit)=>{
       const path=new URL(url).pathname;
       const authorization=new Headers(request.headers).get('authorization');
@@ -223,9 +232,31 @@ it('the private registration PR check rejects an unsupported edit and accepts it
       const route=path.slice(prefix.length);
       if(route==='')return Response.json(product);
       if(route==='/branches/main')return Response.json({name:'main',protected:true,commit:{sha:source}});
-      if(route==='/git/trees/'+source)return Response.json({truncated:false,tree:[...productFiles.keys()].map(path=>({path,type:'blob',sha:object}))});
-      if(route==='/git/ref/heads/steward/governance-state')return new Response(null,{status:404});
+      if(route==='/git/trees/'+source)return Response.json({truncated:false,tree:[
+        ...[...productFiles.keys()].map(path=>({path,type:'blob',sha:object})),
+        ...(markerActive?[{path:'.github',type:'tree',mode:'040000',sha:object}]:[])
+      ]});
+      if(route==='/git/trees/'+object&&markerActive)
+        return Response.json({truncated:false,tree:[{path:'steward-central-policy',type:'blob',mode:'100644',sha:markerSha}]});
+      if(route==='/contents/.github/steward-central-policy'&&markerActive)
+        return Response.json({path:'.github/steward-central-policy',type:'file',sha:markerSha,
+          size:Buffer.byteLength(marker),encoding:'base64',content:Buffer.from(marker).toString('base64')});
+      if(route==='/git/ref/heads/steward/governance-state') {
+        if(projectionState==='no-branch')return new Response(null,{status:404});
+        if(projectionState==='read-failed')return new Response(null,{status:503});
+        return Response.json({ref:'refs/heads/steward/governance-state',object:{type:'commit',sha:stateCommit}});
+      }
       if(route==='/git/matching-refs/heads/steward/governance-state')return Response.json([]);
+      if(route==='/git/commits/'+stateCommit)return Response.json({sha:stateCommit,tree:{sha:stateTree}});
+      if(route==='/git/trees/'+stateTree)
+        return Response.json({truncated:false,tree:projectionState==='active'?[{path:'configuration',type:'tree',mode:'040000',sha:configuration}]:[]});
+      if(route==='/git/trees/'+configuration)
+        return Response.json({truncated:false,tree:[{path:'repository.json',type:'blob',mode:'100644',sha:projectionSha}]});
+      if(route==='/rules/branches/steward%2Fgovernance-state')
+        return Response.json(projectionState==='unprotected'?rules.slice(1):rules);
+      if(route==='/contents/configuration/repository.json')return Response.json({
+        path:'configuration/repository.json',type:'file',sha:projectionSha,size:Buffer.byteLength(projection),
+        encoding:'base64',content:Buffer.from(projection).toString('base64')});
       const file=route.slice('/contents/'.length),bytes=productFiles.get(file);
       expect(bytes).toBeDefined();
       expect(new URL(url).searchParams.get('ref')).toBe(source);
@@ -297,6 +328,31 @@ it('the private registration PR check rejects an unsupported edit and accepts it
     expect(await readFile(summary,'utf8')).toContain('无法确认目标仓的撤回状态');
     publicReadable=true;
     await expect(main(env)).resolves.toMatchObject({dependencyMode:'private-administrator'});
+
+    git('checkout','--detach',unadopted);
+    git('update-ref','refs/remotes/origin/main',base);
+    await update(channel.artifactIds,product.full_name,'central');
+    const retirementBase=git('rev-parse','HEAD');
+    git('rm','repositories/91.json');git('commit','--signoff','--no-gpg-sign','-m','retire registration');
+    const retirementHead=git('rev-parse','HEAD');
+    git('update-ref','refs/remotes/origin/main',retirementBase);
+    await writeFile(event,JSON.stringify({repository,pull_request:{number:25,
+      base:{repo:{id:repository.id},ref:'main',sha:retirementBase},head:{sha:retirementHead}}}));
+    for(const [state,error] of [['no-branch','REPOSITORY_POLICY_PROJECTION_PROTECTION'],
+      ['unprotected','REPOSITORY_POLICY_PROJECTION_PROTECTION'],['read-failed','REPOSITORY_POLICY_PROJECTION_UNAVAILABLE'],
+      ['active','VALIDATION_REGISTRATION_PREVIEW_SELECTION']]) {
+      projectionState=state!;
+      await expect(main(env)).rejects.toThrow(error);
+    }
+    projectionState='retired';markerActive=true;
+    await expect(main(env)).rejects.toThrow('REPOSITORY_POLICY_PROJECTION_REQUIRED');
+    markerActive=false;
+    await expect(main(env)).resolves.toMatchObject({dependencyMode:'private-administrator'});
+    await writeFile(event,JSON.stringify({repository,ref:'refs/heads/main',before:retirementBase,after:retirementHead}));
+    const push={...env,GITHUB_EVENT_NAME:'push'};
+    await expect(main(push)).resolves.toMatchObject({dependencyMode:'private-administrator'});
+    projectionState='active';
+    await expect(main(push)).rejects.toThrow('VALIDATION_REGISTRATION_PREVIEW_SELECTION');
   }finally{vi.unstubAllGlobals();await rm(root,{recursive:true,force:true});}
 },30000);
 it('summary rejects failed, cancelled, missing and unexpectedly skipped required jobs',async()=>{

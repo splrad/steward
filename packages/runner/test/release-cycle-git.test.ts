@@ -29,7 +29,7 @@ it('assigns valid collision-free metadata IDs and retains the original frozen ID
   expect(await publicationAssetFacts({assets},manifest,f.adapter.names(f.target),f.target.directory)).toEqual(assets);
 });
 
-it('publishes seven bytesets, waits for both channels, recovers protected consumption and opens the next-candidate gate',async()=>{
+it('publishes seven bytesets, waits for both channels and recovers protected consumption',async()=>{
   const root=await mkdtemp(join(tmpdir(),'release-cycle-git-'));roots.push(root);registerOfflineFixtureRoot(root);
   const seed=join(root,'seed'),remote=join(root,'remote.git');await mkdir(seed);
   const identity={name:'Offline cycle',email:'cycle@example.invalid'},env=isolatedBuildEnvironment(process.env,root);
@@ -158,33 +158,4 @@ it('publishes seven bytesets, waits for both channels, recovers protected consum
   const recovered=await read();expect(recovered.domainRecords.filter((r:any)=>r.path.startsWith('evidence/')).length).toBeGreaterThan(6);
   expect(await inspectRepositoryHistory(input,{...options,completionReader:(value:any)=>readNativeCompletion(input,value,options)})).toMatchObject({result:'PASS',inventoryComplete:true,lastCompletedCycleId:cycle.id});
   const closed=await read();expect(closed.repository).toMatchObject({activeCycleId:null,candidate:null,lastCompletedCycleId:cycle.id});
-  // The candidate checkout still holds the pre-completion state. The native
-  // adapter must refresh it, then adopt the next ordinary candidate identity.
-  await git('-C',remote,'update-ref','refs/tags/v1.2.3',S);
-  const {nativeReleaseCandidate}=await import(pathToFileURL(resolve('scripts/release-candidate.mjs')).href);
-  let generations=0;
-  const fetcher=(async(input:any,init:any)=>{
-    expect(init.method).toBe('GET');const path=decodeURIComponent(new URL(String(input)).pathname);let value:any;
-    if(path.includes('/git/ref/heads/')){const branch=path.split('/git/ref/heads/')[1]!;let sha;try{sha=await git('-C',remote,'rev-parse','--verify',`refs/heads/${branch}`);}catch{return new Response('{}',{status:404});}value={ref:`refs/heads/${branch}`,object:{type:'commit',sha}};}
-    else if(path.endsWith('/rules/branches/main'))value=[{type:'non_fast_forward'},{type:'deletion'}];
-    else if(path.endsWith('/rulesets'))value=[{id:6,target:'tag',enforcement:'active'}];
-    else if(path.endsWith('/rulesets/6'))value={id:6,target:'tag',enforcement:'active',conditions:{ref_name:{include:['~ALL'],exclude:[]}},rules:[{type:'deletion'},{type:'non_fast_forward'}]};
-    else if(path.endsWith('/releases'))value=[f.release];
-    else if(path.endsWith('/releases/tags/'+unit.tag))value=f.release;
-    else if(path.endsWith('/tags'))value=[{name:unit.tag,commit:{sha:S}}];
-    else if(path.endsWith('/git/ref/tags/'+unit.tag))value={ref:'refs/tags/'+unit.tag,object:{type:'commit',sha:S}};
-    else if(path.endsWith('/actions/workflows'))value={total_count:0,workflows:[]};
-    else if(path.endsWith('/pulls'))value=[];
-    else {const result=await io.request('GET',path);return new Response(Buffer.from(result.bytes).toString('utf8'),{status:result.status});}
-    return new Response(JSON.stringify(value));
-  }) as typeof fetch;
-  expect(await nativeReleaseCandidate({...input,directory:seed,writeDirectory:join(root,'next-candidate')},{token:'fixture-write',readToken:'fixture-read',controllerSha:C,fetcher,temporaryRoot:root,now:()=>now,
-    generator:async(request:any)=>{generations++;expect(request.facts.releases[0]).toMatchObject({id:20,sha:S,draft:false});return {status:'UNCHANGED'};}})).toMatchObject({status:'WAIT',reason:'UNCHANGED'});
-  expect(generations).toBe(1);const next=await read();expect(next.repository.candidate.id).not.toBe(state.candidate.id);
-  expect(next.repository).toMatchObject({activeCycleId:null,lastCompletedCycleId:cycle.id,candidate:{prNumber:null,baseSha:S}});
-  // Reobserving completed history must preserve the next candidate and its
-  // original draft/session identity, including before its PR-create response.
-  const reobserved=await inspectRepositoryHistory(input,{...options,completionReader:(value:any)=>readNativeCompletion(input,value,options)});
-  expect(reobserved,JSON.stringify(reobserved)).toMatchObject({result:'PASS'});
-  expect((await read()).repository.candidate).toEqual(next.repository.candidate);
 },process.platform==='win32'?360_000:150_000);

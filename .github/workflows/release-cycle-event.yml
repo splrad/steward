@@ -16,7 +16,7 @@ permissions:
   contents: read
   actions: read
 concurrency:
-  group: ${{ contains(fromJSON('["candidate-head","candidate-status"]'), fromJSON(inputs.event_json).kind) && format('steward-candidate-homepage-{0}-{1}', fromJSON(inputs.event_json).repositoryId, fromJSON(inputs.event_json).prNumber) || 'steward-release-coordinator' }}
+  group: steward-release-coordinator
   cancel-in-progress: false
   queue: max
 jobs:
@@ -30,7 +30,6 @@ jobs:
     permissions:
       contents: read
       actions: read
-      copilot-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -49,10 +48,9 @@ jobs:
       - name: Install locked controller dependencies
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
-          npm ci --prefix tools/quality-language --ignore-scripts --no-audit --no-fund
           uv sync --project tools/template --frozen --only-group release-inspection --no-build
       - name: Verify the original product Run and freeze its delivery
-        if: ${{ fromJSON(inputs.event_json).kind == 'run' && (vars.STEWARD_OFFICIAL_RELEASE == 'true' || (vars.STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID != '' && format('{0}', fromJSON(inputs.event_json).repositoryId) == vars.STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID)) }}
+        if: ${{ fromJSON(inputs.event_json).kind == 'run' && vars.STEWARD_OFFICIAL_RELEASE == 'true' }}
         id: official_plan
         env:
           STEWARD_CENTRAL_TOKEN: ${{ github.token }}
@@ -63,7 +61,6 @@ jobs:
           BOUNDED_EVENT_JSON: ${{ inputs.event_json }}
           BOUNDED_REQUEST_KEY: ${{ inputs.request_key }}
           OFFICIAL_RELEASE_ENABLED: ${{ vars.STEWARD_OFFICIAL_RELEASE }}
-          STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID: ${{ vars.STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID }}
           OFFICIAL_RELEASE_PHASE: prepare
         run: node scripts/release-cycle-event.mjs
       - name: Issue the product release installation token
@@ -103,12 +100,10 @@ jobs:
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
           STEWARD_CONTROLLER_SHA: ${{ github.workflow_sha }}
           BOUNDED_MODE: cycle
-          STEWARD_COPILOT_TOKEN: ${{ github.token }}
           BOUNDED_POLICY_SHA: ${{ inputs.policy_sha }}
           BOUNDED_EVENT_JSON: ${{ inputs.event_json }}
           BOUNDED_REQUEST_KEY: ${{ inputs.request_key }}
           OFFICIAL_RELEASE_ENABLED: ${{ vars.STEWARD_OFFICIAL_RELEASE }}
-          STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID: ${{ vars.STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID }}
           OFFICIAL_RELEASE_TOKEN: ${{ steps.official_token.outputs.token }}
           OFFICIAL_RELEASE_ACTION_ID: ${{ steps.official_draft.outputs.id }}
           OFFICIAL_RELEASE_ACTION_TAG: ${{ steps.official_draft.outputs.tag_name }}
@@ -120,6 +115,3 @@ jobs:
           path: result.json
           if-no-files-found: error
           retention-days: 90
-      - name: Report candidate preview failure
-        if: ${{ contains(fromJSON('["candidate-head","candidate-status"]'), fromJSON(inputs.event_json).kind) }}
-        run: node -e "if (require('./result.json').status === 'FAILED') process.exitCode = 1"

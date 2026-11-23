@@ -11,7 +11,7 @@ import { PullRequestBody as ActionPullRequestBody } from 'release-please-officia
 import { PullRequestBody } from 'release-please/build/src/util/pull-request-body.js';
 import { bodyDigest, officialMergeKey, officialNotes, renderOfficialHomepage, validateOfficialMergeEvent,
   renderOfficialPull, verifyOfficialMerge } from '../official-release-candidate.mjs';
-import { captureOfficialAction, finishOfficialPull, officialActionResult, officialActionWasSkipped,
+import { candidateEvent, captureOfficialAction, finishOfficialPull, officialActionResult, officialActionWasSkipped,
   officialCandidateRoute, prepareOfficialPush } from '../official-candidate-event.mjs';
 
 const sourceSha = 'a'.repeat(40), head = 'b'.repeat(40), controllerSha = 'c'.repeat(40), previousSha = 'd'.repeat(40);
@@ -38,26 +38,26 @@ const orgNotes = {
 const person = { id: 42, login: 'contributor', profileUrl: 'https://github.com/contributor',
   avatarUrl: 'https://avatars.githubusercontent.com/u/42?v=4', alt: 'contributor' };
 
-test('only the native product declaration selects a candidate writer while the official switch is off', async () => {
-  const push = { kind: 'push', repositoryId: product.id, sourceSha };
+test('requires the official switch and the native product declaration to select a candidate writer', async () => {
   const label = { repositoryId: product.id, prNumber: 29, eventId: 12 };
   const old = { 'separate-pull-requests': false };
-  assert.deepEqual(officialCandidateRoute(push, old), { result: 'legacy_cycle_route' });
-  assert.deepEqual(officialCandidateRoute(label, old), { route: 'legacy' });
-  assert.deepEqual(officialCandidateRoute(label, settings), { result: 'official_candidate_adopted' });
-  assert.deepEqual(officialCandidateRoute(push, settings), { result: 'official_candidate_disabled' });
-  assert.deepEqual(officialCandidateRoute(push, settings, 'false', '18'), { result: 'official_candidate_disabled' });
-  assert.deepEqual(officialCandidateRoute(push, settings, 'false', '17'), { route: 'official' });
-  assert.deepEqual(officialCandidateRoute(push, settings, 'true'), { route: 'official' });
+  assert.deepEqual(officialCandidateRoute(old, 'true'), { result: 'official_candidate_not_adopted' });
+  assert.throws(() => candidateEvent(label, 'a'.repeat(64)), /OFFICIAL_CANDIDATE_EVENT/);
+  assert.deepEqual(officialCandidateRoute(settings), { result: 'official_candidate_disabled' });
+  assert.deepEqual(officialCandidateRoute(settings, 'false'), { result: 'official_candidate_disabled' });
+  assert.deepEqual(officialCandidateRoute(settings, 'true'), { route: 'official' });
   const multi = { ...settings, packages: { ...settings.packages, tools: { 'release-type': 'simple' } } };
-  assert.throws(() => officialCandidateRoute(push, multi, 'true'), /ROOT_CONFIG/);
-  assert.deepEqual(officialCandidateRoute(push, multi, 'false'), { result: 'official_candidate_disabled' });
-  assert.throws(() => officialCandidateRoute(push, {}, 'false'), /ROUTE/);
+  assert.throws(() => officialCandidateRoute(multi, 'true'), /ROOT_CONFIG/);
+  assert.deepEqual(officialCandidateRoute(multi, 'false'), { result: 'official_candidate_disabled' });
+  assert.throws(() => officialCandidateRoute({}, 'false'), /ROUTE/);
 
   const workflow = YAML.parse(await readFile('.github/workflows/release-candidate-event.yml', 'utf8'));
   const steps = workflow.jobs.event.steps;
   assert.equal(steps.find(step => step.id === 'candidate-token').if, "steps.product.outputs.route == 'official'");
-  assert.equal(steps.find(step => step.run === 'node scripts/release-candidate-event.mjs').if, "steps.product.outputs.route == 'legacy'");
+  assert.equal(workflow.jobs.event.permissions['copilot-requests'], undefined);
+  const secretSteps = steps.filter(step => /secrets\./.test(JSON.stringify(step)));
+  assert.deepEqual(secretSteps.map(step => step.id), ['product', 'candidate-token', 'confirm-action-source', 'homepage']);
+  for (const step of secretSteps) assert.deepEqual(JSON.stringify(step).match(/secrets\.[A-Z_0-9]+/g), ['secrets.STEWARD_APP_PRIVATE_KEY']);
   assert.equal(steps.find(step => step.id === 'release-please').if, "steps.prepare.outputs.mode == 'action'");
 });
 

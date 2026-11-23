@@ -36,7 +36,7 @@ export async function acceptReleasePromotion(env:BoundedEnv,event:string,p:any){
 
 // Each deployment has a monotonic promotion generation. Waiters record the generation
 // before reading GitHub, so a concurrent promotion remains visible after enrollment.
-type PromotionKind = 'cycle'|'native'|'quality';
+type PromotionKind = 'cycle'|'quality';
 const bucket=(generation:number)=>'wait:'+String(generation).padStart(16,'0')+':';
 export class ReleasePromotion {
   constructor(private storage:DurableObjectStorage,private env:BoundedEnv){}
@@ -45,7 +45,7 @@ export class ReleasePromotion {
     await this.storage.transaction(async t=>{
       let generation=(await t.get<number>('generation'))??0;
       if(action==='/wait'){
-        ensure(key(b.key)&&['cycle','native','quality'].includes(b.kind!)&&Number.isSafeInteger(b.generation)&&b.generation!>=0&&b.generation!<=generation,'PROMOTION_WAIT');
+        ensure(key(b.key)&&['cycle','quality'].includes(b.kind!)&&Number.isSafeInteger(b.generation)&&b.generation!>=0&&b.generation!<=generation,'PROMOTION_WAIT');
         const name=bucket(b.generation!)+b.kind+':'+b.key;
         if(await t.get(name)===undefined)await t.put(name,0);
       }else{
@@ -76,7 +76,7 @@ export class ReleasePromotion {
     const range={start:'wait:',end:bucket(generation)};
     for(const [name,tries] of await this.storage.list<number>({...range,limit:8})){
       const [,,kind,objectKey]=name.split(':');
-      if(kind==='configuration'){
+      if(kind!=='cycle'&&kind!=='quality'){
         await this.storage.delete(name);
         continue;
       }

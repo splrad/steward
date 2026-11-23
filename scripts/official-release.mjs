@@ -69,13 +69,6 @@ async function nativeFile(reader, path, ref) {
     && sha.test(result.sha) && createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex') === result.sha, 'CONFIG_SOURCE');
   return { digest: hash(bytes), value: JSON.parse(bytes.toString('utf8')) };
 }
-export async function sourceUsesOfficialRelease(reader, ref) {
-  requireFact(sha.test(ref), 'CONFIG_SOURCE');
-  const {value} = await nativeFile(reader, configPath, ref);
-  requireFact(typeof value?.['separate-pull-requests'] === 'boolean', 'CONFIG_SOURCE');
-  return value['separate-pull-requests'];
-}
-
 async function approvalFacts(approval, reader, parseBody, compare) {
   const { repository, repositoryId, defaultBranch, prNumber, sourceSha, headSha, appBotId } = approval;
   const [repo, pull, branch, comparison] = await Promise.all([

@@ -3,9 +3,7 @@ import {acceptReleasePromotion} from './release-promotion.js';
 import {acceptReleaseHint} from './release-cycle-relay.js';
 import {forwardPagesCompletion} from './pages-completion.js';
 import {acceptWingetSubmit} from './bounded-winget-submit.js';
-import {acceptNativeCandidateEvent,acceptNativeCandidateCompletion} from './bounded-native-event.js';
 import { handleBoundedRecheckRequest } from './bounded-recheck-api.js';
-import type { LegacyReleaseHandoffEnv } from './legacy-release-handoff.js';
 export { BoundedRecheckCoordinator } from './bounded-recheck-do.js';
 import { legacyValidationRetired } from './validation-retirement.js';
 import { SerialTaskQueue } from './serial-task-queue.js';
@@ -19,7 +17,7 @@ import { dispatchQualityEvent } from "./quality-event.js";
 import repositoryCatalog from "../config/repositories.json" with { type: "json" };
 import { handleBodyWriteInternalRequest } from "./pr-body-api.js";
 
-export interface Env extends LegacyReleaseHandoffEnv {
+export interface Env {
   BOUNDED_RECHECK?: DurableObjectNamespace;
   BOUNDED_RECHECK_ENABLED?: string;
   RELEASE_RELAY_DEPLOYMENT_SHA?: string;
@@ -424,7 +422,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
   const [quality,existing,release,winget,promotion]=await Promise.allSettled([
     dispatchQualityEvent(env,event,payload,deliveryId),
     handleExistingEvent(env,event,payload,deliveryId,action),
-    acceptReleaseHint(env,event,payload,deliveryId),
+    acceptReleaseHint(env,event,payload),
     acceptWingetSubmit(env,event,payload),
     acceptReleasePromotion(env,event,payload),
   ]);
@@ -435,8 +433,6 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
 
 async function handleExistingEvent(env:Env,event:string,payload:any,deliveryId:string,action:string):Promise<Response> {
   try {
-    if (belongsToOrganization(payload.repository)) await acceptNativeCandidateEvent(env, event, payload, deliveryId);
-    await acceptNativeCandidateCompletion(env, event, payload);
     if (["issues", "sub_issues", "issue_dependencies"].includes(event)
       || (event === "installation" && action === "deleted")
       || (event === "installation_repositories" && action === "removed")) return response(204);
