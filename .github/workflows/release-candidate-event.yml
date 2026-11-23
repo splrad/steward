@@ -24,7 +24,7 @@ concurrency:
   queue: max
 jobs:
   event:
-    if: github.repository_id == '1296724484' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.policy_sha == github.sha && github.workflow_sha == github.sha
+    if: github.actor_id == '301115370' && github.repository_id == '1296724484' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.policy_sha == github.sha && github.workflow_sha == github.sha
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment:
@@ -50,11 +50,91 @@ jobs:
           env: false
           persist_github_token: false
       - name: Install locked controller dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Authorize the official candidate event
+        id: product
+        if: fromJSON(inputs.event_json).kind == 'push' || fromJSON(inputs.event_json).kind == 'official-edit' || fromJSON(inputs.event_json).kind == 'official-refresh'
+        env:
+          STEWARD_CENTRAL_TOKEN: ${{ github.token }}
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          STEWARD_CONTROLLER_SHA: ${{ github.workflow_sha }}
+          STEWARD_OFFICIAL_CANDIDATES_ENABLED: ${{ vars.STEWARD_OFFICIAL_CANDIDATES_ENABLED }}
+          BOUNDED_MODE: normal
+          BOUNDED_POLICY_SHA: ${{ inputs.policy_sha }}
+          BOUNDED_EVENT_JSON: ${{ inputs.event_json }}
+          BOUNDED_SOURCE_SHA: ${{ inputs.source_sha }}
+          BOUNDED_REQUEST_KEY: ${{ inputs.request_key }}
+        run: node scripts/official-candidate-event.mjs identify
+      - name: Issue the product candidate token
+        id: candidate-token
+        if: steps.product.outcome == 'success'
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc
+        with:
+          client-id: Iv23liuSr0qd4WLJdZhH
+          private-key: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          owner: splrad
+          repositories: ${{ steps.product.outputs.repo }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+      - name: Check the source and candidate receipt
+        if: steps.product.outcome == 'success'
+        id: prepare
+        env:
+          STEWARD_CENTRAL_TOKEN: ${{ github.token }}
+          STEWARD_CANDIDATE_TOKEN: ${{ steps.candidate-token.outputs.token }}
+        run: node scripts/official-candidate-event.mjs prepare
+      - name: Save the candidate action reservation
+        if: steps.prepare.outputs.mode == 'action'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: official-candidate-before-${{ github.run_id }}
+          path: .official-candidate/before.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 90
+      - name: Confirm the default branch before the candidate action
+        if: steps.prepare.outputs.mode == 'action'
+        env:
+          STEWARD_CANDIDATE_TOKEN: ${{ steps.candidate-token.outputs.token }}
+        run: node scripts/official-candidate-event.mjs check-action-source
+      - name: Refresh the official candidate
+        id: release-please
+        if: steps.prepare.outputs.mode == 'action'
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7
+        with:
+          token: ${{ steps.candidate-token.outputs.token }}
+          repo-url: splrad/${{ steps.product.outputs.repo }}
+          target-branch: ${{ steps.product.outputs.branch }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          skip-github-release: true
+      - name: Record the official candidate action output
+        if: steps.release-please.outcome == 'success'
+        env:
+          OFFICIAL_ACTION_PRS: ${{ steps.release-please.outputs.prs }}
+        run: node scripts/official-candidate-event.mjs capture
+      - name: Save the official action output before rendering
+        if: steps.release-please.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: official-candidate-after-${{ github.run_id }}
+          path: .official-candidate/after.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 90
+      - name: Render or verify the candidate homepage
+        if: steps.product.outcome == 'success'
+        env:
+          STEWARD_CANDIDATE_TOKEN: ${{ steps.candidate-token.outputs.token }}
+        run: node scripts/official-candidate-event.mjs finish
+      - name: Install legacy candidate dependencies
+        if: steps.product.outcome == 'skipped'
         run: |
-          npm ci --ignore-scripts --no-audit --no-fund
           npm ci --prefix tools/quality-language --ignore-scripts --no-audit --no-fund
           uv sync --project tools/template --frozen --only-group release-inspection --no-build
-      - name: Process the native candidate event
+      - name: Process the legacy candidate event
+        if: steps.product.outcome == 'skipped'
         env:
           STEWARD_CENTRAL_TOKEN: ${{ github.token }}
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
@@ -68,7 +148,7 @@ jobs:
         run: node scripts/release-candidate-event.mjs
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: candidate-event-${{ inputs.request_key }}
+          name: candidate-event-${{ inputs.request_key }}${{ steps.product.outcome == 'success' && format('-{0}', github.run_attempt) || '' }}
           path: result.json
           if-no-files-found: error
           retention-days: 90

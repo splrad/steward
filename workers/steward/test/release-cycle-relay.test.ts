@@ -71,6 +71,36 @@ describe('release cycle relay',()=>{
   expect(releaseHint('pull_request',{...edit,sender:{id:42}},'7',undefined,delivery)).toBeUndefined();
   expect(releaseHint('pull_request',{...edit,changes:{title:{from:'Old'}}},'7',undefined,delivery)).toBeUndefined();
  });
+ it('accepts only the closed-and-merged official PR snapshot and deduplicates its review text by merge identity',async()=>{
+  const target={...repo,private:false,visibility:'public',disabled:false,owner:{id:302208797}};
+  const pull={number:301,state:'closed',merged:true,merged_at:'2026-11-23T00:00:00Z',merge_commit_sha:deployment,
+    user:{id:301115370},body:'Header\n---\n## [1.1.0](https://github.com/example)\n\n发布说明。\n---\nFooter',
+    title:'chore(main): release 1.1.0',labels:[{name:'autorelease: pending'}],base:{ref:'main',repo:{id:TARGET.id}},
+    head:{ref:'release-please--branches--main',repo:{id:TARGET.id},sha:pin}};
+  const event={...payload,repository:target,action:'closed',number:301,pull_request:pull};
+  const accepted=releaseHint('pull_request',event,'7')!;
+  expect(accepted).toEqual({repositoryId:TARGET.id,kind:'official-merge',prNumber:301,head:pin,sourceSha:deployment,
+    mergedAt:pull.merged_at,title:pull.title,body:pull.body});
+  expect(relayKey(releaseHint('pull_request',{...event,pull_request:{...pull,body:'different delivery text'}},'7')!)).toBe(relayKey(accepted));
+  for(const change of [{merged:false},{user:{id:42}},{labels:[]},{head:{...pull.head,repo:{id:3}}},{head:{...pull.head,ref:'feature'}}])
+    expect(releaseHint('pull_request',{...event,pull_request:{...pull,...change}},'7')).toBeUndefined();
+  const recorded:any[]=[];
+  const env={BOUNDED_RECHECK_ENABLED:'true',INSTALLATION_ID:'7',BOUNDED_RECHECK:{idFromName:(name:string)=>name,get:(name:string)=>({
+    async fetch(r:Request){recorded.push([name,await r.json()]);return new Response(null,{status:204});}
+  })}};
+  await acceptReleaseHint(env as any,'pull_request',event);
+  expect(recorded).toEqual([['cycle:v1:'+relayKey(accepted),{hint:accepted,source:{name:TARGET.name,defaultBranch:'main'}}]]);
+  const tagged={...event,action:'labeled',label:{name:'autorelease: tagged'},sender:{id:301115370},
+    pull_request:{...pull,labels:[{name:'autorelease: tagged'}]}};
+  expect(releaseHint('pull_request',tagged,'7')).toEqual({repositoryId:TARGET.id,kind:'official-refresh',prNumber:301,head:pin,releasedSha:deployment});
+  expect(releaseHint('pull_request',{...tagged,sender:{id:42}},'7')).toBeUndefined();
+  for(const action of ['opened','synchronize','ready_for_review','reopened'])
+    expect(releaseHint('pull_request',{...event,action,pull_request:{...pull,state:'open',merged:false}},'7')).toBeUndefined();
+  const edit={...event,action:'edited',sender:{id:42,type:'User'},changes:{body:{from:'old'}},
+    pull_request:{...pull,state:'open',merged:false}};
+  expect(releaseHint('pull_request',edit,'7')?.kind).toBe('official-edit');
+  expect(releaseHint('pull_request',{...edit,sender:{id:301115370,type:'Bot'}},'7')).toBeUndefined();
+ });
  it('routes only the app bot creation of a status comment on an open pull request',()=>{
   const event={...payload,action:'created',sender:{id:301115370},issue:{number:201,state:'open',pull_request:{}},comment:{
     id:51,user:{id:301115370},body:'<!-- steward:candidate-status:'+'a'.repeat(64)+' -->\nStatus'}};

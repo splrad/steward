@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 export { replayReleaseContributors, selectReleaseContributors } from '../../core/src/release-candidate.js';
-export { isAdoptedOrganizationReleaseTemplate, isConditionalTemplate, isPreviouslyAdoptedReleaseTemplate, reviewedConditionalReleaseTemplate } from '../../core/src/conditional-release-notes.js';
+export { assertVersionAcquisitionLinks, isAdoptedOrganizationReleaseTemplate, isConditionalTemplate, isPreviouslyAdoptedReleaseTemplate, parseConditionalNotes, renderConditionalNotes, reviewedConditionalReleaseTemplate } from '../../core/src/conditional-release-notes.js';
 export { manualCandidateFacts, manualCandidatePreview, manualCandidateBody, validateManualCandidateRecord } from '../../core/src/manual-candidate.js';
 export { parseDeliveryConfig, deliveryAssetNames, assertDeliveryPath } from '../../core/src/delivery-config.js';
 export { defaultBuildWorkflow, dispatchWorkflow, encodeRepositoryPath, staticMatrixRows } from '../../core/src/release-workflow.js';

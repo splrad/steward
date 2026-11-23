@@ -16,7 +16,7 @@ export interface BoundedEnv extends BodyWriteRuntimeEnv {
  BOUNDED_CONTROLLER_SHA?:string; BOUNDED_PRODUCT_SHA?:string; BOUNDED_DEPLOYMENT_SHA?:string;
 }
 export interface RunLocator { repositoryId:number;runId:number;attempt:number;requestKey:string }
-export interface ProductTarget {id:number;name:string;defaultBranch:string;units?:{id:string;path:string}[]}
+export interface ProductTarget {id:number;name:string;defaultBranch:string;units?:{id:string;path:string}[];officialCandidate?:true}
 export interface GitReader {
  readonly target?: ProductTarget;
  prepareDispatch?(repositoryId:number):Promise<void>;
@@ -166,10 +166,11 @@ export class BoundedGitHub implements GitReader {
      const roots=units.map((unit:any)=>unit.path).sort();
      // Release Please has no previous version entry for units awaiting their first release.
      if(delivery.schemaVersion===3)ensure(typeof versions==='object'&&!Array.isArray(versions),'CANDIDATE_DECLARATION');
-     ensure(settings['separate-pull-requests']===false&&new Set(roots).size===roots.length&&JSON.stringify(roots)===JSON.stringify(Object.keys(settings.packages).sort())&&
+     ensure(typeof settings['separate-pull-requests']==='boolean'&&new Set(roots).size===roots.length&&JSON.stringify(roots)===JSON.stringify(Object.keys(settings.packages).sort())&&
        Object.keys(versions).every(path=>roots.includes(path)),'CANDIDATE_UNIT_COVERAGE');
      ensure(new Set(units.map((unit:any)=>unit.id)).size===units.length,'CANDIDATE_UNIT_COVERAGE');
      target.units=units.map(({id,path}:any)=>({id,path}));
+     if(settings['separate-pull-requests']===true)target.officialCandidate=true;
    }catch(error){if(error instanceof Error && error.message === 'GITHUB_HTTP_404')return;throw error;}
    ensure((await scoped.json(id,refPath)).object?.sha===ref.object.sha,'CANDIDATE_SOURCE_MOVED');
    return scoped;

@@ -64,10 +64,11 @@ for(const name of ['release-observe','bounded-release-event','release-candidate-
   const jobs=Object.values(value.jobs);assert.equal(jobs.length,1);const job=jobs[0];
   assert.ok(job.if.includes('inputs.policy_sha == github.sha'));assert.ok(job.if.includes('github.workflow_sha == github.sha'));
   const evaluate=context=>job.if.split(' && ').every(term=>{const [left,right]=term.split(' == ');return context[left]=== (right.startsWith("'")?right.slice(1,-1):context[right]);});
-  const context={'github.repository_id':'1296724484','github.ref':'refs/heads/main',
+  const context={'github.actor_id':'301115370','github.repository_id':'1296724484','github.ref':'refs/heads/main',
     'github.event_name':'workflow_dispatch','inputs.policy_sha':head,'github.sha':head,'github.workflow_sha':head};
   assert.equal(evaluate(context),true);
   for(const field of ['inputs.policy_sha','github.sha','github.workflow_sha'])assert.equal(evaluate({...context,[field]:'b'.repeat(40)}),false);
+  if(name==='release-candidate-event')assert.equal(evaluate({...context,'github.actor_id':'42'}),false);
   assert.equal(job.steps[0].with.ref,'${{ github.workflow_sha }}');
 });
 for(const mode of ['observe','event','normal','cycle','pages'])test(`${mode} rejects main movement during native admission`,async()=>{
