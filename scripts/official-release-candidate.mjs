@@ -1,9 +1,8 @@
 import { createHash } from 'node:crypto';
 import { GitHub, Manifest } from 'release-please';
-import { PullRequestBody } from 'release-please-official/build/src/util/pull-request-body.js';
-import { PullRequestTitle } from 'release-please-official/build/src/util/pull-request-title.js';
-import { TagName } from 'release-please-official/build/src/util/tag-name.js';
-import { Version } from 'release-please-official/build/src/version.js';
+import { PullRequestBody } from 'release-please/build/src/util/pull-request-body.js';
+import { PullRequestTitle } from 'release-please/build/src/util/pull-request-title.js';
+import { parse as parseVersion } from 'semver';
 import { assertDeliveryPath, assertVersionAcquisitionLinks, EvidenceReadError, generateOfficialCandidateNotes,
   parseDeliveryConfig, renderConditionalNotes, selectReleaseContributors } from '../packages/runner/dist/index.js';
 
@@ -150,9 +149,10 @@ function officialUnit(settings, ref, base, version) {
   const unit = officialRootSettings(settings);
   requireCandidate(unit, 'ROOT_CONFIG');
   requireCandidate(officialRef(ref, base), 'BRANCH');
-  const tag = value => new TagName(Version.parse(value), undefined, unit['tag-separator'],
-    unit['include-v-in-tag'] ?? true).toString();
-  return { unit, tag: tag(version) };
+  const parsed = parseVersion(version);
+  const suffix = parsed?.build.length ? '+' + parsed.build.join('.') : '';
+  requireCandidate(parsed && parsed.version + suffix === version, 'VERSION');
+  return { unit, tag: (unit['include-v-in-tag'] === false ? '' : 'v') + version };
 }
 
 export function pullBinding(pull, product, number, botId) {

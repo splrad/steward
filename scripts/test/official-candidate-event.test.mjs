@@ -6,7 +6,7 @@ import { parseFragment } from 'parse5';
 import YAML from 'yaml';
 import { EvidenceReadError } from '../../packages/runner/dist/index.js';
 import { Manifest as ActionManifest } from 'release-please-official/build/src/manifest.js';
-import { Manifest } from 'release-please/build/src/manifest.js';
+import { Manifest } from 'release-please';
 import { PullRequestBody as ActionPullRequestBody } from 'release-please-official/build/src/util/pull-request-body.js';
 import { PullRequestBody } from 'release-please/build/src/util/pull-request-body.js';
 import { bodyDigest, computeOfficialCandidate, draftOfficialCandidate, officialCandidateRoundId, officialMergeKey,
