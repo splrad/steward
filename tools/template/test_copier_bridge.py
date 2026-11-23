@@ -252,8 +252,28 @@ class CopierTests(unittest.TestCase):
             bridge.render(self.central, self.product, current, 'update')
         self.assertEqual(caught.exception.paths, [path])
         self.assertEqual(document.read_bytes(), b'Edited product template\n')
+        self.git(self.product, 'rm', '--', path)
+        self.commit(self.product, 'Remove product template')
         document.write_bytes(original)
+        with self.assertRaisesRegex(ValueError, 'TEMPLATE_DIRTY'):
+            bridge.render(self.central, self.product, current, 'update')
+        ignore = self.product / '.git/info/exclude'
+        with ignore.open('a', encoding='utf-8') as excluded:
+            excluded.write('/' + path + '\n')
+        with self.assertRaises(bridge.TemplateConflict) as caught:
+            bridge.render(self.central, self.product, current, 'update')
+        self.assertEqual(caught.exception.paths, [path])
+        self.assertEqual(document.read_bytes(), original)
+        attributes = self.product / '.gitattributes'
+        attributes.write_text('/' + path + ' text eol=crlf\n', encoding='utf-8', newline='\n')
+        self.git(self.product, 'add', '--force', '--', path)
         self.commit(self.product, 'Restore delivered bytes for reviewed deletion')
+        document.unlink()
+        self.git(self.product, 'checkout', 'HEAD', '--', path)
+        self.assertEqual(self.git(self.product, 'check-attr', 'eol', '--', path), path + ': eol: crlf')
+        self.assertEqual(document.read_bytes().replace(b'\r\n', b'\n'), original)
+        self.assertIn(b'\r\n', document.read_bytes())
+        self.assertEqual(self.git(self.product, 'status', '--porcelain'), '')
         result = bridge.render(self.central, self.product, current, 'update')
         self.assertEqual(result['paths'], ['.copier-answers.yml', path])
         self.assertFalse(document.exists())

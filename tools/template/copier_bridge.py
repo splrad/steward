@@ -212,6 +212,21 @@ def review_rules_template(central, sha, env):
     return sections
 
 
+def is_committed_release_copy(target, checked_out, known_templates, env):
+    path = RELEASE_NOTES_TEMPLATE
+    entry = git(target, ['ls-tree', 'HEAD', '--', path], env)
+    if not entry.startswith(b'100644 blob '):
+        return False
+    committed = git(target, ['show', 'HEAD:' + path], env)
+    if committed not in known_templates:
+        return False
+    if checked_out == committed:
+        return True
+    attributes = git(target, ['check-attr', '-z', '--cached', 'eol', '--', path], env)
+    return (attributes.split(b'\0') == [path.encode(), b'eol', b'crlf', b'']
+            and checked_out == committed.replace(b'\n', b'\r\n'))
+
+
 def render(central, target, sha, mode, data=None):
     target_path = Path(target).absolute()
     require(not any(p.is_symlink() or getattr(p, 'is_junction', lambda: False)()
@@ -259,7 +274,8 @@ def render(central, target, sha, mode, data=None):
                         for ref in (old_sha, sha)
                         if git(central, ['ls-tree', ref, '--', release_source], env)
                     }
-                    if RELEASE_NOTES_TEMPLATE not in old_paths or previous_template not in known_templates:
+                    if (RELEASE_NOTES_TEMPLATE not in old_paths
+                            or not is_committed_release_copy(target, previous_template, known_templates, env)):
                         raise TemplateConflict([RELEASE_NOTES_TEMPLATE])
         if data:
             data_file = Path(profile) / 'data.json'
