@@ -1,18 +1,22 @@
-import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import apiVersion from '../config/github-api.json' with { type: 'json' };
-import { pathToFileURL } from 'node:url';
-import { GitHub, Manifest, VERSION } from 'release-please-official';
-import { downloadNativeArtifact, NativeEvidenceReader, nativeEvidenceTransport, nativeReleaseApp } from '../packages/runner/dist/index.js';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { copilotReleaseClient, NativeEvidenceReader, nativeEvidenceTransport, nativeReleaseApp } from '../packages/runner/dist/index.js';
 import { entryGuard } from './bounded-release-entry.mjs';
-import { releaseParticipation } from './release-coordinator.mjs';
+import { fetchState, releaseParticipation } from './release-coordinator.mjs';
 import { assertReleaseUnpaused, releaseIsPaused } from './release-pause-policy.mjs';
-import { bodyDigest, defaultHead, fitsOfficialEvent, hasLabel, officialConfig, officialPending, officialRef, officialRootSettings, officialTagged,
-  pages, pullBinding, readOfficialConfig, readOfficialManifest, renderOfficialPull, requireCandidate,
+import { compatibleExistingCandidate, openOfficialPull, verifyCandidateDraft, writeOfficialCandidate } from './official-candidate-write.mjs';
+import { bodyDigest, candidateBaseline, computeOfficialCandidate, defaultHead, draftOfficialCandidate, fitsOfficialEvent,
+  hasLabel, officialCandidateEvidence, officialCandidateRoundId, officialConfig, officialPending, officialRef, officialRootSettings, officialTagged,
+  pages, pullBinding, readOfficialConfig, readOfficialManifest, requireCandidate,
   verifyOfficialPull } from './official-release-candidate.mjs';
 
 const central = 'splrad/steward';
 const botId = 301115370;
+const botIdentity = { name: 'splrad-steward[bot]', email: '301115370+splrad-steward[bot]@users.noreply.github.com' };
+const controllerDirectory = fileURLToPath(new URL('../', import.meta.url));
 const templatePath = new URL('../templates/repository/.github/release-template.md.mustache', import.meta.url);
 const validSha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 const positive = value => Number.isSafeInteger(value) && value > 0;
@@ -26,7 +30,7 @@ const fetchJson = async (token, path, method = 'GET', data) => {
     headers: { Authorization: 'Bearer ' + token, Accept: 'application/vnd.github+json',
       'Content-Type': 'application/json', 'X-GitHub-Api-Version': apiVersion.version },
     ...(data ? { body: JSON.stringify(data) } : {}), signal: AbortSignal.timeout(60_000) });
-  requireCandidate(result.ok, 'HTTP_' + result.status);
+  if (!result.ok) throw Object.assign(new Error('OFFICIAL_CANDIDATE_HTTP_' + result.status), { status: result.status });
   return result.json();
 };
 
@@ -105,177 +109,6 @@ async function identify(env) {
   await appendFile(env.GITHUB_OUTPUT, 'route=official\nrepo=' + product.name.split('/')[1] + '\nbranch=' + product.defaultBranch + '\n');
 }
 
-async function assertCandidateUnpaused(env, repositoryId) {
-  const app = await nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY ?? '');
-  await assertReleaseUnpaused(app, repositoryId);
-}
-
-async function scopedReader(token, product) {
-  const scope = await fetchJson(token, '/installation/repositories?per_page=100');
-  requireCandidate(scope.total_count === 1 && scope.repositories?.length === 1, 'TOKEN_SCOPE');
-  const actual = target(scope.repositories[0], product.id);
-  requireCandidate(actual.name === product.name && actual.defaultBranch === product.defaultBranch, 'TOKEN_SCOPE');
-  const reader = new NativeEvidenceReader(nativeEvidenceTransport(token), product.name);
-  return {
-    get: path => reader.json(path),
-    patch: (number, body) => fetchJson(token, '/repos/' + product.name + '/pulls/' + number, 'PATCH', { body }),
-  };
-}
-
-const onOfficialBranch = (pull, product) => {
-  const ref = pull.head?.ref;
-  return pull.head?.repo?.id === product.id && (officialRef(ref, product.defaultBranch) ||
-    (typeof ref === 'string' && ref.startsWith('release-please--branches--' + product.defaultBranch + '--components--')));
-};
-
-async function openOfficialPulls(get, product) {
-  const pulls = await pages(get, 'pulls?state=open&base=' + encodeURIComponent(product.defaultBranch));
-  const official = pulls.filter(pull => onOfficialBranch(pull, product));
-  for (const pull of official) pullBinding(pull, product, pull.number, botId);
-  requireCandidate(new Set(official.map(pr => pr.head.ref)).size === official.length, 'AMBIGUOUS_BRANCH');
-  return official;
-}
-
-async function inspectWaiting(get, product) {
-  const pending = await pages(get, 'issues?state=closed&labels=' + encodeURIComponent(officialPending));
-  const pulls = await Promise.all(pending.filter(issue => issue.pull_request).map(issue => get('pulls/' + issue.number)));
-  return pulls.filter(pr => pr.merged === true && pr.base?.ref === product.defaultBranch &&
-    onOfficialBranch(pr, product)).map(pr => {
-    pullBinding(pr, product, pr.number, botId);
-    requireCandidate(hasLabel(pr, officialPending), 'PENDING_CHANGED');
-    return pr.number;
-  });
-}
-
-async function downloadCheckpoint(centralReader, env, identity, name) {
-  const artifacts = await centralReader.pages('actions/runs/' + identity.runId + '/artifacts?name=' +
-    encodeURIComponent('official-candidate-' + name + '-' + identity.runId), 'artifacts');
-  if (!artifacts.length) return false;
-  requireCandidate(artifacts.length === 1 && artifacts[0].expired === false, 'CHECKPOINT');
-  const artifact = artifacts[0], directory = join(stateDirectory, 'previous-' + name);
-  requireCandidate(artifact.workflow_run?.id === identity.runId && artifact.workflow_run?.head_sha === identity.controllerSha, 'CHECKPOINT_RUN');
-  await downloadNativeArtifact({ fullName: central, artifactId: artifact.id, digest: artifact.digest,
-    names: [name + '.json'], directory, policyDirectory: process.cwd(), home: stateDirectory }, env.STEWARD_CENTRAL_TOKEN);
-  const stored = JSON.parse(await readFile(join(directory, name + '.json'), 'utf8'));
-  requireCandidate(stored.runId === identity.runId && stored.requestKey === identity.requestKey &&
-    stored.controllerSha === identity.controllerSha && stored.sourceSha === identity.sourceSha, 'CHECKPOINT_INPUT');
-  await write(name, stored);
-  return true;
-}
-
-export async function officialActionWasSkipped(readJobs, runId, runAttempt) {
-  if (!Number.isSafeInteger(runAttempt) || runAttempt < 2) return false;
-  for (let attempt = 1; attempt < runAttempt; attempt++) {
-    const jobs = await readJobs(attempt);
-    if (jobs.length !== 1) return false;
-    const [job] = jobs;
-    if (job.run_id !== runId || job.run_attempt !== attempt || job.name !== 'event' || job.status !== 'completed') return false;
-    if (job.conclusion === 'skipped' && (!job.steps || job.steps.length === 0)) continue;
-    const steps = job.steps?.filter(step => step.name === 'Refresh the official candidate');
-    if (steps?.length !== 1 || steps[0].status !== 'completed' || steps[0].conclusion !== 'skipped') return false;
-  }
-  return true;
-}
-
-export async function prepareOfficialPush({ identity, get, prepareParticipation, restore, checkBranch, actionWasSkipped = async () => false }) {
-  const { product, event, runId, requestKey, controllerSha, sourceSha } = identity;
-  if (await defaultHead(get, product.defaultBranch) !== sourceSha) return { result: 'source_changed' };
-  const [state, settings, manifest] = await Promise.all([
-    prepareParticipation(), readOfficialConfig(get, sourceSha), readOfficialManifest(get, sourceSha),
-  ]);
-  requireCandidate(state.status === 'APPLICABLE' && state.sourceSha === sourceSha && officialRootSettings(settings), 'ROOT_CONFIG');
-  requireCandidate(await defaultHead(get, product.defaultBranch) === sourceSha, 'SOURCE_CHANGED');
-  const reserved = await restore('before');
-  if (reserved && await restore('after')) return { mode: 'resume' };
-  if (reserved) requireCandidate(await actionWasSkipped(), 'ACTION_RESULT_UNKNOWN');
-  if (event.kind === 'official-refresh') {
-    const released = await get('pulls/' + event.prNumber);
-    pullBinding(released, product, event.prNumber, botId);
-    requireCandidate(released.state === 'closed' && released.merged === true && released.head.sha === event.head &&
-      released.merge_commit_sha === event.releasedSha && hasLabel(released, officialTagged) &&
-      !hasLabel(released, officialPending), 'REFRESH_ORIGIN');
-  }
-  const waiting = await inspectWaiting(get, product);
-  if (waiting.length) return { result: 'merged_pending', waiting };
-  const open = await openOfficialPulls(get, product);
-  const initial = await Promise.all(open.map(async pr => {
-    const commit = await get('git/commits/' + pr.head.sha);
-    requireCandidate(commit.sha === pr.head.sha && commit.parents?.length === 1, 'PR_PARENT');
-    return { number: pr.number, head: pr.head.sha, sourceSha: commit.parents[0].sha };
-  }));
-  if (initial.length === 1 && initial[0].sourceSha === sourceSha) return { result: 'candidate_unchanged' };
-  await checkBranch();
-  requireCandidate(await defaultHead(get, product.defaultBranch) === sourceSha, 'SOURCE_CHANGED');
-  if (reserved) return { mode: 'action', reservation: 'existing' };
-  return { mode: 'action', reservation: 'new', checkpoint: { runId, requestKey, controllerSha, sourceSha,
-    configDigest: bodyDigest(JSON.stringify(settings)), manifestDigest: bodyDigest(JSON.stringify(manifest)), initial } };
-}
-
-async function requireRootBranch(product, token) {
-  requireCandidate(VERSION === '17.6.0', 'CORE_VERSION');
-  const [owner, repo] = product.name.split('/');
-  const github = await GitHub.create({ owner, repo, token, defaultBranch: product.defaultBranch });
-  const manifest = await Manifest.fromManifest(github, product.defaultBranch);
-  const strategies = await manifest.getStrategiesByPath();
-  requireCandidate(Object.keys(strategies).length === 1 && strategies['.'] &&
-    !(await strategies['.'].getBranchComponent()), 'ROOT_BRANCH');
-}
-
-export function officialActionResult(outputs, before) {
-  const values = JSON.parse(outputs || '[]');
-  requireCandidate(Array.isArray(values) && values.every(x => positive(x.number) && typeof x.body === 'string' &&
-    typeof x.headBranchName === 'string' && typeof x.baseBranchName === 'string') &&
-    new Set(values.map(x => x.number)).size === values.length, 'ACTION_OUTPUT');
-  return { ...before, output: values.map(({number, body, headBranchName, baseBranchName}) =>
-    ({ number, upstreamDigest: bodyDigest(body), headBranchName, baseBranchName })) };
-}
-
-export async function captureOfficialAction({ checkpoint, product, get }) {
-  const { output: values, ...before } = checkpoint;
-  const pulls = [];
-  for (const value of values) {
-    const pull = await get('pulls/' + value.number);
-    pullBinding(pull, product, value.number, botId);
-    requireCandidate(pull.head.ref === value.headBranchName && value.baseBranchName === product.defaultBranch, 'ACTION_PR');
-    if (pull.state !== 'open' || pull.merged === true) continue;
-    if (before.initial.some(pr => pr.number === pull.number && pr.head === pull.head.sha)) continue;
-    requireCandidate(hasLabel(pull, officialPending), 'ACTION_PR');
-    const commit = await get('git/commits/' + pull.head.sha);
-    requireCandidate(commit.sha === pull.head.sha && commit.parents?.length === 1 &&
-      commit.parents[0].sha === before.sourceSha, 'ACTION_BASE_MOVED');
-    pulls.push({ number: pull.number, head: pull.head.sha, upstreamDigest: value.upstreamDigest });
-  }
-  return { ...before, pulls };
-}
-
-export async function finishOfficialPull({ product, get, patch, sourceSha, checkpoint, template, admit, render = renderOfficialPull }) {
-  let pull = await get('pulls/' + checkpoint.number);
-  pullBinding(pull, product, checkpoint.number, botId);
-  if (pull.state !== 'open' || pull.merged === true || pull.head.sha !== checkpoint.head ||
-      await defaultHead(get, product.defaultBranch) !== sourceSha) return { number: pull.number, status: 'superseded' };
-  requireCandidate(hasLabel(pull, officialPending), 'ACTION_PR');
-  const validateEdit = async current => {
-    const [settings, manifest] = await Promise.all([readOfficialConfig(get, sourceSha), readOfficialManifest(get, current.head.sha)]);
-    const notes = verifyOfficialPull(current, product, current.number, botId, settings, manifest);
-    return { number: current.number, head: current.head.sha, status: 'body_retained', bodyDigest: notes.bodyDigest };
-  };
-  if (bodyDigest(pull.body) !== checkpoint.upstreamDigest) return validateEdit(pull);
-  const proposal = await render(pull, product, get, botId, sourceSha, template);
-  await admit();
-  if (await defaultHead(get, product.defaultBranch) !== sourceSha) return { number: pull.number, status: 'superseded' };
-  pull = await get('pulls/' + checkpoint.number);
-  pullBinding(pull, product, checkpoint.number, botId);
-  if (pull.state !== 'open' || pull.merged === true || pull.head.sha !== checkpoint.head) return { number: pull.number, status: 'superseded' };
-  if (bodyDigest(pull.body) !== checkpoint.upstreamDigest) return validateEdit(pull);
-  try { await patch(pull.number, proposal.body); } catch { /* Read native state after an unknown PATCH response. */ }
-  const actual = await get('pulls/' + pull.number);
-  pullBinding(actual, product, pull.number, botId);
-  requireCandidate(actual.head.sha === checkpoint.head && actual.state === 'open' && actual.merged !== true
-    && actual.body === proposal.body, 'BODY_WRITE_UNKNOWN');
-  return { number: pull.number, head: checkpoint.head, status: 'rendered', templateDigest: proposal.templateDigest,
-    bodyDigest: proposal.notes.bodyDigest };
-}
-
 async function checkEdited(identity, get) {
   const { event, product } = identity;
   const pull = await get('pulls/' + event.prNumber);
@@ -290,58 +123,178 @@ async function checkEdited(identity, get) {
   return { status: 'verified', number: pull.number, head: event.head, bodyDigest: notes.bodyDigest };
 }
 
+async function inspectWaiting(get, product) {
+  const pending = await pages(get, 'issues?state=closed&labels=' + encodeURIComponent(officialPending));
+  const pulls = await Promise.all(pending.filter(issue => issue.pull_request).map(issue => get('pulls/' + issue.number)));
+  return pulls.filter(pr => pr.merged === true && pr.base?.ref === product.defaultBranch &&
+    pr.head?.repo?.id === product.id && officialRef(pr.head.ref, product.defaultBranch)).map(pr => {
+    pullBinding(pr, product, pr.number, botId);
+    requireCandidate(validSha(pr.merge_commit_sha) && hasLabel(pr, officialPending), 'PENDING_MERGE');
+    return { number: pr.number, head: pr.head.sha, sourceSha: pr.merge_commit_sha };
+  });
+}
+
+export async function prepareOfficialCandidate({ identity, get, store, token, prepareParticipation,
+  buildCandidate = computeOfficialCandidate, collectEvidence = officialCandidateEvidence }) {
+  const { product, event, sourceSha } = identity;
+  if (await defaultHead(get, product.defaultBranch) !== sourceSha) return { result: 'source_changed' };
+  const [participation, configuration, versions] = await Promise.all([
+    prepareParticipation(), readOfficialConfig(get, sourceSha), readOfficialManifest(get, sourceSha),
+  ]);
+  requireCandidate(participation.status === 'APPLICABLE' && participation.sourceSha === sourceSha &&
+    officialRootSettings(configuration), 'ROOT_CONFIG');
+  if (event.kind === 'official-refresh') {
+    const released = await get('pulls/' + event.prNumber);
+    pullBinding(released, product, event.prNumber, botId);
+    requireCandidate(released.state === 'closed' && released.merged === true && released.head.sha === event.head &&
+      released.merge_commit_sha === event.releasedSha && hasLabel(released, officialTagged) &&
+      !hasLabel(released, officialPending), 'REFRESH_ORIGIN');
+  }
+  const waiting = await inspectWaiting(get, product);
+  if (waiting.length) return { result: 'merged_pending', waiting };
+  const baseline = await candidateBaseline(get, product, sourceSha, configuration, versions);
+  let round = await store.find(sourceSha, baseline);
+  let roundId = round?.roundId;
+  if (!round) {
+    const candidate = await buildCandidate({ product, sourceSha, configuration, get, token });
+    if (!candidate) return { result: 'no_candidate_change' };
+    roundId = officialCandidateRoundId(product, { baseline, candidate });
+    round = await store.read(roundId);
+    if (!round.source) {
+      const pull = await openOfficialPull(get, product, botId);
+      const prior = pull && { number: pull.number, head: pull.head.sha };
+      round = await store.save(roundId, 'source', { sourceSha, baseline, candidate, prior });
+    } else if (round.source.sourceSha !== sourceSha) {
+      requireCandidate(officialCandidateRoundId(product, round.source) === roundId, 'ROUND_IDENTITY');
+      requireCandidate(await defaultHead(get, product.defaultBranch) === sourceSha, 'C2_SOURCE_CHANGED');
+      await store.bind(roundId, sourceSha);
+    }
+  }
+  requireCandidate(round.source && officialCandidateRoundId(product, round.source) === roundId, 'ROUND_IDENTITY');
+  if (round.pull) return { result: 'candidate_unchanged', roundId, pulls: [round.pull] };
+  const { candidate } = round.source;
+
+  // On cutover an already rendered official PR can be carried forward unchanged
+  // when the computed files and candidate version still identify the same change.
+  if ((!round.draft || round.draft.templateDigest === null) && round.source.prior) {
+    const prior = await get('pulls/' + round.source.prior.number);
+    const legacy = prior.state === 'open' && prior.head?.sha === round.source.prior.head &&
+      await compatibleExistingCandidate({ get, pull: prior, product, botId, candidate, configuration });
+    if (legacy) {
+      for (const phase of ['draft', 'branch', 'pull']) {
+        if (!round[phase]) await store.save(roundId, phase, legacy[phase]);
+      }
+      return { result: 'candidate_unchanged', roundId, pulls: [legacy.pull] };
+    }
+    requireCandidate(!round.draft, 'ADOPTED_PULL_DRIFT');
+  }
+  const evidence = round.draft ? null : await collectEvidence({ product, sourceSha, baseline, candidate, get });
+  return { roundId, candidate, mode: round.draft ? 'write' : 'draft', evidence };
+}
+
+async function withCandidateState(env, identity, operation) {
+  const app = await nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY ?? '');
+  const { product } = identity;
+  const repository = { id: product.id, full_name: product.name, default_branch: product.defaultBranch };
+  const root = await mkdtemp(join(tmpdir(), 'steward-candidate-state-'));
+  try {
+    return await app.forCandidateRepository(product.id, async (writeToken, readToken) => {
+      const reader = new NativeEvidenceReader(nativeEvidenceTransport(readToken), product.name);
+      const get = path => reader.json(path);
+      const admit = () => assertReleaseUnpaused(app, product.id);
+      const record = await import('./release-record.mjs');
+      let snapshotDirectory;
+      const directory = () => snapshotDirectory ??= fetchState(root, repository, writeToken).then(state => state.directory);
+      const writeCheckpoint = async (method, fields) => {
+        const result = await method({
+          directory: await directory(), writeDirectory: await mkdtemp(join(root, 'write-')), repository: product.name,
+          repositoryId: product.id, defaultBranch: product.defaultBranch, identity: botIdentity, ...fields,
+        }, { token: writeToken, admit });
+        snapshotDirectory = undefined;
+        return result;
+      };
+      const store = {
+        find: async (sourceSha, baseline) => record.findOfficialCandidateRound({
+          directory: await directory(), repositoryId: product.id, defaultBranch: product.defaultBranch, sourceSha, baseline,
+        }),
+        read: async roundId => record.readOfficialCandidateRound({
+          directory: await directory(), repositoryId: product.id, roundId,
+        }),
+        save: (roundId, phase, data) => writeCheckpoint(record.writeOfficialCandidateCheckpoint, { roundId, phase, data }),
+        bind: (roundId, sourceSha) => writeCheckpoint(record.recordOfficialCandidateSource, { roundId, sourceSha }),
+      };
+      return operation({ get, store, token: readToken, admit, prepareParticipation: () =>
+        releaseParticipation(repository, nativeEvidenceTransport(readToken), { requireWorkflowGitHubDelivery: true }) });
+    });
+  } finally { await rm(root, { recursive: true, force: true }); }
+}
+
+const stateRead = async name => JSON.parse(await readFile(stateFile(name), 'utf8'));
+const finish = (identity, result) => writeFile('result.json', JSON.stringify({ schemaVersion: 1, ...identity, ...result }) + '\n', { flag: 'wx' });
+
 export async function main(stage, env = process.env) {
   if (stage === 'identify') return identify(env);
-  const identity = JSON.parse(await readFile(stateFile('identity'), 'utf8'));
-  if (stage === 'capture') {
-    const before = JSON.parse(await readFile(stateFile('before'), 'utf8'));
-    return write('after', officialActionResult(env.OFFICIAL_ACTION_PRS, before));
+  const identity = await stateRead('identity');
+  const { product, sourceSha } = identity;
+  if (stage === 'prepare' && identity.event.kind === 'official-edit') {
+    const app = await nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY ?? '');
+    const result = await app.forCandidateReadRepository(product.id, async token => {
+      const reader = new NativeEvidenceReader(nativeEvidenceTransport(token), product.name);
+      return checkEdited(identity, path => reader.json(path));
+    });
+    return finish(identity, { result });
   }
-  const token = env.STEWARD_CANDIDATE_TOKEN;
-  const { get, patch } = await scopedReader(token, identity.product);
-  const { event, product } = identity;
   if (stage === 'prepare') {
-    const centralReader = new NativeEvidenceReader(nativeEvidenceTransport(env.STEWARD_CENTRAL_TOKEN), central);
-    const plan = event.kind === 'official-edit' ? { result: await checkEdited(identity, get) }
-      : await prepareOfficialPush({ identity, get, restore: name => Number(env.GITHUB_RUN_ATTEMPT) > 1 &&
-        downloadCheckpoint(centralReader, env, identity, name),
-      actionWasSkipped: () => officialActionWasSkipped(attempt =>
-        centralReader.pages('actions/runs/' + identity.runId + '/attempts/' + attempt + '/jobs', 'jobs'),
-        identity.runId, Number(env.GITHUB_RUN_ATTEMPT)),
-      checkBranch: () => requireRootBranch(product, token),
-      prepareParticipation: () => releaseParticipation({ id: product.id, full_name: product.name,
-        default_branch: product.defaultBranch }, nativeEvidenceTransport(token), { requireWorkflowGitHubDelivery: true }) });
-    if (plan.checkpoint) await write('before', plan.checkpoint);
-    await write('plan', { mode: plan.mode ?? null, result: plan.result ?? null, waiting: plan.waiting ?? [] });
-    await appendFile(env.GITHUB_OUTPUT, 'mode=' + (plan.mode ?? 'complete') + '\nreservation=' + (plan.reservation ?? '') + '\n');
-    return;
+    const plan = await withCandidateState(env, identity, options => prepareOfficialCandidate({ ...options, identity }));
+    if (plan.result) return finish(identity, plan);
+    await write('plan', plan);
+    return appendFile(env.GITHUB_OUTPUT, 'mode=' + plan.mode + '\n');
   }
-  if (stage === 'check-action-source') {
-    requireCandidate(await defaultHead(get, product.defaultBranch) === identity.sourceSha, 'SOURCE_CHANGED');
-    await assertCandidateUnpaused(env, product.id);
-    return;
-  }
-  requireCandidate(stage === 'finish', 'STAGE');
-  const plan = JSON.parse(await readFile(stateFile('plan'), 'utf8'));
-  let result = plan.result, pulls = [], waiting = plan.waiting;
-  if (plan.mode) {
-    const checkpoint = JSON.parse(await readFile(stateFile('after'), 'utf8'));
-    const after = await captureOfficialAction({ checkpoint, product, get });
+  const plan = await stateRead('plan');
+  const { roundId, candidate } = plan;
+  if (stage === 'generate') {
     const template = await readFile(templatePath, 'utf8');
-    const admit = () => assertCandidateUnpaused(env, product.id);
-    for (const checkpoint of after.pulls) pulls.push(await finishOfficialPull({
-      product, get, patch, sourceSha: identity.sourceSha, checkpoint, template, admit,
+    const client = copilotReleaseClient(controllerDirectory, env.STEWARD_COPILOT_TOKEN ?? '');
+    return write('draft', await draftOfficialCandidate({
+      roundId, candidate, context: plan.evidence, product, sourceSha, template, call: client.call,
     }));
-    if (!pulls.length && !checkpoint.output.length) waiting = await inspectWaiting(get, product);
-    result = pulls.length ? 'candidate_observed' : waiting.length ? 'merged_pending' : 'no_candidate_change';
   }
-  await writeFile('result.json', JSON.stringify({ schemaVersion: 1, ...identity, result, pulls, waiting,
-    templateDigest: pulls.length ? bodyDigest(await readFile(templatePath)) : null }) + '\n', { flag: 'wx' });
+  if (stage === 'check') {
+    return withCandidateState(env, identity, async ({ get, store, admit }) => {
+      const round = await store.read(roundId);
+      requireCandidate(round.source && officialCandidateRoundId(product, round.source) === roundId, 'ROUND_IDENTITY');
+      const draft = round.draft ?? await stateRead('draft');
+      verifyCandidateDraft(candidate, draft, roundId);
+      if (!round.draft) await store.save(roundId, 'draft', draft);
+      await admit();
+      const currentSourceSha = await defaultHead(get, product.defaultBranch);
+      if (currentSourceSha !== sourceSha) return finish(identity, { result: 'source_changed', roundId, currentSourceSha });
+      return appendFile(env.GITHUB_OUTPUT, 'mode=write\n');
+    });
+  }
+  requireCandidate(stage === 'write', 'STAGE');
+  const productToken = env.STEWARD_CANDIDATE_TOKEN;
+  const scope = await fetchJson(productToken, '/installation/repositories?per_page=100');
+  requireCandidate(scope.total_count === 1 && scope.repositories?.length === 1, 'TOKEN_SCOPE');
+  const actual = target(scope.repositories[0], product.id);
+  requireCandidate(actual.name === product.name && actual.defaultBranch === product.defaultBranch, 'TOKEN_SCOPE');
+  return withCandidateState(env, identity, async ({ get, store, admit }) => {
+    const round = await store.read(roundId);
+    requireCandidate(round.source && officialCandidateRoundId(product, round.source) === roundId, 'ROUND_IDENTITY');
+    const configuration = await readOfficialConfig(get, sourceSha);
+    const pull = await writeOfficialCandidate({ get, product, botId, round, roundId, sourceSha, configuration, admit,
+      request: (method, path, data) => fetchJson(productToken, '/repos/' + product.name + '/' + path, method, data),
+      save: (phase, data) => store.save(roundId, phase, data),
+    });
+    return finish(identity, { result: 'candidate_observed', roundId, pulls: [pull] });
+  });
 }
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main(process.argv[2]).catch(error => {
-    console.error(/^OFFICIAL_CANDIDATE_[A-Z_0-9]+$/.test(error?.message) ||
-      ['RELEASE_REPOSITORY_PAUSED','RELEASE_PAUSE_POLICY_UNAVAILABLE'].includes(error?.message) ? error.message : 'OFFICIAL_CANDIDATE_STOPPED');
+    const message = error?.message;
+    console.error(/^(OFFICIAL_CANDIDATE|RELEASE|CONTENT)_[A-Z_0-9]+$/.test(message) ||
+      ['WAIT_AUTH', 'WAIT_QUOTA', 'RESPONSE_UNKNOWN'].includes(message) ? message : 'OFFICIAL_CANDIDATE_STOPPED');
     process.exitCode = 1;
   });
 }

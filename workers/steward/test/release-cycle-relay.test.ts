@@ -1,6 +1,6 @@
 import {GitHubRetryError} from '../src/bounded-retry-after.js';
 import {describe,expect,it} from 'vitest';
-import {ReleaseRelay,releaseHint,relayKey,acceptReleaseHint} from '../src/release-cycle-relay.js';
+import {ReleaseRelay,releaseHint,relayKey,acceptReleaseHint,officialDraftReady} from '../src/release-cycle-relay.js';
 import {CENTRAL,TARGET,type GitReader} from '../src/bounded-recheck-github.js';
 import {SqliteDurableStorage} from './bounded-storage.js';
 
@@ -13,6 +13,16 @@ const hint=releaseHint('pull_request',{...payload,action:'closed',number:301,pul
   user:{id:301115370},body:'Release notes',title:'chore(main): release 1.1.0',labels:[{name:'autorelease: pending'}],
   base:{ref:'main',repo:{id:TARGET.id}},head:{ref:'release-please--branches--main',repo:{id:TARGET.id},sha:deployment},
 }},'7')!;
+it('consumes the saved draft receipt for duplicate or delayed callbacks without starting publication',()=>{
+ const ready={status:'DRAFT_READY',reason:'OFFICIAL_DRAFT_ATTACHMENTS_READY',publishInvoked:false,
+  cycleId:'pr-301-'+pin,draft:{releaseId:54,url:'https://github.com/splrad/LayerScape/releases/tag/v1.1.0',
+   tag:'v1.1.0',sourceSha:pin,runId:74,attempt:2,assets:[{assetId:84,name:'Installer.exe'}]}};
+ expect(officialDraftReady(ready,hint)).toBe(true);
+ expect(officialDraftReady(ready,{repositoryId:TARGET.id,kind:'run',runId:74,attempt:3})).toBe(true);
+ expect(()=>officialDraftReady({...ready,publishInvoked:true},hint)).toThrow('PUBLICATION_DRAFT_RECEIPT');
+ expect(()=>officialDraftReady({...ready,draft:{...ready.draft,sourceSha:deployment}},hint)).toThrow('PUBLICATION_DRAFT_RECEIPT');
+ expect(officialDraftReady({publishInvoked:true},hint)).toBe(false);
+});
 const receipt={id:12,run_attempt:1,repository:{id:CENTRAL.id},head_repository:{id:CENTRAL.id},path:'.github/workflows/release-cycle-event.yml',
   head_branch:'main',head_sha:pin,actor:{id:301115370},event:'workflow_dispatch',display_title:'Release cycle '+relayKey(hint)};
 function fixture(){

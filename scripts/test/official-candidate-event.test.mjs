@@ -9,10 +9,10 @@ import { Manifest as ActionManifest } from 'release-please-official/build/src/ma
 import { Manifest } from 'release-please/build/src/manifest.js';
 import { PullRequestBody as ActionPullRequestBody } from 'release-please-official/build/src/util/pull-request-body.js';
 import { PullRequestBody } from 'release-please/build/src/util/pull-request-body.js';
-import { bodyDigest, officialMergeKey, officialNotes, renderOfficialHomepage, validateOfficialMergeEvent,
-  renderOfficialPull, verifyOfficialMerge } from '../official-release-candidate.mjs';
-import { candidateEvent, captureOfficialAction, finishOfficialPull, officialActionResult, officialActionWasSkipped,
-  officialCandidateRoute, prepareOfficialPush } from '../official-candidate-event.mjs';
+import { bodyDigest, computeOfficialCandidate, draftOfficialCandidate, officialCandidateRoundId, officialMergeKey,
+  officialNotes, renderOfficialHomepage, validateOfficialMergeEvent, verifyOfficialMerge } from '../official-release-candidate.mjs';
+import { candidateEvent, officialCandidateRoute, prepareOfficialCandidate } from '../official-candidate-event.mjs';
+import { writeOfficialCandidate } from '../official-candidate-write.mjs';
 
 const sourceSha = 'a'.repeat(40), head = 'b'.repeat(40), controllerSha = 'c'.repeat(40), previousSha = 'd'.repeat(40);
 const product = { id: 17, name: 'splrad/fixture', defaultBranch: 'main' }, authorId = 301115370;
@@ -26,7 +26,7 @@ const pr = { number: 29, user: { id: authorId }, head: { repo: { id: product.id 
   title: 'chore(main): release 1.1.0', body: upstreamBody, state: 'open', merged: false,
   labels: [{ name: 'autorelease: pending' }] };
 const blob = (path, value) => {
-  const bytes = Buffer.from(JSON.stringify(value));
+  const bytes = Buffer.from(typeof value === 'string' ? value : JSON.stringify(value));
   const sha = createHash('sha1').update('blob ' + bytes.length + '\0').update(bytes).digest('hex');
   return { path, type: 'file', encoding: 'base64', content: bytes.toString('base64'), size: bytes.length, sha };
 };
@@ -53,18 +53,22 @@ test('requires the official switch and the native product declaration to select 
 
   const workflow = YAML.parse(await readFile('.github/workflows/release-candidate-event.yml', 'utf8'));
   const steps = workflow.jobs.event.steps;
-  assert.equal(steps.find(step => step.id === 'candidate-token').if, "steps.product.outputs.route == 'official'");
-  assert.equal(workflow.jobs.event.permissions['copilot-requests'], undefined);
+  assert.equal(steps.find(step => step.id === 'candidate-token').if, "steps.check.outputs.mode == 'write'");
+  assert.equal(workflow.jobs.event.permissions['copilot-requests'], 'write');
   const secretSteps = steps.filter(step => /secrets\./.test(JSON.stringify(step)));
-  assert.deepEqual(secretSteps.map(step => step.id), ['product', 'candidate-token', 'confirm-action-source', 'homepage']);
+  assert.deepEqual(secretSteps.map(step => step.id), ['product', 'compute', 'check', 'candidate-token', undefined]);
   for (const step of secretSteps) assert.deepEqual(JSON.stringify(step).match(/secrets\.[A-Z_0-9]+/g), ['secrets.STEWARD_APP_PRIVATE_KEY']);
-  assert.equal(steps.find(step => step.id === 'release-please').if, "steps.prepare.outputs.mode == 'action'");
+  assert.ok(!steps.some(step => /release-please-action/.test(step.uses ?? '')));
+  const model = steps.filter(step => step.env?.STEWARD_COPILOT_TOKEN);
+  assert.equal(model.length, 1);
+  assert.deepEqual(model[0].env, { STEWARD_COPILOT_TOKEN: '${{ github.token }}' });
+  assert.equal(model[0].if, "steps.compute.outputs.mode == 'draft'");
 });
 
-function render(upstream = upstreamBody, notes = orgNotes, contributors = [person]) {
+function render(upstream = upstreamBody, notes = orgNotes, contributors = [person], roundId = 'a'.repeat(64)) {
   return renderOfficialHomepage({ upstreamBody: upstream, template, notes, contributors,
     sourceLink: { label: '查看本版变更', url: 'https://github.com/splrad/fixture/compare/' + previousSha + '...' + sourceSha },
-    candidateUrl: 'https://github.com/splrad/fixture/pull/29/files', prUrl: 'https://github.com/splrad/fixture/pull/29' });
+    roundId });
 }
 
 test('native single-root extraction preserves every byte of rich notes and excludes the footer in both cores', async () => {
@@ -83,12 +87,16 @@ test('native single-root extraction preserves every byte of rich notes and exclu
   assert.equal(avatar?.attrs.find(attr => attr.name === 'href')?.value, person.profileUrl);
   assert.equal(avatar?.childNodes[0]?.attrs.find(attr => attr.name === 'src')?.value, person.avatarUrl);
   assert.match(section, /<summary>贡献者 GitHub ID<\/summary>/);
+  const disclosure = parseFragment(section).childNodes.find(node => node.nodeName === 'details');
+  const login = disclosure?.childNodes.find(node => node.nodeName === 'a');
+  assert.equal(login?.attrs.find(attr => attr.name === 'href')?.value, person.profileUrl);
+  assert.equal(login?.childNodes[0]?.value, person.login);
   assert.match(section, /兼容性与迁移/);
   assert.match(section, /steward doctor/);
   assert.doesNotMatch(officialNotes(render(upstreamBody, { summary: '本版修复安装。' }, [])).body, /贡献者|本次更新/);
   const large = render(upstreamBody.replace('* 支持新版', '技术细节'.repeat(9000)));
   assert.doesNotMatch(large, /技术变更记录/);
-  assert.match(large, /候选文件差异/);
+  assert.match(large, /产品文件差异/);
   assert.throws(() => officialNotes(upstreamBody.replace('\n\n---\n', '\n\n')), /BOUNDARIES/);
 });
 
@@ -123,46 +131,6 @@ test('both cores generate the three native files and choose the same official dr
   }
 });
 
-test('pinned central rendering needs no product Mustache and excludes committers and identified services', async () => {
-  const author = { id: person.id, login: person.login, html_url: person.profileUrl, avatar_url: person.avatarUrl, type: 'User' };
-  const commits = [{ sha: sourceSha, commit: { message: 'fix: 修复安装' }, author, committer: { ...author, id: 555 } },
-    { sha: controllerSha, commit: { message: 'docs: 更新开发说明' },
-      author: { ...author, id: 19864447, login: 'web-flow' } }];
-  let delivery = { schemaVersion: 3 }, productNotes = false, notesStatus = 404;
-  const get = async path => {
-    if (path.startsWith('contents/release-please-config.json?ref=')) return blob('release-please-config.json', settings);
-    if (path === 'contents/.release-please-manifest.json?ref=' + sourceSha) return blob('.release-please-manifest.json', { '.': '1.0.0' });
-    if (path === 'contents/.release-please-manifest.json?ref=' + head) return blob('.release-please-manifest.json', { '.': '1.1.0' });
-    if (path === 'contents/.github/delivery.json?ref=' + sourceSha) return blob('.github/delivery.json', delivery);
-    if (path === 'contents/' + (delivery.notes?.['.'] ?? '.release-notes/root.md') + '?ref=' + sourceSha) {
-      if (!productNotes) throw new EvidenceReadError(notesStatus, null);
-      const notesPath = delivery.notes?.['.'] ?? '.release-notes/root.md';
-      const bytes = Buffer.from('## 概述\n\n适用于指定安装范围。\n');
-      return { ...blob(notesPath, {}), content: bytes.toString('base64'), size: bytes.length,
-        sha: createHash('sha1').update('blob ' + bytes.length + '\0').update(bytes).digest('hex') };
-    }
-    if (path === 'commits/tags%2Fv1.0.0') return { sha: previousSha };
-    if (path === 'compare/' + previousSha + '...' + sourceSha + '?per_page=100&page=1')
-      return { status: 'ahead', base_commit: { sha: previousSha }, merge_base_commit: { sha: previousSha }, total_commits: 2, commits };
-    assert.fail(path);
-  };
-  const homepage = await renderOfficialPull(pr, product, get, authorId, sourceSha, template);
-  assert.equal(homepage.templateDigest, bodyDigest(template));
-  assert.match(homepage.notes.body, /修复安装/);
-  assert.match(homepage.notes.body, /contributor/);
-  assert.doesNotMatch(homepage.notes.body, /555|web-flow|更新开发说明/);
-  assert.match(homepage.notes.body, new RegExp(previousSha + '\\.\\.\\.' + sourceSha));
-  notesStatus = 403;
-  await assert.rejects(renderOfficialPull(pr, product, get, authorId, sourceSha, template), { status: 403 });
-  productNotes = true;
-  assert.match((await renderOfficialPull(pr, product, get, authorId, sourceSha, template)).notes.body, /适用于指定安装范围/);
-  delivery = { schemaVersion: 3, notes: { '.': '.release-notes/custom.md' } };
-  assert.match((await renderOfficialPull(pr, product, get, authorId, sourceSha, template)).notes.body, /适用于指定安装范围/);
-  productNotes = false;
-  notesStatus = 404;
-  await assert.rejects(renderOfficialPull(pr, product, get, authorId, sourceSha, template), { status: 404 });
-});
-
 test('verified merge uses the original event and exact source after the default branch has advanced', async () => {
   const edited = render().replace('适用于本版本的支持范围。', '仅支持已审定的安装范围。');
   const merged = { ...pr, body: edited, state: 'closed', merged: true, merged_at: '2026-11-23T00:00:00Z', merge_commit_sha: sourceSha };
@@ -188,122 +156,195 @@ test('verified merge uses the original event and exact source after the default 
   await assert.rejects(verifyOfficialMerge(event, product, get, authorId), /MERGE_BODY_DRIFT/);
 });
 
-test('old open candidate can coexist while the official writer uses its own branch and duplicate head is retained', async () => {
-  const identity = { product, sourceSha, event: { kind: 'push', repositoryId: product.id, sourceSha }, runId: 1, requestKey: 'k', controllerSha };
-  const old = { ...pr, head: { ...pr.head, ref: 'steward/release-candidate' } };
-  const fork = { ...pr, number: 50, head: { ...pr.head, repo: { id: 999 } } };
-  const open = [old, fork];
+const updateFiles = [
+  { path: '.release-please-manifest.json', mode: '100644', content: '{"." : "1.1.0"}\n' },
+  { path: 'CHANGELOG.md', mode: '100644', content: 'Support new behavior\n' },
+  { path: 'VERSION', mode: '100644', content: '1.1.0\n' },
+];
+const computed = {
+  title: pr.title, head: pr.head.ref, base: product.defaultBranch, body: upstreamBody, version: '1.1.0',
+  files: updateFiles, labels: ['autorelease: pending'],
+};
+const source = { sourceSha, baseline: { tag: 'v1.0.0', sha: previousSha }, candidate: computed, prior: null };
+const roundId = officialCandidateRoundId(product, source);
+const expectedBody = render(upstreamBody, orgNotes, [person], roundId);
+
+test('materializes the official candidate once against the immutable source and derives identity from its raw content', async () => {
+  let buildCount = 0, readCount = 0;
+  const get = async path => {
+    assert.equal(path, 'git/ref/heads/main');
+    return { ref: 'refs/heads/main', object: { type: 'commit', sha: sourceSha } };
+  };
+  const raw = { title: pr.title, headRefName: computed.head, body: upstreamBody, version: computed.version,
+    labels: computed.labels, draft: false, updates: [{ path: 'VERSION' }] };
+  const openManifest = async () => ({
+    github: { buildChangeSet: async (updates, source) => {
+      ++readCount;
+      assert.deepEqual(updates, raw.updates);
+      assert.equal(source, sourceSha);
+      return new Map(updateFiles.map(({path, mode, content}) => [path, {mode, content}]));
+    } },
+    manifest: {
+      getStrategiesByPath: async () => ({ '.': { getBranchComponent: async () => '' } }),
+      buildPullRequests: async () => { ++buildCount; return [raw]; },
+    },
+  });
+  assert.deepEqual(await computeOfficialCandidate({ product, sourceSha, configuration: settings, get, openManifest }), computed);
+  assert.deepEqual([buildCount, readCount], [1, 1]);
+  assert.equal(officialCandidateRoundId(product, { ...source, sourceSha: controllerSha }), roundId);
+  assert.notEqual(officialCandidateRoundId(product, { ...source, baseline: { tag: null, sha: null } }), roundId);
+  assert.notEqual(officialCandidateRoundId(product, { ...source, candidate: { ...computed, body: upstreamBody + '\nChanged' } }), roundId);
+});
+
+test('restores a saved calculation and draft before contacting Release Please or Copilot again', async () => {
+  let hasDraft = true, hasPull = false, collectCount = 0;
+  const identity = { product, event: { kind: 'push' }, sourceSha };
   const get = async path => {
     if (path === 'git/ref/heads/main') return { ref: 'refs/heads/main', object: { type: 'commit', sha: sourceSha } };
-    if (path === 'git/commits/' + head) return { sha: head, parents: [{ sha: sourceSha }] };
-    if (path.startsWith('contents/release-please-config.json?')) return blob('release-please-config.json', settings);
-    if (path.startsWith('contents/.release-please-manifest.json?')) return blob('.release-please-manifest.json', { '.': '1.0.0' });
-    if (path.startsWith('pulls?')) return open;
     if (path.startsWith('issues?')) return [];
+    if (path === 'contents/release-please-config.json?ref=' + sourceSha) return blob('release-please-config.json', settings);
+    if (path === 'contents/.release-please-manifest.json?ref=' + sourceSha) return blob('.release-please-manifest.json', { '.': '1.0.0' });
+    if (path === 'commits/tags%2Fv1.0.0') return { sha: previousSha };
+    if (path === 'compare/' + previousSha + '...' + sourceSha + '?per_page=1')
+      return { status: 'ahead', merge_base_commit: { sha: previousSha } };
     assert.fail(path);
   };
-  let branchChecks = 0;
-  const options = { identity, get, prepareParticipation: async () => ({ status: 'APPLICABLE', sourceSha }),
-    restore: async () => false, checkBranch: async () => { branchChecks++; } };
-  const fresh = await prepareOfficialPush(options);
-  assert.equal(fresh.mode, 'action');
-  assert.deepEqual(fresh.checkpoint.initial, []);
-  open.push(pr);
-  assert.deepEqual(await prepareOfficialPush(options), { result: 'candidate_unchanged' });
-  assert.deepEqual(await prepareOfficialPush({ ...options, restore: async () => true }), { mode: 'resume' });
-  await assert.rejects(prepareOfficialPush({ ...options, restore: async name => name === 'before' }), /ACTION_RESULT_UNKNOWN/);
-  assert.equal(branchChecks, 1);
-  open.pop();
-  const pausedReservation = { ...options, restore: async name => name === 'before' };
-  assert.deepEqual(await prepareOfficialPush({ ...pausedReservation, actionWasSkipped: async () => true }),
-    { mode: 'action', reservation: 'existing' });
-  assert.equal(fresh.reservation, 'new');
-  assert.equal(branchChecks, 2);
-  await assert.rejects(prepareOfficialPush({ ...pausedReservation, actionWasSkipped: async () => true,
-    checkBranch: async () => { throw Error('ROOT_BRANCH'); } }), /ROOT_BRANCH/);
-  open.push(pr, { ...pr, number: 51, head: { ...pr.head, ref: pr.head.ref + '--components--tools' } });
-  await assert.rejects(prepareOfficialPush(options), /PR_IDENTITY/);
-  assert.equal(branchChecks, 2);
+  const store = {
+    find: async (sha, baseline) => {
+      assert.deepEqual([sha, baseline], [sourceSha, source.baseline]);
+      return { roundId, source, draft: hasDraft ? { body: expectedBody, templateDigest: bodyDigest(template) } : null,
+        pull: hasPull ? { number: 29, head, bodyDigest: bodyDigest(expectedBody) } : null };
+    },
+  };
+  const prepare = () => prepareOfficialCandidate({ identity, get, store,
+    prepareParticipation: async () => ({ status: 'APPLICABLE', sourceSha }),
+    buildCandidate: () => assert.fail('recomputed the saved candidate'),
+    collectEvidence: () => { collectCount++; return { fixture: true }; },
+  });
+  assert.equal((await prepare()).mode, 'write');
+  assert.equal(collectCount, 0);
+  hasDraft = false;
+  assert.deepEqual((await prepare()).evidence, { fixture: true });
+  assert.equal(collectCount, 1);
+  hasDraft = hasPull = true;
+  assert.equal((await prepare()).result, 'candidate_unchanged');
+  assert.equal(collectCount, 1);
 });
 
-test('reuses a blocked reservation only when every prior attempt proves the official action never started', async () => {
-  const runId = 14;
-  const action = { name: 'Refresh the official candidate', status: 'completed', conclusion: 'skipped' };
-  const job = attempt => ({ name: 'event', run_id: runId, run_attempt: attempt, status: 'completed',
-    conclusion: 'failure', steps: [action] });
-  const success = async attempt => [job(attempt)];
-  assert.equal(await officialActionWasSkipped(success, runId, 3), true);
-  assert.equal(await officialActionWasSkipped(success, runId, 1), false);
-  for (const drift of [{ steps: [{ ...action, conclusion: 'success' }] }, { steps: [{ ...action, conclusion: 'failure' }] },
-    { steps: [{ ...action, conclusion: 'cancelled' }] }, { steps: [] }, { name: 'spoofed' }, { run_id: 1 },
-    { run_attempt: 1 }, { status: 'in_progress' },
-    { conclusion: 'skipped', steps: [{ ...action, conclusion: 'success' }] }]) {
-    const read = async attempt => [attempt === 1 ? job(attempt) : { ...job(attempt), ...drift }];
-    assert.equal(await officialActionWasSkipped(read, runId, 3), false);
-  }
-});
-
-test('a delayed refresh must still match the merged PR and current terminal labels', async () => {
-  const releasedSha = previousSha;
-  const event = { kind: 'official-refresh', repositoryId: product.id, prNumber: pr.number, head, releasedSha };
-  const identity = { product, sourceSha, event, runId: 1, requestKey: 'k', controllerSha };
-  const tagged = { name: 'autorelease: tagged' };
-  const merged = { ...pr, state: 'closed', merged: true, merge_commit_sha: releasedSha, labels: [tagged] };
-  let current = merged;
+test('records each new source only after an exact round match and skips repeated computation for that source', async () => {
+  const identity = { product, event: { kind: 'push' }, sourceSha: controllerSha };
+  const saved = {
+    roundId, source, draft: { body: expectedBody, templateDigest: bodyDigest(template) },
+    branch: { head, sourceSha }, pull: { number: pr.number, head, bodyDigest: officialNotes(expectedBody).bodyDigest },
+  };
+  let boundSource, builds = 0;
   const get = async path => {
-    if (path === 'git/ref/heads/main') return { ref: 'refs/heads/main', object: { type: 'commit', sha: sourceSha } };
-    if (path.startsWith('contents/release-please-config.json?')) return blob('release-please-config.json', settings);
-    if (path.startsWith('contents/.release-please-manifest.json?')) return blob('.release-please-manifest.json', { '.': '1.0.0' });
-    if (path === 'pulls/' + pr.number) return current;
-    if (path.startsWith('pulls?') || path.startsWith('issues?')) return [];
+    if (path === 'git/ref/heads/main') return { ref: 'refs/heads/main', object: { type: 'commit', sha: controllerSha } };
+    if (path.startsWith('issues?')) return [];
+    if (path === 'contents/release-please-config.json?ref=' + controllerSha) return blob('release-please-config.json', settings);
+    if (path === 'contents/.release-please-manifest.json?ref=' + controllerSha) return blob('.release-please-manifest.json', { '.': '1.0.0' });
+    if (path === 'commits/tags%2Fv1.0.0') return { sha: previousSha };
+    if (path.startsWith('compare/')) return { status: 'ahead', merge_base_commit: { sha: previousSha } };
     assert.fail(path);
   };
-  const options = { identity, get, prepareParticipation: async () => ({ status: 'APPLICABLE', sourceSha }),
-    restore: async () => false, checkBranch: async () => {} };
-  assert.equal((await prepareOfficialPush(options)).mode, 'action');
-  for (const drift of [{ labels: [tagged, ...pr.labels] }, { labels: [] }, { merge_commit_sha: controllerSha },
-    { head: { ...pr.head, sha: controllerSha } }]) {
-    current = { ...merged, ...drift };
-    await assert.rejects(prepareOfficialPush(options), /REFRESH_ORIGIN/);
-  }
+  const store = {
+    find: async sha => sha === boundSource ? saved : null,
+    read: async id => { assert.equal(id, roundId); return saved; },
+    bind: async (id, sha) => {
+      assert.equal(id, roundId);
+      assert.equal(sha, controllerSha);
+      boundSource = sha;
+    },
+  };
+  const prepare = () => prepareOfficialCandidate({ identity, get, store,
+    prepareParticipation: async () => ({ status: 'APPLICABLE', sourceSha: controllerSha }),
+    buildCandidate: async () => { builds++; return computed; },
+    collectEvidence: () => assert.fail('recomputed the saved evidence'),
+  });
+  assert.equal((await prepare()).result, 'candidate_unchanged');
+  assert.equal(boundSource, controllerSha);
+  assert.equal((await prepare()).result, 'candidate_unchanged');
+  assert.equal(builds, 1);
 });
 
-test('only the action-produced head is rendered and retries protect human edits and stale heads', async () => {
-  const output = JSON.stringify([{ number: pr.number, headBranchName: pr.head.ref, baseBranchName: 'main', body: upstreamBody }]);
-  const before = { sourceSha, initial: [] };
-  let live = { ...pr }, writes = 0, pauseChecks = 0, paused = true;
+test('renders only evidence-bound Copilot sections and validates them with both official parsers', async () => {
+  const context = {
+    unit: { id: 'root', path: '.', version: computed.version, tag: 'v1.1.0' }, tag: 'v1.1.0', contributors: [person],
+    sourceLink: { label: '查看本版变更', url: 'https://github.com/splrad/fixture/compare/' + previousSha + '...' + sourceSha },
+    evidence: [{ kind: 'fixture', details: { instruction: '升级前备份设置。' } }],
+  };
+  const draft = await draftOfficialCandidate({ roundId, candidate: computed, context, product, sourceSha, template,
+    call: async input => {
+      const value = JSON.parse(input);
+      assert.equal(value.sources[0].details.instruction, '升级前备份设置。');
+      return { text: JSON.stringify({ paragraphs: [{
+        section: 'requiredActions', sourceIds: [value.sources[0].id], qualification: 'SOURCE_CONFIRMED',
+        textZh: '**升级用户**。升级前备份设置。',
+      }] }) };
+    },
+  });
+  const section = officialNotes(draft.body);
+  assert.match(section.body, /> \[!IMPORTANT\][\s\S]+升级前备份设置/);
+  assert.match(section.body, /版本记录/);
+  assert.doesNotMatch(section.body, /获取与使用|本次更新|候选文件差异/);
+  assert.equal(PullRequestBody.parse(draft.body).releaseData[0].notes, section.body);
+  assert.equal(ActionPullRequestBody.parse(draft.body).releaseData[0].notes, section.body);
+});
+
+test('reads back unknown candidate writes across Runs and preserves manual edits after the first PR write', async () => {
+  const phases = [];
+  const round = { source, draft: { body: expectedBody, templateDigest: bodyDigest(template) }, branch: null, pull: null };
+  let branchHead = null, actualPull = null, failCheckpoint = true, defaultSource = sourceSha;
+  const created = { sha: head, tree: { sha: '1'.repeat(40) }, parents: [{ sha: sourceSha }],
+    message: computed.title + '\n\nSteward-Candidate-Round: ' + roundId, verification: { verified: true } };
   const get = async path => {
-    if (path === 'pulls/29') return live;
-    if (path === 'git/commits/' + head) return { sha: head, parents: [{ sha: sourceSha }] };
-    if (path === 'git/ref/heads/main') return { ref: 'refs/heads/main', object: { type: 'commit', sha: sourceSha } };
-    if (path.startsWith('contents/release-please-config.json?')) return blob('release-please-config.json', settings);
-    if (path.startsWith('contents/.release-please-manifest.json?')) return blob('.release-please-manifest.json', { '.': '1.1.0' });
+    if (path === 'git/ref/heads/main') return { ref: 'refs/heads/main', object: { type: 'commit', sha: defaultSource } };
+    if (path === 'git/ref/heads/' + computed.head) {
+      if (!branchHead) throw new EvidenceReadError(404, null);
+      return { ref: 'refs/heads/' + computed.head, object: { type: 'commit', sha: branchHead } };
+    }
+    if (path.startsWith('pulls?')) return actualPull ? [actualPull] : [];
+    if (path === 'pulls/29') return actualPull;
+    if (path === 'git/commits/' + sourceSha) return { sha: sourceSha, tree: { sha: '2'.repeat(40) } };
+    if (path === 'git/commits/' + head) return created;
+    if (path === 'compare/' + sourceSha + '...' + head + '?per_page=1') {
+      return { merge_base_commit: { sha: sourceSha }, total_commits: 1, files: updateFiles.map(file => ({filename: file.path})) };
+    }
+    if (path.startsWith('contents/') && path.endsWith('?ref=' + head)) {
+      const file = updateFiles.find(file => path === 'contents/' + file.path + '?ref=' + head);
+      return blob(file.path, file.content);
+    }
     assert.fail(path);
   };
-  const observed = await captureOfficialAction({ checkpoint: officialActionResult(output, before), product, get });
-  const checkpoint = observed.pulls[0];
-  assert.equal(checkpoint.upstreamDigest, bodyDigest(upstreamBody));
-  const proposal = render();
-  const options = { product, get, patch: async (_number, body) => { writes++; live = { ...live, body }; throw Error('response lost'); },
-    sourceSha, checkpoint, template, render: () => ({ body: proposal, templateDigest: bodyDigest(template), notes: officialNotes(proposal) }),
-    admit: async () => {
-      pauseChecks++;
-      if (paused) throw Error('RELEASE_REPOSITORY_PAUSED');
-    } };
-  await assert.rejects(finishOfficialPull(options), /RELEASE_REPOSITORY_PAUSED/);
-  assert.equal(live.body, upstreamBody);
-  assert.equal(writes, 0);
-  await assert.rejects(finishOfficialPull(options), /RELEASE_REPOSITORY_PAUSED/);
-  assert.equal(writes, 0);
-  paused = false;
-  assert.equal((await finishOfficialPull(options)).status, 'rendered');
-  assert.equal((await finishOfficialPull(options)).status, 'body_retained');
-  live.body = live.body.replace('检查安装', '核查正式版安装');
-  const human = live.body;
-  assert.equal((await finishOfficialPull(options)).status, 'body_retained');
-  assert.equal(live.body, human);
-  live.head = { ...live.head, sha: controllerSha };
-  assert.equal((await finishOfficialPull(options)).status, 'superseded');
-  assert.equal(writes, 1);
-  assert.equal(pauseChecks, 3);
+  const request = async (method, path, body) => {
+    assert.equal(method, 'POST');
+    if (path === 'git/trees') return created.tree;
+    if (path === 'git/commits') return created;
+    phases.push(path);
+    if (path === 'git/refs') branchHead = body.sha;
+    if (path === 'pulls') {
+      assert.equal(body.body, expectedBody);
+      actualPull = { ...pr, body: body.body, labels: [] };
+    }
+    if (path === 'issues/29/labels') actualPull.labels = body.labels.map(name => ({ name }));
+    throw Error('response lost');
+  };
+  const save = async (phase, data) => {
+    if (failCheckpoint) throw Error('checkpoint unavailable');
+    round[phase] = data;
+  };
+  const write = () => writeOfficialCandidate({ roundId, round, product, botId: authorId, sourceSha, configuration: settings,
+    get, request, save, admit: async () => {} });
+  defaultSource = controllerSha;
+  await assert.rejects(write, /C2_SOURCE_CHANGED/);
+  assert.deepEqual(phases, []);
+  defaultSource = sourceSha;
+  await assert.rejects(write, /checkpoint unavailable/);
+  failCheckpoint = false;
+  const recorded = await write();
+  assert.deepEqual(phases, ['git/refs', 'pulls', 'issues/29/labels']);
+  actualPull.body = actualPull.body.replace('支持范围', '人工修订');
+  assert.deepEqual(await write(), recorded);
+  assert.match(actualPull.body, /人工修订/);
+  assert.deepEqual(phases, ['git/refs', 'pulls', 'issues/29/labels']);
 });

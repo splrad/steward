@@ -54,6 +54,24 @@ function officialCycle(cycle: Awaited<ReturnType<typeof readCycle>>['cycle'], bu
         dispatch.canonicalRunId === delivery.runId).length === 1);
 }
 
+export function officialDraftReady(value: any, hint: Hint): boolean {
+  if (value.status !== 'DRAFT_READY') return false;
+  const ready = value.draft;
+  ensure(value.reason === 'OFFICIAL_DRAFT_ATTACHMENTS_READY' && value.publishInvoked === false &&
+    ready && sha(ready.sourceSha) && typeof value.cycleId === 'string' &&
+    /^pr-[1-9][0-9]*-[0-9a-f]{40}$/.test(value.cycleId) && value.cycleId.endsWith('-' + ready.sourceSha) &&
+    positive(ready.releaseId) && positive(ready.runId) && positive(ready.attempt) &&
+    typeof ready.tag === 'string' && ready.tag.length > 0 &&
+    typeof ready.url === 'string' && /^https:\/\/github\.com\/splrad\/[A-Za-z0-9_.-]+\/releases\//.test(ready.url) &&
+    Array.isArray(ready.assets) && ready.assets.length > 0 &&
+    ready.assets.every((file: any) => positive(file.assetId) && typeof file.name === 'string' && file.name.length > 0) &&
+    new Set(ready.assets.map((file: any) => file.assetId)).size === ready.assets.length &&
+    new Set(ready.assets.map((file: any) => file.name)).size === ready.assets.length &&
+    (hint.kind === 'official-merge' ? value.cycleId === 'pr-' + hint.prNumber + '-' + hint.sourceSha :
+      hint.kind === 'run' && ready.runId === hint.runId), 'PUBLICATION_DRAFT_RECEIPT');
+  return true;
+}
+
 async function boundBuildCycle(g:GitReader,run:any) {
   const cycleId=run.head_branch.slice('steward/build/'.length),{cycle}=await readCycle(g,cycleId);
   const matches=cycle.dispatches?.filter((d:any)=>d.purpose==='build' && d.ref===run.head_branch &&
@@ -358,6 +376,7 @@ export class ReleaseRelay {
             v.producer.runId===run.id && v.producer.attempt===run.run_attempt && v.producer.controllerSha===run.head_sha &&
             v.event?.repositoryId===prior.hint.repositoryId && v.event.kind===prior.hint.kind && relayKey(v.event)===parentKey &&
             typeof v.publishInvoked==='boolean','PUBLICATION_ARTIFACT');
+          if(officialDraftReady(v,prior.hint)){await save({stage:'received',reason:'DRAFT_READY'});return;}
           if(!v.publishInvoked){await save({stage:'received',reason:'NO_PUBLICATION'});return;}
         }
         const policy=await promotedController(g,this.env.RELEASE_RELAY_DEPLOYMENT_SHA??this.env.BOUNDED_DEPLOYMENT_SHA,this.env);

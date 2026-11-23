@@ -1,4 +1,4 @@
-import { CopilotClient } from '@github/copilot-sdk';
+import { CopilotClient } from '@microsoft/copilot-sdk';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -6,12 +6,12 @@ import { pathToFileURL } from 'node:url';
 import { isolatedCopilotClientOptions, isolatedCopilotSessionOptions } from './isolation.mjs';
 
 /** @param {'preflight'|'generate'} mode @param {string} input @param {string} token
- * @param {(options: import('@github/copilot-sdk').CopilotClientOptions) => import('@github/copilot-sdk').CopilotClient} [createClient] */
+ * @param {(options: import('@microsoft/copilot-sdk').CopilotClientOptions) => import('@microsoft/copilot-sdk').CopilotClient} [createClient] */
 export async function releaseNotes(mode, input, token, createClient = options => new CopilotClient(options)) {
   if (!['preflight', 'generate'].includes(mode)) throw new Error('CONTENT_MODE_INVALID');
   const directory = await mkdtemp(join(tmpdir(), 'steward-content-sdk-'));
   const client = createClient(isolatedCopilotClientOptions(directory, token));
-  /** @type {import('@github/copilot-sdk').CopilotSession | undefined} */ let session;
+  /** @type {import('@microsoft/copilot-sdk').CopilotSession | undefined} */ let session;
   let responseReceived = false;
   let generationObserved = false;
   try {

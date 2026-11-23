@@ -38,8 +38,7 @@ test('expired tokens, organization policy and budget rejection do not retry or f
       status:status===429?'WAIT_QUOTA':'WAIT_AUTH',retryAfterMs:120000,
     });
     assert.deepEqual(f.events,['start','session','send','abort','disconnect','stop']);
-    assert.equal(f.options().clientOptions.gitHubToken,'workflow-token');
-    assert.equal(f.options().clientOptions.useLoggedInUser,false);
+    assert.deepEqual(f.options().clientOptions.github, { token: 'workflow-token', useLoggedInUser: false });
   }
 });
 test('SDK content call has no tools, agents, discovery or retained session and returns measured usage', async () => {
@@ -47,9 +46,12 @@ test('SDK content call has no tools, agents, discovery or retained session and r
   assert.deepEqual(result, { status: 'RETURNED', text: '{"items":[]}', model: 'fixture', usage: { inputTokens: 10, outputTokens: 5,
     totalNanoAiu: 1500000000, aiCredits: 1.5, premiumRequests: 2, requests: 1, selectedModel: 'fixture' } });
   const { clientOptions: c, sessionOptions: s } = f.options();
-  assert.equal(c.mode, 'empty'); assert.equal(c.useLoggedInUser, false); assert.equal(c.gitHubToken, 'fixture-token');
-  assert.deepEqual(s.availableTools, []); assert.deepEqual(s.tools, []); assert.deepEqual(s.customAgents, []); assert.deepEqual(s.mcpServers, {});
-  assert.equal(s.enableConfigDiscovery, false); assert.deepEqual(s.onPermissionRequest(), { kind: 'reject' }); assert.deepEqual(s.memory, { enabled: false });
+  assert.equal(c.mode, 'empty'); assert.deepEqual(c.github, { token: 'fixture-token', useLoggedInUser: false });
+  assert.deepEqual(s.tools, { availableTools: [], definitions: [] });
+  assert.deepEqual(s.agents, { definitions: [], includedBuiltinAgents: [] });
+  assert.deepEqual(s.mcp, { servers: {} });
+  assert.equal(s.enableConfigDiscovery, false); assert.deepEqual(s.permissions.onRequest(), { kind: 'reject' });
+  assert.deepEqual(s.state, { infiniteSessions: { enabled: false }, memory: { enabled: false } });
   assert.deepEqual(f.events, ['start', 'session', 'send', 'disconnect', 'stop']);
 });
 test('SDK capacity and output limits are explicit and always stop the client', async () => {

@@ -61,8 +61,8 @@ try {
   const rootLock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
   const sdkLock = JSON.parse(readFileSync('tools/quality-language/package-lock.json', 'utf8'));
   if (JSON.stringify(rootPackage.workspaces) !== '["packages/*","services/settings-events"]'
-    || Object.keys(rootLock.packages).some(path => path.includes('@github/copilot-sdk'))
-    || !sdkLock.packages['node_modules/@github/copilot-sdk']) diagnostics.push({ file: 'package.json', reason: 'SDK installation boundary changed' });
+    || Object.keys(rootLock.packages).some(path => /@(?:github|microsoft)\/copilot-sdk/.test(path))
+    || !sdkLock.packages['node_modules/@microsoft/copilot-sdk']) diagnostics.push({ file: 'package.json', reason: 'SDK installation boundary changed' });
   const report = { compilerVersion: JSON.parse(readFileSync('node_modules/typescript/package.json', 'utf8')).version,
     modules, diagnostics, scope: 'Parsed source imports/exports, compiler module resolution, core ambient I/O references, SDK lock boundary. Initializers are recorded for review; this is not runtime acceptance.' };
   if (process.argv[2]) writeFileSync(process.argv[2], JSON.stringify(report, null, 2) + '\n');
