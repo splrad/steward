@@ -48,7 +48,7 @@ export function renderOfficialHomepage({ upstreamBody, template, notes, sourceLi
   const first = lines.indexOf('---'), last = lines.lastIndexOf('---');
   const header = lines.slice(0, first + 1).join('\n');
   const footer = lines.slice(last + 1).join('\n').trim();
-  const versionHeading = upstream.body.split('\n', 1)[0];
+  const versionHeading = '## ' + upstream.version;
   const notesBody = renderConditionalNotes(template, notes, sourceLink, contributors).trimEnd();
   const expected = versionHeading + '\n\n' + notesBody;
   const result = [header + '\n\n' + expected + '\n\n---', footer, officialRoundMarker(roundId)]

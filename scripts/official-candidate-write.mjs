@@ -1,5 +1,5 @@
 import { EvidenceReadError } from '../packages/runner/dist/index.js';
-import { bodyDigest, defaultHead, fitsOfficialEvent, hasLabel, officialNotes, officialPending,
+import { defaultHead, fitsOfficialEvent, hasLabel, officialNotes, officialPending,
   officialRef, officialRoundMarker, pages, pullBinding, readOfficialManifest, readSourceFile,
   requireCandidate, verifyOfficialPull } from './official-release-candidate.mjs';
 

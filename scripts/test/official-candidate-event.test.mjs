@@ -77,6 +77,8 @@ test('native single-root extraction preserves every byte of rich notes and exclu
     const section = officialNotes(expected);
     assert.equal(section.version, '1.1.0');
     assert.match(section.body, /版本记录/);
+    assert.match(section.body, /^## 1\.1\.0\n/);
+    assert.equal(section.body.match(/\/compare\//g)?.length, 1);
     assert.doesNotMatch(section.body, /候选文件差异|技术变更记录|产品文件差异/);
     for (const core of versions) {
       assert.equal(core.parse(expected.replace(/\n/g, '\r\n'), {error() {}, warn() {}}).releaseData[0].notes, section.body);
