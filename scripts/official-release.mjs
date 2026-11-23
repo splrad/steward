@@ -2,8 +2,8 @@ import { createHash } from 'node:crypto';
 import { appendFile, readFile, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { EvidenceReadError, NativeEvidenceReader, nativeEvidenceTransport, nativeGhCommand } from '../packages/runner/dist/index.js';
+import { officialRef, officialRootSettings } from './official-release-candidate.mjs';
 
-const candidatePrefix = 'release-please--branches--';
 const pending = 'autorelease: pending';
 const tagged = 'autorelease: tagged';
 const configPath = 'release-please-config.json';
@@ -87,7 +87,7 @@ async function approvalFacts(approval, reader, parseBody, compare) {
     && repo.archived === false && repo.disabled === false, 'REPOSITORY');
   requireFact(pull.number === prNumber && pull.state === 'closed' && pull.merged === true && typeof pull.merged_at === 'string'
     && pull.base?.ref === defaultBranch && pull.base?.repo?.id === repositoryId && pull.head?.repo?.id === repositoryId
-    && pull.head?.ref === candidatePrefix + defaultBranch && pull.head?.sha === headSha
+    && officialRef(pull.head?.ref, defaultBranch) && pull.head?.sha === headSha
     && pull.user?.id === appBotId && pull.user?.type === 'Bot' && pull.merge_commit_sha === sourceSha, 'MERGED_PULL');
   requireFact(typeof pull.body === 'string' && hash(pull.body) === approval.pullBodyDigest, 'PULL_BODY_DRIFT');
   const body = await parseBody(pull.body);
@@ -99,10 +99,8 @@ async function approvalFacts(approval, reader, parseBody, compare) {
     nativeFile(reader, manifestPath, sourceSha), nativeFile(reader, manifestPath, branch.object.sha),
   ]);
   requireFact(merged.digest === live.digest && mergedManifest.digest === liveManifest.digest, 'CONFIG_DRIFT');
-  const config = live.value, root = config.packages?.['.'];
-  requireFact(root && Object.keys(config.packages).length === 1 && config['separate-pull-requests'] === true
-    && ['label', 'release-label'].every(key => config[key] === undefined) && root['skip-github-release'] !== true
-    && (root.draft ?? config.draft) === true && root['force-tag-creation'] === true
+  const config = live.value;
+  requireFact(officialRootSettings(config)
     && liveManifest.value?.['.'] === approval.version && Object.keys(liveManifest.value).length === 1, 'ROOT_CONFIG');
   const prerelease = releaseIsPrerelease(config, approval.version);
   requireFact(Array.isArray(pull.labels) && pull.labels.every(label => typeof label.name === 'string'), 'LABELS');
