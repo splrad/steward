@@ -48,7 +48,7 @@ test('native single-root extraction preserves every byte of rich notes and exclu
     assert.match(section.body, /版本记录/);
     assert.doesNotMatch(section.body, /候选文件差异|技术变更记录|产品文件差异/);
     for (const core of versions) {
-      assert.equal(core.parse(expected.replace(/\n/g, '\r\n')).releaseData[0].notes, section.body);
+      assert.equal(core.parse(expected.replace(/\n/g, '\r\n'), {error() {}, warn() {}}).releaseData[0].notes, section.body);
     }
   }
   const section = officialNotes(render()).body;
@@ -146,7 +146,8 @@ test('verified merge uses the original event and exact source after the default 
 test('old open candidate can coexist while the official writer uses its own branch and duplicate head is retained', async () => {
   const identity = { product, sourceSha, event: { kind: 'push', repositoryId: product.id, sourceSha }, runId: 1, requestKey: 'k', controllerSha };
   const old = { ...pr, head: { ...pr.head, ref: 'steward/release-candidate' } };
-  const open = [old];
+  const fork = { ...pr, number: 50, head: { ...pr.head, repo: { id: 999 } } };
+  const open = [old, fork];
   const get = async path => {
     if (path === 'git/ref/heads/main') return { ref: 'refs/heads/main', object: { type: 'commit', sha: sourceSha } };
     if (path === 'git/commits/' + head) return { sha: head, parents: [{ sha: sourceSha }] };

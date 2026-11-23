@@ -1,5 +1,6 @@
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import apiVersion from '../config/github-api.json' with { type: 'json' };
 import { pathToFileURL } from 'node:url';
 import { downloadNativeArtifact, NativeEvidenceReader, nativeEvidenceTransport, nativeReleaseApp } from '../packages/runner/dist/index.js';
 import { entryGuard } from './bounded-release-entry.mjs';
@@ -22,7 +23,7 @@ const inputs = {
 const fetchJson = async (token, path, method = 'GET', data) => {
   const result = await fetch('https://api.github.com' + path, { method, redirect: 'error',
     headers: { Authorization: 'Bearer ' + token, Accept: 'application/vnd.github+json',
-      'Content-Type': 'application/json', 'X-GitHub-Api-Version': '2026-03-10' },
+      'Content-Type': 'application/json', 'X-GitHub-Api-Version': apiVersion.version },
     ...(data ? { body: JSON.stringify(data) } : {}), signal: AbortSignal.timeout(60_000) });
   requireCandidate(result.ok, 'HTTP_' + result.status);
   return result.json();
@@ -96,7 +97,7 @@ async function scopedReader(token, product) {
 
 async function openOfficialPulls(get, product) {
   const pulls = await pages(get, 'pulls?state=open&base=' + encodeURIComponent(product.defaultBranch));
-  const official = pulls.filter(p => officialRef(p.head?.ref, product.defaultBranch));
+  const official = pulls.filter(p => p.head?.repo?.id === product.id && officialRef(p.head.ref, product.defaultBranch));
   for (const pull of official) pullBinding(pull, product, pull.number, botId);
   requireCandidate(new Set(official.map(pr => pr.head.ref)).size === official.length, 'AMBIGUOUS_BRANCH');
   return official;
@@ -105,7 +106,7 @@ async function openOfficialPulls(get, product) {
 async function inspectWaiting(get, product) {
   const pending = await pages(get, 'issues?state=closed&labels=' + encodeURIComponent(officialPending));
   const pulls = await Promise.all(pending.filter(issue => issue.pull_request).map(issue => get('pulls/' + issue.number)));
-  return pulls.filter(pr => pr.merged === true && pr.base?.ref === product.defaultBranch &&
+  return pulls.filter(pr => pr.merged === true && pr.base?.ref === product.defaultBranch && pr.head?.repo?.id === product.id &&
     officialRef(pr.head?.ref, product.defaultBranch)).map(pr => {
     pullBinding(pr, product, pr.number, botId);
     requireCandidate(hasLabel(pr, officialPending), 'PENDING_CHANGED');
@@ -264,15 +265,16 @@ export async function main(stage, env = process.env) {
   }
   requireCandidate(stage === 'finish', 'STAGE');
   const plan = JSON.parse(await readFile(stateFile('plan'), 'utf8'));
-  let result = plan.result, pulls = [];
+  let result = plan.result, pulls = [], waiting = plan.waiting;
   if (plan.mode) {
     const checkpoint = JSON.parse(await readFile(stateFile('after'), 'utf8'));
     const after = await captureOfficialAction({ checkpoint, product, get });
     const template = await readFile(templatePath, 'utf8');
     for (const checkpoint of after.pulls) pulls.push(await finishOfficialPull({ product, get, patch, sourceSha: identity.sourceSha, checkpoint, template }));
-    result = pulls.length ? 'candidate_observed' : 'no_candidate_change';
+    if (!pulls.length && !checkpoint.output.length) waiting = await inspectWaiting(get, product);
+    result = pulls.length ? 'candidate_observed' : waiting.length ? 'merged_pending' : 'no_candidate_change';
   }
-  await writeFile('result.json', JSON.stringify({ schemaVersion: 1, ...identity, result, pulls, waiting: plan.waiting,
+  await writeFile('result.json', JSON.stringify({ schemaVersion: 1, ...identity, result, pulls, waiting,
     templateDigest: pulls.length ? bodyDigest(await readFile(templatePath)) : null }) + '\n', { flag: 'wx' });
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
