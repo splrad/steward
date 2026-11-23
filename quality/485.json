@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "repositoryId": 1296724484,
+  "pullRequestNumber": 485,
+  "currentHead": "ef381ad37c94171ef622e09e953f462123804b70",
+  "configVersion": "quality-native-comments-v1",
+  "heads": {
+    "ef381ad37c94171ef622e09e953f462123804b70": {
+      "sourceSetDigest": "bfc6fda001b5315a3143940413a361fe121f5681b8c42fa41596720512a1a331",
+      "sources": [
+        {
+          "sourceCommentId": "review-comment:4673517117",
+          "sourceCommit": "a62f3d80fe245fcec5b6442cab6fdcf9cb602975",
+          "sourceUrl": "https://github.com/splrad/steward/pull/485#discussion_r4673517117",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Unused variable, import, function or class\n\nUnused import bodyDigest.\n\n---\n\n<p>To fix this without changing behavior, remove only the unused named import <code>bodyDigest</code> from the destructured import in <code>scripts/official-candidate-write.mjs</code>.</p>\n<p>Best single change:</p>\n<ul>\n<li>In the top import block (lines 2–4 in the snippet), delete <code>bodyDigest</code> from the named import list.</li>\n<li>Keep all other imports unchanged.</li>\n<li>No new methods, definitions, or dependencies are needed.</li>\n</ul>",
+          "updatedAt": "2026-11-23T23:39:58Z"
+        }
+      ],
+      "keys": [
+        "1f70f8cb8a27649e4f1d62952af74f9e19ddfb474a7ff8db6cfc5c2b09b07c76"
+      ],
+      "checkId": null,
+      "externalId": "splrad-quality:1296724484:485:ef381ad37c94171ef622e09e953f462123804b70",
+      "observedAt": "2026-11-23T23:44:57.834Z"
+    }
+  },
+  "entries": {
+    "1f70f8cb8a27649e4f1d62952af74f9e19ddfb474a7ff8db6cfc5c2b09b07c76": {
+      "key": "1f70f8cb8a27649e4f1d62952af74f9e19ddfb474a7ff8db6cfc5c2b09b07c76",
+      "segment": {
+        "sourceCommentId": "review-comment:4673517117",
+        "sourceCommit": "a62f3d80fe245fcec5b6442cab6fdcf9cb602975",
+        "sourceUrl": "https://github.com/splrad/steward/pull/485#discussion_r4673517117",
+        "severity": "原文未说明",
+        "bodyMarkdown": "## Unused variable, import, function or class\n\nUnused import bodyDigest.\n\n---\n\n<p>To fix this without changing behavior, remove only the unused named import <code>bodyDigest</code> from the destructured import in <code>scripts/official-candidate-write.mjs</code>.</p>\n<p>Best single change:</p>\n<ul>\n<li>In the top import block (lines 2–4 in the snippet), delete <code>bodyDigest</code> from the named import list.</li>\n<li>Keep all other imports unchanged.</li>\n<li>No new methods, definitions, or dependencies are needed.</li>\n</ul>",
+        "segmentIndex": 0,
+        "originalIdentifiers": [
+          "<code>bodyDigest</code>",
+          "<code>scripts/official-candidate-write.mjs</code>",
+          "scripts/official-candidate-write.mjs"
+        ]
+      },
+      "configVersion": "quality-native-comments-v1",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    }
+  },
+  "cursor": 0
+}
