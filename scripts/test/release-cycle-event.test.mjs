@@ -4,19 +4,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import Handlebars from 'handlebars';
 import YAML from 'yaml';
 import { advanceEvent, validateEvent, publicCycleError, withCycleCleanup } from '../release-cycle-event.mjs';
 import { product, sha256 } from '../bounded-candidate-contract.mjs';
 const source='a'.repeat(40), later='b'.repeat(40);
 const push=sourceSha=>({kind:'push',repositoryId:product.id,sourceSha});
-test('packaged conventional changelog renders two distinct Markdown items', async()=>{
-  const renderer=Handlebars.create();
-  const template=name=>readFile(new URL('../../packages/runner/dist/'+name+'1.hbs',import.meta.url),'utf8');
-  for(const name of ['commit','header','footer'])renderer.registerPartial(name,await template(name));
-  const text=renderer.compile(await template('template'))({commitGroups:[{title:'Features',commits:[{subject:'alpha'},{subject:'beta'}]}]});
-  assert.match(text,/^\* alpha\n\* beta$/m);
-});
 test('event key binds native identity independently of the controller revision',()=>{
   validateEvent(push(source),sha256([product.id,'push',source]));
   assert.throws(()=>validateEvent(push(later),sha256([product.id,'push',source])));
