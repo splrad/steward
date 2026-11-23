@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import registrations from '../config/release/event-repositories.json' with {type:'json'};
 import {releaseParticipation} from './release-coordinator.mjs';
 import {nativeEvidenceTransport} from '../packages/runner/dist/index.js';
 
@@ -22,8 +21,6 @@ export async function withParticipatingProduct(app,id,operation,transport=native
     return operation(product,participation);
   });
 }
-const legacy=registrations.filter(record=>record.legacyPublicationCallback===true);
-export const product = legacy.length===1 ? legacy[0] : undefined;
 export const sha256 = value => createHash('sha256').update(typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value)).digest('hex');
 export const sha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 export function exact(value, fields) {

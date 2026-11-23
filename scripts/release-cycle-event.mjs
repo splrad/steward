@@ -13,23 +13,18 @@ import { finishOfficialAction, readOfficialBody } from './official-release.mjs';
 const centralId = 1296724484, central = 'splrad/steward';
 const eventKinds=['push','run','publication','official-merge'];
 const registrations=JSON.parse(await readFile(new URL('../config/release/event-repositories.json',import.meta.url),'utf8'));
+const eventProductId=event=>event.kind==='publication'?event.productRepositoryId:event.repositoryId;
 function registeredRepository(event, registry=registrations) {
-  const id=event.kind==='publication'?event.productRepositoryId:event.repositoryId;
-  // Older central callbacks carry only the controller identity. They are unambiguous for the original pilot.
-  const matches=registry.filter(repository=>id===undefined?repository.legacyPublicationCallback===true:repository.id===id);
+  const id=eventProductId(event);
+  if(!positive(id))fail('CYCLE_EVENT_KIND');
+  const matches=registry.filter(repository=>repository.id===id);
   if(matches.length!==1)fail('CYCLE_EVENT_KIND');
   return matches[0];
 }
 export function withCycleEventProduct(app,event,operation,transport=nativeEvidenceTransport) {
-  const oldCallback=event.kind==='publication'&&!Object.hasOwn(event,'productRepositoryId');
-  const legacy=oldCallback?registeredRepository(event):undefined;
-  const id=legacy?legacy.id:event.kind==='publication'?event.productRepositoryId:event.repositoryId;
-  if(!eventKinds.includes(event.kind)||!Number.isSafeInteger(id)||id<1)fail('CYCLE_EVENT_KIND');
-  return withParticipatingProduct(app,id,product=>{
-    if(!legacy)return operation(product);
-    if(product.name!==legacy.name||product.defaultBranch!==legacy.defaultBranch)fail('CYCLE_EVENT_KIND');
-    return operation({...product,legacyPublicationCallback:true});
-  },transport);
+  const id=eventProductId(event);
+  if(!eventKinds.includes(event.kind)||!positive(id))fail('CYCLE_EVENT_KIND');
+  return withParticipatingProduct(app,id,operation,transport);
 }
 const identity = {name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'};
 const fail = reason => { throw Error(reason); };
@@ -46,9 +41,10 @@ export function validateEvent(event, requestKey, registry=registrations) {
     return;
   }
   const push = kind === 'push';
-  exact(event, ['repositoryId','kind',...(push ? ['sourceSha'] : ['runId','attempt']),...(kind==='publication' && event.productRepositoryId!==undefined?['productRepositoryId']:[])]);
+  const publication = kind==='publication';
+  exact(event, ['repositoryId','kind',...(push ? ['sourceSha'] : ['runId','attempt']),...(publication?['productRepositoryId']:[])]);
   if (push ? !sha(event.sourceSha) : !positive(event.runId) || !positive(event.attempt)) fail('CYCLE_EVENT_ID');
-  if (requestKey !== sha256([repositoryId,kind,...(push ? [event.sourceSha] : [event.runId,event.attempt]),...(event.productRepositoryId===undefined?[]:[event.productRepositoryId])])) fail('CYCLE_EVENT_KEY');
+  if (requestKey !== sha256([repositoryId,kind,...(push ? [event.sourceSha] : [event.runId,event.attempt]),...(publication?[event.productRepositoryId]:[])])) fail('CYCLE_EVENT_KEY');
 }
 const wait = reason => ({status:'WAIT',reason});
 const only = items => items.length === 1 ? items[0] : fail('CYCLE_EVENT_AMBIGUOUS');

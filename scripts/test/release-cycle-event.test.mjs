@@ -6,13 +6,21 @@ import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import YAML from 'yaml';
 import { advanceEvent, validateEvent, publicCycleError, withCycleCleanup } from '../release-cycle-event.mjs';
-import { product, sha256 } from '../bounded-candidate-contract.mjs';
+import registrations from '../../config/release/event-repositories.json' with { type: 'json' };
+import { sha256 } from '../bounded-candidate-contract.mjs';
+const [product]=registrations;
 const source='a'.repeat(40), later='b'.repeat(40);
 const push=sourceSha=>({kind:'push',repositoryId:product.id,sourceSha});
+const publication={kind:'publication',repositoryId:1296724484,productRepositoryId:product.id,runId:52,attempt:1};
 test('event key binds native identity independently of the controller revision',()=>{
   validateEvent(push(source),sha256([product.id,'push',source]));
   assert.throws(()=>validateEvent(push(later),sha256([product.id,'push',source])));
   assert.throws(()=>validateEvent({...push(source),cycleId:'foreign'},sha256([product.id,'push',source])));
+  const key=sha256([publication.repositoryId,publication.kind,publication.runId,publication.attempt,publication.productRepositoryId]);
+  validateEvent(publication,key);
+  const {productRepositoryId,...unbound}=publication;
+  assert.throws(()=>validateEvent(unbound,key),/CYCLE_EVENT_KIND/);
+  assert.throws(()=>validateEvent({...publication,productRepositoryId:productRepositoryId+1},key),/CYCLE_EVENT_KIND/);
 });
 test('only the acknowledged official merge can register and dispatch a build',async()=>{
   const event={kind:'official-merge',repositoryId:product.id,prNumber:192,head:later,sourceSha:source,
@@ -113,7 +121,7 @@ test('a publication completion requires its exact archived invocation', async()=
   const state={cycles:[],domainRecords:[]},calls=[];
   const ports={snapshot:async()=>state,botId:301115370,centralGet:async()=>run,
     invoke:async(command,id)=>{calls.push([command,id]); return {status:'OBSERVED'};}};
-  const event={kind:'publication',repositoryId:1296724484,runId:52,attempt:1};
+  const event=publication;
   await assert.rejects(advanceEvent(event,ports),/AMBIGUOUS/);
   state.domainRecords.push({path:'evidence/publication/test.json',value:{startEvidencePath:null,centralRun:{id:52,runAttempt:1,headSha:source},cycleId:'cycle'}});
   await advanceEvent(event,ports);
@@ -211,7 +219,7 @@ test('a GitHub-only publication checks its receipt and has no external work even
     event:'workflow_dispatch',path:'.github/workflows/release-cycle-event.yml'};
   const archive={path:'evidence/publication/test.json',value:{startEvidencePath:null,centralRun:{id:52,runAttempt:1,headSha:source},cycleId:'only-github'}};
   const state={cycles:[{value:{id:'only-github',requiredChannels:[]}}],domainRecords:[archive]},calls=[];
-  const result=await advanceEvent({kind:'publication',repositoryId:1296724484,runId:52,attempt:1},{
+  const result=await advanceEvent(publication,{
     snapshot:async()=>state,centralGet:async()=>run,botId:301115370,
     invoke:async command=>{calls.push(command);return command==='reconcile-publication'?{status:'OBSERVED'}:{status:'WAIT'};}
   });
@@ -287,8 +295,8 @@ test('push diagnostics distinguish the failing operation and keep its original f
 test('run and publication read failures retain their source stage',async()=>{
   const snapshot=async()=>({cycles:[]});
   const unavailable=async()=>{throw Error('NATIVE_HTTP_503')};
-  for(const [kind,repositoryId,port] of [['run',product.id,'get'],['publication',1296724484,'centralGet']]) {
-    await assert.rejects(advanceEvent({kind,repositoryId,runId:52,attempt:1},{snapshot,[port]:unavailable}),
+  for(const [event,port] of [[{kind:'run',repositoryId:product.id,runId:52,attempt:1},'get'],[publication,'centralGet']]) {
+    await assert.rejects(advanceEvent(event,{snapshot,[port]:unavailable}),
       error=>publicCycleError(error)==='CYCLE_EVENT_STOPPED\nstage=SOURCE_READ category=NATIVE_HTTP_503');
   }
 });

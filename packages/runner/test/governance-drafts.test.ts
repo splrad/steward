@@ -62,16 +62,15 @@ it('consolidates equal runtime constraints into five rules while preserving thei
   }
   expect(named('Steward 构建分支不可变').rules).toEqual([{type:'update',parameters:{update_allows_fetch_and_merge:false}},{type:'deletion'}]);
   expect(named('Steward 治理状态写入限制').bypass_actors.map((a:any)=>a.actor_id)).toEqual([4243096,92]);
-  expect(named('Steward 自动化分支创建限制').conditions.ref_name.include).toEqual(['refs/heads/steward/build/*','refs/heads/steward/managed-sync','refs/heads/steward/release-candidate']);
+  expect(named('Steward 自动化分支创建限制').conditions.ref_name.include).toEqual(['refs/heads/steward/build/*','refs/heads/steward/managed-sync']);
   expect(named('Steward 运行状态写入限制').conditions.ref_name.include).toEqual(['refs/heads/steward/release-state']);
-  expect(named('Steward 自动化分支完整性保护').conditions.ref_name.include).toEqual(['refs/heads/steward/release-state','refs/heads/steward/governance-state','refs/heads/steward/managed-sync','refs/heads/steward/release-candidate']);
+  expect(named('Steward 自动化分支完整性保护').conditions.ref_name.include).toEqual(['refs/heads/steward/release-state','refs/heads/steward/governance-state','refs/heads/steward/managed-sync']);
 });
 // This finite configuration comparison checks the request bodies, not GitHub enforcement.
 it.each([
   ['steward/release-state',[4243096],[4243096]],
   ['steward/governance-state',[4243096,92],[4243096,92]],
   ['steward/managed-sync',[4243096],[4243096,92,7,8]],
-  ['steward/release-candidate',[4243096],[4243096,92,7,8]],
   ['steward/build/cycle-1',[4243096],[]],
 ])('keeps per-actor create/update/force/delete constraints for %s',async(branch,creators,writers)=>{
   const {prepareGovernance}=await module(),{runtime}=prepareGovernance(snapshot());
@@ -89,7 +88,7 @@ it.each([
 });
 it('keeps runtime constraints off default and unrelated branches',async()=>{
   const {prepareGovernance}=await module(),{runtime}=prepareGovernance(snapshot());
-  for(const branch of ['main','feature/next','steward/build-other','steward/governance-state-other','steward/automation-health'])
+  for(const branch of ['main','feature/next','steward/build-other','steward/governance-state-other','steward/automation-health','steward/release-candidate','release-please--branches--main'])
     expect(runtime.some((r:any)=>r.conditions.ref_name.include.some((p:string)=>p.endsWith('/*')?`refs/heads/${branch}`.startsWith(p.slice(0,-1)):p===`refs/heads/${branch}`))).toBe(false);
 });
 it.each(['steward/release-state','steward/build/cycle-1'])('connects consolidated request bodies to the actual writer protection reader: %s',async branch=>{
@@ -112,7 +111,7 @@ it('scopes observed legacy branches to the exact native repository and rejects g
   const {prepareGovernance}=await module(),s=snapshot();s.legacyCandidates=[{repositoryId:15,branch:'release-please--branches--main'}];
   const result=prepareGovernance(s);expect(result.legacy).toHaveLength(2);
   expect(result.legacy[0].conditions).toEqual({repository_id:{repository_ids:[15]},ref_name:{include:['refs/heads/release-please--branches--main'],exclude:[]}});
-  for(const branch of ['*','x/../y','x//y','x.lock','steward/release-candidate']) {s.legacyCandidates[0].branch=branch;expect(()=>prepareGovernance(s)).toThrow('LEGACY_BRANCH');}
+  for(const branch of ['*','x/../y','x//y','x.lock','steward/release-candidate','steward/managed-sync']) {s.legacyCandidates[0].branch=branch;expect(()=>prepareGovernance(s)).toThrow('LEGACY_BRANCH');}
 });
 it.each(['codeowners','last-push','extra-review','required-reviewers','other-ruleset','legacy','legacy-unknown','base-bypass','team-bypass','base-missing','approval-missing','threads','merge','scope'])('rejects effective approval conflicts: %s',async(kind)=>{
   const {prepareGovernance,assertApprovalUnion}=await module(),e=effective(prepareGovernance(snapshot()));let protection:any=null;

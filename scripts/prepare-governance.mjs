@@ -70,19 +70,19 @@ export function prepareGovernance(snapshot) {
   const state = ['refs/heads/steward/release-state'];
   const governance = ['refs/heads/steward/governance-state'];
   const build = ['refs/heads/steward/build/*'];
-  const pr = ['refs/heads/steward/managed-sync', 'refs/heads/steward/release-candidate'];
+  const managedSync = 'refs/heads/steward/managed-sync';
   const runtime = [
     nativeRule('Steward 运行状态写入限制', state, ['creation', 'update'], [actor(4243096)]),
     nativeRule('Steward 治理状态写入限制', governance, ['creation', 'update'], [actor(4243096), actor(governanceApp.id)]),
-    nativeRule('Steward 自动化分支创建限制', [...build, ...pr], ['creation'], [actor(4243096)]),
-    nativeRule('Steward 自动化分支完整性保护', [...state, ...governance, ...pr], ['non_fast_forward', 'deletion'], []),
+    nativeRule('Steward 自动化分支创建限制', [...build, managedSync], ['creation'], [actor(4243096)]),
+    nativeRule('Steward 自动化分支完整性保护', [...state, ...governance, managedSync], ['non_fast_forward', 'deletion'], []),
     nativeRule('Steward 构建分支不可变', build, ['update', 'deletion'], []),
   ];
   const legacy = []; const seen = new Set();
   for (const item of legacyCandidates) {
     if (!id(item.repositoryId) || typeof item.branch !== 'string' || !/^[A-Za-z0-9_-][A-Za-z0-9_./-]*$/.test(item.branch)
       || item.branch.includes('..') || item.branch.split('/').some(part => !part || part.startsWith('.') || part.endsWith('.') || part.endsWith('.lock'))
-      || pr.includes(`refs/heads/${item.branch}`) || seen.has(`${item.repositoryId}:${item.branch}`)) fail('LEGACY_BRANCH');
+      || item.branch === 'steward/release-candidate' || `refs/heads/${item.branch}` === managedSync || seen.has(`${item.repositoryId}:${item.branch}`)) fail('LEGACY_BRANCH');
     seen.add(`${item.repositoryId}:${item.branch}`);
     for (const [suffix, types, bypass] of [['创建限制', ['creation'], [actor(4243096)]], ['完整性保护', ['non_fast_forward', 'deletion'], []]]) {
       const entry = nativeRule(`Steward 旧版拉取请求分支${suffix}（${item.repositoryId}-${legacy.length}）`, [`refs/heads/${item.branch}`], types, bypass);

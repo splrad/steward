@@ -1,12 +1,15 @@
 import {channelTargetsDigest,verifyChannelProbe,decodeReleaseRecord} from '../packages/runner/dist/index.js';
 import registrations from '../config/release/event-repositories.json' with {type:'json'};
-import {product,sha,sha256} from './bounded-candidate-contract.mjs';
+import {sha,sha256} from './bounded-candidate-contract.mjs';
+const isWingetAdapter=adapter=>adapter.channelId==='winget'&&adapter.location==='SPLRAD.LayerScape.Deployer';
+const wingetRegistrations=registrations.filter(repository=>repository.externalAdapters?.some(isWingetAdapter));
+const product=wingetRegistrations.length===1?wingetRegistrations[0]:undefined;
 const fail=()=>{throw Error('BOUNDED_WINGET_IDENTITY');};
 /** Input is an independently verified protected Git cycle, not a network request body. */
 export function boundedWingetInputs(value,executionSha) {
   const cycle=decodeReleaseRecord('cycle',Buffer.from(JSON.stringify(value)));
-  const adapters=registrations.find(repository=>repository.id===product.id && repository.name===product.name)?.externalAdapters;
-  if(!sha(executionSha)||cycle.units.length!==1||!adapters?.some(adapter=>adapter.unitId===cycle.units[0].id && adapter.channelId==='winget')||!cycle.requiredChannels.some(c=>c.unitId===cycle.units[0].id && c.channelId==='winget'))fail();
+  if(!product||!sha(executionSha)||cycle.units.length!==1||!product.externalAdapters.some(adapter=>
+    isWingetAdapter(adapter)&&adapter.unitId===cycle.units[0].id)||!cycle.requiredChannels.some(c=>c.unitId===cycle.units[0].id && c.channelId==='winget'))fail();
   const unit=cycle.units[0],targets=[{unitId:unit.id,channelId:'winget',version:unit.version,releaseId:unit.releaseId,manifestDigest:unit.manifestDigest}];
   const digest=channelTargetsDigest({repositoryId:product.id,cycle},targets);
   return {cycle_id:cycle.id,source_sha:cycle.sourceSha,execution_sha:executionSha,controller_sha:cycle.controllerSha,
