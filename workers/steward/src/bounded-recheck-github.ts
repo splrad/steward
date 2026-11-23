@@ -6,17 +6,18 @@ import { createAppJwt } from '../support/github/index.js';
 import { GITHUB_API_VERSION } from '../support/github/api-version.js';
 import type { BodyWriteRuntimeEnv } from './pr-body-api.js';
 import { releasePleaseUnitId } from '../../../packages/core/src/release-workflow.js';
+import type {LegacyReleaseHandoffEnv} from './legacy-release-handoff.js';
 export const TARGET = { id:1187527897, name:'splrad/LayerScape', defaultBranch:'main' } as const;
 export const CENTRAL = { id:1296724484, name:'splrad/steward' } as const;
 export function digest(bytes:Uint8Array|string){return 'sha256:'+createHash('sha256').update(bytes).digest('hex');}
 export function ensure(value:unknown,code:string):asserts value {if(!value)throw new Error(code);}
-export interface BoundedEnv extends BodyWriteRuntimeEnv {
+export interface BoundedEnv extends BodyWriteRuntimeEnv,LegacyReleaseHandoffEnv {
  BOUNDED_ACCEPTANCE_SKIP_ONCE?:string; BOUNDED_RECHECK?:DurableObjectNamespace; BOUNDED_RECHECK_ENABLED?:string;
  RELEASE_RELAY_DEPLOYMENT_SHA?:string;
  BOUNDED_CONTROLLER_SHA?:string; BOUNDED_PRODUCT_SHA?:string; BOUNDED_DEPLOYMENT_SHA?:string;
 }
 export interface RunLocator { repositoryId:number;runId:number;attempt:number;requestKey:string }
-export interface ProductTarget {id:number;name:string;defaultBranch:string;units?:{id:string;path:string}[];officialCandidate?:true}
+export interface ProductTarget {id:number;name:string;defaultBranch:string;units?:{id:string;path:string}[];officialCandidate?:true;sourceSha?:string}
 export interface GitReader {
  readonly target?: ProductTarget;
  prepareDispatch?(repositoryId:number):Promise<void>;
@@ -170,7 +171,10 @@ export class BoundedGitHub implements GitReader {
        Object.keys(versions).every(path=>roots.includes(path)),'CANDIDATE_UNIT_COVERAGE');
      ensure(new Set(units.map((unit:any)=>unit.id)).size===units.length,'CANDIDATE_UNIT_COVERAGE');
      target.units=units.map(({id,path}:any)=>({id,path}));
-     if(settings['separate-pull-requests']===true)target.officialCandidate=true;
+     if(settings['separate-pull-requests']===true){
+       target.officialCandidate=true;
+       if(delivery.schemaVersion===3)target.sourceSha=ref.object.sha;
+     }
    }catch(error){if(error instanceof Error && error.message === 'GITHUB_HTTP_404')return;throw error;}
    ensure((await scoped.json(id,refPath)).object?.sha===ref.object.sha,'CANDIDATE_SOURCE_MOVED');
    return scoped;

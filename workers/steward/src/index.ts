@@ -5,6 +5,7 @@ import {forwardPagesCompletion} from './pages-completion.js';
 import {acceptWingetSubmit} from './bounded-winget-submit.js';
 import {acceptNativeCandidateEvent,acceptNativeCandidateCompletion} from './bounded-native-event.js';
 import { handleBoundedRecheckRequest } from './bounded-recheck-api.js';
+import type { LegacyReleaseHandoffEnv } from './legacy-release-handoff.js';
 export { BoundedRecheckCoordinator } from './bounded-recheck-do.js';
 import { legacyValidationRetired } from './validation-retirement.js';
 import { SerialTaskQueue } from './serial-task-queue.js';
@@ -18,7 +19,7 @@ import { dispatchQualityEvent } from "./quality-event.js";
 import repositoryCatalog from "../config/repositories.json" with { type: "json" };
 import { handleBodyWriteInternalRequest } from "./pr-body-api.js";
 
-export interface Env {
+export interface Env extends LegacyReleaseHandoffEnv {
   BOUNDED_RECHECK?: DurableObjectNamespace;
   BOUNDED_RECHECK_ENABLED?: string;
   RELEASE_RELAY_DEPLOYMENT_SHA?: string;

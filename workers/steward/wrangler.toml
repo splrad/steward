@@ -18,6 +18,7 @@ migrations_dir = "../../packages/runtime/migrations"
 
 [vars]
 BOUNDED_RECHECK_ENABLED = "false"
+LEGACY_RELEASE_HANDOFF_IDS = "[]"
 LEGACY_RELEASE_RETIRED = "true"
 LEGACY_VALIDATION_RETIRED = "true"
 ORGANIZATION_ID = "302208797"

@@ -5,11 +5,13 @@ import {BoundedGitHub,TARGET,CENTRAL,digest,ensure,type BoundedEnv,type GitReade
 import {candidateFacts,verifiedProducer} from './bounded-candidate-evidence.js';
 import {dispatchFixed} from './bounded-recheck-effects.js';
 import {identityKey,objectKey,type Identity,type RecordState} from './bounded-recheck.js';
+import {legacyReleaseHandoff,legacyReleaseHandoffReason} from './legacy-release-handoff.js';
 export interface CandidateEvent {repositoryId:number;prNumber:number;eventId:number}
 export interface EventIntent {schemaVersion:1;event:CandidateEvent;requestKey:string;policySha:string;createdAt:number;deadline:number;checks:number;status:'PENDING'|'REGISTERED'|'NEEDS_ATTENTION'|'PAUSED';nextAt:number|null;reason:string}
 /** Called only after the existing GitHub webhook HMAC + organization validation. */
 export async function acceptBoundedCandidateEvent(env:BoundedEnv,event:string,payload:any,g:GitReader=new BoundedGitHub(env)){
  if(env.BOUNDED_RECHECK_ENABLED!=='true'||event!=='pull_request'||payload.repository?.id!==TARGET.id||!['labeled','unlabeled','reopened'].includes(payload.action))return;
+ if(legacyReleaseHandoff(env,TARGET.id))return;
  if(payload.action!=='reopened'&&payload.label?.name!=='release:editing')return;
  ensure(env.BOUNDED_RECHECK&&/^[a-f0-9]{40}$/.test(env.BOUNDED_CONTROLLER_SHA??''),'BOUNDED_EVENT_CONFIGURATION');
  const facts=await candidateFacts(g);ensure(payload.pull_request?.number===facts.pull.number,'EVENT_CANDIDATE');
@@ -25,6 +27,7 @@ export async function acceptBoundedCandidateEvent(env:BoundedEnv,event:string,pa
 export class CandidateEventCoordinator {
  constructor(private storage:DurableObjectStorage,private env:BoundedEnv,private g:()=>GitReader=()=>new BoundedGitHub(env),private clock:()=>number=Date.now){}
  async register(input:Omit<EventIntent,'schemaVersion'|'deadline'|'checks'|'status'|'nextAt'|'reason'>){
+  if(legacyReleaseHandoff(this.env,input.event.repositoryId))return;
   const now=this.clock();ensure(input.event.repositoryId===TARGET.id&&input.policySha===this.env.BOUNDED_CONTROLLER_SHA&&Number.isFinite(input.createdAt)&&input.createdAt<=now,'EVENT_IDENTITY');
   let claimed=false;
   await this.storage.transaction(async t=>{const old=await t.get<EventIntent>('event');if(old){ensure(old.requestKey===input.requestKey&&JSON.stringify(old.event)===JSON.stringify(input.event)&&old.policySha===input.policySha&&old.createdAt===input.createdAt,'EVENT_CONFLICT');return;}
@@ -48,6 +51,15 @@ export class CandidateEventCoordinator {
    if(run.status!=='completed'||run.conclusion!=='success')return;
    const a=await g.artifact(CENTRAL.id,run.id,`bounded-recheck-registration-${r.requestKey}`,'registration.json');
    const verified=await verifiedProducer(g,this.env,{registration:a.value.registration,producer:{repositoryId:CENTRAL.id,runId:run.id,attempt:run.run_attempt,requestKey:r.requestKey}});
+   if(legacyReleaseHandoff(this.env,r.event.repositoryId)){
+    await this.storage.transaction(async t=>{
+     const latest=await t.get<EventIntent>('event');
+     if(latest?.requestKey!==r.requestKey||latest.status==='PAUSED')return;
+     latest.status='PAUSED';latest.reason=legacyReleaseHandoffReason;latest.nextAt=null;
+     await t.put('event',latest);await t.deleteAlarm();
+    });
+    return;
+   }
    ensure(this.env.BOUNDED_RECHECK,'NAMESPACE');const name='recheck:v1:'+createHash('sha256').update(objectKey(verified.registration.identity)).digest('hex');const stub=this.env.BOUNDED_RECHECK.get(this.env.BOUNDED_RECHECK.idFromName(name));
    await applyVerifiedCandidateEvent(stub,verified);
    await this.storage.transaction(async t=>{const latest=await t.get<EventIntent>('event');if(latest?.requestKey!==r.requestKey||latest.status==='PAUSED')return;latest.status='REGISTERED';latest.reason='VERIFIED_PRODUCER_REGISTERED';latest.nextAt=null;await t.put('event',latest);await t.deleteAlarm();});

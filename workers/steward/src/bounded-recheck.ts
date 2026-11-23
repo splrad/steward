@@ -1,5 +1,6 @@
 import {GitHubRetryError,retryAfterTime,rejectedDispatch} from './bounded-retry-after.js';
 import { createHash } from 'node:crypto';
+import {legacyReleaseHandoffReason} from './legacy-release-handoff.js';
 /** Bounded wake intents only. Git/Run/channel facts remain authoritative. */
 export type Stage = 'candidate' | 'winget-pr' | 'winget-index';
 export type Status = 'PENDING' | 'PAUSED' | 'CANCELLED' | 'DONE' | 'NEEDS_ATTENTION';
@@ -57,7 +58,8 @@ function next(r:RecordState, now:number, notBefore=now) {
   r.nextAt=r.nextSlot<p.offsets.length?r.t0+p.offsets[r.nextSlot]!*minute:r.deadline;
 }
 export class BoundedRecheck {
-  constructor(private store:Store,private effects:Effects,private clock:()=>number=Date.now,private executionSha?:string,private executionAnchorSha?:string) {}
+  constructor(private store:Store,private effects:Effects,private clock:()=>number=Date.now,private executionSha?:string,
+    private executionAnchorSha?:string,private mayClaim:(repositoryId:number)=>boolean=()=>true) {}
   async register(input:Registration):Promise<RecordState> {
     const now=this.clock(); validateRegistration(input,now);if(input.identity.stage!=='candidate')assert(typeof this.executionSha==='string'&&/^[a-f0-9]{40}$/.test(this.executionSha),'EXECUTION_PIN_REQUIRED');
     return this.store.transaction(r=>{
@@ -132,6 +134,10 @@ export class BoundedRecheck {
         if(following===undefined){ r.status='NEEDS_ATTENTION';r.reason='UNKNOWN_DELIVERY';r.notificationPending=true; }
         // Reserve the confirmation before GET; a crash never resets the allowance.
         return {record:r,result:{record:structuredClone(r),intent:structuredClone(r.intent),confirm:true}};
+      }
+      if(!this.mayClaim(r.identity.repositoryId)){
+        stop(r,'PAUSED',legacyReleaseHandoffReason);
+        return {record:r,result:null};
       }
       const p=POLICIES[r.identity.stage];
       if(r.initialClaimed && r.nextSlot>=p.offsets.length) {stop(r,'NEEDS_ATTENTION','WINDOW_EXHAUSTED');return {record:r,result:null};}

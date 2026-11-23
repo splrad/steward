@@ -3,6 +3,7 @@ import {authorizeSingleRepository} from './pr-body-api.js';
 import {identityKey,objectKey,validateRegistration,type Identity} from './bounded-recheck.js';
 import {BoundedGitHub,candidateReader,CENTRAL,ensure,type BoundedEnv} from './bounded-recheck-github.js';
 import {verifiedProducer} from './bounded-candidate-evidence.js';
+import {legacyReleaseHandoff,legacyReleaseHandoffReason} from './legacy-release-handoff.js';
 function exact(b:any,keys:string[]){ensure(b&&typeof b==='object'&&!Array.isArray(b)&&Object.keys(b).sort().join(',')===keys.sort().join(','),'CLOSED_REQUEST');}
 export async function handleBoundedRecheckRequest(request:Request,env:BoundedEnv):Promise<Response|null>{
  const u=new URL(request.url),prefix='/internal/bounded-rechecks/v1/';if(!u.pathname.startsWith(prefix))return null;
@@ -16,6 +17,8 @@ export async function handleBoundedRecheckRequest(request:Request,env:BoundedEnv
   const identity:Identity=action==='register'?b.registration?.identity:b.identity;
   validateRegistration({identity,t0:1,policySha:'0'.repeat(40),deploymentSha:'0'.repeat(40)},Date.now());
   await authorizeSingleRepository(request,env,identity.repositoryId);
+  if(['register','resume'].includes(action)&&legacyReleaseHandoff(env,identity.repositoryId))
+    return reply(503,legacyReleaseHandoffReason);
   const readerClient=new BoundedGitHub(env);
   const github=identity.stage==='candidate'&&action!=='receipt'?await candidateReader(readerClient,identity.repositoryId):readerClient;
   if(action==='register'){exact(b,['registration','producer']);await verifiedProducer(github,env,b);}

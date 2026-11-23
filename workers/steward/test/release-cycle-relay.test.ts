@@ -12,7 +12,7 @@ const receipt={id:12,run_attempt:1,repository:{id:CENTRAL.id},head_repository:{i
   head_branch:'main',head_sha:pin,actor:{id:301115370},event:'workflow_dispatch',display_title:'Release cycle '+relayKey(hint)};
 function fixture(){
  const storage=new SqliteDurableStorage();
- const env={BOUNDED_RECHECK_ENABLED:'true',BOUNDED_DEPLOYMENT_SHA:deployment};
+ const env={BOUNDED_RECHECK_ENABLED:'true',BOUNDED_DEPLOYMENT_SHA:deployment,LEGACY_RELEASE_HANDOFF_IDS:'[]'};
  const state={now:Date.now(),promoted:'3'.repeat(40),posts:0,hits:[] as any[]};
  const g={async json(id:number,path:string,method?:string){
    expect(id).toBe(CENTRAL.id);
@@ -213,12 +213,13 @@ it('recovers a never-posted event after promotion without another POST for unkno
  expect(await f.storage.get('releaseCycle')).toMatchObject({stage:'unknown',reason:'DELIVERY_UNKNOWN'});
  await f.relay.register(hint);await f.relay.wakePromoted(pin);await f.tick();expect(f.state.posts).toBe(1);
 });
-it('binds a protected build ref and the original operation before dispatch',async()=>{
+it.each(['ordinary','handoff-legacy','handoff-official'] as const)('binds build completion to its frozen cycle before dispatch: %s',async mode=>{
  const cycleId='pr-192-'+pin, op='a'.repeat(64), ref='steward/build/'+cycleId, f=fixture();
  const created=new Date().toISOString();
  const run={id:101,run_attempt:2,status:'completed',head_sha:pin,head_branch:ref,event:'workflow_dispatch',actor:{id:301115370},
    repository:{id:TARGET.id},head_repository:{id:TARGET.id},workflow_id:410998652,path:'.github/workflows/steward-release-publish.yml',display_title:'Build '+op,created_at:created};
- const cycle={id:cycleId,sourceSha:pin,dispatches:[{purpose:'build',ref,executionSha:pin,sourceSha:pin,workflowId:410998652,canonicalRunId:101,operationKey:op,sentAt:created}]};
+ const cycle={id:cycleId,sourceSha:pin,dispatches:[{purpose:'build',ref,executionSha:pin,sourceSha:pin,workflowId:410998652,canonicalRunId:101,operationKey:op,sentAt:created}],
+   ...(mode==='handoff-official'?{officialRelease:{headSha:pin,pullBodyDigest:op,bodyDigest:op}}:{})};
  const {createHash}=await import('node:crypto');
  const bytes=Buffer.from(JSON.stringify(cycle)), blob=createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex');
  let post:any;
@@ -231,9 +232,18 @@ it('binds a protected build ref and the original operation before dispatch',asyn
    if(method==='POST'){post=body;return null;}
    return {state:'active',path:receipt.path};
  }};
- const relay=new ReleaseRelay(f.storage as any,{INSTALLATION_ID:'7',BOUNDED_RECHECK_ENABLED:'true',BOUNDED_DEPLOYMENT_SHA:deployment} as any,()=>reader as any,()=>f.state.now);
+ const relay=new ReleaseRelay(f.storage as any,{...f.env,INSTALLATION_ID:'7',
+   LEGACY_RELEASE_HANDOFF_IDS:JSON.stringify(mode==='ordinary'?[]:[TARGET.id])} as any,()=>reader as any,()=>f.state.now);
  const h=releaseHint('workflow_run',{...payload,action:'completed',workflow_run:run},'7')!;
- await relay.register(h);await relay.alarm();expect(JSON.parse(post.inputs.event_json)).toEqual({repositoryId:TARGET.id,kind:'run',runId:101,attempt:2});
+ await relay.register(h);await relay.alarm();
+ if(mode==='handoff-legacy'){
+   expect(post).toBeUndefined();
+   expect(await f.storage.get('releaseCycle')).toMatchObject({paused:true,reason:'LEGACY_RELEASE_HANDOFF',reserved:0});
+   expect(await f.storage.getAlarm()).toBeNull();
+ }else{
+   expect(JSON.parse(post.inputs.event_json)).toEqual({repositoryId:TARGET.id,kind:'run',runId:101,attempt:2});
+   if(mode==='handoff-official')expect(await f.storage.get('releaseCycle')).toMatchObject({stage:'confirm',officialRelease:true});
+ }
 });
 it('treats a validated custom path as a build completion and rejects the same Run with a different path',()=>{
  const path='.github/workflows/发布 构建.yml',workflowId=300,source='a'.repeat(40);
@@ -246,10 +256,11 @@ it('treats a validated custom path as a build completion and rejects the same Ru
  expect(hint(run)).toEqual({repositoryId:TARGET.id,kind:'run',runId:20,attempt:1});
  expect(hint({...run,path:'.github/workflows/other-cli.yaml'})).toBeUndefined();
 });
-it('verifies the original reservation before forwarding a repaired publication artifact from attempt two',async()=>{
+it.each(['ordinary','handoff-legacy','handoff-official'] as const)('verifies the original reservation when forwarding publication attempt two: %s',async mode=>{
  const f=fixture(), firstTime=new Date(f.state.now).toISOString(), after=new Date(f.state.now+3600000).toISOString();
  const source={...receipt,created_at:firstTime,status:'completed'}, second={...source,run_attempt:2,created_at:after};
- const parent={hint,policy:pin,reserved:f.state.now,runId:source.id};
+ const parent={hint,policy:pin,reserved:f.state.now,runId:source.id,
+   ...(mode==='handoff-official'?{officialRelease:true}:{})};
  const ns={idFromName:(s:string)=>s,get:()=>({fetch:async()=>Response.json(parent)})};
  let posts=0;
  const g={json:async(_id:number,path:string,method?:string)=>{
@@ -261,8 +272,11 @@ it('verifies the original reservation before forwarding a repaired publication a
  },artifact:async(_repo:number,id:number,name:string,file:string)=>{expect([id,name,file]).toEqual([source.id,'release-cycle-'+relayKey(hint)+'-2','result.json']);return {value:{schemaVersion:1,requestKey:relayKey(hint),event:hint,producer:{repositoryId:CENTRAL.id,runId:source.id,attempt:2,controllerSha:pin},publishInvoked:true}};}};
  const h=releaseHint('workflow_run',{installation:{id:7},repository:{id:CENTRAL.id,full_name:CENTRAL.name},action:'completed',workflow_run:second},'7')!;
  expect(h).toEqual({repositoryId:CENTRAL.id,kind:'publication',runId:source.id,attempt:2});
- const relay=new ReleaseRelay(f.storage as any,{BOUNDED_RECHECK:ns,BOUNDED_RECHECK_ENABLED:'true',BOUNDED_DEPLOYMENT_SHA:deployment} as any,()=>g as any,()=>f.state.now);
- await relay.register(h);await relay.alarm();expect(posts).toBe(1);
+ const relay=new ReleaseRelay(f.storage as any,{...f.env,BOUNDED_RECHECK:ns,
+   LEGACY_RELEASE_HANDOFF_IDS:JSON.stringify(mode==='ordinary'?[]:[TARGET.id])} as any,()=>g as any,()=>f.state.now);
+ await relay.register(h);await relay.alarm();
+ expect(posts).toBe(mode==='handoff-legacy'?0:1);
+ if(mode==='handoff-legacy')expect(await f.storage.get('releaseCycle')).toMatchObject({paused:true,reason:'LEGACY_RELEASE_HANDOFF',reserved:0});
 });
 it('quiesces an unconfirmed POST and resumes its existing confirmation budget on redelivery',async()=>{
  const f=fixture();f.state.promoted=pin;await f.relay.register(hint);await f.tick();
@@ -271,6 +285,45 @@ it('quiesces an unconfirmed POST and resumes its existing confirmation budget on
  expect(await f.storage.get('releaseCycle')).toEqual({...before,paused:true});expect(await f.storage.get('__alarm')).toBeUndefined();
  f.env.BOUNDED_RECHECK_ENABLED='true';await f.relay.register(hint);f.state.hits=[receipt];await f.tick();
  expect(await f.storage.get('releaseCycle')).toMatchObject({stage:'received',runId:12});expect(f.state.posts).toBe(1);
+});
+it.each([false,true])('legacy handoff drains previously reserved relay (%s) without making another POST',async reserved=>{
+ const f=fixture();f.state.promoted=pin;await f.relay.register(hint);
+ if(reserved)await f.tick();
+ f.env.LEGACY_RELEASE_HANDOFF_IDS=JSON.stringify([TARGET.id]);
+ f.state.hits=[receipt];await f.tick();
+ expect(f.state.posts).toBe(reserved?1:0);
+ if(reserved)expect(await f.storage.get('releaseCycle')).toMatchObject({stage:'received',runId:receipt.id});
+ else expect(await f.storage.get('releaseCycle')).toMatchObject({stage:'prepare',reason:'LEGACY_RELEASE_HANDOFF',paused:true,tries:0,reserved:0});
+ expect(await f.storage.getAlarm()).toBeNull();
+});
+it('allows only an adopted current official push for the handoff repository and leaves another repository eligible',async()=>{
+ const f=fixture(),keys:string[]=[];
+ const env={...f.env,INSTALLATION_ID:'7',LEGACY_RELEASE_HANDOFF_IDS:JSON.stringify([TARGET.id]),
+  BOUNDED_RECHECK:{idFromName:(key:string)=>key,get:(key:string)=>{
+   keys.push(key);return {fetch:async()=>Response.json({})};
+  }}};
+ const signed={...payload,repository:{...repo,private:false,owner:{id:302208797}}};
+ const reader=(official:boolean,sourceSha:string)=>()=>({...f.g,forCandidate:async()=>
+  ({...f.g,target:{...TARGET,...(official?{officialCandidate:true as const,sourceSha}:{})}})}) as any;
+ await acceptReleaseHint(env as any,'push',signed,'',reader(false,pin));
+ await acceptReleaseHint(env as any,'push',signed,'',reader(true,deployment));
+ expect(keys).toEqual([]);
+ await acceptReleaseHint(env as any,'push',signed,'',reader(true,pin));
+ const other={...signed,repository:{...signed.repository,id:123456,full_name:'splrad/other'}};
+ await acceptReleaseHint(env as any,'push',other);
+ expect(keys).toEqual(['cycle:v1:'+relayKey(hint),'cycle:v1:'+relayKey({...hint,repositoryId:123456})]);
+});
+it('retains an existing unqualified legacy intake as a paused record for reconciliation',async()=>{
+ const f=fixture();
+ const reader={...f.g,forCandidate:async()=>({...f.g,target:TARGET})};
+ const relay=new ReleaseRelay(f.storage as any,f.env as any,()=>reader as any,()=>f.state.now);
+ await relay.register(hint,{name:TARGET.name,defaultBranch:TARGET.defaultBranch});
+ expect(await f.storage.get('releaseIntake')).toBeDefined();
+ f.env.LEGACY_RELEASE_HANDOFF_IDS=JSON.stringify([TARGET.id]);
+ await relay.alarm();
+ expect(await f.storage.get('releaseIntake')).toBeUndefined();
+ expect(await f.storage.get('releaseCycle')).toMatchObject({hint,paused:true,reason:'LEGACY_RELEASE_HANDOFF',reserved:0});
+ expect(await f.storage.getAlarm()).toBeNull();expect(f.state.posts).toBe(0);
 });
 it('quiesces a pending WinGet submit without consuming its preparation budget',async()=>{
  const {WingetSubmit}=await import('../src/bounded-winget-submit.js');

@@ -107,6 +107,20 @@ async function normalFixture(){
  return {f,hint,key,g,env,run,artifact,eventStorage,store,engine,coordinator,time:(n:number)=>{now=n;},clock:()=>now,missingArtifact:()=>{artifactError='ARTIFACT_UNIQUE';},artifactFailure:(s:string|null)=>{artifactError=s;},readError:(s:string|null)=>{readError=s;},unavailable:(v:boolean)=>{unavailable=v;},losePost:()=>{losePost=true;},posts:()=>posts,reads:()=>reads};
 }
 describe('durable normal candidate event chain',()=>{
+ it('stops legacy candidate intake and cancels promotion wake for its unposted claim',async()=>{
+  const f=await normalFixture();
+  await f.coordinator().register({hint:f.hint,deliveryId:'already-registered'});
+  const before=await f.eventStorage.get<any>('nativeEvent');
+  before.waitingForPromotion=f.hint.updatedAt;await f.eventStorage.put('nativeEvent',before);
+  const scoped={...f.env,LEGACY_RELEASE_HANDOFF_IDS:JSON.stringify([TARGET.id])};
+  const coordinator=new NativeCandidateCoordinator(f.eventStorage as any,scoped,()=>f.g,()=>f.clock());
+  await coordinator.wakePromoted(before.waitingForPromotion);
+  expect(await coordinator.register({hint:f.hint,deliveryId:'late-repeat'})).toBeNull();
+  await coordinator.alarm();
+  expect(await f.eventStorage.get('nativeEvent')).toMatchObject({status:'PAUSED',reason:'LEGACY_RELEASE_HANDOFF',
+    nextAt:null,deadline:before.deadline,preparations:0,dispatchedAt:null,claim:0});
+  expect(f.posts()).toBe(0);
+ });
  it('recovers a durable hint after candidate discovery fails without redelivery or duplicate dispatch',async()=>{
   const f=await normalFixture();
   let attempts=0;
