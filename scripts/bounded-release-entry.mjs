@@ -99,5 +99,9 @@ export async function main(env=process.env) {
     }
   });}finally{await rm(root,{recursive:true,force:true});}
 }
-if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)main().catch(()=>{process.stderr.write((['RELEASE_REPOSITORY_PAUSED','RELEASE_PAUSE_POLICY_UNAVAILABLE'].includes(error?.message)
-  ?error.message:'BOUNDED_ENTRY_STOPPED')+'\n');process.exitCode=1;});
+if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)main().catch(error=>{
+  const code=error?.message;
+  const reason=['RELEASE_REPOSITORY_PAUSED','RELEASE_PAUSE_POLICY_UNAVAILABLE'].includes(code)?code:'BOUNDED_ENTRY_STOPPED';
+  process.stderr.write(reason+'\n');
+  process.exitCode=1;
+});

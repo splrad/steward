@@ -57,5 +57,9 @@ export async function main(env=process.env) {
     await writeFile('result.json',JSON.stringify(result)+'\n',{flag:'wx'});return result;
   });}finally {await rm(root,{recursive:true,force:true});}
 }
-if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)main().catch(()=>{process.stderr.write((['RELEASE_REPOSITORY_PAUSED','RELEASE_PAUSE_POLICY_UNAVAILABLE'].includes(error?.message)
-  ?error.message:'CANDIDATE_EVENT_STOPPED')+'\n');process.exitCode=1;});
+if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)main().catch(error=>{
+  const code=error?.message;
+  const reason=['RELEASE_REPOSITORY_PAUSED','RELEASE_PAUSE_POLICY_UNAVAILABLE'].includes(code)?code:'CANDIDATE_EVENT_STOPPED';
+  process.stderr.write(reason+'\n');
+  process.exitCode=1;
+});
