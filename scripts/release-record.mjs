@@ -654,7 +654,7 @@ export async function registerOfficialMergedCycle(request,snapshot,receipt,{conf
   const written=await writeReleaseRecords({directory:join(request.writeDirectory,'register-official'),remote:request.remote,
     repositoryId:request.repositoryId,defaultBranch:request.defaultBranch,targetRef:'steward/release-state',writer:'release',
     expectedHead:snapshot.head,allowedPaths:changes.map(file=>file.path),changes:changes.map(file=>({...file,sha256:sha256(file.content)})),
-    identity:request.identity},{token});
+    identity:request.identity},{token,beforePush:admit});
   if(!['APPLIED','UNCHANGED'].includes(written.status))fail('official merge state write');
   const adopted=await readReleaseRecords({directory:join(request.writeDirectory,'register-official'),targetRef:'steward/release-state',
     repositoryId:request.repositoryId,includeHistory:false});

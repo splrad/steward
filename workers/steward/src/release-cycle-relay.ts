@@ -46,7 +46,7 @@ async function currentPush(g:GitReader,target:ProductTarget,hint:Extract<Hint,{k
   return ref.ref==='refs/heads/'+target.defaultBranch&&ref.object?.type==='commit'&&ref.object.sha===hint.sourceSha;
 }
 const hexDigest = (v: unknown): v is string => typeof v === 'string' && v.length === 64 && /^[a-f0-9]+$/.test(v);
-function officialCycle(cycle: Awaited<ReturnType<typeof readCycle>>['cycle']): boolean {
+function officialCycle(cycle: Awaited<ReturnType<typeof readCycle>>['cycle'], buildRunId: number): boolean {
   const receipt=cycle.officialRelease;
   if (!receipt || Object.keys(receipt).sort().join(',') !== 'bodyDigest,headSha,pullBodyDigest' ||
       !sha(receipt.headSha) || !hexDigest(receipt.pullBodyDigest) || !hexDigest(receipt.bodyDigest) ||
@@ -57,8 +57,11 @@ function officialCycle(cycle: Awaited<ReturnType<typeof readCycle>>['cycle']): b
   if (cycle.officialDraftScopeDigest === undefined) return unit.releaseId === null;
   const delivery=unit.githubDelivery;
   return hexDigest(cycle.officialDraftScopeDigest) && (unit.releaseId === null || positive(unit.releaseId)) &&
-    Boolean(delivery && positive(delivery.runId) && positive(delivery.attempt) && positive(delivery.artifactId) &&
-      typeof delivery.digest === 'string' && delivery.digest.startsWith('sha256:') && hexDigest(delivery.digest.slice(7)));
+    Boolean(delivery && positive(delivery.runId) && delivery.runId === buildRunId && positive(delivery.attempt) && positive(delivery.artifactId) &&
+      typeof delivery.digest === 'string' && delivery.digest.startsWith('sha256:') && hexDigest(delivery.digest.slice(7)) &&
+      Array.isArray(cycle.dispatches) &&
+      cycle.dispatches.filter((dispatch: any) => dispatch?.purpose === 'build' && dispatch.sourceSha === cycle.sourceSha &&
+        dispatch.canonicalRunId === delivery.runId).length === 1);
 }
 
 async function boundBuildCycle(g:GitReader,run:any) {
@@ -77,14 +80,15 @@ async function officialPublication(g:GitReader,parent:Relay,installation:string|
   if (hint.kind!=='official-merge' && hint.kind!=='run') return false;
   const scoped=await candidateReader(g,hint.repositoryId),target=scoped.target;
   if (!version3Candidate(target)) return false;
-  if (hint.kind==='official-merge' || parent.officialRelease===true) return true;
+  if (hint.kind==='official-merge') return true;
   const run=await scoped.json(target.id,`/repos/${target.name}/actions/runs/${hint.runId}/attempts/${hint.attempt}`);
   if (!isBuildWorkflow(run?.path) || run.repository?.id!==target.id || !sha(run.head_sha) || !positive(run.workflow_id)) return false;
-  // A historical receipt binds to the original native Run and its frozen dispatch.
+  // Check the original native Run against the final frozen cycle. A prior relay
+  // may have claimed the build before GitHub delivery was recorded.
   const product={...target,publishWorkflowId:run.workflow_id,buildWorkflow:run.path};
   const observed=releaseHint('workflow_run',{action:'completed',repository:{id:target.id,full_name:target.name,
     default_branch:target.defaultBranch,fork:false,archived:false},installation:{id:Number(installation)},workflow_run:run},installation,product);
-  return Boolean(observed && relayKey(observed)===relayKey(hint) && officialCycle(await boundBuildCycle(scoped,run)));
+  return Boolean(observed && relayKey(observed)===relayKey(hint) && officialCycle(await boundBuildCycle(scoped,run),run.id));
 }
 
 type RelayProduct=ProductTarget & {publishWorkflowId?:number;channelWorkflowId?:number;buildWorkflow?:string};
@@ -397,7 +401,7 @@ export class ReleaseRelay {
           ensure(run.repository?.id===target.id && sha(run.head_sha) && repeated && relayKey(repeated)===key,'RELEASE_PRODUCT_RUN');
           if(draining&&(run.path===channelPath||!version3Candidate(scoped.target))){await stopLegacy();return;}
           if(run.path!==channelPath){
-            officialRelease=officialCycle(await boundBuildCycle(scoped,run));
+            officialRelease=officialCycle(await boundBuildCycle(scoped,run),run.id);
             if(draining&&!officialRelease){await stopLegacy();return;}
           }
         }

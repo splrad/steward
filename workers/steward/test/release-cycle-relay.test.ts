@@ -214,15 +214,20 @@ it('recovers a never-posted event after promotion without another POST for unkno
  expect(await f.storage.get('releaseCycle')).toMatchObject({stage:'unknown',reason:'DELIVERY_UNKNOWN'});
  await f.relay.register(hint);await f.relay.wakePromoted(pin);await f.tick();expect(f.state.posts).toBe(1);
 });
-it.each(['ordinary','ordinary-official','handoff-legacy','handoff-official','handoff-invalid-scope','handoff-receipt-only','handoff-recover-cycle-read'] as const)('binds build completion to its frozen cycle before dispatch: %s',async mode=>{
+it.each(['ordinary','ordinary-official','handoff-legacy','handoff-official','handoff-invalid-scope','handoff-receipt-only','handoff-recover-cycle-read','handoff-frozen-draft','handoff-unrelated-delivery'] as const)('binds build completion to its frozen cycle before dispatch: %s',async mode=>{
  const cycleId='pr-192-'+pin, op='a'.repeat(64), ref='steward/build/'+cycleId, f=fixture();
  const created=new Date().toISOString();
  const run={id:101,run_attempt:2,status:'completed',head_sha:pin,head_branch:ref,event:'workflow_dispatch',actor:{id:301115370},
    repository:{id:TARGET.id},head_repository:{id:TARGET.id},workflow_id:410998652,path:'.github/workflows/steward-release-publish.yml',display_title:'Build '+op,created_at:created};
- const official=mode.endsWith('-official')||mode==='handoff-recover-cycle-read';
+ const draft=mode==='handoff-frozen-draft'||mode==='handoff-unrelated-delivery';
+ const official=mode.endsWith('-official')||mode==='handoff-recover-cycle-read'||mode==='handoff-frozen-draft';
  const cycle={id:cycleId,prNumber:192,sourceSha:pin,dispatches:[{purpose:'build',ref,executionSha:pin,sourceSha:pin,workflowId:410998652,canonicalRunId:101,operationKey:op,sentAt:created}],
    ...(mode==='handoff-legacy'||mode==='ordinary'?{}:{officialRelease:{headSha:pin,pullBodyDigest:op,bodyDigest:op}}),
-   ...(mode==='handoff-receipt-only'?{}:{workflowDelivery:true,units:[{notesDigest:op,releaseId:mode==='handoff-invalid-scope'?123:null}]})};
+   ...(draft?{officialDraftScopeDigest:op}:{}),
+   ...(mode==='handoff-receipt-only'?{}:{workflowDelivery:true,units:[{
+     notesDigest:op,releaseId:mode==='handoff-invalid-scope'?123:null,
+     ...(draft?{githubDelivery:{runId:mode==='handoff-unrelated-delivery'?102:101,attempt:2,artifactId:8,digest:'sha256:'+op}}:{})
+   }]})};
  const {createHash}=await import('node:crypto');
  const bytes=Buffer.from(JSON.stringify(cycle)), blob=createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex');
  let post:any,cycleReads=0;
@@ -272,7 +277,7 @@ it('treats a validated custom path as a build completion and rejects the same Ru
  expect(hint(run)).toEqual({repositoryId:TARGET.id,kind:'run',runId:20,attempt:1});
  expect(hint({...run,path:'.github/workflows/other-cli.yaml'})).toBeUndefined();
 });
-it.each(['ordinary','handoff-legacy','stored-proof','historical-unmarked','historical-unrelated-dispatch'] as const)('verifies the original reservation when forwarding publication attempt two: %s',async mode=>{
+it.each(['ordinary','handoff-legacy','stored-proof','stored-proof-unrelated-delivery','historical-unmarked','historical-unrelated-dispatch'] as const)('verifies the original reservation when forwarding publication attempt two: %s',async mode=>{
  const f=fixture(), firstTime=new Date(f.state.now).toISOString(), after=new Date(f.state.now+3600000).toISOString();
  const cycleId='pr-192-'+pin, op='a'.repeat(64), ref='steward/build/'+cycleId, buildPath='.github/workflows/steward-release-publish.yml';
  const build={id:101,run_attempt:2,status:'completed',head_sha:pin,head_branch:ref,event:'workflow_dispatch',actor:{id:301115370},
@@ -281,13 +286,16 @@ it.each(['ordinary','handoff-legacy','stored-proof','historical-unmarked','histo
  const source={...receipt,display_title:'Release cycle '+relayKey(parentHint),created_at:firstTime,status:'completed'};
  const second={...source,run_attempt:2,created_at:after};
  const parent={hint:parentHint,policy:pin,reserved:f.state.now,runId:source.id,
-   ...(mode==='stored-proof'?{officialRelease:true}:{})};
+   ...(mode.startsWith('stored-proof')?{officialRelease:true}:{})};
  const intake:string[]=[];
  const ns={idFromName:(s:string)=>s,get:()=>({fetch:async(req:Request)=>{
    if(new URL(req.url).pathname==='/release-cycle')intake.push('publication');
    return Response.json(parent);
  }})};
- const cycle={id:cycleId,prNumber:192,sourceSha:pin,workflowDelivery:true,units:[{notesDigest:op,releaseId:null}],
+ const wrongDelivery=mode==='stored-proof-unrelated-delivery';
+ const cycle={id:cycleId,prNumber:192,sourceSha:pin,workflowDelivery:true,units:[{notesDigest:op,releaseId:null,
+   ...(wrongDelivery?{githubDelivery:{runId:102,attempt:2,artifactId:8,digest:'sha256:'+op}}:{})}],
+   ...(wrongDelivery?{officialDraftScopeDigest:op}:{}),
    officialRelease:{headSha:pin,pullBodyDigest:op,bodyDigest:op},
    dispatches:[{purpose:'build',ref,executionSha:pin,sourceSha:pin,workflowId:410998652,canonicalRunId:mode==='historical-unrelated-dispatch'?102:101,operationKey:op,sentAt:firstTime}]};
  const {createHash}=await import('node:crypto');
@@ -311,12 +319,12 @@ it.each(['ordinary','handoff-legacy','stored-proof','historical-unmarked','histo
  expect(h).toEqual({repositoryId:CENTRAL.id,kind:'publication',runId:source.id,attempt:2});
  const env={...f.env,INSTALLATION_ID:'7',BOUNDED_RECHECK:ns,LEGACY_RELEASE_HANDOFF_IDS:JSON.stringify(mode==='ordinary'?[]:[TARGET.id])} as any;
  const relay=new ReleaseRelay(f.storage as any,env,()=>g as any,()=>f.state.now);
- const rejected=mode==='handoff-legacy'||mode==='historical-unrelated-dispatch';
+ const rejected=mode==='handoff-legacy'||mode==='historical-unrelated-dispatch'||wrongDelivery;
  await acceptReleaseHint(env,'workflow_run',webhook);
  expect(intake).toHaveLength(mode==='handoff-legacy'?0:1);
  await relay.register(h);await relay.alarm();
  expect(posts).toBe(rejected?0:1);
- expect(historicalReads>0).toBe(mode.startsWith('historical'));
+ expect(historicalReads>0).toBe(mode.startsWith('stored-proof')||mode.startsWith('historical'));
  if(mode==='handoff-legacy')expect(await f.storage.get('releaseCycle')).toMatchObject({paused:true,reason:'LEGACY_RELEASE_HANDOFF',reserved:0});
 });
 it('quiesces an unconfirmed POST and resumes its existing confirmation budget on redelivery',async()=>{

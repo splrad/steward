@@ -2,14 +2,12 @@ import {retryAfterTime} from './bounded-retry-after.js';
 import {BoundedGitHub, TARGET, ensure, type BoundedEnv, type GitReader} from './bounded-recheck-github.js';
 import {registerWingetRun} from './bounded-winget-evidence.js';
 import {releaseHint} from './release-cycle-relay.js';
-import {legacyReleaseHandoff} from './legacy-release-handoff.js';
 
 type Submit = {id:number; attempt:number; title:string; tries:number; next:number; state:'pending'|'finished'|'unknown';paused?:boolean};
 export async function acceptWingetSubmit(env:BoundedEnv,event:string,p:any) {
   if(env.BOUNDED_RECHECK_ENABLED!=='true')return;
   const hint=releaseHint(event,p,env.INSTALLATION_ID);
   if(hint?.kind!=='run'||p.workflow_run.workflow_id!==410998651||!/^Channels submit [a-f0-9]{64}$/.test(p.workflow_run.display_title))return;
-  if(legacyReleaseHandoff(env,TARGET.id))return;
   const ns=env.BOUNDED_RECHECK;ensure(ns,'CHANNEL_NAMESPACE');
   const stub=ns.get(ns.idFromName('winget-submit:v1:'+hint.runId+':'+hint.attempt));
   const response=await stub.fetch(new Request('https://bounded.internal/winget-submit',{method:'POST',
@@ -19,7 +17,6 @@ export async function acceptWingetSubmit(env:BoundedEnv,event:string,p:any) {
 export class WingetSubmit {
   constructor(private storage:DurableObjectStorage,private env:BoundedEnv,private reader:()=>GitReader=()=>new BoundedGitHub(env),private now=Date.now){}
   async register(hint:Pick<Submit,'id'|'attempt'|'title'>){
-    if(legacyReleaseHandoff(this.env,TARGET.id))return;
     await this.storage.transaction(async t=>{
       const old=await t.get<Submit>('wingetSubmit');
       if(old){
@@ -36,7 +33,7 @@ export class WingetSubmit {
     const r=await this.storage.transaction(async t=>{
       const r=await t.get<Submit>('wingetSubmit');
       if(!r||r.state!=='pending'||r.next>this.now())return;
-      if(this.env.BOUNDED_RECHECK_ENABLED!=='true'||legacyReleaseHandoff(this.env,TARGET.id)){r.paused=true;await t.put('wingetSubmit',r);await t.deleteAlarm();return;}
+      if(this.env.BOUNDED_RECHECK_ENABLED!=='true'){r.paused=true;await t.put('wingetSubmit',r);await t.deleteAlarm();return;}
       if(r.tries>=4){r.state='unknown';await t.put('wingetSubmit',r);await t.deleteAlarm();return;}
       r.tries++;r.next=this.now()+[60000,300000,900000,60000][r.tries-1]!;
       await t.put('wingetSubmit',r);await t.setAlarm(r.next);return r;
