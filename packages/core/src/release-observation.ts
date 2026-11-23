@@ -113,6 +113,8 @@ export function parseReleaseRecord<K extends keyof RecordKinds>(kind: K, value: 
       fail('official release cycle');
     if (record.officialDraftScopeDigest && (!record.officialRelease || !record.units[0]!.githubDelivery))
       fail('official release scope receipt');
+    if (record.officialRelease && record.units[0]!.releaseId!==null && !record.officialDraftScopeDigest)
+      fail('official release scope required for binding');
     const pair = (value: { unitId: string; channelId: string }) => JSON.stringify([value.unitId, value.channelId]);
     if (!unique(record.requiredChannels.map(pair)) || record.requiredChannels.some(item => !record.units.some(unit => unit.id === item.unitId))) fail('required channels');
     for (const unit of record.units) if (!unique(unit.assets.map(asset => asset.id)) || !unique(unit.assets.map(asset => asset.path.toLowerCase()))) fail('duplicate asset');

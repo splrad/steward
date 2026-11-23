@@ -215,6 +215,19 @@ export async function readOfficialScope(approval, token, body) {
   return snapshot.othersDigest;
 }
 
+/** The durable ID already passed the branch-wide Action check in its original attempt. */
+export async function readBoundOfficialDraft(approval, reader) {
+  requireFact(id(approval.releaseId), 'BOUND_DRAFT_REQUIRED');
+  const [config, release] = await Promise.all([
+    nativeFile(reader, configPath, approval.sourceSha), reader.json(`releases/${approval.releaseId}`),
+  ]);
+  requireFact(typeof release.body==='string' && hash(release.body)===approval.bodyDigest, 'DRAFT_IDENTITY');
+  const prerelease=releaseIsPrerelease(config.value,approval.version);
+  const current=await releaseInventory(approval,{body:release.body,prerelease},reader);
+  requireFact(current.releaseId===approval.releaseId, 'DRAFT_IDENTITY');
+  return {body:release.body,prerelease,releaseId:approval.releaseId};
+}
+
 export async function prepareOfficialAction(approval, token, stateHead, scopeDigest) {
   const reader = await scopedReader(approval, token);
   requireFact(/^[a-f0-9]{64}$/.test(scopeDigest), 'SCOPE_RECEIPT_REQUIRED');

@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import YAML from 'yaml';
 import { EvidenceReadError } from '../../packages/runner/dist/index.js';
-import { approvedOfficialBody, inspectOfficialRelease, reconcileOfficialLifecycle } from '../official-release.mjs';
+import { approvedOfficialBody, inspectOfficialRelease, readBoundOfficialDraft, reconcileOfficialLifecycle } from '../official-release.mjs';
 
 const digest = value => createHash('sha256').update(value).digest('hex');
 const source = 'a'.repeat(40), head = 'b'.repeat(40), newer = 'c'.repeat(40), annotation = 'd'.repeat(40);
@@ -58,7 +58,7 @@ function fixture() {
   const compare=async()=>({status:facts.comparison,merge_base_commit:{sha:source}});
   const perform=options=>inspectOfficialRelease(approval,{reader,scan:async()=>facts.scan,compare,...options});
   const after=()=>{facts.releases.push(draft);facts.tag={type:'tag',sha:annotation};pull.labels=[{name:tagged}];facts.scan=[];};
-  return {facts, matching, draft, perform, after};
+  return {facts, matching, draft, perform, after, reader};
 }
 
 test('the pinned official parser preserves the approved Chinese body, inline HTML, and code',async()=>{
@@ -104,6 +104,17 @@ test('postmerge edits and config changes are rejected even when the official sca
     Object.keys(override).forEach(key=>delete f.facts.config[key]);
     f.facts.config['separate-pull-requests']=true;
   }
+});
+
+test('a bound draft resumes from the recorded ID and original body after the default manifest advances',async()=>{
+  const f=fixture();f.after();
+  f.facts.activeConfig={...f.facts.config,draft:false};
+  f.facts.manifest['.']='1.2.4';
+  f.facts.pull.body+=' edited later';
+  const bound={...approval,releaseId:2};
+  assert.deepEqual(await readBoundOfficialDraft(bound,f.reader),{body,prerelease:false,releaseId:2});
+  f.draft.body+=' draft drift';
+  await assert.rejects(readBoundOfficialDraft(bound,f.reader),/DRAFT_IDENTITY/);
 });
 
 test('a correct tag with lost draft creation can continue only through the official action',async()=>{

@@ -256,8 +256,12 @@ export async function main(env=process.env) {
         const refresh=()=>cycleStage('LEDGER_READ',()=>fetchState(root,repository,token));
         const request=async(cycleId,runId,state)=>({directory:(state??await refresh()).directory,writeDirectory:await mkdtemp(join(root,'write-')),
           remote:'https://github.com/'+product.name+'.git',repository:product.name,repositoryId:product.id,defaultBranch:product.defaultBranch,appBotId:app.appBotId,cycleId,runId,identity});
-        const official={enabled:officialEnabled,stage:officialStage,
+        const official={enabled:officialEnabled,stage:officialStage,ready:Boolean(env.OFFICIAL_RELEASE_TOKEN),
           readBody:approval=>app.forCandidateReadRepository(product.id,readToken=>readOfficialBody(approval,readToken)),
+          preparation:async cycleId=>{
+            const previous=JSON.parse(await readFile('official-release-preparation.json','utf8'));
+            return previous.cycleId===cycleId?previous:wait('OFFICIAL_RELEASE_PREFLIGHT_REQUIRED');
+          },
           confirm:async approval=>{
             if (!env.OFFICIAL_RELEASE_TOKEN) fail('OFFICIAL_RELEASE_PREFLIGHT_REQUIRED');
             const prior=JSON.parse(await readFile('official-release-preflight.json','utf8'));
@@ -318,10 +322,12 @@ export async function main(env=process.env) {
     });
     const result=await cycleStage('PARTICIPATION',()=>withCycleEventProduct(app,event,processProduct));
     if (officialStage==='prepare') {
-      if (result.officialPlan) {
-        const [owner,repo]=result.officialPlan.approval.repository.split('/');
-        await writeFile('official-release-plan.json',JSON.stringify(result.officialPlan)+'\n',{flag:'wx'});
-        await appendFile(env.GITHUB_OUTPUT,`ready=true\nowner=${owner}\nrepo=${repo}\ntarget_branch=${result.officialPlan.approval.defaultBranch}\n`);
+      const {officialPlan,...summary}=result;
+      await writeFile('official-release-preparation.json',JSON.stringify(summary)+'\n',{flag:'wx'});
+      if (officialPlan) {
+        const [owner,repo]=officialPlan.approval.repository.split('/');
+        await writeFile('official-release-plan.json',JSON.stringify(officialPlan)+'\n',{flag:'wx'});
+        await appendFile(env.GITHUB_OUTPUT,`ready=true\nowner=${owner}\nrepo=${repo}\ntarget_branch=${officialPlan.approval.defaultBranch}\n`);
       }
       return;
     }

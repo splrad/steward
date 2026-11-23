@@ -16,7 +16,7 @@ import { githubUnits, decodeReleaseRecord, decodeStateFile, stateRecordOwner, as
   retainedChannelObservations, observeNativeChannels, readChannelSourceRejections, selectChannelDispatch, prepareChannelDispatch, channelTargetsDigest, verifyChannelResult, verifyContinuationReleases, evaluateCompletion } from '../packages/runner/dist/index.js';
 
 import {withReleaseAdoption,recoverReleaseCaches} from './release-adoption.mjs';
-import { approvedCycleTarget, readOfficialScope } from './official-release.mjs';
+import { approvedCycleTarget, readBoundOfficialDraft, readOfficialScope } from './official-release.mjs';
 
 const refs = new Set(['steward/release-state','steward/governance-state','steward/automation-health']);
 const hash = value => typeof value==='string' && /^[a-f0-9]{40}$/.test(value) && value.length===40;
@@ -729,6 +729,7 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
       if(!cycle.officialRelease&&release.draft!==false)
         return {status:'WAIT',reason:'LEGACY_PUBLICATION_READ_ONLY',publishInvoked:false};
       if(release.draft===false) {
+        if(official?.stage==='prepare')return {status:'WAIT',reason:'FORMAL_RELEASE_READBACK_REQUIRED',publishInvoked:false};
         await verifyFormalPublication(context,io,token,new Set([unit.id]));
         alreadyPublished.add(unit.id);
       }
@@ -738,7 +739,12 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
       return {status:'WAIT',reason:'OFFICIAL_RELEASE_DISABLED',publishInvoked:false};
     const approval=cycle.officialRelease?approvedCycleTarget(context,request.defaultBranch):null;
     const isOfficialPreparation=approval&&official.stage==='prepare';
-    const officialDraft=approval&&!isOfficialPreparation?await official.confirm(approval):null;
+    if(isOfficialPreparation&&approval.releaseId!==null)
+      return {status:'WAIT',reason:'BOUND_OFFICIAL_DRAFT_READY',publishInvoked:false};
+    if(approval&&!isOfficialPreparation&&approval.releaseId===null&&!official.ready)
+      return await official.preparation(cycle.id);
+    const officialDraft=approval&&!isOfficialPreparation?(approval.releaseId===null
+      ?await official.confirm(approval):await readBoundOfficialDraft(approval,reader)):null;
     const officialBody=approval?(officialDraft?.body??await official.readBody(approval)):undefined;
     const pending=alreadyPublished.size||unavailable.size
       ?new Set(targets.filter(unit=>!alreadyPublished.has(unit.id)&&!unavailable.has(unit.id)).map(unit=>unit.id)):undefined;
