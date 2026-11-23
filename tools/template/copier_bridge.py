@@ -76,16 +76,19 @@ def revision(central, value, env):
     require(isinstance(value, str) and re.fullmatch(r'[a-f0-9]{40}', value), 'TEMPLATE_SHA')
     require(git(central, ['rev-parse', '--verify', value + '^{commit}'], env).decode().strip() == value, 'TEMPLATE_COMMIT')
     tags = git(central, ['tag', '--points-at', value], env).decode().splitlines()
-    versions = []
+    versions = {}
     for tag in tags:
         try:
             version = Version(tag)
             if not version.is_prerelease and not version.is_devrelease:
-                versions.append(version)
+                versions[version] = tag
         except InvalidVersion:
             continue
     require(versions, 'TEMPLATE_VERSION_TAG_REQUIRED')
-    return max(versions)
+    tag = versions[max(versions)]
+    require(git(central, ['rev-parse', '--verify', 'refs/tags/' + tag + '^{commit}'], env).decode().strip() == value,
+            'TEMPLATE_COMMIT')
+    return tag
 
 
 def select_template(central, controller):
@@ -98,7 +101,7 @@ def select_template(central, controller):
             try: version=Version(tag)
             except InvalidVersion: continue
             if version.is_prerelease or version.is_devrelease: continue
-            sha=git(central,['rev-parse','--verify',tag+'^{commit}'],env).decode().strip()
+            sha=git(central,['rev-parse','--verify','refs/tags/'+tag+'^{commit}'],env).decode().strip()
             if not git(central,['ls-tree',sha,'--','copier.yml'],env): continue
             require(version not in candidates or candidates[version]['templateSha']==sha,'TEMPLATE_VERSION_AMBIGUOUS')
             candidates[version]={'templateSha':sha,'tag':tag}
@@ -118,7 +121,7 @@ def configuration_excluded(config):
 
 
 def contract(central, sha, data, env):
-    version = revision(central, sha, env)
+    tag = revision(central, sha, env)
     raw = git(central, ['show', sha + ':copier.yml'], env)
     config = yaml.safe_load(raw)
     require(isinstance(config, dict) and config.get('_subdirectory') == 'templates/repository'
@@ -154,7 +157,7 @@ def contract(central, sha, data, env):
         paths.difference_update(LEGACY_CONFIGURATION)
         if '/' + RELEASE_NOTES_TEMPLATE in config['_exclude']:
             paths.discard(RELEASE_NOTES_TEMPLATE)
-    return version, questions, paths
+    return tag, questions, paths
 
 
 def answers(central, product, env):
@@ -237,7 +240,7 @@ def render(central, target, sha, mode, data=None):
     data = data or {}
     with tempfile.TemporaryDirectory(prefix='steward-copier-profile-') as profile:
         env = environment(Path(profile))
-        new_version, _, new_paths = contract(central, sha, data, env)
+        new_tag, _, new_paths = contract(central, sha, data, env)
         public_rules, default_section = review_rules_template(central, sha, env)
         before, old_paths = {}, set()
         repository_section = b''
@@ -251,8 +254,8 @@ def render(central, target, sha, mode, data=None):
             require(not (target / ADOPTION_REPORT).exists(), 'TEMPLATE_ADOPTION_INCOMPLETE')
             require(not git(target, ['status', '--porcelain', '--untracked-files=all'], env), 'TEMPLATE_DIRTY')
             _, old_sha, old_data = answers(central, target, env)
-            old_version, _, old_paths = contract(central, old_sha, old_data, env)
-            require(new_version >= old_version, 'TEMPLATE_DOWNGRADE')
+            old_tag, _, old_paths = contract(central, old_sha, old_data, env)
+            require(Version(new_tag) >= Version(old_tag), 'TEMPLATE_DOWNGRADE')
             before = paths_in_tree(target)
             old_public, old_section = review_rules_template(central, old_sha, env)
             previous = before.get(REVIEW_RULES_PATH, b'')
@@ -308,6 +311,22 @@ def render(central, target, sha, mode, data=None):
                 (target / REVIEW_RULES_PATH).write_bytes(expected_rules)
                 after[REVIEW_RULES_PATH] = expected_rules
         require(after.get(REVIEW_RULES_PATH) == expected_rules, 'TEMPLATE_REVIEW_RULES_OUTPUT')
+        answers_path = '.copier-answers.yml'
+        require(answers_path in after, 'TEMPLATE_REQUIRED_FILE_MISSING')
+        generated = yaml.safe_load(after[answers_path])
+        require(isinstance(generated, dict) and generated.get('_src_path') == SOURCE, 'TEMPLATE_GENERATED_SOURCE')
+        ref = generated.get('_commit')
+        require(isinstance(ref, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.!_+-]*', ref), 'TEMPLATE_GENERATED_VERSION')
+        require(git(central, ['rev-parse', '--verify', ref + '^{commit}'], env).decode().strip() == sha,
+                'TEMPLATE_GENERATED_VERSION')
+        # Copier describes the SHA with any exact tag. Persist the selected template version.
+        if ref != new_tag:
+            normalized, count = re.subn(rb'(?m)^(_commit:[ \t]+)[^\r\n]+',
+                                        lambda match: match[1] + new_tag.encode('ascii'), after[answers_path])
+            generated['_commit'] = new_tag
+            require(count == 1 and yaml.safe_load(normalized) == generated, 'TEMPLATE_GENERATED_VERSION')
+            (target / answers_path).write_bytes(normalized)
+            after[answers_path] = normalized
         changed = {p for p in before.keys() | after.keys() if before.get(p) != after.get(p)}
         if new_paths.isdisjoint(LEGACY_CONFIGURATION):
             require(changed.isdisjoint(LEGACY_CONFIGURATION), 'TEMPLATE_LEGACY_CONFIGURATION_CHANGED')
@@ -318,9 +337,6 @@ def render(central, target, sha, mode, data=None):
         require(new_paths <= after.keys(), 'TEMPLATE_REQUIRED_FILE_MISSING')
         if retire_release_template:
             require(RELEASE_NOTES_TEMPLATE not in after, 'TEMPLATE_RELEASE_COPY_RECREATED')
-        generated = yaml.safe_load(after['.copier-answers.yml'])
-        require(generated['_src_path'] == SOURCE, 'TEMPLATE_GENERATED_SOURCE')
-        require(git(central, ['rev-parse', '--verify', str(generated['_commit']) + '^{commit}'], env).decode().strip() == sha, 'TEMPLATE_GENERATED_VERSION')
         return {'mode': mode, 'paths': sorted(changed), 'answers': generated,
                 'reviewRulesSha256': hashlib.sha256(expected_rules).hexdigest()}
 
