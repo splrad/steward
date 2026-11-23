@@ -47,11 +47,12 @@ export async function main(env=process.env) {
     {get,product,invoke:async({before,sourceSha})=>{
       const repository={id:product.id,full_name:product.name,default_branch:product.defaultBranch},state=await fetchState(root,repository,token);
       if(state.snapshot.head!==before.evidence.stateCommit)fail('CANDIDATE_EVENT_STATE_MOVED');
-      await assertReleaseUnpaused(app,product.id);
+      const admit=()=>assertReleaseUnpaused(app,product.id);
+      await admit();
       return nativeReleaseCandidate({directory:state.directory,writeDirectory:join(root,'writes'),remote:state.remote,repository:product.name,
         repositoryId:product.id,defaultBranch:product.defaultBranch,appBotId:app.appBotId,identity:botIdentity},{token,readToken,
         copilotToken:env.STEWARD_COPILOT_TOKEN,controllerSha:env.STEWARD_CONTROLLER_SHA,expectedStateSha:before.evidence.stateCommit,expectedSourceSha:sourceSha,
-        checkRepositoryPolicy:releasePolicyGuard(app,repository),
+        checkRepositoryPolicy:releasePolicyGuard(app,repository),admit,
         reselectUnits:before.selectionChanged,manualCandidateProducer:{repositoryId:centralId,runId:run.id,attempt:run.run_attempt,controllerSha:env.STEWARD_CONTROLLER_SHA,requestKey:env.BOUNDED_REQUEST_KEY}});
     }});
     await writeFile('result.json',JSON.stringify(result)+'\n',{flag:'wx'});return result;

@@ -674,6 +674,22 @@ async function runNativeCandidate(pinCase: string) {
     expect(requests.slice(start).every(request=>request.method==='GET')).toBe(true);
     expect(await head('steward/release-state')).toBe(before);expect(modelCalls).toBe(firstCalls);
   }
+  if(pinCase==='new-source') {
+    const before = await head('steward/release-state'), start = requests.length;
+    let prepared = false;
+    await expect(releaseCommand('candidate',{...request,cycleId:null,runId:null,writeDirectory:join(root,'late-paused-handoff')},
+      {token:options.token,candidateReadToken:options.readToken,controllerSha:options.controllerSha,now:options.now,io,
+        candidateRuntime:{
+          checkRepositoryPolicy:async()=>{prepared=true;},
+          admit:async()=>{
+            expect(prepared).toBe(true);
+            await checkPaused();
+          },
+        }})).rejects.toThrow('RELEASE_REPOSITORY_PAUSED');
+    expect(await head('steward/release-state')).toBe(before);
+    expect(requests.slice(start).every(request=>request.method==='GET')).toBe(true);
+    expect(modelCalls).toBe(firstCalls);
+  }
   const compactReadsBeforeHandoff=compactPolicyReads;
   let adoptedReads=0;
   const adoptedPolicy=explicitWorkflow?releasePolicyGuard({},request,async()=>{

@@ -94,15 +94,17 @@ export async function executePlan(p,{root,controllerDirectory,app,modelToken,fet
     requireFact(state.snapshot.head===p.stateSha,'STATE_CHANGED');
     const client=boundedClient(lib.copilotReleaseClient(controllerDirectory,modelToken),p.maxRequests);
     const checkRepositoryPolicy=p.repository.full_name.startsWith('splrad/')?releasePolicyGuard(app,p.repository):undefined;
+    let admit;
     if(checkRepositoryPolicy) {
       const {assertReleaseUnpaused}=await import(pathToFileURL(join(controllerDirectory,'scripts/release-pause-policy.mjs')).href);
-      await assertReleaseUnpaused(app,p.repository.id);
+      admit=()=>assertReleaseUnpaused(app,p.repository.id);
+      await admit();
     }
     const result=await nativeReleaseCandidate({directory:state.directory,writeDirectory:join(root,'writes'),remote:state.remote,
       repository:p.repository.full_name,repositoryId:p.repository.id,defaultBranch:'main',appBotId:app.appBotId,
       identity:{name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'}},
       {token,readToken,controllerSha:p.controllerSha,controllerDirectory,temporaryRoot:root,fetcher:guardedFetch,
-        language:client,expectedStateSha:p.stateSha,checkRepositoryPolicy});
+        language:client,expectedStateSha:p.stateSha,checkRepositoryPolicy,admit});
     requireFact(result.status==='READY','CANDIDATE_PENDING');return {kind:p.kind,calls:client.calls,status:result.status};
   });
 }

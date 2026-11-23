@@ -76,11 +76,12 @@ export async function main(env=process.env) {
       const repository={id:product.id,full_name:product.name,default_branch:product.defaultBranch};
       const state=await fetchState(root,repository,token);
       if(state.snapshot.head!==before.evidence.stateCommit)fail('BOUNDED_STATE_MOVED');
-      await assertReleaseUnpaused(app,product.id);
+      const admit=()=>assertReleaseUnpaused(app,product.id);
+      await admit();
       const result=await nativeReleaseCandidate({directory:state.directory,writeDirectory:join(root,'writes'),remote:state.remote,repository:product.name,
         repositoryId:product.id,defaultBranch:product.defaultBranch,appBotId:app.appBotId,identity:botIdentity},{token,readToken,controllerSha:env.STEWARD_CONTROLLER_SHA,
         expectedStateSha:before.evidence.stateCommit,observation:identity,
-        checkRepositoryPolicy:releasePolicyGuard(app,repository)});
+        checkRepositoryPolicy:releasePolicyGuard(app,repository),admit});
       const after=await candidateEvidence(get,{product});if(!sameIdentity(identity,after.identity))fail('BOUNDED_EPOCH_MOVED');
       if(after.pull.head.sha!==before.pull.head.sha)fail('BOUNDED_HUMAN_HEAD_MOVED');
       const output={schemaVersion:1,requestKey,identity,repositoryId:centralId,runId:run.id,runAttempt:run.run_attempt,

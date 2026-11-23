@@ -42,7 +42,7 @@ export function mergedContributorIdentity(identity, authors) {
 }
 
 /** Fixed candidate adapter. Credentials never enter archived data or model/RP payloads. */
-export async function nativeReleaseCandidate(request, { token, readToken, copilotToken, controllerSha, controllerDirectory = process.cwd(), now = () => new Date().toISOString(), fetcher = fetch, generator, language, expectedStateSha, expectedSourceSha, temporaryRoot = tmpdir(),verifyHandoff,contentRecovery,observation,manualCandidateProducer,reselectUnits=false,checkRepositoryPolicy,homepageEvent } = {}) {
+export async function nativeReleaseCandidate(request, { token, readToken, copilotToken, controllerSha, controllerDirectory = process.cwd(), now = () => new Date().toISOString(), fetcher = fetch, generator, language, expectedStateSha, expectedSourceSha, temporaryRoot = tmpdir(),verifyHandoff,contentRecovery,observation,manualCandidateProducer,reselectUnits=false,checkRepositoryPolicy,homepageEvent,admit } = {}) {
   if (!readToken || readToken === token) return { status: 'WAIT', reason: 'CANDIDATE_SCOPED_READ_CREDENTIAL_REQUIRED' };
   if (!validSha(controllerSha)) return { status: 'WAIT', reason: 'CANDIDATE_CONTROLLER_IDENTITY_REQUIRED' };
   if(expectedStateSha!==undefined&&!validSha(expectedStateSha))fail('CANDIDATE_EXPECTED_STATE_INVALID');
@@ -218,7 +218,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       } }, {token,fetcher});
       const result = await writeReleaseRecords({ directory: join(request.writeDirectory, `candidate-${++writes}`), remote: request.remote,
         repositoryId: request.repositoryId, defaultBranch: request.defaultBranch, targetRef: 'steward/release-state', writer: 'release', expectedHead,
-        allowedPaths: changes.map(f => f.path), changes, identity: request.identity }, { token });
+        allowedPaths: changes.map(f => f.path), changes, identity: request.identity }, { token, beforePush: admit });
       if (!['APPLIED', 'UNCHANGED'].includes(result.status)) fail('CANDIDATE_STATE_CONFLICT');
       expectedHead = result.head; for (const file of changes) { loaded.set(file.path, file.content); persisted.set(file.path, file.content); } return expectedHead;
     };
