@@ -187,6 +187,34 @@ test('a rerun after a lost publication receipt verifies the original attempt wit
   assert.deepEqual(calls,['reconcile-publication','reconcile-publication']);
 });
 
+test('official draft preparation recovers a lost canonical build binding on the original completed Run',async()=>{
+  const request={purpose:'build',operationKey:'e'.repeat(64),requestKey:'f'.repeat(64),canonicalRunId:null,workflowId:410998652,
+    ref:'steward/build/pr-192-'+source,executionSha:source,sentAt:'2026-11-19T01:00:00Z'};
+  const run={id:83,run_attempt:1,status:'completed',conclusion:'success',repository:{id:product.id},head_repository:{id:product.id},
+    head_sha:source,head_branch:request.ref,actor:{id:301115370},triggering_actor:{id:301115370},event:'workflow_dispatch',workflow_id:410998652,
+    path:'.github/workflows/steward-release-publish.yml',created_at:'2026-11-19T01:00:00Z',updated_at:'2026-11-19T01:01:00Z',
+    display_title:'Build '+request.operationKey};
+  const cycle={id:'cycle',officialRelease:{},dispatches:[request]};
+  const event={repositoryId:product.id,kind:'run',runId:83,attempt:1};
+  const calls=[];
+  let recoveredId=run.id;
+  const ports={get:async()=>run,snapshot:async()=>({cycles:[{value:structuredClone(cycle)}]}),
+    botId:301115370,officialStage:'prepare',invoke:async(command,id,runId,_allowProbe,recoverOnly)=>{
+      calls.push([command,id,runId,recoverOnly]);
+      if (recoverOnly) cycle.dispatches[0].canonicalRunId=recoveredId;
+      return {status:'BOUND'};
+    }};
+  assert.deepEqual(await advanceEvent(event,ports),{status:'BOUND',cycleId:'cycle'});
+  assert.deepEqual(calls,[['dispatch-build','cycle',null,true],['publish','cycle',null,undefined]]);
+  for (const canonical of [null,84]) {
+    calls.length=0;
+    request.canonicalRunId=null;
+    recoveredId=canonical;
+    assert.equal((await advanceEvent(event,ports)).reason,'CANONICAL_RUN_UNCONFIRMED');
+    assert.deepEqual(calls,[['dispatch-build','cycle',null,true]]);
+  }
+});
+
 test('retains each native attempt receipt even if the first upload acknowledgement was lost',async()=>{
   const workflow=YAML.parse(await readFile(new URL('../../.github/workflows/release-cycle-event.yml',import.meta.url),'utf8'));
   const upload=workflow.jobs['release-coordinator'].steps.find(step=>step.uses?.startsWith('actions/upload-artifact@'));
