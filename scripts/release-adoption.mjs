@@ -19,7 +19,7 @@ const same=(a,b)=>a?.sourceSha===b?.sourceSha&&a?.prNumber===b?.prNumber;
 export function validateReleaseConfiguration(delivery,settings,versions) {
   const object=v=>v!==null&&typeof v==='object'&&!Array.isArray(v);
   const paths=delivery.units.map(u=>u.path).sort();
-  if(!object(settings)||settings['separate-pull-requests']!==false||!object(settings.packages)
+  if(!object(settings)||typeof settings['separate-pull-requests']!=='boolean'||!object(settings.packages)
     ||JSON.stringify(Object.keys(settings.packages).sort())!==JSON.stringify(paths)
     ||!object(versions)||Object.keys(versions).some(path=>!paths.includes(path)))fail('adopted configuration');
   for(const path of paths) {

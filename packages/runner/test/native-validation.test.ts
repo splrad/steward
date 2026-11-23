@@ -47,7 +47,8 @@ it('reads real complete Git base/head and detects stale base, wrong checkout and
     const env={GITHUB_EVENT_PATH:event,GITHUB_EVENT_NAME:'pull_request',GITHUB_REPOSITORY_ID:'1',GITHUB_REPOSITORY:'splrad/fixture',WORKFLOW_REPOSITORY:'splrad/steward',WORKFLOW_PATH:'.github/workflows/pr-validation-native.yml',WORKFLOW_SHA:S};
     expect((await validationInput(root,env)).input.changedPaths).toEqual(['new name.md','old name.md']);
     await expect(validationInput(root,{...env,WORKFLOW_REPOSITORY:'fork/steward'})).rejects.toThrow('TRUSTED_SOURCE');
-    git('update-ref','refs/remotes/origin/main',head);await expect(validationInput(root,env)).rejects.toThrow('BASE_MOVED');
+    git('update-ref','refs/remotes/origin/main',head);
+    await expect(validationInput(root,env)).rejects.toThrow(`VALIDATION_BASE_MOVED eventBase=${base} observedBase=${head}`);
     git('update-ref','refs/remotes/origin/main',base);git('checkout',base);await expect(validationInput(root,env)).rejects.toThrow('CHECKOUT');
     git('checkout',head);const payload=JSON.parse(await readFile(event,'utf8'));payload.pull_request.base.sha=S;await writeFile(event,JSON.stringify(payload));await expect(validationInput(root,env)).rejects.toThrow();
   }finally{await rm(root,{recursive:true,force:true});}
@@ -102,7 +103,7 @@ it('keeps CI registered while scoping modified prose on both PR and single-paren
     await check(code,added,true);
   }finally{await rm(root,{recursive:true,force:true});}
 },45000);
-it.each([false,true])('uses the protected base repository marker for a fork (private=%s)',async privateRepository=>{
+it.each([false,true])('scopes a fork without querying a repository projection (private=%s)',async privateRepository=>{
   const {main}=await script('validation-input'),root=await mkdtemp(join(tmpdir(),'validation-fork-'));
   registerOfflineFixtureRoot(root);
   const git=(...args:string[])=>execFileSync('git',args,{cwd:root,encoding:'utf8'}).trim();
@@ -114,50 +115,22 @@ it.each([false,true])('uses the protected base repository marker for a fork (pri
     const marker='.github/steward-central-policy',bytes=Buffer.from('central\n');
     await writeFile(join(root,marker),bytes);
     git('add','.');git('commit','--signoff','--no-gpg-sign','-m','adopt');
-    const base=git('rev-parse','HEAD'),tree=git('rev-parse',base+':.github'),blob=git('rev-parse',base+':'+marker);
+    const base=git('rev-parse','HEAD');
     git('update-ref','refs/remotes/origin/main',base);
     git('rm',marker);git('commit','--signoff','--no-gpg-sign','-m','remove marker in fork');
     const repository={id:42,full_name:'splrad/fixture',default_branch:'main',private:privateRepository,has_issues:false,has_pages:false};
     const event=join(root,'event.json'),output=join(root,'output.txt');
     await writeFile(event,JSON.stringify({repository,pull_request:{base:{repo:{id:42},ref:'main',sha:base},
       head:{repo:{id:91,full_name:'contributor/fixture'},sha:git('rev-parse','HEAD')}}}));
-    const responses=new Map<string,unknown>([
-      ['',repository],['branches/main',{name:'main',protected:true,commit:{sha:base}}],
-      ['git/trees/'+base,{truncated:false,tree:[{path:'.github',mode:'040000',type:'tree',sha:tree}]}],
-      ['git/trees/'+tree,{truncated:false,tree:[{path:'steward-central-policy',mode:'100644',type:'blob',sha:blob}]}],
-      ['contents/'+marker+'?ref='+base,{path:marker,type:'file',encoding:'base64',sha:blob,size:bytes.length,content:bytes.toString('base64')}],
-      ['git/matching-refs/heads/steward/governance-state',[]],
-    ]);
-    const origin='https://api.github.com/repos/splrad/fixture';
-    const requests:string[]=[];
-    vi.stubGlobal('fetch',vi.fn(async(url:string,request:RequestInit)=>{
-      expect(url.startsWith(origin)).toBe(true);
-      expect(request.method).toBe('GET');
-      expect(new Headers(request.headers).get('authorization')).toBe('Bearer workflow-read');
-      const path=url.slice(origin.length).replace(/^\//,'');
-      requests.push(path);
-      if(path==='git/ref/heads/steward/governance-state')return new Response(null,{status:404});
-      const value=responses.get(path);
-      expect(value).toBeDefined();
-      return Response.json(value);
-    }));
+    const fetcher=vi.fn(()=>{throw Error('Product CI scope must not query a configuration projection');});
+    vi.stubGlobal('fetch',fetcher);
     const env={VALIDATION_WORKSPACE:root,GITHUB_OUTPUT:output,GITHUB_EVENT_PATH:event,GITHUB_EVENT_NAME:'pull_request',
       GITHUB_REPOSITORY_ID:'42',GITHUB_REPOSITORY:repository.full_name,WORKFLOW_REPOSITORY:'splrad/steward',
-      WORKFLOW_PATH:'.github/workflows/pr-validation-native.yml',WORKFLOW_SHA:S,GITHUB_ACTIONS:'true',
-      REPOSITORY_POLICY_TOKEN:'workflow-read'};
-    await expect(main(env)).rejects.toThrow('REPOSITORY_POLICY_PROJECTION_REQUIRED');
-    expect(requests).toContain('git/ref/heads/steward/governance-state');
-    await expect(readFile(output)).rejects.toMatchObject({code:'ENOENT'});
-    responses.set('git/trees/'+tree,{truncated:true,tree:[]});
-    await expect(main(env)).rejects.toThrow('REPOSITORY_POLICY_PROJECTION_UNAVAILABLE');
-    responses.set('git/trees/'+tree,{truncated:false,tree:[]});
-    requests.length=0;
+      WORKFLOW_PATH:'.github/workflows/pr-validation-native.yml',WORKFLOW_SHA:S,GITHUB_ACTIONS:'true'};
     expect(await main(env)).toMatchObject({productApplicable:false,workflows:[]});
-    expect(requests.some(path=>path.includes('steward/governance-state'))).toBe(privateRepository);
+    expect(fetcher).not.toHaveBeenCalled();
     const fileJobEnv:NodeJS.ProcessEnv={...process.env,...env};
-    delete fileJobEnv.REPOSITORY_POLICY_TOKEN;
     const workflow=(await import('yaml')).parse(await readFile('.github/workflows/pr-validation-native.yml','utf8'));
-    expect(workflow.jobs.scope.steps.find((step:{id?:string})=>step.id==='identity').env.REPOSITORY_POLICY_TOKEN).toBe('${{ github.token }}');
     for(const [job,name] of [['governance','validation-governance'],['docs','validation-docs']] as const){
       const definition=workflow.jobs[job];
       expect(definition.needs).toBe('scope');
@@ -481,6 +454,47 @@ it('keeps registered settings and supplier lock metadata in organizational check
   expect(requiresProductCI(files,'private-administrator',admin)).toBe(false);
   expect(requiresProductCI([...files,'server/main.go'],'private-administrator',admin)).toBe(true);
 });
+it('accepts a valid release pause list only as an ordinary administrator Git file',async()=>{
+  const {validationInput}=await script('validation-input');
+  const root=await mkdtemp(join(tmpdir(),'validation-pause-list-'));
+  registerOfflineFixtureRoot(root);
+  const git=(...args:string[])=>execFileSync('git',args,{cwd:root,encoding:'utf8'}).trim();
+  const path='release-pauses.json',file=join(root,path),eventPath=join(root,'.git','event.json');
+  const repository={id:1447987054,full_name:'splrad/steward-settings',private:true,default_branch:'main'};
+  const env={GITHUB_EVENT_PATH:eventPath,GITHUB_EVENT_NAME:'pull_request',GITHUB_REPOSITORY_ID:String(repository.id),
+    GITHUB_REPOSITORY:repository.full_name,WORKFLOW_REPOSITORY:'splrad/steward',
+    WORKFLOW_PATH:'.github/workflows/pr-validation-native.yml',WORKFLOW_SHA:S};
+  const commit=()=>{
+    git('commit','--signoff','--no-gpg-sign','-qm','validation fixture');
+    return git('rev-parse','HEAD');
+  };
+  try{
+    git('init','--initial-branch=main');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid');
+    await writeFile(join(root,'README.md'),'base\n');git('add','README.md');
+    const before=commit();
+    const evaluate=async(base:string)=>{
+      git('update-ref','refs/remotes/origin/main',base);
+      await writeFile(eventPath,JSON.stringify({repository,pull_request:{base:{repo:{id:repository.id},ref:'main',sha:base},
+        head:{sha:git('rev-parse','HEAD')}}}));
+      return validationInput(root,env);
+    };
+    const save=async(bytes:string)=>{
+      await writeFile(file,bytes);git('add',path);return commit();
+    };
+    const empty=await save('[]\n');
+    await expect(evaluate(before)).resolves.toMatchObject({productApplicable:false,dependencyMode:'private-administrator',
+      workflows:[],input:{changedPaths:[path]}});
+    const paused=await save('[1187527897]\n');
+    await expect(evaluate(empty)).resolves.toMatchObject({productApplicable:false,dependencyMode:'private-administrator'});
+    await save('[1187527897,1187527897]\n');
+    await expect(evaluate(paused)).rejects.toThrow('RELEASE_PAUSES_INVALID');
+    git('checkout','--detach',paused);git('rm',path);commit();
+    await expect(evaluate(paused)).rejects.toThrow('VALIDATION_RELEASE_PAUSES_FILE');
+    git('checkout','--detach',paused);
+    git('update-index','--add','--cacheinfo','100755,'+git('rev-parse','HEAD:'+path)+','+path);commit();
+    await expect(evaluate(paused)).rejects.toThrow('VALIDATION_RELEASE_PAUSES_FILE');
+  }finally{await rm(root,{recursive:true,force:true});}
+},30000);
 it('accepts fork fallback only with the reviewed native run name and workflow source',async()=>{
   const {boundForkRun,workflowSource}=await script('product-ci-evidence');
   const path='.github/workflows/test.yml';

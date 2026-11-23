@@ -59,14 +59,20 @@ test('native candidate rejects a changed actual initial Git snapshot before busi
   try{
     const remote=join(root,'remote'),directory=join(root,'read');await mkdir(remote);await mkdir(directory);
     const env=isolatedBuildEnvironment(process.env,root),git=async(cwd,...args)=>(await promisify(execFile)('git',args,{cwd,env,encoding:'utf8',windowsHide:true})).stdout.trim();
-    await git(remote,'init','--initial-branch=steward/release-state');await git(remote,'config','user.name','Fixture');await git(remote,'config','user.email','fixture@example.invalid');
+    await git(remote,'init','--initial-branch=main');await git(remote,'config','user.name','Fixture');await git(remote,'config','user.email','fixture@example.invalid');
+    await writeFile(join(remote,'release-please-config.json'),JSON.stringify({'separate-pull-requests':false}));
+    await git(remote,'add','.');await git(remote,'commit','-m','default branch');const source=await git(remote,'rev-parse','HEAD');
+    await git(remote,'switch','--orphan','steward/release-state');
     await writeFile(join(remote,'state.json'),JSON.stringify({schemaVersion:3,repositoryId:1,defaultBranch:'main',revision:0,releaseAdoption:{sourceSha:sha,prNumber:1},lastObservedDefaultSha:sha,lastCompletedCycleId:null,activeCycleId:null,candidate:null,nextCheckAt:null,lastProgressAt:null,lastErrorCode:null})+'\n');
     await git(remote,'add','.');await git(remote,'commit','-m','fixture');const actual=await git(remote,'rev-parse','HEAD');await git(directory,'init');
     const {nativeReleaseCandidate}=await import('../../../scripts/release-candidate.mjs');let requests=0;
-    const fetcher=async()=>{requests++;return new Response(JSON.stringify({object:{sha:actual,type:'commit'}}));};
+    const fetcher=async(input:unknown)=>{
+      requests++;
+      return Response.json({object:{sha:String(input).endsWith('/main')?source:actual,type:'commit'}});
+    };
     const request={directory,writeDirectory:join(root,'writes'),remote,repository:'test/product',repositoryId:1,defaultBranch:'main'};
     await assert.rejects(nativeReleaseCandidate(request,{token:'write',readToken:'read',controllerSha:sha,expectedStateSha:'b'.repeat(40),fetcher,temporaryRoot:root}),/CANDIDATE_STATE_CHANGED/);
-    assert.equal(requests,1);assert.equal(await git(remote,'rev-parse','HEAD'),actual);
+    assert.equal(requests,2);assert.equal(await git(remote,'rev-parse','HEAD'),actual);
   }finally{await rm(root,{recursive:true,force:true});}
 },120000);
 

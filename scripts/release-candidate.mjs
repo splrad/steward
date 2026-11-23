@@ -136,6 +136,10 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     await git('update-ref', `refs/heads/${branch}`, head); return head;
   };
   try {
+    const liveHead = await fetchBranch(request.defaultBranch);
+    if (!liveHead) fail('CANDIDATE_DEFAULT_BRANCH_UNAVAILABLE');
+    const liveConfig = JSON.parse(await fileAt(liveHead, 'release-please-config.json'));
+    if (liveConfig['separate-pull-requests'] === true) return { status: 'WAIT', reason: 'OFFICIAL_CANDIDATE_ADOPTED' };
     // History closure may have adopted a newer state in a separate checkout.
     // Load the exact native ref before opening the next candidate session.
     if(!await fetchBranch('steward/release-state'))fail('CANDIDATE_STATE_UNAVAILABLE');

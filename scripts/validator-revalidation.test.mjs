@@ -42,7 +42,7 @@ test('the shipped App bundle mints and revokes only the target repository revali
 
 function fixture() {
   const state=epoch(previous,validator),changes=[],records=[],events=[],runs=[],files={},jobs=[];
-  const pr={id:320,node_id:'PR_fixture',number:32,state:'open',draft:false,merged:false,title:'Existing policy PR',
+  const pr={id:320,node_id:'PR_fixture',number:32,state:'open',draft:false,merged:false,mergeable:true,mergeable_state:'clean',title:'Existing policy PR',
     base:{ref:'main',repo},head:{ref:'author/policy-change',repo,sha:head},body:'User content'};
   const actor={id:bot};
   let value=null,mergeQueueReads=0,runtime={mergeQueue:false,crashAfterClose:false,crashAfterReopen:false};
@@ -65,6 +65,7 @@ function fixture() {
     assert.equal(method,'GET');
     if(route===path+'/pulls/32') {
       if(runtime.crashAfterClose&&pr.state==='closed'||runtime.crashAfterReopen&&changes.at(-1)==='open')throw Error('process interrupted');
+      if(value&&JSON.parse(value).pulls[0]?.closeRequest==='pending'&&pr.state==='open')runtime.beforeClose?.();
       return {status:200,value:clone(pr)};
     }
     if(route===path+'/rules/branches/main')return {status:200,value:[{ruleset_id:18883080,type:'pull_request',
@@ -211,7 +212,7 @@ test('a head change while the App close is outstanding restores the PR and track
 });
 
 test('never cycles a PR with an exact pending or failed Run, a draft, merge management, or a release candidate',async()=>{
-  for(const type of ['failed','running','draft','queue','autoMerge','release','legacyRelease']){
+  for(const type of ['failed','running','draft','queue','autoMerge','release','legacyRelease','official']){
     const f=fixture();
     if(type==='failed')f.addRun(99,validator,'completed','failure');
     if(type==='running')f.addRun(99,validator,'queued',null);
@@ -220,6 +221,7 @@ test('never cycles a PR with an exact pending or failed Run, a draft, merge mana
     if(type==='autoMerge')f.pr.auto_merge={enabled_at:'record'};
     if(type==='release')f.pr.head.ref='steward/release-candidate';
     if(type==='legacyRelease')f.pr.labels=[{name:'autorelease: pending'}];
+    if(type==='official'){f.pr.head.ref='release-please--branches--'+f.pr.base.ref;f.pr.user={id:301115370};}
     const expected=type==='failed'?'failure':type==='running'?'in_progress':'waiting';
     assert.equal((await f.run()).pulls[0].status,expected);
     assert.equal((await f.run()).pulls[0].status,expected);
@@ -233,6 +235,103 @@ test('keeps the PR open when merge management appears immediately before the clo
   assert.equal(state.pulls[0].status,'waiting');
   assert.equal(state.pulls[0].reason,'merge-management');
   assert.deepEqual(f.changes,[]);
+});
+
+test('parks conflicts, a behind base and unresolved mergeability without changing the PR',async()=>{
+  for(const [mergeable,mergeable_state,reason] of [
+    [false,'dirty','merge-conflict'],[true,'behind','base-behind'],[null,'unknown','mergeability-pending']
+  ]){
+    const f=fixture();
+    Object.assign(f.pr,{mergeable,mergeable_state});
+    f.addRun(60,previous,'completed','success');
+    for(let retry=0;retry<2;retry++){
+      const state=await f.run();
+      assert.equal(state.pulls[0].status,'waiting');
+      assert.equal(state.pulls[0].reason,reason);
+      assert.equal(state.pulls[0].run,undefined);
+    }
+    assert.deepEqual(f.changes,[]);
+  }
+  const existing=fixture();
+  existing.pr.mergeable_state='behind';
+  existing.addRun(63,validator,'completed','failure',undefined,2);
+  const observed=(await existing.run()).pulls[0];
+  assert.equal(observed.status,'failure');
+  assert.deepEqual(observed.run,{id:63,attempt:2,source:validator,head,status:'completed',conclusion:'failure'});
+  assert.deepEqual(existing.changes,[]);
+});
+
+test('rechecks a newly behind base before a prepared close and records a later native synchronize',async()=>{
+  const f=fixture();
+  f.runtime.beforeClose=()=>{f.pr.mergeable_state='behind';};
+  let state=await f.run();
+  assert.equal(state.pulls[0].status,'waiting');
+  assert.equal(state.pulls[0].reason,'base-behind');
+  assert.equal(state.pulls[0].closeRequest,'rejected');
+  assert.deepEqual(f.changes,[]);
+  f.runtime.beforeClose=undefined;
+  f.pr.head.sha='d'.repeat(40);
+  f.pr.mergeable_state='clean';
+  const native=f.addRun(61,validator,'completed','success',undefined,2);
+  state=await f.run();
+  assert.deepEqual(state.pulls.map(entry=>entry.status),['superseded','success']);
+  assert.deepEqual(state.pulls[1].run,{id:native.id,attempt:2,source:validator,head:f.pr.head.sha,
+    status:'completed',conclusion:'success',job:610});
+  assert.deepEqual(f.changes,[]);
+});
+
+test('a historical reopen is still a single attempt after mergeability changes on the same head',async()=>{
+  const f=fixture();
+  assert.equal((await f.run()).pulls[0].status,'reopened');
+  Object.assign(f.pr,{mergeable:false,mergeable_state:'dirty'});
+  const waiting=(await f.run()).pulls[0];
+  assert.equal(waiting.reason,'merge-conflict');
+  assert.ok(waiting.reopenEvent);
+  Object.assign(f.pr,{mergeable:true,mergeable_state:'clean'});
+  await f.run();
+  assert.deepEqual(f.changes,['closed','open']);
+  f.addRun(62,validator,'completed','failure');
+  assert.equal((await f.run()).pulls[0].status,'failure');
+  assert.deepEqual(f.changes,['closed','open']);
+});
+
+test('keeps the original App reopen when a superseded head returns through a conflict',async()=>{
+  const f=fixture();
+  f.runtime.now=1_000;
+  const first=(await f.run()).pulls[0];
+  assert.equal(first.reopenEvent,2);
+  f.pr.head.sha='d'.repeat(40);
+  await f.run();
+  f.pr.head.sha=head;
+  Object.assign(f.pr,{mergeable:false,mergeable_state:'dirty'});
+  const dirty=(await f.run()).pulls.at(-1);
+  assert.equal(dirty.head,head);
+  assert.equal(dirty.status,'waiting');
+  assert.equal(dirty.reason,'merge-conflict');
+  Object.assign(f.pr,{mergeable:true,mergeable_state:'clean'});
+  f.runtime.now=200_000;
+  await f.run();
+  assert.deepEqual(f.changes,['closed','open']);
+  assert.equal(dirty.reopenEvent,first.reopenEvent);
+  f.addRun(64,validator,'completed','success',undefined,2);
+  const returned=(await f.run()).pulls.at(-1);
+  assert.equal(returned.status,'success');
+  assert.equal(returned.reopenEvent,first.reopenEvent);
+  assert.deepEqual(returned.run,{id:64,attempt:2,source:validator,head,status:'completed',conclusion:'success',job:640});
+});
+
+test('does not transfer an App reopen to a different PR source at the same SHA',async()=>{
+  for(const source of [{ref:'author/renamed'},{repo:{...repo,id:45}}]){
+    const f=fixture();
+    const first=(await f.run()).pulls[0];
+    assert.equal(first.reopenEvent,2);
+    Object.assign(f.pr.head,source);
+    const state=await f.run();
+    assert.equal(state.pulls[0].status,'superseded');
+    assert.equal(state.pulls[1].status,'waiting');
+    assert.equal(state.pulls[1].reopenEvent,undefined);
+    assert.deepEqual(f.changes,['closed','open']);
+  }
 });
 
 test('validator compares the exact local execution graph in both trees and accepts a newer protected data source',async t=>{

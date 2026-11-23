@@ -111,7 +111,8 @@ def select_template(central, controller):
 def configuration_excluded(config):
     if '_exclude' not in config:
         return False
-    require(config['_exclude'] == ['/' + path for path in LEGACY_CONFIGURATION],
+    historical = ['/' + path for path in LEGACY_CONFIGURATION]
+    require(config['_exclude'] in (historical, historical + ['/' + RELEASE_NOTES_TEMPLATE]),
             'TEMPLATE_EXCLUSION_POLICY')
     return True
 
@@ -151,6 +152,8 @@ def contract(central, sha, data, env):
     require('.copier-answers.yml' in paths and 'AGENTS.md' in paths, 'TEMPLATE_REQUIRED_FILES')
     if excluded:
         paths.difference_update(LEGACY_CONFIGURATION)
+        if '/' + RELEASE_NOTES_TEMPLATE in config['_exclude']:
+            paths.discard(RELEASE_NOTES_TEMPLATE)
     return version, questions, paths
 
 
@@ -209,6 +212,21 @@ def review_rules_template(central, sha, env):
     return sections
 
 
+def is_committed_release_copy(target, checked_out, known_templates, env):
+    path = RELEASE_NOTES_TEMPLATE
+    entry = git(target, ['ls-tree', 'HEAD', '--', path], env)
+    if not entry.startswith(b'100644 blob '):
+        return False
+    committed = git(target, ['show', 'HEAD:' + path], env)
+    if committed not in known_templates:
+        return False
+    if checked_out == committed:
+        return True
+    attributes = git(target, ['check-attr', '-z', '--cached', 'eol', '--', path], env)
+    return (attributes.split(b'\0') == [path.encode(), b'eol', b'crlf', b'']
+            and checked_out == committed.replace(b'\n', b'\r\n'))
+
+
 def render(central, target, sha, mode, data=None):
     target_path = Path(target).absolute()
     require(not any(p.is_symlink() or getattr(p, 'is_junction', lambda: False)()
@@ -223,6 +241,8 @@ def render(central, target, sha, mode, data=None):
         public_rules, default_section = review_rules_template(central, sha, env)
         before, old_paths = {}, set()
         repository_section = b''
+        retire_release_template = RELEASE_NOTES_TEMPLATE not in new_paths
+        release_source = 'templates/repository/' + RELEASE_NOTES_TEMPLATE
         if mode == 'copy':
             require(not target.exists(), 'TEMPLATE_SEED_EXISTS')
             argv = ['copy', '--defaults', '--vcs-ref', sha, SOURCE, str(target)]
@@ -245,6 +265,18 @@ def render(central, target, sha, mode, data=None):
             argv = ['update', '--defaults', '--vcs-ref', sha, '--conflict', 'rej']
             if repository_section:
                 argv += ['--skip', '/' + REVIEW_RULES_PATH]
+            if retire_release_template:
+                argv += ['--skip', '/' + RELEASE_NOTES_TEMPLATE]
+                previous_template = before.get(RELEASE_NOTES_TEMPLATE)
+                if previous_template is not None:
+                    known_templates = {
+                        git(central, ['show', ref + ':' + release_source], env)
+                        for ref in (old_sha, sha)
+                        if git(central, ['ls-tree', ref, '--', release_source], env)
+                    }
+                    if (RELEASE_NOTES_TEMPLATE not in old_paths
+                            or not is_committed_release_copy(target, previous_template, known_templates, env)):
+                        raise TemplateConflict([RELEASE_NOTES_TEMPLATE])
         if data:
             data_file = Path(profile) / 'data.json'
             data_file.write_text(json.dumps(data), encoding='utf-8')
@@ -253,7 +285,10 @@ def render(central, target, sha, mode, data=None):
         after = paths_in_tree(target)
         rejects = {p for p in after if p.endswith('.rej')}
         reject = RELEASE_NOTES_TEMPLATE + '.rej'
-        release_source = 'templates/repository/' + RELEASE_NOTES_TEMPLATE
+        if mode == 'update' and retire_release_template and RELEASE_NOTES_TEMPLATE in before:
+            require(after.get(RELEASE_NOTES_TEMPLATE) == before[RELEASE_NOTES_TEMPLATE], 'TEMPLATE_RELEASE_COPY_CHANGED')
+            (target / RELEASE_NOTES_TEMPLATE).unlink()
+            del after[RELEASE_NOTES_TEMPLATE]
         if (mode == 'update' and reject in rejects and reject not in before
                 and RELEASE_NOTES_TEMPLATE in before and RELEASE_NOTES_TEMPLATE in new_paths
                 and before[RELEASE_NOTES_TEMPLATE] == after.get(RELEASE_NOTES_TEMPLATE)
@@ -281,6 +316,8 @@ def render(central, target, sha, mode, data=None):
             if re.search(rb'(?m)^(?:<{7}|={7}|>{7})(?: |$)', after[path]):
                 raise TemplateConflict([path])
         require(new_paths <= after.keys(), 'TEMPLATE_REQUIRED_FILE_MISSING')
+        if retire_release_template:
+            require(RELEASE_NOTES_TEMPLATE not in after, 'TEMPLATE_RELEASE_COPY_RECREATED')
         generated = yaml.safe_load(after['.copier-answers.yml'])
         require(generated['_src_path'] == SOURCE, 'TEMPLATE_GENERATED_SOURCE')
         require(git(central, ['rev-parse', '--verify', str(generated['_commit']) + '^{commit}'], env).decode().strip() == sha, 'TEMPLATE_GENERATED_VERSION')

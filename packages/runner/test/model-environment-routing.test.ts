@@ -41,9 +41,14 @@ it.each([
   expect(job.permissions['copilot-requests']).toBe('write');
   expect(workflow.permissions['copilot-requests']).toBeUndefined();
   expect(Object.keys(workflow.on).every(event => ['push', 'schedule', 'workflow_dispatch'].includes(event))).toBe(true);
-  for (const step of job.steps.filter((step: unknown) => step !== consumers[0])) {
-    expect(JSON.stringify(step)).not.toMatch(/secrets\./);
-  }
+  const secretSteps = job.steps.filter((step: unknown) => step !== consumers[0] && /secrets\./.test(JSON.stringify(step)));
+  const approvedAppSteps: Record<string, string[]> = {
+    'release-candidate-event.yml': ['product', 'candidate-token'],
+    'release-cycle-event.yml': ['official_plan', 'official_token'],
+  };
+  expect(secretSteps.map((step: {id: string}) => step.id)).toEqual(approvedAppSteps[file] ?? []);
+  for (const step of secretSteps)
+    expect(JSON.stringify(step).match(/secrets\.[A-Z_0-9]+/g)).toEqual(['secrets.STEWARD_APP_PRIVATE_KEY']);
 });
 
 it('only the production and explicitly gated acceptance jobs receive native Copilot permission', async () => {

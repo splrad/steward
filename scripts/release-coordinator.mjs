@@ -17,7 +17,7 @@ const validMatchingRefs=(refs,target)=>Array.isArray(refs)
   &&new Set(refs.map(r=>r.ref)).size===refs.length;
 
 /** Repository visibility is not product enrollment. Only proven absent inputs and obligations are inapplicable. */
-export async function releaseParticipation(repository,io,{includeUnits=false}={}) {
+export async function releaseParticipation(repository,io,{includeUnits=false,requireWorkflowGitHubDelivery=false}={}) {
   const read=async suffix=>{
     const r=await io.request('GET',`/repos/${repository.full_name}${suffix?'/'+suffix:''}`);
     if(r.status!==200)throw Error('RELEASE_PARTICIPATION_UNAVAILABLE');
@@ -88,8 +88,15 @@ export async function releaseParticipation(repository,io,{includeUnits=false}={}
           assertRegisteredAdapters(repository.id,repository.full_name,delivery);
         }
       }
+      if(requireWorkflowGitHubDelivery&&(delivery.schemaVersion!==3||delivery.units.length!==1||
+        delivery.units[0].id!=='root'||delivery.units[0].path!=='.'||
+        !delivery.units[0].channels.some(channel=>channel.id==='github-release'&&channel.required)))
+        throw Error('OFFICIAL_CANDIDATE_GITHUB_DELIVERY');
       if(includeUnits)units=delivery.units.map(({id,path,notesPath})=>({id,path,notesPath}));
-    }catch(error){if(error.message==='AUTHOR_IDENTITY_UNVERIFIED')throw error;throw Error('RELEASE_CONFIGURATION_INVALID');}
+    }catch(error){
+      if(['AUTHOR_IDENTITY_UNVERIFIED','OFFICIAL_CANDIDATE_GITHUB_DELIVERY'].includes(error.message))throw error;
+      throw Error('RELEASE_CONFIGURATION_INVALID');
+    }
   }
   if(absenceFacts) {
     const after=[await read('git/matching-refs/heads/steward/release-candidate'),await read('git/matching-refs/heads/steward/build/'),await read('releases?per_page=1')];

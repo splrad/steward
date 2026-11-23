@@ -62,6 +62,8 @@ export interface CycleRecord {
   id: string; prNumber: number; sourceSha: string; controllerSha: string; deliveryConfigSha: string; units: CycleUnit[];
   buildWorkflow?: string;
   workflowDelivery?: true;
+  officialRelease?: { headSha: string; pullBodyDigest: string; bodyDigest: string };
+  officialDraftScopeDigest?: string;
   requiredChannels: { unitId: string; channelId: string }[];
   dispatches: { requestKey: string; operationKey: string; purpose: 'build' | 'channel-submit' | 'channel-verify'; workflowId: number;
     buildWorkflow?: string;
@@ -106,6 +108,13 @@ export function parseReleaseRecord<K extends keyof RecordKinds>(kind: K, value: 
     const record = value as CycleRecord;
     if (record.buildWorkflow !== undefined && !isBuildWorkflow(record.buildWorkflow)) fail('cycle workflow');
     if (record.id !== `pr-${record.prNumber}-${record.sourceSha}` || !record.units.length || !unique(record.units.map(unit => unit.id))) fail('cycle identity');
+    if (record.officialRelease && (!record.workflowDelivery || record.units.length !== 1 || record.units[0]!.githubDisabled
+      || record.units[0]!.notesDigest !== null && record.units[0]!.notesDigest !== record.officialRelease.bodyDigest))
+      fail('official release cycle');
+    if (record.officialDraftScopeDigest && (!record.officialRelease || !record.units[0]!.githubDelivery))
+      fail('official release scope receipt');
+    if (record.officialRelease && record.units[0]!.releaseId!==null && !record.officialDraftScopeDigest)
+      fail('official release scope required for binding');
     const pair = (value: { unitId: string; channelId: string }) => JSON.stringify([value.unitId, value.channelId]);
     if (!unique(record.requiredChannels.map(pair)) || record.requiredChannels.some(item => !record.units.some(unit => unit.id === item.unitId))) fail('required channels');
     for (const unit of record.units) if (!unique(unit.assets.map(asset => asset.id)) || !unique(unit.assets.map(asset => asset.path.toLowerCase()))) fail('duplicate asset');

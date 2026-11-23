@@ -18,15 +18,17 @@ export async function ghReleaseFixture(sourceShaOverride?:string, notesBody?:str
     artifacts: ['app.exe','dll.zip','fonts.zip'].map((path, i) => ({ id: ['app','dll','fonts'][i]!, path, mediaType: 'application/octet-stream', size: 3, sha256: digest('app') })), evidence: [] };
   for (const asset of manifest.artifacts) await writeFile(join(directory, asset.path), 'app');
   await writeFile(join(directory, 'sbom.spdx.json'), JSON.stringify({ spdxVersion: 'SPDX-2.3', SPDXID: 'SPDXRef-DOCUMENT', packages: [] }));
-  await writeFile(join(directory, 'release-notes.md'), notesBody ?? `1.2.3\n${sourceSha}\n${manifest.controllerSha}\n`);
-  const target: ReleaseTarget & {manifest:ProductReleaseManifest} = { directory, releaseId: 20, appBotId: 42, manifest: await sealProductArtifacts(directory, manifest, notesBody) };
+  const publicBody = notesBody ?? `1.2.3\n${sourceSha}\n${manifest.controllerSha}\n`;
+  await writeFile(join(directory, 'release-notes.md'), publicBody);
+  const target: ReleaseTarget & {manifest:ProductReleaseManifest} = { directory, releaseId: 20, appBotId: 42,
+    publicBody, official:{prerelease:false}, manifest: await sealProductArtifacts(directory, manifest, notesBody) };
   const remote = new Map<string, { bytes: Buffer; id: number; state: string; label: string; uploader: { id: number } }>(); const calls: string[][] = [];
-  const release = { id: 20, author: { id: 42 }, tag_name: 'v1.2.3', target_commitish: sourceSha, draft: true, immutable: false, body: 'draft',
+  const release = { id: 20, author: { id: 42 }, tag_name: 'v1.2.3', target_commitish: sourceSha, draft: true, immutable: false, body: publicBody, prerelease:false,
     html_url: 'https://github.com/fixture/product/releases/tag/v1.2.3', upload_url: 'https://uploads.github.com/repos/fixture/product/releases/20/assets{?name,label}' };
   const releases = new Map<number, typeof release>([[20, release]]);
-  const state = { source: sourceSha, tag: true, annotated: false, loseUpload: false, losePublish: false, loseBody: false, loseDraft: false, loseTag: false,
+  const state = { source: sourceSha, tag: true, annotated: false, loseUpload: false, losePublish: false,
     blockLabel: false, loseLabel: false, failUpload: false, incomplete: false, corruptDownload: false, disabled: false, private: false, disableAfterUpload: false, runStatus: 'completed', runConclusion: 'success',
-    originalAttempt: 1, originalConclusion: 'success',
+    originalAttempt: 1, originalConclusion: 'success', changeBodyAfterUpload: false,
     invocation: 'https://github.com/fixture/product/actions/runs/10/attempts/2', certificateRepository: '1', buildTrigger: 'workflow_dispatch' };
   let nextAsset = 100;
   const put = (name: string, bytes: Buffer, extra = {}) => remote.set(name, { bytes, id: nextAsset++, state: 'uploaded', label: '', uploader: { id: 42 }, ...extra });
@@ -53,7 +55,7 @@ export async function ghReleaseFixture(sourceShaOverride?:string, notesBody?:str
           if (!state.tag) throw Object.assign(new Error('not found'), { status: 404 });
           return JSON.stringify({ ref: 'refs/tags/v1.2.3', object: { type: state.annotated ? 'tag' : 'commit', sha: state.annotated ? 'f'.repeat(40) : state.source } });
         }
-        if (endpoint.includes('/git/tags/')) return JSON.stringify({ object: { type: 'commit', sha: state.source } });
+        if (endpoint.includes('/git/tags/')) return JSON.stringify({ sha:'f'.repeat(40), object: { type: 'commit', sha: state.source } });
         if (endpoint.includes('/git/matching-refs/')) return '[]';
         if (endpoint.endsWith('/releases?per_page=100')) return JSON.stringify([[...releases.values()]]);
         if (/\/releases\/\d+$/.test(endpoint)) {
@@ -62,15 +64,12 @@ export async function ghReleaseFixture(sourceShaOverride?:string, notesBody?:str
         }
         if (endpoint.endsWith('/assets?per_page=100')) return JSON.stringify(state.incomplete ? {} : [[...remote].map(([name, asset]) => ({ ...asset, bytes: undefined, name, size: asset.bytes.length, digest: null }))]);
       }
-      if (method === 'POST' && endpoint.endsWith('/git/refs')) { state.tag = true; state.source = body.sha; if (state.loseTag) throw new Error('lost tag response'); return '{}'; }
-      if (method === 'POST' && endpoint.endsWith('/releases')) {
-        Object.assign(release, body); releases.set(20, release); if (state.loseDraft) throw new Error('lost draft response'); return JSON.stringify(release);
-      }
       if (method === 'POST' && endpoint.startsWith('https://uploads.')) {
         if (state.failUpload) throw new Error('forbidden upload');
         const url = new URL(endpoint), name = url.searchParams.get('name')!;
         put(name, await readFile(args[args.indexOf('--input') + 1]!), { label: url.searchParams.get('label')! });
         if (state.disableAfterUpload) state.disabled = true;
+        if (state.changeBodyAfterUpload) release.body += '\nChanged externally';
         if (state.loseUpload) throw new Error('lost upload response'); return '{}';
       }
       if (method === 'PATCH' && endpoint.includes('/releases/assets/')) {
@@ -85,13 +84,13 @@ export async function ghReleaseFixture(sourceShaOverride?:string, notesBody?:str
         // Match GitHub REST: omitting tag_name removes the draft's current tag association.
         release.tag_name = body.tag_name ?? 'untagged-fixture';
         expect(endpoint).toBe('repos/fixture/product/releases/20');
-        if (body.body !== undefined) { release.body = body.body; if (state.loseBody) throw new Error('lost body response'); }
+        expect(body.body).toBeUndefined();
         if (body.draft === false) { expect(Object.keys(body)).toEqual(['tag_name', 'draft']); release.draft = false; release.immutable = true; if (state.losePublish) throw new Error('lost publish response'); }
         return '{}';
       }
       if (method === 'DELETE') {
         if (endpoint.includes('/releases/assets/')) { const id = Number(endpoint.split('/').at(-1)); for (const [name, asset] of remote) if (asset.id === id) remote.delete(name); }
-        else releases.delete(Number(endpoint.split('/').at(-1)));
+        else throw new Error('release deletion is forbidden');
         return '';
       }
     }

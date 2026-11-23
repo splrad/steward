@@ -23,39 +23,26 @@ import type { BuildPipelineRecord } from '../src/release-pipeline-record.js';
 vi.setConfig({ testTimeout: process.platform === 'win32' ? 1_200_000 : 360_000 });
 setLogger({ debug() {}, info() {}, warn() {}, error() {}, trace() {} });
 vi.mock('../dist/index.js', async () => import('../src/index.js'));
-const { nativeReleaseCandidate, mergedContributorIdentity } = await import(pathToFileURL(resolve('scripts/release-candidate.mjs')).href);
+const { nativeReleaseCandidate } = await import(pathToFileURL(resolve('scripts/release-candidate.mjs')).href);
 const { advanceEvent } = await import(pathToFileURL(resolve('scripts/release-cycle-event.mjs')).href);
 const { releaseParticipation } = await import(pathToFileURL(resolve('scripts/release-coordinator.mjs')).href);
 const { releasePolicyGuard } = await import(pathToFileURL(resolve('scripts/release-repository-policy.mjs')).href);
 
-it('projects legacy web-flow cache at merge while preserving original actors and rejecting other drift', () => {
-  const bot = {id:19864447, login:'web-flow', type:'User', profileUrl:'https://github.com/web-flow', avatarUrl:'https://avatars.githubusercontent.com/u/19864447?v=4'};
-  const person = {id:45, login:'human', type:'User', profileUrl:'https://github.com/human', avatarUrl:'https://avatars.githubusercontent.com/u/45'};
-  const contributor = ({id, login, profileUrl, avatarUrl}:typeof bot) => ({id, login, profileUrl, avatarUrl, alt:login});
-  const scope = {actors:[bot, person, null], contributors:{contributors:[contributor(person),contributor(bot)], unresolved:1}};
-  const frozen = {...scope, units:[{...scope, id:'app'}]};
-  const authors = [{id:7, evidence:'verified repository author'}];
-  const projected = mergedContributorIdentity(frozen,authors);
-  expect(projected.contributors).toEqual({contributors:[contributor(person)], unresolved:1});
-  expect(projected.units[0].contributors).toEqual(projected.contributors);
-  expect(projected.actors).toBe(frozen.actors);
-  expect(frozen.contributors.contributors).toHaveLength(2);
-  expect(mergedContributorIdentity(projected,authors)).toEqual(projected);
-  const corrupt = structuredClone(frozen);
-  corrupt.units[0]!.contributors.unresolved++;
-  expect(()=>mergedContributorIdentity(corrupt,authors)).toThrow('MERGED_CANDIDATE_CONTRIBUTOR_DRIFT');
-});
 const { readReleaseRecords,writeReleaseRecords,releaseCommand } = await import(pathToFileURL(resolve('scripts/release-record.mjs')).href);
 const roots: string[] = [];
 afterEach(async () => { vi.unstubAllGlobals();for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
-it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-recovery', 'pending-recovery', 'legacy-pending-cancel', 'retained-legacy-manual', 'retained-controller-manual',
-  'compact', 'compact-registered', 'conditional-organization', 'conditional-before-adoption', 'conditional-controller-upgrade',
-  'conditional-runtime-upgrade', 'conditional-merge-contributors', 'conditional-compact', 'conditional-tampered'])('runs the native candidate adapter through protected state, real Git, upstream generation, fake SDK and same-PR editing: %s', async pinCase => {
+// Each suite has its own worker-local fetch mock, temporary repositories and cleanup.
+export function nativeCandidateCases(cases: readonly string[]) {
+  it.each(cases)('runs the native candidate adapter through protected state, real Git, upstream generation, fake SDK and same-PR editing: %s', runNativeCandidate);
+}
+
+async function runNativeCandidate(pinCase: string) {
   const root = await mkdtemp(join(tmpdir(), 'candidate-native-test-')); roots.push(root); registerOfflineFixtureRoot(root);
   const directory = join(root, 'source'), remote = join(root, 'remote.git'); await mkdir(directory);
   const env = isolatedBuildEnvironment(process.env, root), identity = { name: 'Fixture', email: 'fixture@example.invalid' };
   const git = async (...args: string[]) => (await promisify(execFile)('git', args, { cwd: directory, env, encoding: 'utf8', windowsHide: true })).stdout.trim();
   const conditional = pinCase.startsWith('conditional-');
+  const rejectedPin = pinCase === 'missing-pin' || pinCase === 'conflicting-pin';
   const mergeContributors = pinCase === 'conditional-merge-contributors';
   const runtimeController = pinCase === 'conditional-runtime-upgrade';
   const upgradeController = pinCase === 'conditional-controller-upgrade' || runtimeController;
@@ -67,6 +54,9 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   await mkdir(join(directory,'.github/workflows'));
   const copierAnswers = '_commit: v0.1.7\n_src_path: https://github.com/splrad/steward.git\nproduct_repository: fixture/product\n';
   if(runtimeController)await writeFile(join(directory,'.copier-answers.yml'),copierAnswers);
+  // Pin, retained-manual and merge-author variants focus on handoff. The other layouts
+  // also check the label pause before the real note edit and the closed PR afterward.
+  const exercisesEditingPause = !rejectedPin && !retainedManual && !mergeContributors;
   const compactRegistered=pinCase==='compact-registered'||pinCase==='conditional-compact';
   const compact=pinCase==='compact'||compactRegistered;
   if(compactRegistered)await writeFile(join(directory,'.github/steward-central-policy'),'central\n');
@@ -203,14 +193,11 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     else if((compact||path.startsWith('/repos/splrad/steward/'))&&path.includes('/contents/')) {
       const file=path.split('/contents/')[1]!,ref=url.searchParams.get('ref');
       if(path.startsWith('/repos/splrad/steward/'))expect(pinCase==='old-source'?[sourceControllerSha,'f'.repeat(40)]:[sourceControllerSha,historicalControllerSha]).toContain(ref);
-      const bytes=path.startsWith('/repos/splrad/steward/')
+      const contents=path.startsWith('/repos/splrad/steward/')
         ?await readFile(olderConditionalLayout && (!upgradeController||ref===historicalControllerSha) ? 'packages/core/test/fixtures/release-template-conditional-v1.mustache'
           : conditional||retainedController&&ref===sourceControllerSha ? file : 'packages/core/test/fixtures/release-template-compact.mustache')
-        :Buffer.from(await git('show',ref+':'+file));
-      const fileSha=path.startsWith('/repos/splrad/steward/')?createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex')
-        :await git('rev-parse',ref+':'+file);
-      const contents=path.startsWith('/repos/splrad/steward/')?bytes
-        :(await promisify(execFile)('git',['cat-file','blob',fileSha],{cwd:directory,env,encoding:'buffer',windowsHide:true})).stdout;
+        :(await promisify(execFile)('git',['cat-file','blob',ref+':'+file],{cwd:directory,env,encoding:'buffer',windowsHide:true})).stdout;
+      const fileSha=createHash('sha1').update('blob '+contents.length+'\0').update(contents).digest('hex');
       value={type:'file',path:file,encoding:'base64',size:contents.length,sha:fileSha,content:contents.toString('base64')};
     }
     else if(path.endsWith('/commits/main'))value={sha:await head('main')};
@@ -287,7 +274,10 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
       getFileContentsOnBranch: async (path: string) => { let content; try { content = await git('show', `${base}:${path}`); } catch { throw new FileNotFoundError(path); }
         return { content: Buffer.from(content).toString('base64'), parsedContent: content, sha: 'b'.repeat(40), mode: '100644' }; },
       mergeCommitIterator: async function* () {
-        for(const sha of (await git('rev-list',base)).split('\n'))yield {sha,message:await git('show','-s','--format=%B',sha),files:['code.txt']};
+        const fields = (await git('log', '-z', '--format=%H%x00%B', base)).split('\0');
+        for (let index = 0; index < fields.length - 1; index += 2) {
+          yield {sha:fields[index]!, message:fields[index + 1]!.trim(), files:['code.txt']};
+        }
       },
       releaseIterator: async function* () {}, tagIterator: async function* () {}, pullRequestIterator: async function* () {},
     });
@@ -460,6 +450,8 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     await git('-C',previewDirectory,'fetch','--no-tags','--no-recurse-submodules',remote,'refs/heads/steward/release-state');
     await git('-C',previewDirectory,'checkout','--detach',stateBefore!);
     await git('init','--bare',previewRemote);
+    await git('-C',previewRemote,'fetch','--no-tags','--no-recurse-submodules',remote,'refs/heads/main');
+    await git('-C',previewRemote,'update-ref','refs/heads/main','FETCH_HEAD');
     await git('-C',previewRemote,'fetch','--no-tags','--no-recurse-submodules',remote,'refs/heads/steward/release-candidate');
     await git('-C',previewRemote,'update-ref','refs/heads/steward/release-candidate','FETCH_HEAD');
     const stateFile = join(previewDirectory,'state.json');
@@ -534,11 +526,14 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     expect(requests.filter(r=>/\/commits\/|\/users\//.test(r.path))).toHaveLength(identityCalls);
     return;
   }
-  pr.title = '人工修改标题'; pr.body = '人工修改正文'; pr.labels = [{ name: 'release:editing' }];
-  expect(await nativeReleaseCandidate({ ...request, writeDirectory: join(root, 'edit-writes') }, options)).toMatchObject({ reason: 'EDITING', head: firstHead });
-  expect(modelCalls).toBe(firstCalls); expect(await head('steward/release-candidate')).toBe(firstHead); await refresh();
-  const state = await readReleaseRecords({ directory, targetRef: 'steward/release-state', repositoryId: 1 });
-  expect(state.repository.candidate.editingAckHead).toBeUndefined(); expect(state.repository.candidate.prNumber).toBe(9);
+  pr.title = '人工修改标题'; pr.body = '人工修改正文';
+  if (exercisesEditingPause) {
+    pr.labels = [{ name: 'release:editing' }];
+    expect(await nativeReleaseCandidate({ ...request, writeDirectory: join(root, 'edit-writes') }, options)).toMatchObject({ reason: 'EDITING', head: firstHead });
+    expect(modelCalls).toBe(firstCalls); expect(await head('steward/release-candidate')).toBe(firstHead); await refresh();
+    const state = await readReleaseRecords({ directory, targetRef: 'steward/release-state', repositoryId: 1 });
+    expect(state.repository.candidate.editingAckHead).toBeUndefined(); expect(state.repository.candidate.prNumber).toBe(9);
+  }
   await git('fetch', '--no-tags', '--no-recurse-submodules', remote, 'refs/heads/steward/release-candidate');
   await git('switch', '-c', 'reviewed-notes', 'FETCH_HEAD');
   const publishedVersion=JSON.parse(await git('show','HEAD:.release-please-manifest.json'))['.'];
@@ -552,10 +547,14 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   await git('add','--',notesPath);await git('commit','--signoff','-m','docs: review candidate notes');
   let humanHead = await git('rev-parse', 'HEAD'); await git('push', '--porcelain', remote, 'HEAD:refs/heads/steward/release-candidate');
   pr.head.sha = humanHead; await git('switch', 'main');
-  pr.labels = []; pr.state = 'closed';
-  expect(await nativeReleaseCandidate({ ...request, writeDirectory: join(root, 'closed-writes') }, options)).toMatchObject({ reason: 'CLOSED_PR' });
-  pr.state = 'open';
-  expect(await nativeReleaseCandidate({ ...request, writeDirectory: join(root, 'reopened-writes') }, options)).toMatchObject({ status: 'CONFLICT', reason: 'HUMAN_EDIT_CONFLICT' });
+  pr.labels = [];
+  if (exercisesEditingPause) {
+    pr.state = 'closed';
+    expect(await nativeReleaseCandidate({ ...request, writeDirectory: join(root, 'closed-writes') }, options)).toMatchObject({ reason: 'CLOSED_PR' });
+    pr.state = 'open';
+  }
+  expect(await nativeReleaseCandidate({ ...request, writeDirectory: join(root, 'conflict-writes') }, options))
+    .toMatchObject({ status: 'CONFLICT', reason: 'HUMAN_EDIT_CONFLICT' });
   expect(await head('steward/release-candidate')).toBe(humanHead); expect(modelCalls).toBe(firstCalls);
   expect(await git('show',humanHead+':'+notesPath)).toBe(reviewedNotes.trim());
   expect(requests.filter(r => /\/commits\/|\/users\//.test(r.path))).toHaveLength(identityCalls);
@@ -603,12 +602,15 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     const response=await fetcher('https://api.github.com'+path,{method,headers:{authorization:'Bearer fixture-read'}});
     return {status:response.status,headers:response.headers,bytes:new Uint8Array(await response.arrayBuffer())};
   }};
-  if (pinCase === 'missing-pin' || pinCase === 'conflicting-pin') {
+  if (rejectedPin) {
     const before = await head('steward/release-state');
     await expect(releaseCommand('candidate',{...request,cycleId:null,runId:null,writeDirectory:join(root,'rejected-merge-writes')},
       {token:options.token,candidateReadToken:options.readToken,controllerSha:options.controllerSha,now:options.now,io}))
       .rejects.toThrow(pinCase === 'missing-pin' ? 'CANDIDATE_CONTROLLER_PIN_REQUIRED' : 'CANDIDATE_CONTROLLER_PIN_CONFLICT');
-    expect(await head('steward/release-state')).toBe(before);expect(modelCalls).toBe(firstCalls);
+    expect(await head('steward/release-state')).toBe(before);
+    expect(await head('steward/release-candidate')).toBe(humanHead);
+    expect(requests.slice(readsBeforeMerge).every(({method}) => method === 'GET')).toBe(true);
+    expect(modelCalls).toBe(firstCalls);
     return;
   }
   if(explicitWorkflow) {
@@ -786,4 +788,4 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   expect(nextGenerated.units[0].version).toBe('1.0.1');
   expect(requests.slice(readsBeforeMerge).some(r=>/\/(?:releases|tags)$/.test(r.path))).toBe(false);
   expect(nextState.domainRecords.some((record:any)=>record.value.documentKind==='repair-decision')).toBe(false);
-});
+}

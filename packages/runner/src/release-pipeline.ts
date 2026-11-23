@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, copyFile, lstat, rm } from 'node:fs/
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import registrations from '../../../config/release/event-repositories.json' with { type: 'json' };
-import { nativeGhCommand, NativeGitHubRelease, nativeReleaseDownload, releaseReadIsAnonymous, type GhCommand, type ReleaseDownload } from './gh-release.js';
+import { nativeGhCommand, NativeGitHubRelease, nativeReleaseDownload, releaseAssetNames, releaseReadIsAnonymous, type GhCommand, type ReleaseDownload } from './gh-release.js';
 import { localGitSnapshot, safeGitPath } from './git-snapshot.js';
 import type { CandidateSession } from './release-candidate.js';
 import { readLegacyReleaseTemplate, type HistoricalTemplate } from './release-template-source.js';
@@ -25,7 +25,7 @@ import { decodeNormalizedDelivery,type NormalizedDeliveryEvidence } from '../../
 import { githubUnits, parseReleaseRecord, sameWorkflowDelivery, type CycleRecord, type RepositoryRecord, type WorkflowChannelReceipt, type WorkflowDeliveryReceipt } from '../../core/src/release-observation.js';
 import { decodeCandidateDocument, type CandidateArchiveChunk, type LegacyNotesTemplate } from '../../core/src/release-candidate-record.js';
 import { replayReleaseContributors } from '../../core/src/release-candidate.js';
-import { isAdoptedOrganizationReleaseTemplate, isConditionalTemplate, isPreviouslyAdoptedReleaseTemplate, reviewedConditionalReleaseTemplate } from '../../core/src/conditional-release-notes.js';
+import { assertSelectedReleaseDownloads, isAdoptedOrganizationReleaseTemplate, isConditionalTemplate, isPreviouslyAdoptedReleaseTemplate, reviewedConditionalReleaseTemplate } from '../../core/src/conditional-release-notes.js';
 import { nativeRunFact, NativeEvidenceReader, EvidenceReadError, type EvidenceContext, type EvidenceTransport, nativeEvidenceTransport } from './native-release-evidence.js';
 import { verifyExecutionSource, verifyDispatchWorkflow, channelTargets, channelTargetsDigest, verifyContinuationReleases, type ChannelTarget } from './release-run.js';
 import { parseDocument } from 'yaml';
@@ -348,12 +348,15 @@ export function assertProductDelivery(delivery:Pick<DeliveryConfig,'units'>) {
     if(channel.id!=='github-release'&&channel.id!=='ghcr-assets'&&channel.id!=='winget')fail('channel has no fixed product implementation');
 }
 /** The merged source is eligible only when its full Git tree matches the reviewed candidate. */
-export function mergedBuildCycle(input: { prNumber: number; sourceSha: string; controllerSha: string; sourceTree: string; reviewedTree: string;
+export function mergedBuildCycle(input: { prNumber: number; sourceSha: string; controllerSha: string;
   deliveryBlobSha: string; delivery: unknown; releasePlease?:Parameters<typeof parseDeliveryConfig>[1];
   workflow?:Uint8Array;
-  units: { id: string; path: string; version: string; tag: string }[]; repository?:string; repositoryId?:number }): CycleRecord {
-  if (![input.sourceSha, input.controllerSha, input.sourceTree, input.reviewedTree, input.deliveryBlobSha].every(sha => /^[a-f0-9]{40}$/.test(sha))
-    || input.sourceTree !== input.reviewedTree || !input.units.length) fail('merged product tree differs from reviewed source');
+  units: { id: string; path: string; version: string; tag: string }[]; repository?:string; repositoryId?:number } &
+  ({sourceTree:string;reviewedTree:string;officialRelease?:never} |
+   {officialRelease:NonNullable<CycleRecord['officialRelease']>;sourceTree?:never;reviewedTree?:never})): CycleRecord {
+  if (![input.sourceSha, input.controllerSha, input.deliveryBlobSha].every(sha => /^[a-f0-9]{40}$/.test(sha))
+    || !input.units.length || (!input.officialRelease && (!/^[a-f0-9]{40}$/.test(input.sourceTree) || input.sourceTree !== input.reviewedTree)))
+    fail('merged product tree differs from reviewed source');
   const delivery = parseDeliveryConfig(input.delivery,input.releasePlease);
   if(delivery.schemaVersion===3) {
     if(!input.workflow)fail('reviewed delivery workflow required');
@@ -367,6 +370,7 @@ export function mergedBuildCycle(input: { prNumber: number; sourceSha: string; c
     controllerSha: input.controllerSha, deliveryConfigSha: input.deliveryBlobSha,
     ...(delivery.buildWorkflow === undefined ? {} : {buildWorkflow:delivery.buildWorkflow}),
     ...(delivery.schemaVersion===3?{workflowDelivery:true}:{}),
+    ...(input.officialRelease?{officialRelease:input.officialRelease}:{}),
     units: input.units.map(unit => ({ id: unit.id, version: unit.version, tag: unit.tag, releaseId: null, assets: [], notesDigest: null, manifestDigest: null,
       ...(delivery.schemaVersion===3&&!delivery.units.find(item=>item.id===unit.id)!.channels.some(channel=>channel.id==='github-release')?{githubDisabled:true}:{}) })),
     requiredChannels: delivery.units.filter(unit => input.units.some(value => value.id === unit.id)).flatMap(unit => unit.channels.filter(channel => channel.required && channel.id !== 'github-release').map(channel => ({ unitId: unit.id, channelId: channel.id }))),
@@ -388,11 +392,12 @@ async function nativeDeliveryProjection(delivery:DeliveryConfig,targets:CycleRec
     if(options['include-component-in-tag']!==false&&!component)fail('native tag component');
     if(new TagName(Version.parse(target.version),component,options['tag-separator'],options['include-v-in-tag']).toString()!==target.tag)fail('native tag source');
     const path=(name:string)=>{assertDeliveryPath(name);return unit.path==='.'?name:`${unit.path}/${name}`;};
-    if (!historical && (!unit.buildLocks || unit.assets.some(asset => !asset.inspection))) fail('missing product inspection or build locks');
+    if (delivery.schemaVersion!==3 && !historical && (!unit.buildLocks || unit.assets.some(asset => !asset.inspection)))
+      fail('missing product inspection or build locks');
     const packageVersion = await readNativeUnitVersion(unit.path, options, target.version, source, controllerDirectory);
     // Undeclared historical units used the original controller's fixed projection.
-    const locks = unit.buildLocks ?? [options['release-type'] === 'simple' ? 'global.json'
-      : path(options['release-type'] === 'node' ? 'package-lock.json' : 'requirements-build.txt')];
+    const locks = unit.buildLocks ?? (delivery.schemaVersion===3 ? [] : [options['release-type'] === 'simple' ? 'global.json'
+      : path(options['release-type'] === 'node' ? 'package-lock.json' : 'requirements-build.txt')]);
     for (const lock of locks) {
       safeGitPath(lock);
       const bytes = await source(lock);
@@ -463,6 +468,14 @@ export async function pipelineIdentity(input: ProductBuildInput, environment: No
       ||!/^[a-z][a-z0-9-]*$/.test(row.target)||!Array.isArray(row.assets)||!row.assets.length))fail('native producer matrix');
   }
   const projection=await nativeDeliveryProjection(delivery,cycle.units,source,input.controllerDirectory);
+  if (cycle.officialRelease) {
+    const target=cycle.units[0]!, unit=delivery.units.find(item=>item.id===target.id);
+    const version=projection.versions.get(target.id);
+    if (!workflowOwned || unit?.path!=='.' || !version)
+      fail('official release build source');
+    if(!await stateRef())return {status:'UNKNOWN' as const,reason:'STATE_SOURCE_MOVED'};
+    return {status:'SOURCE_VERIFIED' as const,units:[{unit:target.id,version:target.version,tag:target.tag,packageVersion:version}]};
+  }
   const mergedChunks=mergedCandidateChunks(input.state.domainRecords,cycle.id);
   let session;
   let legacyNotesTemplate: LegacyNotesTemplate | undefined;
@@ -751,10 +764,6 @@ async function publicationTarget(record: PublishPipelineRecord, unitId: string, 
   const manifest = await pipelineFrozenManifest(record.build, unitId, directory);
   if ((await fileDigest(directory, 'artifact-manifest.json')).sha256 !== release.manifestDigest) fail('frozen manifest digest');
   return { manifest, directory, releaseId: release.releaseId, appBotId, delivery:record.build.delivery.units.find(unit=>unit.id===unitId)! };
-}
-export async function pipelinePublish(record: PublishPipelineRecord, unitId: string, directory: string, appBotId: number,
-  gh: GhCommand = nativeGhCommand, download: ReleaseDownload = nativeReleaseDownload(process.env.GH_TOKEN)) {
-  return new NativeGitHubRelease(gh, download).publish(await publicationTarget(record, unitId, directory, appBotId));
 }
 /** This is also the exact-Release fallback when the original Actions artifact has expired. */
 export async function pipelineVerifyPublished(record: PublishPipelineRecord, unitId: string, directory: string, appBotId: number,
@@ -1119,7 +1128,7 @@ type PublicationUnit={unitId:string;directory:string;manifest:ProductReleaseMani
 
 async function prepareWorkflowPublication(options:{
   context:EvidenceContext;delivery:DeliveryConfig;units:CycleRecord['units'];versions:Map<string,string>;releasePlease:any;
-  reader:NativeEvidenceReader;pages:NativePages;source:(path:string)=>Promise<string>;template:string;
+  reader:NativeEvidenceReader;pages:NativePages;source:(path:string)=>Promise<string>;template:string;officialBody?:string;
   root:string;controllerDirectory:string;token:string;history:{path:string;commit:string;value:unknown}[];
   handoff:WorkflowHandoff;unavailable?:(unitId:string)=>void;reject?:(unitId:string,reason:string)=>void;
 },download:typeof downloadWorkflowArtifact) {
@@ -1135,24 +1144,27 @@ async function prepareWorkflowPublication(options:{
   }):null;
   if(latest&&!successfulBuild(latest)&&!hasFrozen)
     return {status:'WAIT' as const,reason:'BUILD_RUN_NOT_READY',publishInvoked:false as const};
-  const merged=await decodeCandidateDocument(mergedCandidateChunks(history,cycle.id));
-  if(merged.cycleId!==cycle.id||merged.sourceSha!==cycle.sourceSha||merged.pull.number!==cycle.prNumber
-    ||merged.session.identity?.authorsDigest!==hash(Buffer.from(JSON.stringify(delivery.repositoryAuthors))))fail('workflow delivery reviewed source');
-  const template = await reviewedConditionalReleaseTemplate(options.template, merged.session.identity.noteTemplate);
+  const merged=cycle.officialRelease?null:await decodeCandidateDocument(mergedCandidateChunks(history,cycle.id));
+  if(merged&&(merged.cycleId!==cycle.id||merged.sourceSha!==cycle.sourceSha||merged.pull.number!==cycle.prNumber
+    ||merged.session.identity?.authorsDigest!==hash(Buffer.from(JSON.stringify(delivery.repositoryAuthors)))))fail('workflow delivery reviewed source');
+  const template = merged ? await reviewedConditionalReleaseTemplate(options.template, merged.session.identity.noteTemplate) : '';
   const conditional = isConditionalTemplate(template);
-  if (merged.session.identity.noteTemplate !== (conditional ? template : undefined)) fail('frozen candidate template');
-  const contributorMode = conditional ? merged.session.identity.contributorMode : undefined;
+  if (merged && merged.session.identity.noteTemplate !== (conditional ? template : undefined)) fail('frozen candidate template');
+  const contributorMode = conditional ? merged?.session.identity.contributorMode : undefined;
+  if(cycle.officialRelease && (options.officialBody===undefined || !options.officialBody.trim()
+    || hash(Buffer.from(options.officialBody))!==cycle.officialRelease.bodyDigest))fail('official release body');
   const records:PublicationUnit[]=[];
   for(const target of units) {
     const unit=delivery.units.find(unit=>unit.id===target.id);
     if(!unit?.channels.some(channel=>channel.id==='github-release'))fail('workflow GitHub delivery channel');
     const packageVersion=versions.get(unit.id);
-    const identity=merged.session.identity.units.find((item:any)=>item.id===unit.id);
-    if(!packageVersion||!identity)fail('workflow delivery unit data');
-    assertReviewedNotesPath(unit, identity);
-    const contributors=replayReleaseContributors(identity,delivery.repositoryAuthors,
-      contributorMode ?? (conditional ? 'recorded' : undefined));
-    if(JSON.stringify(contributors)!==JSON.stringify(identity.contributors))fail('workflow delivery contributor identity');
+    if(!packageVersion || !merged && unit.path!=='.')fail('workflow delivery unit data');
+    const identity=merged?.session.identity.units.find((item: {id:string})=>item.id===unit.id);
+    if(merged&&!identity)fail('workflow delivery unit data');
+    if(identity)assertReviewedNotesPath(unit, identity);
+    const contributors=identity?replayReleaseContributors(identity,delivery.repositoryAuthors,
+      contributorMode ?? (conditional ? 'recorded' : undefined)):null;
+    if(contributors&&JSON.stringify(contributors)!==JSON.stringify(identity.contributors))fail('workflow delivery contributor identity');
     const directory=join(root,unit.id);
     let nativeReceipt:WorkflowDeliveryReceipt;
     try {
@@ -1186,6 +1198,12 @@ async function prepareWorkflowPublication(options:{
       buildRef:'refs/heads/'+request.ref,workflowId:request.workflowId,runId:nativeReceipt.runId,attempt:nativeReceipt.buildAttempt??nativeReceipt.attempt,
       delivery:nativeReceipt,attested,artifacts};
     validateWorkflowManifest(manifest);
+    if (!contributors) {
+      if (options.officialBody===undefined) fail('official release body');
+      assertSelectedReleaseDownloads(options.officialBody,context.repository,target.tag,new Set(releaseAssetNames({manifest,delivery:unit})));
+      records.push({unitId:unit.id,directory,manifest,delivery:unit,build:null,archive:null,githubDelivery:nativeReceipt,publicBody:options.officialBody});
+      continue;
+    }
     const config={...releasePlease,...releasePlease.packages[unit.path]},changelog=config['changelog-path']??'CHANGELOG.md';
     assertDeliveryPath(changelog);
     const changelogFile=unit.path==='.'?changelog:unit.path+'/'+changelog;
@@ -1206,7 +1224,7 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
   gh: GhCommand = args => nativeGhCommand(args, token), io: EvidenceTransport = nativeEvidenceTransport(token),
   controllerIo:EvidenceTransport=nativeEvidenceTransport(undefined),download:ReleaseDownload=nativeReleaseDownload(token),
   history:{path:string;commit:string;value:unknown}[]=[],unitIds?:ReadonlySet<string>,
-  workflowDownload=downloadWorkflowArtifact,unavailable?:(unitId:string)=>void,reject?:(unitId:string,reason:string)=>void) {
+  workflowDownload=downloadWorkflowArtifact,unavailable?:(unitId:string)=>void,reject?:(unitId:string,reason:string)=>void,officialBody?:string) {
   const { cycle } = context, reader = new NativeEvidenceReader(io, context.repository);
   const units=githubUnits(cycle).filter(unit=>!unitIds||unitIds.has(unit.id));
   if(unitIds&&units.length!==unitIds.size)fail('unknown publication unit');
@@ -1235,7 +1253,7 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
   const delivery=original.delivery;
   assertProductDelivery(delivery);
   const sharedTemplate=()=>source('splrad/steward',cycle.controllerSha,sharedReleaseTemplatePath);
-  const currentTemplate=delivery.schemaVersion===3?await sharedTemplate():
+  const currentTemplate=cycle.officialRelease?{bytes:Buffer.alloc(0)}:delivery.schemaVersion===3?await sharedTemplate():
     await source(context.repository,cycle.sourceSha,productReleaseTemplatePath).catch(error=>{
       if(delivery.buildWorkflow===undefined||!(error instanceof EvidenceReadError)||error.status!==404)throw error;
       return sharedTemplate();
@@ -1291,6 +1309,7 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
         }
       },
       root,controllerDirectory,token,history,handoff:original.handoff!,
+      ...(officialBody===undefined?{}:{officialBody}),
       ...(unavailable?{unavailable}:{}),...(reject?{reject}:{})},workflowDownload);
   }
   if (conditional && !reviewedIdentity) fail('frozen candidate identity required');

@@ -2,18 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {selectWorkflow} from '../configuration-build.mjs';
-import {candidates,configurationForm,planFromForm} from '../configuration-form.mjs';
 import {documentationOnly,requiresProductCI,selectableProductCI} from '../validation-input.mjs';
+import {parseReleasePauses,releasePausesPath} from '../release-pauses.mjs';
 import {mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
 import {execFileSync} from 'node:child_process';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {authorizePull,checkEvent,protectedChanges,requestPath} from '../configuration-authorization.mjs';
-import {dispatchTrial,findEvidence,nativeChannelJobs,requestFromRun,rerunValidation,trialInventory} from '../configuration-native.mjs';
-import {inspectRepository,versionsPath,pagesPath} from '../configuration-view.mjs';
-import {applySelection,assertChannelWorkflow,prepareTarget,trialKey} from '../configuration-selection.mjs';
-import {optionState,reconcile} from '../repository-configuration.mjs';
-import {requestFromComment} from '../configuration-dashboard.mjs';
+import {findEvidence,nativeChannelJobs,trialInventory} from '../configuration-native.mjs';
+import {inspectRepository} from '../configuration-view.mjs';
+import {assertChannelWorkflow,trialKey} from '../configuration-selection.mjs';
 import YAML from 'yaml';
 const A='a'.repeat(40),B='b'.repeat(40),C='c'.repeat(40),actor={id:12,login:'maintainer',type:'User'};
 const repo={id:21,full_name:'splrad/sample',default_branch:'trunk',owner:{login:'splrad'}};
@@ -44,67 +42,6 @@ function fake(contents) {
   pulls:{get:async()=>response(structuredClone(pull)),listFiles:()=>{},listReviews:()=>{}},
   issues:{listComments:()=>{}},actions:{getWorkflowRun:async()=>{},listWorkflowRuns:()=>{},listJobsForWorkflowRunAttempt:()=>{}}}};
 }
-test('manual run and rerun both require live administrator or delegated identity before any mutation',async()=>{
-  const source=await readFile('templates/repository/'+requestPath,'utf8'), api=fake(new Map([[B+'/'+requestPath,source]]));
-  const native={repository:repo,head_repository:repo,head_branch:'trunk',id:1,head_sha:B,run_attempt:2,status:'completed',conclusion:'success',
-    path:requestPath,event:'workflow_dispatch',actor,triggering_actor:{...actor,id:13,login:'other'}};
-  api.rest.actions.getWorkflowRun=async()=>response(native);
-  const archive=async()=>({data:{event:'workflow_dispatch',repository:21,actor:12,source:B,run:'1',attempt:'2'}});
-  await assert.rejects(requestFromRun(api,'',repo,1,2,B,archive),/administrator/);
-  native.triggering_actor=actor;
-  assert.equal((await requestFromRun(api,'',repo,1,2,B,archive)).data.actor,12);
-  await assert.rejects(requestFromRun(api,'',repo,1,1,B,archive),/Stale/);
-});
-
-test('public initiation is selected on each protected default branch and cannot authorize PR edits',async()=>{
-  const source=await readFile('templates/repository/'+requestPath,'utf8');
-  for(const repositoryId of [21,48]){
-    const product={...repo,id:repositoryId};
-    const files=new Map([[A+'/'+requestPath,source],[B+'/'+requestPath,source]]);
-    const api=fake(files);
-    api.rest.repos.getCollaboratorPermissionLevel=async()=>response({permission:'read',user:actor});
-    const run={repository:product,head_repository:product,head_branch:'trunk',id:1,head_sha:A,run_attempt:1,status:'completed',
-      conclusion:'success',path:requestPath,event:'issue_comment',actor,triggering_actor:actor};
-    api.rest.actions.getWorkflowRun=async()=>response(run);
-    const data={event:run.event,repository:product.id,actor:actor.id,source:A,run:1,attempt:1,command:{number:2,id:3}};
-    const read=()=>requestFromRun(api,'',product,1,1,B,async()=>({data}));
-    const native=()=>requestFromComment(api,product,B,2,3,1,1);
-    assert.equal((await native()).publicRequests,false);
-    const policy=B+'/.github/configuration-delegates.json';
-    files.set(policy,JSON.stringify([actor.id]));
-    assert.equal((await native()).publicRequests,false);
-    run.event=data.event='issues';
-    data.source=run.head_sha=B;
-    assert.equal((await read()).publicRequests,false);
-    files.set(policy,JSON.stringify([]));
-    await assert.rejects(read(),/administrator/);
-    data.source=run.head_sha=A;
-    files.set(policy,JSON.stringify({delegates:[],requestAccess:'public'}));
-    assert.equal((await native()).publicRequests,true);
-    run.event=data.event='workflow_dispatch';
-    await assert.rejects(read(),/Default branch moved/);
-    run.event=data.event='pull_request';data.pull={number:2,head:A};
-    await assert.rejects(read(),/administrator/);
-  }
-});
-
-test('review requests bind the originating fork and head before authorization is reconciled',async()=>{
-  const source=await readFile('templates/repository/'+requestPath,'utf8');
-  const api=fake(new Map([[A+'/'+requestPath,source],[B+'/'+requestPath,source]]));
-  const fork={id:42},pull={number:7,base:{repo},head:{repo:fork,sha:A,ref:'topic'}};
-  const run={repository:repo,head_repository:fork,head_branch:'topic',id:1,head_sha:A,run_attempt:1,status:'completed',
-    conclusion:'success',path:requestPath,event:'pull_request_review',actor,triggering_actor:actor};
-  api.rest.actions.getWorkflowRun=async()=>response(run);
-  api.rest.pulls.get=async()=>response(pull);
-  const archive=async()=>({data:{event:run.event,repository:repo.id,actor:actor.id,pull:{number:7,head:A},run:1,attempt:1}});
-  const read=()=>requestFromRun(api,'',repo,1,1,B,archive);
-  assert.equal((await read()).data.pull.number,7);
-  pull.head.repo={id:43};
-  await assert.rejects(read(),/current PR/);
-  run.event='workflow_dispatch';
-  await assert.rejects(read(),/foreign/);
-});
-
 test('first CI adoption, prior and proposed inputs, renames, exact heads and merge group bytes are protected',async()=>{
   const old='.github/workflows/old.yml',next='.github/workflows/next.yml',ci='.github/product-ci.json';
   const api=fake(new Map([[A+'/'+ci,JSON.stringify([next])],[B+'/'+ci,JSON.stringify([old])]]));
@@ -192,8 +129,8 @@ test('formal workflow references retain both revisions and exclude independent p
   const changes=await protectedChanges(fake(contents),[{filename:next,previous_filename:prior},{filename:nested},{filename:other}],B,A);
   assert.deepEqual(changes,new Set([prior,next,nested]));
 });
-test('central receiver requires an administrator and selected local actions follow both revisions',async()=>{
-  const ci='.github/product-ci.json',build='.github/workflows/product.yml',receiver='.github/workflows/repository-configuration-event.yml';
+test('selected local actions follow both reviewed revisions',async()=>{
+  const ci='.github/product-ci.json',build='.github/workflows/product.yml';
   const files=new Map([[B+'/'+ci,JSON.stringify([build])],[A+'/'+ci,JSON.stringify([build])],
     [B+'/'+build,YAML.stringify({jobs:{build:{steps:[{uses:'./.github/actions/old'}]}}})],
     [A+'/'+build,YAML.stringify({jobs:{build:{steps:[{uses:'actions/checkout@v4',with:{path:'product'}},{uses:'./product/.github/actions/new'}]}}})],
@@ -202,65 +139,7 @@ test('central receiver requires an administrator and selected local actions foll
     [B+'/.github/configuration-delegates.json',JSON.stringify([actor.id])]]);
   const api=fake(files),changed=['.github/actions/old/bin.js','.github/actions/new/action.yml','adapters/build/tool.js','adapters/shared/entry.js','.github/actions/unselected/a.js'];
   assert.deepEqual(await protectedChanges(api,changed.map(filename=>({filename})),B,A),new Set(changed.slice(0,4)));
-  api.paginate=async method=>method===api.rest.pulls.listFiles?[{filename:receiver}]:method===api.rest.pulls.listReviews?[{state:'APPROVED',commit_id:A,user:actor}]:[];
-  assert.equal(await authorizePull(api,1,A,'trunk'),false);
-  api.target={owner:'splrad',repo:'steward'};
-  api.rest.repos.getCollaboratorPermissionLevel=async()=>response({permission:'write',user:actor});
-  await assert.rejects(authorizePull(api,1,A,'trunk'),/Configuration approval/);
-  api.rest.repos.getCollaboratorPermissionLevel=async()=>response({permission:'admin',user:actor});
-  assert.equal(await authorizePull(api,1,A,'trunk'),true);
-});
-test('re-evaluates the required scope on approved, dismissed, and edited reviews',async()=>{
-  const template=YAML.parse(await readFile('templates/repository/'+requestPath,'utf8'));
-  assert.ok(template.on.pull_request_review.types.includes('edited'));
-  const ci='.github/product-ci.json',api=fake(new Map([[B+'/'+ci,'[]'],[A+'/'+ci,'[]']]));
-  const review={state:'APPROVED',commit_id:A,user:actor};
-  const runs=api.rest.actions.listWorkflowRunsForRepo=Symbol();
-  let scopeConclusion='success',rechecked=0;
-  api.paginate=async method=>{
-    if(method===api.rest.pulls.listFiles)return [{filename:ci}];
-    if(method===api.rest.pulls.listReviews)return [review];
-    if(method===api.rest.repos.getBranchRules)return [rule(B)];
-    if(method===runs)return [validationRun()];
-    if(method===api.rest.actions.listJobsForWorkflowRunAttempt)return [{id:5,name:'Validation scope',steps:[{name:'Authorize repository configuration',conclusion:scopeConclusion}]}];
-    return [];
-  };
-  api.graphql=async()=>validationFile(B);
-  const actions={rest:{actions:{reRunJobForWorkflowRun:async({job_id})=>{
-    assert.equal(job_id,5);rechecked++;
-    try {await authorizePull(api,1,A,'trunk');scopeConclusion='success';}
-    catch(error){assert.equal(error.code,'CONFIGURATION_APPROVAL_REQUIRED');scopeConclusion='failure';}
-  }}}};
-  const reconcileReview=()=>reconcile({repo,base:B,api,actions,run:{event:'pull_request_review'},data:{pull:{number:1,head:A}}});
-  await reconcileReview();assert.equal(rechecked,0);
-  review.state='DISMISSED';await reconcileReview();
-  assert.equal(rechecked,1);assert.equal(scopeConclusion,'failure');
-  review.state='APPROVED';await reconcileReview();
-  assert.equal(rechecked,2);assert.equal(scopeConclusion,'success');
-  review.state='COMMENTED';review.body='';review.node_id='review';
-  api.graphql=async query=>query.includes('WorkflowRun')?validationFile(B):
-    {node:{author:{login:actor.login},editor:{login:actor.login},body:review.body,lastEditedAt:'2026-11-20T00:00:00Z'}};
-  await reconcileReview();
-  assert.equal(rechecked,3);assert.equal(scopeConclusion,'failure');
-  review.body='/steward approve-configuration';await reconcileReview();
-  assert.equal(rechecked,4);assert.equal(scopeConclusion,'success');
-  review.body='';await reconcileReview();
-  assert.equal(rechecked,5);assert.equal(scopeConclusion,'failure');
 
-});
-test('retries only the configuration authorization step failure',async()=>{
-  const api=fake(new Map()),retry=[];
-  api.rest.actions.listWorkflowRunsForRepo=()=>{};
-  api.graphql=async(_,variables)=>validationFile(variables.id==='4'?C:B);
-  api.paginate=async(method,args)=>{
-    if(method===api.rest.repos.getBranchRules)return [rule(B)];
-    if(method===api.rest.actions.listWorkflowRunsForRepo)return [validationRun(4),validationRun(3)];
-    assert.equal(args.run_id,3);
-    return [{id:5,name:'Validation scope',conclusion:'failure',steps:[{name:'Install dependencies',conclusion:'failure'}]},
-      {id:6,name:'Validation scope',conclusion:'failure',steps:[{name:'Authorize repository configuration',conclusion:'failure'}]}];
-  };
-  await rerunValidation(api,{rest:{actions:{reRunJobForWorkflowRun:async args=>retry.push(args.job_id)}}},pull);
-  assert.deepEqual(retry,[6]);
 });
 test('an existing container job with a service can provide bound native evidence without translating its commands',async()=>{
   const path='.github/workflows/build.yml',doc={on:'workflow_dispatch',jobs:{pack:{'runs-on':'ubuntu-24.04',container:'example',
@@ -285,7 +164,7 @@ test('an existing container job with a service can provide bound native evidence
   };
   let logged=101;
   api.rest.actions.downloadJobLogsForWorkflowRun=async()=>response('2026-11-17T10:00:02.000Z Artifact bin has been successfully uploaded! Final size is 100 bytes. Artifact ID is '+logged);
-  const concurrent=()=>trialInventory(api,'',repo,B,A,{workflow:path,archive:'bin',...result.binding},undefined,async()=>({
+  const concurrent=()=>trialInventory(api,'',repo,B,A,{workflow:path,archive:'bin',...result.binding},async()=>({
     asset:{id:101,name:'bin',size_in_bytes:100,created_at:'2026-11-17T10:00:02Z'},data:result.files}));
   assert.deepEqual(await concurrent(),result.files);
   logged=999;await assert.rejects(concurrent(),/bind the archive/);
@@ -293,84 +172,10 @@ test('an existing container job with a service can provide bound native evidence
   const inputsModel=inspectRepository(new Map([[path,YAML.stringify(doc)]]));
   assert.equal(await findEvidence(api,'',repo,B,A,{unit:'x',target:'one',workflow:path,job:'pack',matrix:{},archive:'bin'},inputsModel),undefined);
 });
-test('a successful trial with an expired artifact can be requested again',async()=>{
-  const path='.github/workflows/repository-configuration-trial.yml';
-  const source=await readFile('templates/repository/'+path,'utf8'), api=fake(new Map([[B+'/'+path,source]]));
-  const target={unit:'route',target:'hosted'},recipe={runner:'ubuntu-24.04',output:'out',tools:{},steps:[]};
-  const key=trialKey(A,target.unit,target.target,recipe);
-  const run={id:11,run_attempt:1,actor:{id:301115370},display_title:'Configuration trial '+A+' route/hosted '+key,status:'completed',conclusion:'success'};
-  const asset={name:'trial-'+key+'-11-1',expired:true,expires_at:new Date(Date.now()+60000).toISOString()};
-  api.rest.actions.listWorkflowRunArtifacts=()=>{};
-  api.paginate=async method=>method===api.rest.actions.listWorkflowRuns?[run]:[asset];
-  const requests=[];
-  const actions={rest:{actions:{createWorkflowDispatch:async input=>requests.push(input)}}};
-  await dispatchTrial(api,actions,repo,B,A,target,recipe);
-  assert.equal(requests.length,1);
-  asset.expired=false;
-  await dispatchTrial(api,actions,repo,B,A,target,recipe);
-  assert.equal(requests.length,1);
-});
-test('trial approvals bind output and tools as well as source, and preserve native Pages and version policies',async()=>{
+test('trial keys bind the output path and tools to the source',()=>{
   const recipe={runner:'ubuntu-24.04',output:'out',steps:[],tools:{}};
   assert.notEqual(trialKey(A,'app','linux',recipe),trialKey(A,'app','linux',{...recipe,output:'debug'}));
-  const pages={'run-name':"Pages build-only · ${{ inputs.source_mode || vars.STEWARD_DOCS_SOURCE || 'default-branch' }}",jobs:{select:{if:"vars.STEWARD_DOCS_SOURCE != ''"},build:{if:"!cancelled() && needs.select.outputs.ready == 'true'",steps:[]},
-    deploy:{if:"vars.STEWARD_DOCS_SOURCE == 'default-branch' || vars.STEWARD_DOCS_SOURCE == 'release'"}}};
-  const files=new Map([[versionsPath,JSON.stringify({packages:{'.':{'release-type':'node'}}})],['VERSION','1.2.3'],['CHANGELOG.md','notes'],[pagesPath,YAML.stringify(pages)]]);
-  const plan={site:{source:'default-branch',build:true,deploy:false},versions:[{path:'.',versionFile:'VERSION',changelog:'CHANGELOG.md'}]};
-  const first=await applySelection(inspectRepository(files),'configure',plan,{});
-  assert.match(YAML.parse(first.get(pagesPath))['run-name'],/Pages build-only .*inputs\.source_mode \|\| 'default-branch'/);
-  assert.equal(JSON.parse(first.get(versionsPath)).packages['.']['release-type'],'node');
-  assert.match(YAML.parse(first.get(pagesPath)).jobs.deploy.if,/^\(false .*vars\.STEWARD_DOCS_SOURCE/);
-  for(const [p,b] of first)files.set(p,b);
-  assert.equal((await applySelection(inspectRepository(files),'configure',plan,{})).size,0);
-  plan.site.deploy=true;
-  assert.match(YAML.parse((await applySelection(inspectRepository(files),'configure',plan,{})).get(pagesPath)).jobs.deploy.if,/^\(true .*vars\.STEWARD_DOCS_SOURCE/);
-});
-test('adding a Windows asset preserves selected Linux files and channel metadata',()=>{
-  const model=inspectRepository(new Map([['.github/delivery.json',JSON.stringify({schemaVersion:2,units:[{id:'cli',path:'.',
-    assets:[{id:'linux',name:'cli.zip'},{id:'symbols',name:'symbols.zip'}],
-    channels:[{id:'github-release',location:'github',required:true,artifactIds:['linux','symbols'],metadata:['SHA256SUMS']}]}]})]]));
-  const file='win.zip',asset='s1.f'+createHash('sha256').update(file).digest('hex').slice(0,16);
-  const state={evidence:{s1:{files:[{path:file}],binding:{}}},values:{'s1.use':true,'s1.unit':'cli','s1.target':'windows',
-    's1.dest.github-release':'github',[asset+'.use']:true,[asset+'.id']:'win',[asset+'.github-release']:true,
-    'channel.cli.github-release.asset.symbols':false}};
-  const [edit]=planFromForm(model,state,'select').channels;
-  assert.deepEqual(edit.artifactIds,['linux','win']);assert.deepEqual(edit.metadata,['SHA256SUMS']);
-});
-test('a failed target in the same release unit cannot add its existing asset to another channel',async()=>{
-  const assets=['linux','windows'].map(id=>({id,name:id+'.zip',mediaType:'application/zip'}));
-  const unit={id:'cli',path:'.',notesPath:'notes.md',assets,channels:[{id:'github-release',location:'github',required:true}]};
-  const files=new Map([['.github/delivery.json',JSON.stringify({schemaVersion:2,repositoryAuthors:[{id:12,evidence:'fixture'}],units:[unit]})],
-    ['release-please-config.json',JSON.stringify({packages:{'.':{'version-file':'VERSION'}}})],['VERSION','1.0.0'],['notes.md','notes'],
-    ['pack.sh','true'],['.github/workflows/steward-release-channels.yml',await readFile('templates/release/steward-release-channels.yml','utf8')],['.github/release-template.md.mustache','notes'],['.github/workflows/repository-configuration-trial.yml','protected']]);
-  const model=inspectRepository(files),state={values:{signing:true},evidence:{}};
-  for(const [index,asset] of assets.entries()){
-    const id='s'+(index+1),field=id+'.f'+createHash('sha256').update(asset.name).digest('hex').slice(0,16);
-    for(const [k,v] of Object.entries({use:true,unit:'cli',target:asset.id,path:'.',entry:'pack.sh',directory:'.',runner:'ubuntu-24.04',shell:'bash',
-      command:'sh pack.sh',output:'out',notes:'notes.md','dest.ghcr-assets':'ghcr.io/splrad/fixture'}))state.values[id+'.'+k]=v;
-    Object.assign(state.values,{[field+'.use']:true,[field+'.ghcr-assets']:true,[field+'.id']:asset.id,[field+'.name']:asset.name,[field+'.type']:asset.mediaType});
-    state.evidence[id]={files:[{path:asset.name}],binding:{}};
-  }
-  const plan=planFromForm(model,state,'select');
-  for(const t of plan.targets) for(const [path,bytes] of prepareTarget(model,t).files)files.set(path,bytes);
-  const seed=await readFile('templates/release/steward-release-publish.yml','utf8');
-  const {renderBuild}=await import('../configuration-build.mjs');
-  const adopted=renderBuild(seed,plan.targets.map(t=>({unit:'cli',target:t.target,recipe:{runner:t.runner,steps:[{shell:'pwsh',
-    name:'Run reviewed packaging entry',run:'node product/'+prepareTarget(model,t).path}],output:'out'},files:[{id:t.target,path:t.target+'.zip',pattern:t.target+'.zip'}]})),{signing:'not-applicable'});
-  files.set('.github/workflows/steward-release-publish.yml',adopted);
-  const warnings=[];
-  const changes=await applySelection(inspectRepository(files),'select',plan,{seed,channelEvidence:async()=>new Set(['submit/ghcr-assets/cli','verify/ghcr-assets/cli']),describe:m=>warnings.push(m),inventory:async t=>{
-    if(t.target==='windows')throw Error('Expired artifact');return [{path:'linux.zip'}];
-  }});
-  const saved=JSON.parse(changes.get('.github/delivery.json')).units[0];
-  assert.deepEqual(saved.channels.find(c=>c.id==='ghcr-assets').artifactIds,['linux']);
-  assert.deepEqual(saved.assets.map(a=>a.id).sort(),['linux','windows']);
-  assert.ok(warnings.some(m=>m.includes('windows') && m.includes('Expired artifact')));
-  const clear=structuredClone(plan);
-  clear.channels=[{unit:'cli',id:'ghcr-assets',required:false,artifactIds:[],metadata:[]}];
-  const result=await applySelection(inspectRepository(files),'select',clear,{seed,inventory:async t=>[{path:t.target+'.zip'}]});
-  const disabled=JSON.parse(result.get('.github/delivery.json')).units[0].channels.find(c=>c.id==='ghcr-assets');
-  assert.equal(disabled.required,false);assert.equal(disabled.artifactIds,undefined);assert.deepEqual(disabled.metadata,[]);
+  assert.notEqual(trialKey(A,'app','linux',recipe),trialKey(A,'app','linux',{...recipe,tools:{node:'24'}}));
 });
 test('both submit and verify must have a native receipt for the external target',async()=>{
   const product=YAML.parse(await readFile('templates/release/steward-release-channels.yml','utf8'));
@@ -419,16 +224,27 @@ test('configuration callers are governance files and product CI choices match na
   for(const on of ['pull_request_target',['push','pull_request_target'],{push:{},pull_request:{types:['opened']}},'pull_request']) {
     const model=inspectRepository(new Map([[path,YAML.stringify({on,jobs:{}})]]));
     assert.equal(selectableProductCI(model.workflows[0]),false);
-    await assert.rejects(applySelection(model,'configure',{ci:[path]},{}),/产品工作流/);
   }
   assert.equal(selectableProductCI({path,document:{on:['push','pull_request']}}),true);
+});
+test('only the administrator pause list is managed and repository IDs must be unique positive integers',()=>{
+  const administrator={workflow:'.github/workflows/settings-sync.yml'};
+  assert.equal(requiresProductCI([releasePausesPath],'private-administrator',administrator),false);
+  assert.equal(requiresProductCI([releasePausesPath],'native'),true);
+  assert.equal(requiresProductCI(['other/'+releasePausesPath],'private-administrator',administrator),true);
+  assert.equal(requiresProductCI([releasePausesPath,'src/product.py'],'private-administrator',administrator),true);
+  assert.deepEqual(parseReleasePauses(Buffer.from('[]\n')),[]);
+  assert.deepEqual(parseReleasePauses(Buffer.from('[1187527897,1296724484]')),[1187527897,1296724484]);
+  for(const invalid of ['{}','[0]','[-1]','[1.5]','["1187527897"]','[9007199254740992]','[1,1]','[1,]'])
+    assert.throws(()=>parseReleasePauses(Buffer.from(invalid)),/^Error: RELEASE_PAUSES_INVALID$/);
+  assert.throws(()=>parseReleasePauses(Buffer.from([0xff])),/^Error: RELEASE_PAUSES_INVALID$/);
 });
 test('selects entries covering all PR bases and files and the actual default branch push',()=>{
   const choice=(push,pull_request={})=>selectableProductCI({path:'.github/workflows/build.yml',document:{on:{push,pull_request}}},'stable/v2');
   const path='.github/workflows/build.yml',doc={on:{push:{branches:['trunk']},pull_request:{}},jobs:{}};
   const model=inspectRepository(new Map([[path,YAML.stringify(doc)]]));
   model.defaultBranch='stable/v2';
-  assert.match(configurationForm(model,A).body,/push 的分支或标签筛选未覆盖默认分支 stable\/v2/);
+
   assert.ok(choice({branches:['stable/v2']}));
   assert.ok(choice({branches:['stable/**']}));
   assert.ok(choice({branches:['**','!stable/**','stable/v2']}));
@@ -437,28 +253,6 @@ test('selects entries covering all PR bases and files and the actual default bra
     assert.equal(choice(push),false);
   for(const pr of [{branches:['trunk']},{paths:['**','!docs/**']},{'paths-ignore':['docs/**']}])
     assert.equal(choice({},pr),false);
-});
-
-test('form archive defaults resolve the selected static matrix row and include override',()=>{
-  const path='.github/workflows/product.yml',doc={jobs:{pack:{'runs-on':'ubuntu-24.04',strategy:{matrix:{
-    os:['linux','macos'],include:[{os:'linux',flavor:'small'}]}},steps:[{uses:'actions/checkout@'+'a'.repeat(40),with:{'persist-credentials':false}},{run:'echo ok'},{uses:'actions/upload-artifact@'+'a'.repeat(40),with:{name:'artifact-${{ matrix.os }}',path:'out'}}]}}};
-  const bytes=YAML.stringify(doc),model=inspectRepository(new Map([[path,bytes]]));
-  const entries=candidates(model,{}).filter(e=>e.workflow);
-  assert.deepEqual(entries.map(e=>e.archive),['artifact-linux','artifact-macos']);
-  for(const e of entries)assert.equal(selectWorkflow(bytes,e).output,'out');
-});
-test('a README-only push or completed configuration merge cannot create another PR',async()=>{
-  const before=inspectRepository(new Map([['README.md','first']]));
-  const after=inspectRepository(new Map([['README.md','second']]));
-  assert.deepEqual(optionState(before),optionState(after));
-  const changed=inspectRepository(new Map([['.github/workflows/build.yml','jobs: {}']]));
-  assert.notDeepEqual(optionState(after),optionState(changed));
-  const api=fake(new Map());
-  api.rest.pulls.list=()=>{};api.rest.repos.listPullRequestsAssociatedWithCommit=()=>{};
-  api.paginate=async()=>[];
-  await reconcile({repo,base:A,api,write:null,run:{event:'push'},data:{before:B},load:async(_,ref)=>ref===A?after:before});
-  api.paginate=async method=>method===api.rest.pulls.list?[]:[{merged_at:'now',base:{repo},head:{ref:'steward/repository-configuration-'+B},user:{id:301115370}}];
-  await reconcile({repo,base:A,api,write:null,run:{event:'push'},data:{before:B},load:()=>{throw Error('Unexpected snapshot');}});
 });
 
 test('retains the product signing job and untouched release units when changing one managed producer',async()=>{

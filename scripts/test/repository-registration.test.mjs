@@ -10,15 +10,12 @@ import { registrationEntry, registrationIds, pushRegistrationIds, selectRegistra
 import { requestFile } from '../repository-registration-request.mjs';
 import { checkedRegistration,parseRegistration } from '../repository-registration-policy.mjs';
 import { assertInputScope, assertGovernanceOnlyScope } from '../private-dependency-policy.mjs';
-import { requiresProductCI, selectedProductWorkflows } from '../validation-input.mjs';
+import { requiresProductCI } from '../validation-input.mjs';
 import {readRepositoryPolicy} from '../repository-policy-read.mjs';
-import {main as runLegacyConfiguration} from '../repository-configuration.mjs';
 import {releasePolicyGuard} from '../release-repository-policy.mjs';
-import {servicePages} from '../pages-maintenance.mjs';
 import {projectionBytes,readRepositoryPolicySelection,readRepositoryProjection,repositoryPolicyAdoptionPath} from '../repository-policy-projection.mjs';
 import {projectMergedRepositoryPolicy} from '../repository-policy-publish.mjs';
 import {validateRegistrationPreview} from '../repository-registration-preview.mjs';
-import {workflowPagesOptions} from '../select-pages-source.mjs';
 import {writeReleaseRecords} from '../release-record.mjs';
 import {nativeTemporaryParent} from '../native-scratch.mjs';
 
@@ -87,7 +84,7 @@ test('a trusted GitHub push publishes only changed merged settings records by ex
   await assert.rejects(pushRegistrationIds({...payload,forced:true},{GITHUB_SHA:source},api),/Untrusted registration/);
 });
 
-test('product reads only selected CI and Pages from protected state, with digest and native approval checks',async()=>{
+test('checks identity, digest and branch protection when reading a repository projection',async()=>{
   const {policy}=await propose(product,productFiles);
   const content=projectionBytes({...policy,adoption:'central',site:{workflow:pages,mode:'build-and-deploy',source:'default-branch'}});
   assert.ok(!content.includes('splrad/')&&!content.includes('github-release')&&!content.includes('channels'));
@@ -107,31 +104,8 @@ test('product reads only selected CI and Pages from protected state, with digest
     return {type:'file',path,encoding:'base64',sha:blob,size:bytes.length,content:bytes.toString('base64')};
   }};
   const selection=await readRepositoryProjection(reader,product.id);
-  assert.deepEqual(selectedProductWorkflows(selection,[ci,'.github/workflows/unselected.yml'],true),[ci]);
-  assert.throws(()=>selectedProductWorkflows(selection,[],true),/PRODUCT_CI_REPOSITORY_POLICY/);
-  assert.deepEqual(selectedProductWorkflows({...selection,adoption:'paused'},[ci,'draft'],true),[ci,'draft']);
-  const env={STEWARD_REPOSITORY_POLICY:'true',GITHUB_REPOSITORY_ID:String(product.id)};
-  const options=(env,read,required=false)=>workflowPagesOptions(reader,env,read,async()=>({required,assertCurrent:async()=>{}}));
-  const built=await options(env,async()=>selection);
-  assert.equal(built.options.mode,'default-branch');
-  assert.equal(built.publicAllowed,false);
-  assert.equal(built.options.buildOnly,true);
-  assert.equal((await options({...env,STEWARD_DOCS_SOURCE:'default-branch'},async()=>selection)).publicAllowed,true);
-  assert.equal((await options({...env,STEWARD_DOCS_SOURCE:'default-branch',
-    STEWARD_DOCS_APPROVED_SOURCE:''},async()=>selection)).publicAllowed,false);
-  assert.equal((await options({...env,STEWARD_DOCS_SOURCE:'default-branch'},async()=>({...selection,site:null}))).options.mode,'');
-  const required={...env,STEWARD_DOCS_SOURCE:'default-branch'};
-  for(const pending of [null,{...selection,adoption:'paused'},{...selection,adoption:'legacy'}]) {
-    await assert.rejects(options(required,async()=>pending,true),/PROJECTION_REQUIRED/);
-  }
-  await assert.rejects(options(required,async()=>{throw Error('PROJECTION_READ_DENIED');},true),/PROJECTION_READ_DENIED/);
-  const revised={...selection,site:null};
-  assert.equal((await options(required,async()=>selection,true)).publicAllowed,true);
-  assert.deepEqual(selectedProductWorkflows(selection,[ci,'.github/workflows/unselected.yml'],true),[ci]);
-  assert.equal((await options(required,async()=>revised,true)).publicAllowed,false);
-  const restored={...selection,adoption:'legacy',productCi:[],site:null};
-  assert.equal((await options(required,async()=>restored)).publicAllowed,true);
-  assert.deepEqual(selectedProductWorkflows(restored,[ci],true),[ci]);
+  assert.deepEqual(selection.productCi,[ci]);
+  assert.deepEqual(selection.site,{workflow:pages,mode:'build-and-deploy',source:'default-branch'});
   await assert.rejects(readRepositoryProjection(reader,1),/PROJECTION_INVALID/);
   protectedRules=false;
   await assert.rejects(readRepositoryProjection(reader,product.id),/PROJECTION_PROTECTION/);
@@ -188,10 +162,10 @@ test('the adoption marker is independent of Pages and Issues and comes only from
   const selected={adoption:'central',site:null};
   const read=async()=>selected;
   assert.equal(await readRepositoryPolicySelection(reader,product.id,{read}),selected);
-  await assert.rejects(workflowPagesOptions(reader,{GITHUB_REPOSITORY_ID:String(product.id)},async()=>null),/PROJECTION_REQUIRED/);
-  await assert.rejects(workflowPagesOptions(reader,{GITHUB_REPOSITORY_ID:String(product.id)},async()=>{
+  await assert.rejects(readRepositoryPolicySelection(reader,product.id,{read:async()=>null}),/PROJECTION_REQUIRED/);
+  await assert.rejects(readRepositoryPolicySelection(reader,product.id,{read:async()=>{
     present=false;moves=true;refs=1;return selected;
-  }),/PROJECTION_MOVED/);
+  }}),/PROJECTION_MOVED/);
   moves=false;
   present=false;
   assert.equal(await readRepositoryPolicySelection(reader,product.id,{read:async()=>assert.fail('Unexpected optional projection')}),null);
@@ -533,21 +507,6 @@ test('the registration command reaches the native state reader for an approved p
   }
 });
 
-test('legacy workflow stops before acquiring product write credentials for paused and central targets',async()=>{
-  const env={REPOSITORY_ID:String(product.id),GITHUB_REPOSITORY:'splrad/steward',GITHUB_REPOSITORY_ID:'1296724484',
-    GITHUB_EVENT_NAME:'workflow_dispatch'};
-  let writes=0;
-  const app={discover:async()=>[product],forTemplateRepository:async()=>{writes++;}};
-  for(const adoption of ['paused','central','legacy'])
-    await runLegacyConfiguration(env,{openApp:async()=>app,readPolicy:async(_app,repo)=>{
-      assert.equal(repo.id,product.id);
-      return {adoption};
-    }});
-  assert.equal(writes,1);
-  await assert.rejects(runLegacyConfiguration(env,{openApp:async()=>app,readPolicy:async()=>{throw Error('Unavailable');}}),/Unavailable/);
-  assert.equal(writes,1);
-});
-
 test('new release candidates consume the approved release selections and preserve native product changes',async()=>{
   const {policy}=await propose(product,productFiles);
   let adoption='central',selection=policy,commit=base;
@@ -583,17 +542,6 @@ test('new release candidates consume the approved release selections and preserv
   await assert.rejects(guard(async()=>assert.fail('Disabled release should not load product inputs')),/CANDIDATE_REPOSITORY_POLICY_DISABLED/);
   adoption='legacy';
   await guard(async()=>assert.fail('Legacy release should continue from native inputs'));
-});
-
-test('central Pages consumer blocks recovery for disabled and build-only sites and checks native source',async()=>{
-  const preventWrite=()=>assert.fail('unexpected Pages mutation');
-  const readPolicy=async site=>({adoption:'central',policy:{site}});
-  const args={repository:product,coordinator:{controllerSha:base},store:{save:preventWrite}};
-  for(const site of [null,{workflow:pages,mode:'build-only',source:'default-branch'}]) {
-    assert.deepEqual(await servicePages({...args,readPolicy:()=>readPolicy(site),io:{request:preventWrite}}),{status:'DISABLED'});
-  }
-  await assert.rejects(servicePages({...args,readPolicy:()=>readPolicy({workflow:pages,mode:'build-and-deploy',source:'default-branch'}),
-    io:{request:async method=>{assert.equal(method,'GET');return {status:404};}}}),/PAGES_REPOSITORY_POLICY_CONFLICT/);
 });
 
 test('a native release entry needs no central registration and honors a migrated pause',async()=>{

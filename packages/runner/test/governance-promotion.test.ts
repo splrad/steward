@@ -125,7 +125,10 @@ it('already adopted source is a read-only NOP',async()=>{
 it.each(['success','lost','conflict','changed','first security adoption'])('template tags are create-only, exact commit bound and recover lost responses: %s',async mode=>{
   const refs:any={'refs/tags/v1.0.0':P},plan={status:'CREATE',commit:M,tag:'v1.0.1',tags:{...refs}};
   let writes=0;const io={request:async(method:string,url:string,body:any)=>{
-    if(url.endsWith('matching-refs/tags/'))return {status:200,value:Object.entries(refs).map(([ref,sha])=>({ref,object:{sha,type:'commit'}}))};
+    if(url.endsWith('matching-refs/tags/'))return {status:200,value:[
+      {ref:'refs/tags/controller-v1000',object:{sha:P,type:'commit'}},
+      ...Object.entries(refs).map(([ref,sha])=>({ref,object:{sha,type:'commit'}})),
+    ]};
     if(method==='GET'){const value=refs['refs/tags/v1.0.1'];return value?{status:200,value:{ref:'refs/tags/v1.0.1',object:{type:'commit',sha:value}}}:{status:404};}
     expect(method).toBe('POST');expect(body).toEqual({ref:'refs/tags/v1.0.1',sha:M});writes++;refs[body.ref]=M;
     if(mode==='lost')throw Error('lost');return {status:201};
@@ -163,6 +166,154 @@ it('uses the independent Governance App, one repository, exact permissions and r
   await expect(withGovernanceCredential({GOVERNANCE_APP_ID:'765',GOVERNANCE_APP_PRIVATE_KEY:privateKey},async()=>{throw Error('business failure');},transport)).rejects.toThrow('business failure');
   expect(calls.at(-1)).toBe('DELETE /installation/token');
 });
+it('records a journal API failure and cleanup failure without masking the first error',async()=>{
+  const {withGovernanceCredential,recordPromotionFailure}=await module();
+  const privateKey=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs8',format:'pem'});
+  const calls:string[]=[],records:unknown[]=[];
+  const record=async(value:unknown)=>{records.push(value);};
+  const transport:typeof fetch=async(input,init)=>{
+    const path=new URL(String(input)).pathname;
+    const method=init?.method;
+    const token=new Headers(init?.headers).get('authorization');
+    calls.push(method+' '+path);
+    if(path==='/app')return Response.json({id:765,slug:'splrad-governance'});
+    if(path==='/orgs/splrad/installation')return Response.json({id:99,app_id:765,account:{id:302208797}});
+    if(path.endsWith('/access_tokens')){
+      const request=JSON.parse(String(init?.body));
+      return request.repository_ids[0]===1447987054
+        ?Response.json({message:'untrusted API response body'},{status:502})
+        :Response.json({token:'fixture-controller',permissions:request.permissions},{status:201});
+    }
+    if(path==='/installation/repositories')return Response.json({total_count:1,repositories:[{id:1296724484,full_name:'splrad/steward'}]});
+    if(path==='/installation/token'){
+      expect(token).toBe('token fixture-controller');
+      return Response.json({message:'another untrusted message'},{status:503});
+    }
+    throw Error('unregistered fixture');
+  };
+  const run=async()=>{
+    try {
+      await withGovernanceCredential({GOVERNANCE_APP_ID:'765',GOVERNANCE_APP_PRIVATE_KEY:privateKey},
+        async(_io:unknown,withJournal:(work:unknown)=>Promise<unknown>)=>withJournal(vi.fn()),transport,record);
+    }catch(error){await recordPromotionFailure(error,record);}
+  };
+  await expect(run()).rejects.toThrow('PROMOTION_UNAVAILABLE');
+  expect(records).toEqual([
+    {kind:'stage-failure',stage:'journal-token',errorKind:'HTTP',httpStatus:502},
+    {kind:'stage-failure',stage:'controller-token-revoke',errorKind:'HTTP',httpStatus:503},
+    {kind:'failure',code:'PROMOTION_UNAVAILABLE'}
+  ]);
+  expect(calls.filter(call=>call.startsWith('POST '))).toHaveLength(2);
+  expect(calls.filter(call=>call.startsWith('DELETE '))).toHaveLength(1);
+});
+it('authenticates the shipped bot identity lookup when the anonymous IP bucket is exhausted',async()=>{
+  const {promotionTransport}=await module();
+  const {nativeReleaseApp}=await import(pathToFileURL(resolve('packages/runner/dist/index.js')).href);
+  const privateKey=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs8',format:'pem'});
+  const workflowAuthorization='Bearer workflow-read-fixture';
+  const calls:string[]=[];
+  const transport:typeof fetch=async(input,init)=>{
+    const url=new URL(String(input));
+    const route=decodeURIComponent(url.pathname);
+    const authorization=new Headers(init?.headers).get('authorization');
+    calls.push(route);
+    if(route==='/users/splrad-steward[bot]'&&url.origin==='https://api.github.com'){
+      if(!authorization)return Response.json({message:'API rate limit exceeded'},{status:403});
+      expect(authorization).toBe(workflowAuthorization);
+      expect(init?.redirect).toBe('error');
+      return Response.json({id:301115370,type:'Bot'});
+    }
+    expect(authorization).not.toBe(workflowAuthorization);
+    if(route==='/app')return Response.json({id:4243096,client_id:'Iv23liuSr0qd4WLJdZhH',slug:'splrad-steward'});
+    if(route==='/orgs/splrad/installation')return Response.json({id:99,app_id:4243096,account:{id:302208797}});
+    return Response.json({});
+  };
+  await expect(nativeReleaseApp(privateKey,transport)).rejects.toMatchObject({status:403});
+  const authenticatedTransport=promotionTransport(transport,vi.fn(),'workflow-read-fixture');
+  expect((await nativeReleaseApp(privateKey,authenticatedTransport)).appBotId).toBe(301115370);
+  await authenticatedTransport('https://example.invalid/users/splrad-steward%5Bbot%5D',{method:'GET'});
+  await authenticatedTransport('https://api.github.com/users/human-account',{method:'GET'});
+  expect(calls.filter(path=>path.endsWith('/access_tokens'))).toEqual([]);
+});
+it.each([
+  ['GET',502,2],['GET',503,2],['GET',504,2],['GET',403,1],['GET',429,1],['GET',404,1],
+  ['POST',502,1],['PATCH',502,1],['PUT',502,1],['DELETE',502,1]
+])('retries only a transient read, once (%s %s)',async(method,status,calls)=>{
+  const {promotionTransport}=await module();
+  const record=vi.fn();
+  const fetcher=vi.fn(async()=>Response.json({message:'fixture'}, {status}));
+  const response=await promotionTransport(fetcher,record)('https://api.github.com/repos/example/repository',{method});
+  expect(response.status).toBe(status);
+  expect(fetcher).toHaveBeenCalledTimes(calls);
+  expect(record.mock.calls).toEqual(calls===2?[[{kind:'read-retry',httpStatus:status,delayMs:0}]]:[]);
+});
+it('recovers a transient journal read and defers a server window beyond the retry bound',async()=>{
+  const {promotionTransport,promotionIO}=await module();
+  const {validatorJournal}=await import(pathToFileURL(resolve('scripts/validator-revalidation.mjs')).href);
+  const journal={schema:1,previous:'a'.repeat(40),validator:'b'.repeat(40),phase:'observe',pulls:[]};
+  const original=vi.fn().mockResolvedValue(Response.json({}, {status:503}));
+  const id='read-only-test-fixture';
+  await expect(validatorJournal(promotionIO(id,original)).load()).rejects.toThrow('JOURNAL_READ');
+  expect(original).toHaveBeenCalledTimes(1);
+  const fetcher=vi.fn().mockResolvedValueOnce(Response.json({}, {status:503}))
+    .mockResolvedValueOnce(Response.json({name:'STEWARD_VALIDATOR_REVALIDATION',value:JSON.stringify(journal)}));
+  const record=vi.fn();
+  await expect(validatorJournal(promotionIO(id,promotionTransport(fetcher,record))).load()).resolves.toEqual(journal);
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(record).toHaveBeenCalledWith({kind:'read-retry',httpStatus:503,delayMs:0});
+  fetcher.mockReset();
+  fetcher.mockResolvedValue(Response.json({}, {status:503,headers:{'retry-after':'60'}}));
+  await expect(validatorJournal(promotionIO(id,promotionTransport(fetcher,record))).load())
+    .rejects.toMatchObject({message:'VALIDATOR_REVALIDATION_JOURNAL_READ',status:503});
+  expect(fetcher).toHaveBeenCalledTimes(1);
+});
+it.each(['seconds','date'])('waits for a short Retry-After expressed as %s',async(kind)=>{
+  const {promotionTransport}=await module();
+  const now=Date.UTC(2026,10,23,0);
+  const original=vi.spyOn(Date,'now').mockReturnValue(now);
+  try{
+    const header=kind==='seconds'?'1':new Date(now+1000).toUTCString();
+    const fetcher=vi.fn().mockResolvedValueOnce(Response.json({}, {status:503,headers:{'retry-after':header}}))
+      .mockResolvedValueOnce(Response.json({}));
+    const record=vi.fn();
+    const start=performance.now();
+    const result=await promotionTransport(fetcher,record)('https://api.github.com/example',{method:'GET'});
+    expect(result.status).toBe(200);
+    expect(performance.now()-start).toBeGreaterThanOrEqual(950);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[0]![1].signal).toBe(fetcher.mock.calls[1]![1].signal);
+    expect(record).toHaveBeenCalledWith({kind:'read-retry',httpStatus:503,delayMs:1000});
+  }finally{original.mockRestore();}
+});
+it('does not send the second GET when Retry-After outlasts the request signal',async()=>{
+  const {promotionTransport}=await module();
+  const fetcher=vi.fn().mockResolvedValue(Response.json({}, {status:503,headers:{'retry-after':'1'}}));
+  const record=vi.fn();
+  await expect(promotionTransport(fetcher,record)('https://api.github.com/example',
+    {method:'GET',signal:AbortSignal.timeout(30)})).rejects.toMatchObject({name:'AbortError'});
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(record).not.toHaveBeenCalled();
+});
+it('reports a journal write response only when readback cannot confirm the mutation',async()=>{
+  const {validatorJournal,epoch}=await import(pathToFileURL(resolve('scripts/validator-revalidation.mjs')).href);
+  for(const persisted of [false,true]){
+    let stored:string|null=null;
+    const methods:string[]=[];
+    const writer=validatorJournal({request:async(method:string,_path:string,body?:{value:string})=>{
+      methods.push(method);
+      if(method==='POST'){
+        if(persisted)stored=body!.value;
+        return {status:409};
+      }
+      return stored===null?{status:404}:{status:200,value:{name:'STEWARD_VALIDATOR_REVALIDATION',value:stored}};
+    }});
+    await writer.load();
+    const result=writer.save(epoch('a'.repeat(40),'b'.repeat(40)));
+    if(persisted)await expect(result).resolves.toBeUndefined();
+    else await expect(result).rejects.toMatchObject({message:'VALIDATOR_REVALIDATION_JOURNAL_WRITE',status:409});
+    expect(methods).toEqual(['GET','GET','POST','GET']);
+  }
+});
 it('wires trusted native validation and serialized promotion without upstream artifacts or caches',async()=>{
   const {validationJobNames}=await module(),native=YAML.parse(await readFile('.github/workflows/pr-validation-native.yml','utf8'));
   expect(validationJobNames(native)).toEqual(['Validation scope','Product CI evidence','Governance scans','Dependency review','Documentation links','SPLRAD Validation']);expect(JSON.stringify(native)).not.toMatch(/PRIVATE_KEY|environment|secrets\./);
@@ -184,14 +335,27 @@ it('wires trusted native validation and serialized promotion without upstream ar
   expect(promote.jobs.promote.steps.indexOf(preflight)).toBeLessThan(promote.jobs.promote.steps.indexOf(write));
 });
 
-it.each(['eligible','failed','moved','private-key','forged-preflight'])('preflight stays read-only and privileged entry independently verifies native facts: %s',async mode=>{
+it.each(['eligible','failed','moved','private-key','forged-preflight','transient','unavailable'])('preflight stays read-only and privileged entry independently verifies native facts: %s',async mode=>{
   const {mkdtemp,writeFile,readFile,rm}=await import('node:fs/promises'),{tmpdir}=await import('node:os'),{join}=await import('node:path');
   const directory=await mkdtemp(join(tmpdir(),'promotion-preflight-'));
   try {
     const api=await module(),f=source(),definition=YAML.parse(await readFile('.github/workflows/pr-validation-native.yml','utf8'));
     f.jobs.splice(0,f.jobs.length,...api.validationJobNames(definition).map((name:string,i:number)=>({id:100+i,run_id:12,run_attempt:2,head_sha:M,name,status:'completed',conclusion:'success'})));
     const env:any={GITHUB_REPOSITORY:'splrad/steward',GITHUB_REPOSITORY_ID:'1296724484',GITHUB_REF:'refs/heads/main',STEWARD_CONTROLLER_SHA:M,GITHUB_RUN_ID:'50',GITHUB_EVENT_NAME:'workflow_run',SOURCE_VALIDATION_RUN_ID:'12',NATIVE_VALIDATION_WORKFLOW_ID:'5',GITHUB_TOKEN:'read-only-fixture',GITHUB_OUTPUT:join(directory,'output'),PROMOTION_EVIDENCE_DIRECTORY:directory};
-    const transport=async(url:string,init:any)=>{expect(init.method).toBe('GET');const u=new URL(url),r=await f.request(init.method,u.pathname+u.search);return Response.json(r.value,{status:r.status});};
+    let mainReads=0;
+    const transport=async(url:string,init:any)=>{
+      expect(init.method).toBe('GET');
+      const u=new URL(url);
+      if(u.pathname.endsWith('/commits/main')){
+        mainReads++;
+        if(mode==='unavailable'||mode==='transient'&&mainReads===1)return Response.json({}, {status:503});
+      }
+      const r=await f.request(init.method,u.pathname+u.search);
+      return Response.json(r.value,{status:r.status});
+    };
+    const events=async()=>(await readFile(join(directory,'observations.jsonl'),'utf8')).trim()
+      .split('\n').map(line=>JSON.parse(line));
+    const retry={kind:'read-retry',httpStatus:503,delayMs:0};
     if(mode==='failed')f.run.conclusion='failure';if(['moved','forged-preflight'].includes(mode))f.main=T;
     if(mode==='private-key'){
       env.GOVERNANCE_APP_PRIVATE_KEY='must-not-enter-preflight';
@@ -203,11 +367,39 @@ it.each(['eligible','failed','moved','private-key','forged-preflight'])('preflig
       expect(await readFile(join(directory,'observations.jsonl'),'utf8')).toContain('STALE');
       expect(f.calls.every(c=>c.startsWith('GET '))).toBe(true);return;
     }
+    if(mode==='unavailable'){
+      await expect(api.preflight(env,transport)).rejects.toThrow('PROMOTION_NATIVE_READ_503');
+      expect(mainReads).toBe(2);
+      expect(await events()).toEqual([
+        retry,{kind:'stage-failure',stage:'source-preflight',errorKind:'HTTP',httpStatus:503},
+        {kind:'failure',code:'PROMOTION_NATIVE_READ_503'}
+      ]);
+      await expect(readFile(env.GITHUB_OUTPUT,'utf8')).rejects.toHaveProperty('code','ENOENT');
+      return;
+    }
     const result=await api.preflight(env,transport);
-    expect(result.status).toBe(mode==='eligible'?'ELIGIBLE':mode==='failed'?'WAITING_VALIDATION':'STALE');
-    expect(await readFile(env.GITHUB_OUTPUT,'utf8')).toBe(`eligible=${mode==='eligible'}\n`);
+    expect(result.status).toBe(mode==='failed'?'WAITING_VALIDATION':mode==='moved'?'STALE':'ELIGIBLE');
+    if(mode==='transient'){
+      expect(mainReads).toBe(3); // one recovery and the existing final main readback
+      expect(await events()).toEqual([retry]);
+    }
+    expect(await readFile(env.GITHUB_OUTPUT,'utf8')).toBe(`eligible=${mode==='eligible'||mode==='transient'}\n`);
     expect(JSON.parse(await readFile(join(directory,'source-preflight.json'),'utf8'))).toEqual(result);
   }finally{await rm(directory,{recursive:true,force:true});}
+});
+it('preserves failed HTTP status at both controller protection and validator read boundaries',async()=>{
+  const {assertSourceProtection}=await import(pathToFileURL(resolve('scripts/controller-source.mjs')).href);
+  const {promoteRequiredWorkflow}=await module();
+  const io={request:async(method:string)=>{
+    expect(method).toBe('GET');
+    return {status:503,value:{}};
+  }};
+  await expect(assertSourceProtection(io,765)).rejects.toMatchObject({
+    message:'CONTROLLER_SOURCE_READ_UNCONFIRMED',status:503
+  });
+  await expect(promoteRequiredWorkflow(io,M,vi.fn(),vi.fn(),compare)).rejects.toMatchObject({
+    message:'PROMOTION_NATIVE_READ_503',status:503
+  });
 });
 it('publishes one fixed template wake only after a new tag; unknown responses never retry',async()=>{
   const {wakePublishedTemplate}=await module();
@@ -239,7 +431,7 @@ it('stops before writing when the default-branch protection changes',async()=>{
   expect(f.writes).toBe(0);
 });
 it.each(['before tag write','after tag write'])('checks the adopted default-branch protection during publication: %s',async when=>{
-  const {promoteRequiredWorkflow,publishPromotedSources}=await module();
+  const {promoteRequiredWorkflow,publishTemplateTag}=await module();
   const f=rulesFixture();
   const {verifyCurrent}=await promoteRequiredWorkflow(f,M,async()=>{},f.record,compare);
   const plan={status:'CREATE',commit:M,tag:'v1.0.1',tags:{}};
@@ -256,10 +448,13 @@ it.each(['before tag write','after tag write'])('checks the adopted default-bran
     shaBinding(f.current).sha=T;
     return {status:201,value:tagRef};
   }};
-  await expect(publishPromotedSources(io,plan,M,123,verifyCurrent,f.record))
+  const checkPublication=async()=>{
+    await publishTemplateTag(io,plan,verifyCurrent,f.record);
+    await verifyCurrent();
+  };
+  await expect(checkPublication())
     .rejects.toThrow(when==='before tag write'?'TARGET_PROTECTION_CHANGED':'TARGET_READBACK');
   expect(writes).toEqual(when==='before tag write'?[]:['/repos/splrad/steward/git/refs']);
-  expect(f.records.some(record=>['controller-source-result','template-wake'].includes(record.kind))).toBe(false);
 });
 it.each(['sha','protection'])('rejects default-branch drift during final evidence recording: %s',async kind=>{
   const f=rulesFixture();

@@ -4,7 +4,7 @@ const name='STEWARD_VALIDATOR_REVALIDATION';
 export const journalRepository={id:1447987054,name:'splrad/steward-settings'};
 const variables=`/repos/${journalRepository.name}/actions/variables`;
 const key=`${variables}/${name}`;
-const check=(ok,reason)=>{if(!ok)throw Error('VALIDATOR_REVALIDATION_'+reason);};
+const check=(ok,reason,status)=>{if(!ok)throw Object.assign(Error('VALIDATOR_REVALIDATION_'+reason),{status});};
 const number=value=>Number.isSafeInteger(value)&&value>0;
 const active=new Set(['queued','waiting','prepared','reopened','in_progress']);
 const actorId=301115370;
@@ -12,7 +12,7 @@ const synchronizeGrace=2*60*1000;
 
 async function get(io,path) {
   const result=await io.request('GET',path);
-  check(result.status===200&&result.value!=null,'READ_'+result.status);
+  check(result.status===200&&result.value!=null,'READ_'+result.status,result.status);
   return result.value;
 }
 
@@ -36,7 +36,7 @@ export function validatorJournal(io) {
   async function read() {
     const response=await io.request('GET',key);
     if(response.status===404)return null;
-    check(response.status===200&&response.value?.name===name&&typeof response.value.value==='string','JOURNAL_READ');
+    check(response.status===200&&response.value?.name===name&&typeof response.value.value==='string','JOURNAL_READ',response.status);
     return response.value.value;
   }
   return {
@@ -60,8 +60,9 @@ export function validatorJournal(io) {
       if(saved===raw)return;
       check(Buffer.byteLength(raw)<=47*1024,'JOURNAL_SIZE');
       check(await read()===saved,'JOURNAL_CONCURRENT');
-      try {await io.request(saved===null?'POST':'PATCH',saved===null?variables:key,{name,value:raw});}catch{}
-      check(await read()===raw,'JOURNAL_WRITE');
+      let writeStatus;
+      try {({status:writeStatus}=await io.request(saved===null?'POST':'PATCH',saved===null?variables:key,{name,value:raw}));}catch{}
+      check(await read()===raw,'JOURNAL_WRITE',writeStatus);
       saved=raw;
     }
   };
@@ -76,9 +77,23 @@ const scope=(io,repo,base)=>pages(io,`${prefix(repo)}/rules/branches/${encodeURI
   rule=>JSON.stringify([rule.ruleset_id,rule.type,rule.parameters??null]));
 const exactPull=(pr,entry)=>pr.number===entry.number&&pr.base?.ref===entry.base&&pr.base?.repo?.id===entry.repoId
   &&pr.head?.sha===entry.head&&pr.head?.repo?.id===entry.headRepo&&pr.head?.ref===entry.headRef;
-const ownedRelease=pr=>pr.head?.repo?.id===pr.base?.repo?.id
-  &&(pr.head.ref==='steward/release-candidate'||pr.labels?.some(label=>label.name==='autorelease: pending'||label.name.startsWith('release:'))
+const ownedRelease=pr=>typeof pr.head?.ref==='string'&&pr.head.repo?.id===pr.base?.repo?.id
+  &&(pr.head.ref==='steward/release-candidate'||pr.user?.id===301115370 &&
+    (pr.head.ref==='release-please--branches--'+pr.base.ref || pr.head.ref.startsWith('release-please--branches--'+pr.base.ref+'--components--'))
+    ||pr.labels?.some(label=>label.name==='autorelease: pending'||label.name.startsWith('release:'))
     ||/<!-- steward:candidate:[a-f0-9]{64} -->/.test(pr.body??''));
+
+function revalidationWait(pr) {
+  if(ownedRelease(pr))return 'release-managed';
+  if(pr.draft)return 'draft';
+  // GitHub does not schedule pull_request for a conflicted merge. A behind PR
+  // can instead be reopened with an older event base, unusable by the strict gate.
+  if(pr.mergeable===false||pr.mergeable_state==='dirty')return 'merge-conflict';
+  if(pr.mergeable_state==='behind')return 'base-behind';
+  if(pr.mergeable!==true||!['clean','unstable','blocked','has_hooks'].includes(pr.mergeable_state))
+    return 'mergeability-pending';
+  return null;
+}
 
 export async function discoverPulls(app,ioFor,state) {
   const entries=[];
@@ -162,10 +177,11 @@ export async function reconcilePull(io,state,entry,save,guard,record,{draining=f
       &&pr.base?.ref===entry.base&&number(pr.head?.repo?.id)&&typeof pr.head.ref==='string'&&pr.head.ref
       &&validatorCommit(pr.head.sha)&&!exactPull(pr,entry)
       &&!state.pulls.some(other=>active.has(other.status)&&exactPull(pr,other))){
-      const reopened=state.pulls.some(other=>exactPull(pr,other)&&other.reopenEvent);
+      // A later mergeability check can move the successor back to waiting.
+      const reopenEvent=state.pulls.find(other=>exactPull(pr,other)&&number(other.reopenEvent))?.reopenEvent;
       state.pulls.push({repoId:entry.repoId,repo:entry.repo,number:entry.number,base:entry.base,
         head:pr.head.sha,headRepo:pr.head.repo.id,headRef:pr.head.ref,
-        status:reopened?'reopened':'waiting',reason:'synchronize',notBefore:now()+synchronizeGrace});
+        status:reopenEvent?'reopened':'waiting',reopenEvent,reason:'synchronize',notBefore:now()+synchronizeGrace});
     }
     return change('superseded');
   };
@@ -199,7 +215,6 @@ export async function reconcilePull(io,state,entry,save,guard,record,{draining=f
     // Keep its original marker until a native transition proves what happened.
     if(entry.closeRequest&&entry.closeRequest!=='rejected')return record({kind:'validator-close-unconfirmed'});
     if(draining||!exactPull(pr,entry))return supersede(pr);
-    if(pr.draft||ownedRelease(pr))return change('waiting',{reason:pr.draft?'draft':'release-managed'});
   }else if(draining)return;
 
   const pr=await observed();
@@ -209,17 +224,20 @@ export async function reconcilePull(io,state,entry,save,guard,record,{draining=f
   const run=await matchingRun(io,pr,state.validator);
   if(run)return observeRun(run);
   if(entry.status==='in_progress')return record({kind:'validator-run-readback-pending'});
-  if(entry.status==='reopened')return record({kind:'validator-native-run-pending'});
+  const wait=revalidationWait(pr);
+  if(wait)return change('waiting',{reason:wait});
+  if(entry.status==='reopened'||entry.reopenEvent)return record({kind:'validator-native-run-pending'});
   if(entry.notBefore>now())return record({kind:'validator-synchronize-run-pending'});
-  if(ownedRelease(pr))return change('waiting',{reason:'release-managed'});
-  if(pr.draft||await mergeManaged(io,pr))return change('waiting',{reason:pr.draft?'draft':'merge-management'});
+  if(await mergeManaged(io,pr))return change('waiting',{reason:'merge-management'});
   if(entry.status!=='prepared'){
     const last=await lastTransition(io,events);
     await change('prepared',{marker:last?.id??0});
   }
   await guard();
   const fresh=await observed(),last=await lastTransition(io,events);
-  if(fresh.state!=='open'||!exactPull(fresh,entry)||fresh.draft||ownedRelease(fresh)||(last?.id??0)!==entry.marker)return;
+  if(fresh.state!=='open'||!exactPull(fresh,entry)||(last?.id??0)!==entry.marker)return;
+  const freshWait=revalidationWait(fresh);
+  if(freshWait)return change('waiting',{reason:freshWait});
   if(await mergeManaged(io,fresh))return change('waiting',{reason:'merge-management'});
   const native=await matchingRun(io,fresh,state.validator);
   if(native)return observeRun(native);
@@ -228,8 +246,9 @@ export async function reconcilePull(io,state,entry,save,guard,record,{draining=f
   if(beforeClose.state!=='open'||!exactPull(beforeClose,entry)){
     return change('prepared',{closeRequest:'rejected'});
   }
-  if(beforeClose.draft||ownedRelease(beforeClose)||await mergeManaged(io,beforeClose))
-    return change('waiting',{reason:beforeClose.draft?'draft':ownedRelease(beforeClose)?'release-managed':'merge-management',closeRequest:'rejected'});
+  const finalWait=revalidationWait(beforeClose);
+  if(finalWait||await mergeManaged(io,beforeClose))
+    return change('waiting',{reason:finalWait??'merge-management',closeRequest:'rejected'});
   const response=await mutate(io,path,'closed');
   const closeRequest=response>=200&&response<300?'accepted'
     :[400,401,403,404,409,410,422,429].includes(response)?'rejected':'unknown';
