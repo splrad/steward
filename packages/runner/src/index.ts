@@ -14,7 +14,6 @@ export { pipelineIdentity, pipelineNotes, pipelineRecoverCycleFinal, mergedBuild
 export { inspectProductArtifacts, sealProductArtifacts, validateProductManifest } from './release-artifacts.js';
 export { renderFrozenReleaseNotes } from '../../core/src/release-template.js';
 export { decodeCompletionArchive } from '../../core/src/release-history.js';
-export { candidateId } from '../../core/src/release-candidate.js';
 export { collectContentInput, planContentBatches, resumeContentBatches, assembleUnitNotes, contentWireInput } from './release-content.js';
 export { copilotReleaseClient } from './copilot-release-client.js';
 export { copilotQualityClient } from './copilot-quality-client.js';

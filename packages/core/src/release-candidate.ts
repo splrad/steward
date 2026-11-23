@@ -1,14 +1,8 @@
-import { sha256Hex } from './fingerprint.js';
 import { assertDeliveryPath } from './delivery-config.js';
 import { isHumanActor, isBotActor, type GitHubActor } from './identity.js';
 export {renderReleaseContributors} from './candidate-note.js';
 
 export interface CandidateFile { path: string; mode: '100644' | '100755'; content: string | null }
-export interface CandidateSnapshot {
-  schemaVersion: 1; baseSha: string; files: CandidateFile[];
-  units: { id: string; path: string; version: string; tag: string }[];
-  configDigest: string; sourceDigest: string;
-}
 export interface RepositoryAuthor { id: number; evidence: string }
 export interface ReleaseActor extends GitHubActor { profileUrl: string; avatarUrl: string }
 type ReleaseContributorPolicy = readonly Pick<RepositoryAuthor, 'id'>[] | 'github-authors';
@@ -63,17 +57,4 @@ export function replayReleaseContributors(
   mode?: 'github-authors' | 'recorded',
 ) {
   return selectReleaseContributors(record.actors, authors, mode === 'recorded' ? record.contributors.contributors : mode);
-}
-
-export async function candidateId(repositoryId: number, branch: string, baseSha: string, lastCompletedCycleId: string | null) {
-  if (!Number.isSafeInteger(repositoryId) || repositoryId <= 0 || !/^[a-f0-9]{40}$/.test(baseSha) || !branch)
-    throw new Error('CANDIDATE_IDENTITY_INVALID');
-  return sha256Hex(JSON.stringify([1, repositoryId, branch, baseSha, lastCompletedCycleId]));
-}
-export function candidatePhase(candidate: { prNumber: number | null; pendingWrite: object | null; publishedHead: string | null }, contentReady: boolean) {
-  return candidate.pendingWrite ? 'WRITE_PENDING' : !contentReady ? 'PREPARING' : candidate.prNumber === null ? 'PR_PENDING' : 'OPEN';
-}
-export function candidateCreationBody(id: string, upstreamBody: string) {
-  if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('CANDIDATE_IDENTITY_INVALID');
-  return `${upstreamBody}\n\n当前文稿的预览见本 PR 的 Steward 状态评论。\n\n<!-- steward:candidate:${id} -->\n`;
 }
