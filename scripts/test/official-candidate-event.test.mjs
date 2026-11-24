@@ -122,6 +122,9 @@ test('requires the official switch and the native product declaration to select 
   const secretSteps = steps.filter(step => /secrets\./.test(JSON.stringify(step)));
   assert.deepEqual(secretSteps.map(step => step.id), ['product', 'compute', 'check', 'candidate-token', undefined]);
   for (const step of secretSteps) assert.deepEqual(JSON.stringify(step).match(/secrets\.[A-Z_0-9]+/g), ['secrets.STEWARD_APP_PRIVATE_KEY']);
+  const centralReads = steps.filter(step => step.env?.STEWARD_CENTRAL_TOKEN);
+  assert.deepEqual(centralReads.map(step => step.run.split(' ').at(-1)), ['identify', 'prepare', 'check', 'write']);
+  for (const step of centralReads) assert.equal(step.env.STEWARD_CENTRAL_TOKEN, '${{ github.token }}');
   assert.ok(!steps.some(step => /release-please-action/.test(step.uses ?? '')));
   const model = steps.filter(step => step.env?.STEWARD_COPILOT_TOKEN);
   assert.equal(model.length, 1);
@@ -132,7 +135,7 @@ test('requires the official switch and the native product declaration to select 
 function render(upstream = upstreamBody, notes = orgNotes, contributors = [person], roundId = 'a'.repeat(64)) {
   return renderOfficialHomepage({ upstreamBody: upstream, template, notes, contributors,
     sourceLink: { label: '查看本版变更', url: 'https://github.com/splrad/fixture/compare/' + previousSha + '...' + sourceSha },
-    roundId });
+    filesUrl: 'https://github.com/splrad/fixture/pull/29/files', roundId });
 }
 
 test('native single-root extraction preserves every byte of rich notes and excludes the footer', async () => {
@@ -149,11 +152,18 @@ test('native single-root extraction preserves every byte of rich notes and exclu
   const avatar = parseFragment(section).childNodes.find(node => node.nodeName === 'a');
   assert.equal(avatar?.attrs.find(attr => attr.name === 'href')?.value, person.profileUrl);
   assert.equal(avatar?.childNodes[0]?.attrs.find(attr => attr.name === 'src')?.value, person.avatarUrl);
-  assert.match(section, /<summary>贡献者 GitHub ID<\/summary>/);
+  assert.match(section, /<summary>查看贡献者名单<\/summary>/);
   const disclosure = parseFragment(section).childNodes.find(node => node.nodeName === 'details');
   const login = disclosure?.childNodes.find(node => node.nodeName === 'a');
   assert.equal(login?.attrs.find(attr => attr.name === 'href')?.value, person.profileUrl);
   assert.equal(login?.childNodes[0]?.value, person.login);
+  assert.doesNotMatch(section, / · .42./);
+  const page = render();
+  assert.ok(page.startsWith('> **审阅提示**\n>\n> 请审阅本版。'));
+  assert.match(page, /发行说明\n---\n\n## 1\.1\.0/);
+  assert.match(page, /\n---\n\n## PR 信息\n\n产品文件差异。/);
+  assert.match(page, /<summary>本轮候选变更记录<\/summary>/);
+  assert.equal(officialNotes(page.replace('## 贡献者', '---\n\n## 贡献者')).body, section.replace('## 贡献者', '---\n\n## 贡献者'));
   assert.match(section, /兼容性与迁移/);
   assert.match(section, /steward doctor/);
   assert.doesNotMatch(officialNotes(render(upstreamBody, { summary: '本版修复安装。' }, [])).body, /贡献者|本次更新/);
@@ -326,6 +336,42 @@ test('materializes the official candidate once against the immutable source and 
   assert.notEqual(officialCandidateRoundId(product, { ...source, candidate: { ...computed, body: upstreamBody + '\nChanged' } }), roundId);
 });
 
+test('keeps the creation source on refresh and identifies older PRs without a creation record', async () => {
+  const firstSource = 'e'.repeat(40), firstRound = 'f'.repeat(64);
+  const openPull = { ...pr, body: '维护者已编辑正文。' };
+  let live = null, previous = null;
+  const get = async path => {
+    if (path === 'git/ref/heads/main') return { ref: 'refs/heads/main', object: { type: 'commit', sha: sourceSha } };
+    if (path.startsWith('issues?')) return [];
+    if (path.startsWith('pulls?')) return live ? [live] : [];
+    if (path === 'pulls/' + pr.number) return live;
+    if (path === 'git/commits/' + head) return { sha: head, verification: { verified: true },
+      parents: [{ sha: firstSource }], message: 'Release\n\nSteward-Candidate-Round: ' + firstRound };
+    if (path === 'contents/release-please-config.json?ref=' + sourceSha) return blob('release-please-config.json', settings);
+    if (path === 'contents/.release-please-manifest.json?ref=' + sourceSha) return blob('.release-please-manifest.json', { '.': '1.0.0' });
+    if (path === 'commits/tags%2Fv1.0.0') return { sha: previousSha };
+    if (path.startsWith('compare/')) return { status: 'ahead', merge_base_commit: { sha: previousSha } };
+    assert.fail(path);
+  };
+  const store = { find: async () => null,
+    read: async id => id === firstRound ? previous : { source: null },
+    save: async (id, phase, data) => { assert.equal(phase, 'source'); return { source: data }; } };
+  const prepare = () => prepareOfficialCandidate({ identity: { product, event: { kind: 'push' }, sourceSha }, get, store,
+    buildCandidate: async () => computed, collectEvidence: async () => ({}),
+    prepareParticipation: async () => ({ status: 'APPLICABLE', sourceSha }) });
+  assert.deepEqual((await prepare()).creationRange, { base: previousSha, head: sourceSha });
+  live = openPull;
+  previous = { pull: { number: pr.number, head }, source: { prior: null, baseline: { sha: null }, sourceSha: firstSource } };
+  assert.deepEqual((await prepare()).creationRange, { base: null, head: firstSource });
+  previous.source = { prior: { number: pr.number, head }, creationRange: { base: previousSha, head: firstSource } };
+  assert.deepEqual((await prepare()).creationRange, previous.source.creationRange);
+  previous.pull.number++;
+  assert.equal((await prepare()).creationRange, null);
+  previous.pull.number = pr.number;
+  delete previous.source.creationRange;
+  assert.equal((await prepare()).creationRange, null);
+});
+
 test('restores a saved calculation and draft before contacting Release Please or Copilot again', async () => {
   let hasDraft = true, hasPull = false, collectCount = 0;
   let nativePull = { ...pr, body: '人工修订后的原始正文' };
@@ -449,9 +495,17 @@ test('renders only evidence-bound Copilot sections and validates the official se
     sourceLink: { label: '查看本版变更', url: 'https://github.com/splrad/fixture/compare/' + previousSha + '...' + sourceSha },
     evidence: [{ kind: 'fixture', details: { instruction: '升级前备份设置。' } }],
   };
-  const draft = await draftOfficialCandidate({ roundId, candidate: computed, context, product, sourceSha, template,
+  const initialSha = 'f'.repeat(40);
+  const templateNote = '此处可查看本版使用的源码。';
+  const updatedTemplate = template + '\n' + templateNote + '\n';
+  const draft = await draftOfficialCandidate({ roundId, candidate: computed, context, product, sourceSha, template: updatedTemplate,
+    creationRange: { base: previousSha, head: initialSha },
     call: async input => {
       const value = JSON.parse(input);
+      assert.equal(value.organizationTemplate, updatedTemplate);
+      assert.ok(!value.prompt.includes(templateNote));
+      assert.match(value.prompt, /以中文为主体语言/);
+      assert.match(value.constraints, /按 organizationTemplate 的栏目及注释填写适用内容/);
       assert.equal(value.sources[0].details.instruction, '升级前备份设置。');
       return { text: JSON.stringify({ paragraphs: [{
         section: 'requiredActions', sourceIds: [value.sources[0].id], qualification: 'SOURCE_CONFIRMED',
@@ -460,6 +514,12 @@ test('renders only evidence-bound Copilot sections and validates the official se
     },
   });
   const section = officialNotes(draft.body);
+  assert.ok(section.body.includes(templateNote));
+  assert.equal(draft.templateDigest, bodyDigest(updatedTemplate));
+  assert.ok(draft.body.includes('<summary>创建 PR 时的变更记录</summary>'));
+  assert.ok(draft.body.includes('/compare/' + previousSha + '...' + initialSha));
+  assert.ok(!section.body.includes(initialSha));
+  assert.ok(draft.body.includes('**Files changed**'));
   assert.match(section.body, /> \[!IMPORTANT\][\s\S]+升级前备份设置/);
   assert.match(section.body, /版本记录/);
   assert.doesNotMatch(section.body, /获取与使用|本次更新|候选文件差异/);

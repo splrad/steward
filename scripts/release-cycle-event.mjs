@@ -9,6 +9,7 @@ import {assertReleaseUnpaused} from './release-pause-policy.mjs';
 import { fetchState } from './release-coordinator.mjs';
 import { registerOfficialMergedCycle, releaseCommand } from './release-record.mjs';
 import { finishOfficialAction, readOfficialBody } from './official-release.mjs';
+import { authenticatedBotIdentityTransport } from './steward-bot-identity.mjs';
 
 const centralId = 1296724484, central = 'splrad/steward';
 const eventKinds=['push','run','publication','official-merge'];
@@ -204,7 +205,8 @@ export async function main(env=process.env) {
   const centralGet=path=>reader.json(path);
   const run=await entryGuard(env,path=>centralGet(path.replace('/repos/'+central,'').replace(/^\//,'')),config);
   if ((await centralGet('git/ref/heads/steward/validated-controller')).object?.sha!==run.head_sha) fail('CYCLE_POLICY_UNPROMOTED');
-  const app=await cycleStage('APP_AUTH',()=>nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY));
+  const app=await cycleStage('APP_AUTH',()=>nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY,
+    authenticatedBotIdentityTransport(fetch,env.STEWARD_CENTRAL_TOKEN)));
   if(run.actor?.id!==app.appBotId || run.display_title!=='Release cycle '+requestKey) fail('CYCLE_ACTOR');
   const root=await mkdtemp(join(tmpdir(),'steward-cycle-'));
   const producer={repositoryId:centralId,runId:run.id,attempt:run.run_attempt,controllerSha:run.head_sha};

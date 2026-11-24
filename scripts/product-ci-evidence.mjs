@@ -4,29 +4,12 @@ import {pathToFileURL} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
 
 export const forkRunName='Product CI ${{ github.event.pull_request.number }} ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }}';
-export const stewardRunName="${{ github.event_name == 'merge_group' && format('Product CI merge_group {0} {1}', github.event.merge_group.base_sha, github.event.merge_group.head_sha) || format('Product CI {0} {1} {2}', github.event.pull_request.number, github.event.pull_request.base.sha, github.event.pull_request.head.sha) }}";
-
-export function stewardMergeGroup(event) {
-  const group=event.merge_group;
-  return event.repository?.id===1296724484&&event.repository.full_name==='splrad/steward'
-    &&event.repository.default_branch==='main'&&event.action==='checks_requested'
-    &&group?.base_ref==='refs/heads/main'
-    &&/^refs\/heads\/gh-readonly-queue\/main\/.+$/.test(group.head_ref??'')
-    &&[group.base_sha,group.head_sha].every(sha=>/^(?!0{40}$)[a-f0-9]{40}$/.test(sha??''))
-    &&group.base_sha!==group.head_sha ? group : null;
-}
 
 export function matchesRun(run,path,event,type) {
   const pr=event.pull_request;
   if(run.repository?.id!==event.repository.id||run.path!==path||run.event!==type)return false;
   if(type==='push')return run.head_repository?.id===event.repository.id&&run.head_sha===event.after
     &&event.ref==='refs/heads/'+run.head_branch;
-  if(type==='merge_group'){
-    const group=stewardMergeGroup(event);
-    return Boolean(group&&run.head_repository?.id===event.repository.id&&run.head_sha===group.head_sha
-      &&'refs/heads/'+run.head_branch===group.head_ref
-      &&run.display_title===`Product CI merge_group ${group.base_sha} ${group.head_sha}`);
-  }
   return type==='pull_request'&&run.head_sha===pr.head.sha&&run.head_repository?.id===pr.head.repo.id
     &&run.pull_requests?.some(item=>item.number===pr.number&&item.base?.repo?.id===pr.base.repo.id
       &&item.base?.ref===pr.base.ref&&item.base?.sha===pr.base.sha&&item.head?.repo?.id===pr.head.repo.id
@@ -183,7 +166,7 @@ export async function readEvidenceResponse(read,deadline,wait=delay) {
 async function main(){
   const event=JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH,'utf8'));
   const type=process.env.GITHUB_EVENT_NAME,paths=JSON.parse(process.env.PRODUCT_WORKFLOWS);
-  const head=type==='merge_group'?stewardMergeGroup(event)?.head_sha:event.pull_request?.head.sha??event.after;
+  const head=event.pull_request?.head.sha??event.after;
   if(!head)throw Error('Missing Product CI event head');
   const root=process.env.GITHUB_API_URL+'/repos/'+event.repository.full_name+'/';
   async function read(url){
