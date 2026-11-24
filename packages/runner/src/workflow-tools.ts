@@ -51,14 +51,10 @@ function acceptedTrigger(root: string, finding: any, files: readonly string[], r
   if (typeof path !== 'string' || !isAbsolute(path) || !files.includes(resolve(path))) return null;
   const local = relative(root, path).replaceAll('\\', '/');
   const route = JSON.stringify(primary[0].symbolic?.route?.route);
-  if (['.github/workflows/pr-title.yml', 'templates/repository/.github/workflows/pr-title.yml'].includes(local)
-    && route === JSON.stringify([{ Key: 'on' }, { Key: 'pull_request_target' }])) return 'E07-TITLE-METADATA-20261028';
   if (local === '.github/workflows/governance-promotion.yml'
     && route === JSON.stringify([{ Key: 'on' }, { Key: 'workflow_run' }])) return 'E07-PROMOTION-WORKFLOW-RUN-20261031';
   if (repositoryId === 1296724484 && local === '.github/workflows/maintenance-event.yml'
     && route === JSON.stringify([{ Key: 'on' }, { Key: 'workflow_run' }])) return 'E11-CENTRAL-MAINTENANCE-WORKFLOW-RUN-20261118';
-  if (['.github/workflows/pr-labeler.yml', 'templates/repository/.github/workflows/pr-labeler.yml'].includes(local)
-    && route === JSON.stringify([{ Key: 'on' }, { Key: 'workflow_run' }])) return 'E08-LABELER-TITLE-WORKFLOW-RUN-20261103';
   return null;
 }
 export async function resolvePolicyTool(name: 'syft' | 'gh' | 'lychee' | 'oras' | 'uv', runtimeRoot = policyRoot): Promise<string> {
