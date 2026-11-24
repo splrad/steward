@@ -335,6 +335,7 @@ test('requires the official switch and the native product declaration to select 
   assert.throws(() => officialCandidateRoute({}, 'false'), /ROUTE/);
 
   const workflow = YAML.parse(await readFile('.github/workflows/release-candidate-event.yml', 'utf8'));
+  assert.deepEqual(workflow.jobs.event.env, { MISE_ENABLE_TOOLS: 'node,npm' });
   const steps = workflow.jobs.event.steps;
   assert.equal(steps.find(step => step.id === 'candidate-token').if, "steps.check.outputs.mode == 'write'");
   assert.equal(workflow.jobs.event.permissions['copilot-requests'], 'write');
