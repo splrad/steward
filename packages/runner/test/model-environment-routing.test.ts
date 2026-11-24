@@ -28,7 +28,8 @@ it.each([
     expect(job.if).toContain("github.ref == format('refs/heads/{0}', github.event.repository.default_branch)");
   }
   expect(workflow.env).toBeUndefined();
-  expect(job.env).toBeUndefined();
+  if (file === 'pr-release-impact.yml') expect(job.env).toEqual({ MISE_ENABLE_TOOLS: 'node,npm' });
+  else expect(job.env).toBeUndefined();
   const consumers = job.steps.filter((step: {env?: Record<string, string>}) => step.env?.STEWARD_COPILOT_TOKEN);
   expect(consumers).toHaveLength(1);
   expect(consumers[0].env.STEWARD_COPILOT_TOKEN).toBe('${{ github.token }}');
