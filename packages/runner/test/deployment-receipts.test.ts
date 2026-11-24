@@ -67,6 +67,10 @@ it('reuses a partially written receipt, retires the previous deployment and dedu
   await reconcile(gh, 'production', read, vi.fn());
   expect(writes).toEqual(['deployments/2/statuses success', 'deployments/1/statuses inactive']);
   const summary = vi.fn();
+  await expect(reconcile(gh, 'production', async () => ({rows: [{...row, sha: null}]}), summary))
+    .rejects.toThrow('no verified main commit');
+  expect(current.latestStatus.state).toBe('SUCCESS');
+  expect(writes).toHaveLength(2);
   await expect(reconcile(gh, 'production', async () => ({rows: [{...row, key: 'new', sha: null}]}), summary))
     .rejects.toThrow('no verified main commit');
   expect(writes.at(-1)).toBe('deployments/2/statuses inactive');

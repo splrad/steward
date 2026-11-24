@@ -140,7 +140,12 @@ export async function reconcile(gh, environment, observe, writeSummary = console
   await writeSummary('### ' + environment + '\n\n' + observed.rows.map(r =>
     '- ' + r.label + ' — ' + (r.sha ? '[' + r.sha.slice(0, 12) + '](' + web + '/commit/' + r.sha + ')' : '源码提交待核实')).join('\n') + '\n');
   for (const row of observed.rows) {
-    if (!row.sha) { missing.push(row.label); continue; }
+    if (!row.sha) {
+      missing.push(row.label);
+      // A temporary source lookup failure does not remove this exact, still-serving allocation.
+      for (const known of previous.filter(item => item.key === row.key && item.state === 'SUCCESS')) keep.add(known.id);
+      continue;
+    }
     requireFact(shaPattern.test(row.sha), 'Invalid receipt commit');
     let record = previous.find(item => item.key === row.key && item.sha === row.sha);
     if (!record) {
@@ -152,8 +157,10 @@ export async function reconcile(gh, environment, observe, writeSummary = console
     }
     keep.add(record.id);
     if (record.state !== 'SUCCESS') {
+      const runId = process.env.GITHUB_RUN_ID;
+      const evidence = /^\d+$/.test(runId ?? '') ? web + '/actions/runs/' + runId : api + '/deployments/' + record.id;
       const status = await gh('deployments/' + record.id + '/statuses', {state: 'success', auto_inactive: false,
-        environment_url: row.url, log_url: row.url, description: row.label});
+        environment_url: row.url, log_url: evidence, description: row.label});
       requireFact(status.state === 'success', 'GitHub receipt was not confirmed');
     }
   }
