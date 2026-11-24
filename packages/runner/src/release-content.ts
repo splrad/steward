@@ -29,22 +29,27 @@ export function contentWireInput(payload: ContentPayload) { return JSON.stringif
 
 // Combined diffs include lines removed from each parent, including Internal
 // material. A '+' in every parent column identifies text introduced by the resolution.
-function mergeResolutionLines(diff: string) {
+async function mergeResolutionLines(diff: string, head: string, excluded: ReadonlySet<string>, git: ReadGitText) {
   const additions: string[] = [];
-  let path = '', prefix = '', emittedPath = false;
-  for (const line of diff.split('\n')) {
-    const file = /^diff --(?:cc|combined) (.+)$/.exec(line);
-    if (file) {
-      path = file[1]!;
-      prefix = '';
-      emittedPath = false;
-      continue;
+  for (const section of diff.split(/(?=^diff --(?:cc|combined) )/m)) {
+    const lines = section.split('\n'), rows = new Map<number,number>();
+    let path: string | null = null, prefix = '', next = 0;
+    for (const [index, line] of lines.entries()) {
+      if (!prefix && line.startsWith('+++ ')) path = patchPath(line, 'b/');
+      const hunk = /^(@{3,}) (?:-\d+(?:,\d+)? )+\+(\d+)(?:,\d+)? @@/.exec(line);
+      if (hunk) { prefix = '+'.repeat(hunk[1]!.length - 1); next = Number(hunk[2]); continue; }
+      if (!prefix || line.length < prefix.length) continue;
+      const columns = line.slice(0,prefix.length);
+      if (!/^[ +]+$/.test(columns)) continue; // parent-only lines have no result position
+      if (columns === prefix) rows.set(index,next);
+      next++;
     }
-    const hunk = /^(@{3,}) -/.exec(line);
-    if (hunk) { prefix = '+'.repeat(hunk[1]!.length - 1); continue; }
-    if (!path || !prefix || !line.startsWith(prefix)) continue;
-    if (!emittedPath) { additions.push(path); emittedPath = true; }
-    additions.push('+' + line.slice(prefix.length));
+    const hidden = new Set<number>();
+    await hideUnattributedLines(rows, path, head, excluded, git, hidden);
+    if (path && hidden.size < rows.size) {
+      additions.push(path);
+      for (const index of rows.keys()) if (!hidden.has(index)) additions.push('+' + lines[index]!.slice(prefix.length));
+    }
   }
   return additions.join('\n');
 }
@@ -53,50 +58,60 @@ type ReadGitText = (args: string[]) => Promise<string>;
 
 // With core.quotePath=false Git leaves UTF-8 intact and C-quotes special
 // characters such as tabs. An unquoted path with spaces can end in a separator tab.
-function patchOldPath(header: string) {
+function patchPath(header: string, prefix: string) {
   let path = header.slice(4).replace(/\t$/, '');
   if (path.startsWith('"') && path.endsWith('"')) {
     const escapes: Record<string, string> = {a:'\x07',b:'\b',t:'\t',n:'\n',v:'\v',f:'\f',r:'\r','"':'"','\\':'\\'};
     path = path.slice(1, -1).replace(/\\([abtnvfr"\\]|[0-7]{3})/g,
       (_, value: string) => escapes[value] ?? String.fromCharCode(Number.parseInt(value, 8)));
   }
-  return path.startsWith('a/') ? path.slice(2) : null;
+  return path.startsWith(prefix) ? path.slice(prefix.length) : null;
 }
 
-async function filterRemovedLines(patch: string, parent: string, excluded: ReadonlySet<string>, git: ReadGitText) {
+async function hideUnattributedLines(rows: Map<number, number>, path: string | null, revision: string | null,
+  excluded: ReadonlySet<string>, git: ReadGitText, hidden: Set<number>) {
+  if (!rows.size) return;
+  let blame = '';
+  if (path && revision) {
+    // Native blame follows renames. -C repeated also finds blocks copied from
+    // unmodified files. Incremental output contains locations, never line text.
+    const locations = [...rows.values()];
+    const range = locations[0] + ',' + locations.at(-1);
+    try { blame = await git(['blame', '--no-textconv', '--incremental', '--root', '-M1', '-C1', '-C1', '-C1', '-L', range, revision, '--', path]); }
+    catch { /* Omit lines without a verified origin, including gitlinks. */ }
+  }
+  const spans = [...blame.matchAll(/^([a-f0-9]{40}) \d+ (\d+) (\d+)$/gm)].map(m => ({
+    start: Number(m[2]), end: Number(m[2]) + Number(m[3]), keep: !excluded.has(m[1]!),
+  })).sort((a, b) => a.start - b.start);
+  let which = 0;
+  for (const [index, line] of rows) {
+    while (spans[which] && spans[which]!.end <= line) which++;
+    const span = spans[which];
+    if (!span?.keep || span.start > line) hidden.add(index);
+  }
+}
+
+async function filterPatchLines(patch: string, parent: string | null, head: string, excluded: ReadonlySet<string>, git: ReadGitText) {
   const pieces: string[] = [];
   for (const section of patch.split(/(?=^diff --git )/m)) {
     const lines = section.split('\n');
-    const removed = new Map<number, number>();
-    let oldLine = 0, inHunk = false, added = false, oldPath: string | null = null;
+    const removed = new Map<number, number>(), added = new Map<number, number>();
+    let oldLine = 0, newLine = 0, inHunk = false;
+    let oldPath: string | null = null, newPath: string | null = null;
     for (const [index, line] of lines.entries()) {
-      if (!inHunk && line.startsWith('--- ')) oldPath = patchOldPath(line);
-      const hunk = /^@@ -(\d+)(?:,\d+)? \+\d+(?:,\d+)? @@/.exec(line);
-      if (hunk) { inHunk = true; oldLine = Number(hunk[1]); }
+      if (!inHunk && line.startsWith('--- ')) oldPath = patchPath(line, 'a/');
+      if (!inHunk && line.startsWith('+++ ')) newPath = patchPath(line, 'b/');
+      const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+      if (hunk) { inHunk = true; oldLine = Number(hunk[1]); newLine = Number(hunk[2]); }
       else if (inHunk && line.startsWith('-')) removed.set(index, oldLine++);
-      else if (inHunk && line.startsWith('+')) added = true;
-      else if (inHunk && line.startsWith(' ')) oldLine++;
+      else if (inHunk && line.startsWith('+')) added.set(index, newLine++);
+      else if (inHunk && line.startsWith(' ')) { oldLine++; newLine++; }
     }
-    if (!removed.size) { pieces.push(section); continue; }
-    // Incremental blame emits origin SHA and line ranges, without file content.
-    // For entries Git cannot attribute (for example a submodule), omit the
-    // deleted text and retain additions and the eligible PR's description.
-    let blame = '';
-    if (oldPath) {
-      try { blame = await git(['blame', '--no-textconv', '--incremental', '--root', parent, '--', oldPath]); }
-      catch { /* No verified origin for these deletion lines. */ }
-    }
-    const spans = [...blame.matchAll(/^([a-f0-9]{40}) \d+ (\d+) (\d+)$/gm)].map(m => ({
-      start: Number(m[2]), end: Number(m[2]) + Number(m[3]), keep: !excluded.has(m[1]!),
-    })).sort((a, b) => a.start - b.start);
-    let which = 0;
+    if (!removed.size && !added.size) { pieces.push(section); continue; }
     const hidden = new Set<number>();
-    for (const [index, line] of removed) {
-      while (spans[which] && spans[which]!.end <= line) which++;
-      const span = spans[which];
-      if (!span?.keep || span.start > line) hidden.add(index);
-    }
-    if (added || hidden.size < removed.size)
+    await hideUnattributedLines(removed, oldPath, parent, excluded, git, hidden);
+    await hideUnattributedLines(added, newPath, head, excluded, git, hidden);
+    if (hidden.size < added.size + removed.size)
       pieces.push(lines.filter((_, index) => !hidden.has(index)).join('\n'));
   }
   return pieces.join('');
@@ -125,13 +140,14 @@ export async function officialCandidateDiff(directory: string, sourceSha: string
       catch { throw Error('CONTENT_SOURCE_ENCODING'); }
     };
     let text = await readGit([...(selected ? ['-c','core.quotePath=false'] : []), ...diff, '--no-ext-diff',
-      '--no-textconv', '--no-color', '--no-renames', ...(selected ? ['--src-prefix=a/','--dst-prefix=b/','--unified=0'] : ['--unified=2']),
+      '--no-textconv', '--no-color', ...(selected && !selected.mixedMerge ? ['--find-renames','--find-copies','--find-copies-harder'] : ['--no-renames']),
+      ...(selected ? ['--src-prefix=a/','--dst-prefix=b/','--unified=0'] : ['--unified=2']),
       ...revisions, '--', ...(selected?.exclude.map(path => ':(top,exclude,literal)' + path) ?? [])]);
     // Git can append the preceding unchanged line to a hunk header even with --unified=0.
-    if (selected?.mixedMerge) text = mergeResolutionLines(text);
+    if (selected?.mixedMerge) text = await mergeResolutionLines(text, sourceSha, selected.excludedCommits, readGit);
     else if (selected) {
       text = text.replace(/^(@{2,} [0-9,+ -]+ @{2,}) [^\n]*/gm, '$1');
-      if (baselineSha) text = await filterRemovedLines(text, baselineSha, selected.excludedCommits, readGit);
+      text = await filterPatchLines(text, baselineSha, sourceSha, selected.excludedCommits, readGit);
     }
     if (selected && !text) return [];
     const details = { sourceSha, baselineSha };

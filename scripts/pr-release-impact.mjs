@@ -71,12 +71,14 @@ export async function classifyPull(target, io, classify) {
     const files = await io.files();
     if (completeFiles(before.pr, files)) {
       const readme = await io.readme(before.pr.base.sha);
-      const {text} = await classify(JSON.stringify({ project: target.description, readme, title: before.pr.title,
-        body: before.pr.body, files: files.map(({filename,previous_filename,status,patch}) => ({filename,previous_filename,status,patch})) }));
-      const result = JSON.parse(text);
-      if (!['internal','eligible'].includes(result?.decision) || typeof result.reason !== 'string' || !result.reason.trim())
-        throw Error('IMPACT_RESULT');
-      decision = result.decision;
+      if (readme.trim() || target.description.trim()) {
+        const {text} = await classify(JSON.stringify({ project: target.description, readme, title: before.pr.title,
+          body: before.pr.body, files: files.map(({filename,previous_filename,status,patch}) => ({filename,previous_filename,status,patch})) }));
+        const result = JSON.parse(text);
+        if (!['internal','eligible'].includes(result?.decision) || typeof result.reason !== 'string' || !result.reason.trim())
+          throw Error('IMPACT_RESULT');
+        decision = result.decision;
+      }
     }
   } catch { unavailable = true; }
   const writable = async () => {
@@ -111,7 +113,9 @@ function impactIO(target, token) {
       try {
         const {data} = await client.rest.repos.getReadme({...r,ref});
         if (data.encoding !== 'base64' || !data.content) return '';
-        return Buffer.from(data.content,'base64').toString('utf8');
+        const bytes = Buffer.from(data.content,'base64');
+        if (bytes.includes(0)) return '';
+        try { return new TextDecoder('utf-8', {fatal:true}).decode(bytes); } catch { return ''; }
       } catch (e) { if (e.status === 404) return ''; throw e; }
     },
     ensureLabel: async () => {

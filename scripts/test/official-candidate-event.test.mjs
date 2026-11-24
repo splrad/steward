@@ -161,6 +161,20 @@ test('Internal labels filter every writing source and preserve mixed PRs and dir
   assert.match(resolution, /new-resolution-line/);
   assert.doesNotMatch(resolution, /main-visible-line/);
   assert.doesNotMatch(JSON.stringify(conflict.evidence), /hidden-parent-line/);
+
+  const secretText = 'carried-internal-sentinel\n'.repeat(5);
+  const original = await commit('maintenance.txt', secretText, 'housekeeping');
+  labels.set(original, [pull(46, ['Internal'], 'housekeeping')]);
+  git('mv', 'maintenance.txt', 'renamed.txt');
+  await writeFile(join(directory, 'copy.txt'), secretText + 'genuine-new-behavior\n');
+  git('add', 'copy.txt');
+  git('commit', '-qm', 'publish new behavior');
+  const copied = git('rev-parse', 'HEAD');
+  commits.push({sha:copied,parents:[{sha:original}],commit:{message:'publish new behavior'}});
+  labels.set(copied, [pull(47, [], 'public contribution')]);
+  const copyMaterial = JSON.stringify((await collect(copied)).evidence);
+  assert.doesNotMatch(copyMaterial, /carried-internal-sentinel/);
+  assert.match(copyMaterial, /genuine-new-behavior/);
 });
 
 test('a native manual correction wins even when it lands inside the App label request', async () => {
@@ -209,6 +223,8 @@ test('App classifies the current PR, preserves manual changes and releases stale
   assert.equal(await classifyPull(target,io,internal),'internal');
   assert.deepEqual(writes,['ensure','add']);
   writes=[];
+  assert.equal(await classifyPull(target,{...io,readme:async()=>'  '},()=>assert.fail('no project context')),'eligible');
+  assert.deepEqual(writes,[]);
   events=[{id:1,event:'unlabeled',actor:{id:9},label:{name:'Internal'}}];
   assert.equal(await classifyPull(target,io,()=>assert.fail()),'preserved');
   events=[];
