@@ -496,13 +496,16 @@ test('renders only evidence-bound Copilot sections and validates the official se
     evidence: [{ kind: 'fixture', details: { instruction: '升级前备份设置。' } }],
   };
   const initialSha = 'f'.repeat(40);
-  const draft = await draftOfficialCandidate({ roundId, candidate: computed, context, product, sourceSha, template,
+  const templateNote = '此处可查看本版使用的源码。';
+  const updatedTemplate = template + '\n' + templateNote + '\n';
+  const draft = await draftOfficialCandidate({ roundId, candidate: computed, context, product, sourceSha, template: updatedTemplate,
     creationRange: { base: previousSha, head: initialSha },
     call: async input => {
       const value = JSON.parse(input);
-      assert.equal(value.organizationTemplate, template);
-      assert.match(value.prompt, /纯维护版本用一句话说明现有使用者是否需要操作/);
-      assert.match(value.prompt, /按组织模板填写适用栏目/);
+      assert.equal(value.organizationTemplate, updatedTemplate);
+      assert.ok(!value.prompt.includes(templateNote));
+      assert.match(value.prompt, /以中文为主体语言/);
+      assert.match(value.constraints, /按 organizationTemplate 的栏目及注释填写适用内容/);
       assert.equal(value.sources[0].details.instruction, '升级前备份设置。');
       return { text: JSON.stringify({ paragraphs: [{
         section: 'requiredActions', sourceIds: [value.sources[0].id], qualification: 'SOURCE_CONFIRMED',
@@ -511,6 +514,8 @@ test('renders only evidence-bound Copilot sections and validates the official se
     },
   });
   const section = officialNotes(draft.body);
+  assert.ok(section.body.includes(templateNote));
+  assert.equal(draft.templateDigest, bodyDigest(updatedTemplate));
   assert.ok(draft.body.includes('<summary>创建 PR 时的变更记录</summary>'));
   assert.ok(draft.body.includes('/compare/' + previousSha + '...' + initialSha));
   assert.ok(!section.body.includes(initialSha));

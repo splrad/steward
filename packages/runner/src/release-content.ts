@@ -10,7 +10,7 @@ import { assertDeliveryPath } from '../../core/src/delivery-config.js';
 import { assertSelectedReleaseDownloads, assertVersionAcquisitionLinks, parseConditionalNotes } from '../../core/src/conditional-release-notes.js';
 import { committedVersionNotes } from '../../core/src/release-template.js';
 import { isolatedBuildEnvironment } from './build-environment.js';
-import { CONTENT_PROMPT, CONDITIONAL_CONTENT_PROMPT, validateContentResult, validateContentInput, renderUnitContent, buildConditionalDraft, splitContentText, releaseAffectedUnitIds, utf8Length,
+import { RELEASE_WRITING_PROMPT, CONTENT_PROMPT, CONDITIONAL_CONTENT_PROMPT, validateContentResult, validateContentInput, renderUnitContent, buildConditionalDraft, splitContentText, releaseAffectedUnitIds, utf8Length,
   type ContentInput, type ContentBatch, type ContentItem, type ContentParagraph, type ContentAttempt, type ContentStage } from '../../core/src/release-content.js';
 
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -54,6 +54,14 @@ export async function officialCandidateDiff(directory: string, sourceSha: string
   } finally { await rm(home, { recursive: true, force: true }); }
 }
 
+const officialCandidateConstraints = [
+  '按 organizationTemplate 的栏目及注释填写适用内容。只返回符合 outputSchema 的 JSON 对象，顶层仅含 paragraphs。版本标题、栏目排版、贡献者及版本记录由 Steward 生成；审阅提示与 PR 信息属于候选 PR 的外层。',
+  '每段的 sourceIds 引用本次 sources 中实际支持该段陈述的 id。qualification 用 SOURCE_CONFIRMED 表示材料直接支持，确有必要向读者说明且尚待核实的内容用 UNVERIFIED。当前候选起草请求没有提供经核验的测试来源，不能使用 TEST_CONFIRMED。上版发行记录仅作背景，本版待构建的制品只能描述为预期。',
+  'section 使用 outputSchema 中的栏目键。summary 最多一条，textZh 写成单行概述。summary 与 highlights 可择一使用，也可都省略。其余栏目的 textZh 写成“**短标题**。具体说明”，标题和说明在同一行。requiredActions 的短标题写实际受影响的使用者。仅 acquisition 可在段落后另附一个围栏代码块，给出本版本的用法。',
+  '链接使用有依据的公开 HTTPS 地址。需要提供本版获取入口时，优先采用交付资料中的本版 Release 页面。同仓源码及工作流引用使用本版标签或对应的固定提交。当前候选阶段尚未核定单件发行附件，省略这些附件的下载直链。',
+  '每段 textZh 的 UTF-8 长度上限为 2,048 字节，完整 JSON 上限为 12,288 字节。',
+].join('\n\n');
+
 /** The official candidate is generated from read-only, source-bound GitHub evidence. */
 export async function generateOfficialCandidateNotes(options: {
   unit: ContentInput['units'][number];
@@ -64,9 +72,9 @@ export async function generateOfficialCandidateNotes(options: {
   const sources = options.evidence.map(source => ({ id: hash(source), ...source }));
   const sourceIds = [...new Set(sources.map(source => source.id))];
   const response = await options.call(JSON.stringify({
-    prompt: CONDITIONAL_CONTENT_PROMPT,
+    prompt: RELEASE_WRITING_PROMPT,
     organizationTemplate: options.template,
-    constraints: '用 organizationTemplate 的栏目及填写说明组织材料，只返回 outputSchema 约定的 JSON 段落。上版记录只用于背景，制作中的制品只能描述为预期。链接优先使用本版 Release 页面，逐件下载链接仅在本版选件已证实时使用。版本记录和贡献者由模板提供。',
+    constraints: officialCandidateConstraints,
     outputSchema: contentOutputSchema(true),
     units: [options.unit],
     sources,
