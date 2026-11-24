@@ -93,12 +93,12 @@ test('Internal labels filter every writing source and preserve mixed PRs and dir
     base: pr.base, merged_at: '2026-01-01T00:00:00Z' });
   const labels = new Map([[internal, [pull(40, ['iNteRnal'], 'internal-only-sentinel')]],
     [visible, [pull(41, ['auto/docs'], 'mixed change')]], [direct, []]]);
-  async function collect() {
-    return officialCandidateEvidence({ product, sourceSha: direct, baseline, candidate, directory: async () => directory,
+  async function collect(sourceSha = direct) {
+    return officialCandidateEvidence({ product, sourceSha, baseline, candidate, directory: async () => directory,
       getPages: async path => labels.get(path.split('/')[1]),
       get: async path => {
-        if (path === 'contents/release-please-config.json?ref=' + direct) return blob('release-please-config.json', settings);
-        if (path === 'contents/.github/delivery.json?ref=' + direct) return blob('.github/delivery.json', { schemaVersion: 3 });
+        if (path === 'contents/release-please-config.json?ref=' + sourceSha) return blob('release-please-config.json', settings);
+        if (path === 'contents/.github/delivery.json?ref=' + sourceSha) return blob('.github/delivery.json', { schemaVersion: 3 });
         if (path.startsWith('compare/')) return { base_commit: baseline, merge_base_commit: baseline, status: 'ahead',
           total_commits: commits.length, commits };
         assert.fail('unexpected range-wide source: ' + path);
@@ -116,6 +116,25 @@ test('Internal labels filter every writing source and preserve mixed PRs and dir
   const draft = await draftOfficialCandidate({ roundId: 'e'.repeat(64), candidate, context, product, sourceSha: direct,
     template, call: () => assert.fail('purely internal release does not need model inference') });
   assert.match(officialNotes(draft.body).body, /本版仅包含项目内部维护/);
+
+  const baseBranch = git('branch', '--show-current');
+  git('switch', '-qc', 'feature');
+  const side = await commit('feature.txt', 'feature-from-merge\n', 'changes on topic');
+  labels.set(side, []);
+  git('switch', '-q', baseBranch);
+  git('merge', '--no-ff', '-qm', 'merge topic', 'feature');
+  const merge = git('rev-parse', 'HEAD');
+  commits.push({ sha: merge, parents: [{sha:direct},{sha:side}], commit: {message:'merge topic'} });
+  labels.set(merge, [pull(43, [], 'visible PR')]);
+  const mergePatch = async () => (await collect(merge)).evidence
+    .filter(item => item.kind === 'source-range-diff' && item.details.sourceSha === merge)
+    .map(item => item.details.text).join('');
+  assert.match(await mergePatch(), /\+feature-from-merge/);
+  labels.set(side, [pull(44, ['Internal'], 'embedded maintenance')]);
+  assert.doesNotMatch(JSON.stringify((await collect(merge)).evidence), /feature-from-merge|embedded maintenance/);
+  labels.set(side, []);
+  labels.set(merge, [pull(43, ['Internal'], 'internal merge')]);
+  assert.deepEqual((await collect(merge)).evidence.map(item => item.kind), ['maintenance-only']);
 });
 
 test('App classifies the current PR, preserves manual changes and releases stale automatic labels on failure', async () => {

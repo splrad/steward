@@ -318,6 +318,22 @@ async function sourceTree(get, sourceSha) {
   return tree.tree;
 }
 
+// Side-branch commits first introduced by this merge, limited to the release range.
+function mergedHistory(commit, bySha) {
+  function ancestors(parents, stop) {
+    const found = new Set(), pending = parents.map(parent => parent.sha);
+    while (pending.length) {
+      const id = pending.pop();
+      if (found.has(id) || stop.has(id) || !bySha.has(id)) continue;
+      found.add(id);
+      for (const parent of bySha.get(id).parents) pending.push(parent.sha);
+    }
+    return found;
+  }
+  const baseHistory = ancestors(commit.parents.slice(0, 1), new Set());
+  return ancestors(commit.parents.slice(1), baseHistory);
+}
+
 export async function officialCandidateEvidence({ product, sourceSha, baseline, candidate, get, getPages, directory }) {
   const configuration = await readOfficialConfig(get, sourceSha);
   const { unit: release, tag } = officialUnit(configuration, candidate.head, candidate.base, candidate.version);
@@ -353,18 +369,32 @@ export async function officialCandidateEvidence({ product, sourceSha, baseline, 
   if (eligible.length < associated.size) {
     // Range-wide notes, generated files and snapshots can repeat excluded PRs.
     // Only the selection for writing changes. The original candidate and version history stay intact.
+    const bySha = new Map(commits.map(commit => [commit.sha, commit]));
+    const merges = new Map();
+    for (const commit of commits) {
+      requireCandidate(Array.isArray(commit.parents) && commit.parents.every(p => sha(p.sha)), 'RANGE');
+    }
+    for (const commit of commits.filter(item => item.parents.length > 1)) {
+      merges.set(commit.sha, mergedHistory(commit, bySha));
+    }
     const excluded = new Set([...associated.values()].filter(isInternal).flatMap(item => item.commits));
     for (const item of eligible) for (const sha of item.commits) excluded.delete(sha);
+    for (const id of [...excluded]) {
+      for (const side of merges.get(id) ?? []) excluded.add(side);
+    }
     const selected = commits.filter(commit => !excluded.has(commit.sha));
     const evidence = [...pulls];
     if (selected.length) {
       const workspace = await directory();
       const exclude = [candidate.changelogPath ?? 'CHANGELOG.md', manifestPath];
       for (const commit of selected) {
-        requireCandidate(Array.isArray(commit.parents) && commit.parents.every(p => sha(p.sha)), 'RANGE');
+        // A clean merge has no combined patch. Use its first-parent diff unless
+        // that would reintroduce an Internal side commit. In a mixed merge the
+        // selected side commits supply their own patches plus merge resolutions.
+        const mixedMerge = [...(merges.get(commit.sha) ?? [])].some(id => excluded.has(id));
         evidence.push({ kind: 'selected-commit', details: { sha: commit.sha, message: commit.commit.message } });
         evidence.push(...await officialCandidateDiff(workspace, commit.sha, commit.parents[0]?.sha ?? null,
-          { exclude, merge: commit.parents.length > 1 }));
+          { exclude, mixedMerge }));
       }
       evidence.push({ kind: 'release-page', details: { url: repository + '/releases/tag/' + tag } });
     } else {

@@ -29,14 +29,14 @@ export function contentWireInput(payload: ContentPayload) { return JSON.stringif
 
 /** Use the already fetched product history so GitHub's comparison and PR file limits cannot omit changes. */
 export async function officialCandidateDiff(directory: string, sourceSha: string, baselineSha: string | null,
-  selected?: { exclude: string[]; merge: boolean }) {
+  selected?: { exclude: string[]; mixedMerge: boolean }) {
   const gitSha = /^[a-f0-9]{40}$/;
   if (!gitSha.test(sourceSha) || (baselineSha !== null && !gitSha.test(baselineSha))) throw Error('CONTENT_SOURCE_IDENTITY');
   const home = await mkdtemp(join(tmpdir(), 'steward-candidate-diff-'));
   try {
     const baseline = baselineSha ?? '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
-    const diff = selected?.merge ? ['show', '--format=', '--cc'] : ['diff'];
-    const revisions = selected?.merge ? [sourceSha] : [baseline, sourceSha];
+    const diff = selected?.mixedMerge ? ['show', '--format=', '--cc'] : ['diff'];
+    const revisions = selected?.mixedMerge ? [sourceSha] : [baseline, sourceSha];
     const git = spawn('git', ['--no-replace-objects', '-c', 'core.hooksPath=', ...diff, '--no-ext-diff',
       '--no-textconv', '--no-color', '--no-renames', selected ? '--unified=0' : '--unified=2', ...revisions, '--',
       ...(selected?.exclude.map(path => ':(top,exclude,literal)' + path) ?? [])], {
