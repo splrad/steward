@@ -8,7 +8,7 @@ Worker 验签产品事件，核对产品最新受保护默认分支和采用声�
 
 ## WinGet
 
-`bounded-winget-contract.mjs` 以受保护且已核验的原 cycle 为输入，只构造 layerscape/winget 单目标：
+[Worker 的 currentWinget](../workers/steward/src/bounded-winget-evidence.ts) 以受保护且已核验的原 cycle 为输入，只构造 layerscape/winget 单目标：
 
 `cycle_id/source_sha/execution_sha/controller_sha/targets_json/mode/operation_key/request_key`，其中 mode 固定 observe。操作摘要沿用 `channelTargetsDigest`；request key 为 `SHA256(JSON.stringify(['observe',targetsDigest,executionSha]))`。DO 槽位键不得替代这个现有兼容字段。
 
