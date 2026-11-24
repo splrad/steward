@@ -159,9 +159,26 @@ async function settlePull({ get, request, admit, sourceSha, product, botId, roun
   return { number: pull.number, head: branch.head, bodyDigest: actual.bodyDigest };
 }
 
+export async function observeOfficialCandidatePull({ get, product, botId, record }) {
+  const pull = await get('pulls/' + record.number);
+  pullBinding(pull, product, record.number, botId);
+  requireCandidate(typeof pull.merged === 'boolean' && ['open', 'closed'].includes(pull.state), 'COMPLETED_PULL_STATE');
+  if (pull.state === 'closed') {
+    if (!pull.merged) return 'candidate_closed';
+    requireCandidate(pull.head.sha === record.head, 'COMPLETED_PULL_DRIFT');
+    return 'candidate_merged';
+  }
+  requireCandidate(!pull.merged && pull.head.sha === record.head && hasLabel(pull, officialPending) &&
+    await readBranch(get, pull.head.ref) === record.head, 'COMPLETED_PULL_DRIFT');
+  return 'candidate_unchanged';
+}
+
 export async function writeOfficialCandidate(options) {
   const { round, roundId, sourceSha, product, get, save, admit } = options;
-  if (round.pull) return round.pull;
+  if (round.pull) {
+    await observeOfficialCandidatePull({ get, product, botId: options.botId, record: round.pull });
+    return round.pull;
+  }
   verifyCandidateDraft(round.source.candidate, round.draft, roundId);
   await admit();
   requireCandidate(await defaultHead(get, product.defaultBranch) === sourceSha, 'C2_SOURCE_CHANGED');

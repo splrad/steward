@@ -3,7 +3,7 @@ import { GitHub, Manifest } from 'release-please';
 import { PullRequestBody } from 'release-please/build/src/util/pull-request-body.js';
 import { PullRequestTitle } from 'release-please/build/src/util/pull-request-title.js';
 import { parse as parseVersion } from 'semver';
-import { assertDeliveryPath, assertVersionAcquisitionLinks, EvidenceReadError, generateOfficialCandidateNotes, officialCandidateDiff, splitContentText,
+import { assertDeliveryPath, assertSelectedReleaseDownloads, assertVersionAcquisitionLinks, EvidenceReadError, generateOfficialCandidateNotes, officialCandidateDiff, splitContentText,
   parseDeliveryConfig, renderConditionalNotes, selectReleaseContributors } from '../packages/runner/dist/index.js';
 
 export const officialPending = 'autorelease: pending';
@@ -367,9 +367,15 @@ export async function officialCandidateEvidence({ product, sourceSha, baseline, 
 
 export async function draftOfficialCandidate({ roundId, candidate, context, product, sourceSha, template, call }) {
   const notes = await generateOfficialCandidateNotes({ unit: context.unit, evidence: context.evidence, call });
-  assertVersionAcquisitionLinks(notes, product.name, context.tag, sourceSha);
   const body = renderOfficialHomepage({ upstreamBody: candidate.body, template, notes, sourceLink: context.sourceLink,
     contributors: context.contributors, roundId });
+  try {
+    // The product build hasn't selected or verified the downloadable files yet.
+    assertVersionAcquisitionLinks(notes, product.name, context.tag, sourceSha, []);
+    assertSelectedReleaseDownloads(body, product.name, context.tag, new Set());
+  } catch {
+    throw Error('OFFICIAL_CANDIDATE_C1_ACQUISITION_LINKS');
+  }
   requireCandidate(officialNotes(body).version === candidate.version, 'C1_VERSION');
   return { body, templateDigest: bodyDigest(template) };
 }

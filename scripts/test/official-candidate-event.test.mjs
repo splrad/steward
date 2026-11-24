@@ -291,8 +291,15 @@ test('materializes the official candidate once against the immutable source and 
 
 test('restores a saved calculation and draft before contacting Release Please or Copilot again', async () => {
   let hasDraft = true, hasPull = false, collectCount = 0;
+  let nativePull = { ...pr, body: '人工修订后的原始正文' };
+  let candidateRef = head;
   const identity = { product, event: { kind: 'push' }, sourceSha };
   const get = async path => {
+    if (path === 'pulls/29') return nativePull;
+    if (path === 'git/ref/heads/' + computed.head) {
+      if (!candidateRef) throw new EvidenceReadError(404, null);
+      return { ref: 'refs/heads/' + computed.head, object: { type: 'commit', sha: candidateRef } };
+    }
     if (path === 'git/ref/heads/main') return { ref: 'refs/heads/main', object: { type: 'commit', sha: sourceSha } };
     if (path.startsWith('issues?')) return [];
     if (path === 'contents/release-please-config.json?ref=' + sourceSha) return blob('release-please-config.json', settings);
@@ -321,6 +328,18 @@ test('restores a saved calculation and draft before contacting Release Please or
   assert.equal(collectCount, 1);
   hasDraft = hasPull = true;
   assert.equal((await prepare()).result, 'candidate_unchanged');
+  assert.equal(nativePull.body, '人工修订后的原始正文');
+  nativePull = { ...nativePull, state: 'closed' };
+  assert.equal((await prepare()).result, 'candidate_closed');
+  nativePull = { ...nativePull, merged: true };
+  assert.equal((await prepare()).result, 'candidate_merged');
+  nativePull = { ...pr, labels: [] };
+  await assert.rejects(prepare, /COMPLETED_PULL_DRIFT/);
+  nativePull = { ...pr, head: { ...pr.head, sha: controllerSha } };
+  await assert.rejects(prepare, /COMPLETED_PULL_DRIFT/);
+  nativePull = { ...pr };
+  candidateRef = null;
+  await assert.rejects(prepare, /COMPLETED_PULL_DRIFT/);
   assert.equal(collectCount, 1);
 });
 
@@ -335,6 +354,9 @@ test('records each new source only after an exact round match and skips repeated
   };
   let boundSource, builds = 0;
   const get = async path => {
+    if (path === 'pulls/29') return pr;
+    if (path === 'git/ref/heads/' + computed.head)
+      return { ref: 'refs/heads/' + computed.head, object: { type: 'commit', sha: head } };
     if (path === 'git/ref/heads/main') return { ref: 'refs/heads/main', object: { type: 'commit', sha: controllerSha } };
     if (path.startsWith('issues?')) return [];
     if (path === 'contents/release-please-config.json?ref=' + controllerSha) return blob('release-please-config.json', settings);
@@ -405,6 +427,26 @@ test('renders only evidence-bound Copilot sections and validates the official se
   assert.match(section.body, /版本记录/);
   assert.doesNotMatch(section.body, /获取与使用|本次更新|候选文件差异/);
   assert.equal(PullRequestBody.parse(draft.body).releaseData[0].notes, section.body);
+});
+
+test('C1 permits the versioned Release page and stops unverified asset links anywhere in the draft', async () => {
+  const context = {
+    unit: { id: 'root', path: '.', version: computed.version, tag: 'v1.1.0' }, tag: 'v1.1.0', contributors: [],
+    sourceLink: { label: '查看本版变更', url: 'https://github.com/splrad/fixture/compare/' + previousSha + '...' + sourceSha },
+    evidence: [{ kind: 'delivery', details: { releasePage: 'https://github.com/splrad/fixture/releases/tag/v1.1.0' } }],
+  };
+  const draft = (section, url) => draftOfficialCandidate({ roundId, candidate: computed, context, product, sourceSha, template,
+    call: async input => ({ text: JSON.stringify({ paragraphs: [{
+      section, sourceIds: [JSON.parse(input).sources[0].id], qualification: 'SOURCE_CONFIRMED',
+      textZh: '**获取本版**。前往[本版发布页面](' + url + ')。',
+    }] }) }),
+  });
+  const releasePage = context.evidence[0].details.releasePage;
+  assert.match((await draft('acquisition', releasePage)).body, /releases\/tag\/v1\.1\.0/);
+  const asset = 'https://github.com/splrad/fixture/releases/download/v1.1.0/Unverified.exe';
+  await assert.rejects(draft('acquisition', asset), /C1_ACQUISITION_LINKS/);
+  await assert.rejects(draft('delivery', asset), /C1_ACQUISITION_LINKS/);
+  await assert.rejects(draft('delivery', 'https://github.com/splrad/fixture/releases/latest/download/Unverified.exe'), /C1_ACQUISITION_LINKS/);
 });
 
 test('reads back unknown candidate writes across Runs and preserves manual edits after the first PR write', async () => {

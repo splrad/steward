@@ -7,7 +7,7 @@ import { copilotReleaseClient, NativeEvidenceReader, nativeEvidenceTransport, na
 import { entryGuard } from './bounded-release-entry.mjs';
 import { fetchState, releaseParticipation } from './release-coordinator.mjs';
 import { assertReleaseUnpaused, releaseIsPaused } from './release-pause-policy.mjs';
-import { compatibleExistingCandidate, openOfficialPull, verifyCandidateDraft, writeOfficialCandidate } from './official-candidate-write.mjs';
+import { compatibleExistingCandidate, observeOfficialCandidatePull, openOfficialPull, verifyCandidateDraft, writeOfficialCandidate } from './official-candidate-write.mjs';
 import { bodyDigest, candidateBaseline, computeOfficialCandidate, defaultHead, draftOfficialCandidate, fitsOfficialEvent,
   hasLabel, officialCandidateEvidence, officialCandidateRoundId, officialConfig, officialPending, officialRef, officialRootSettings, officialTagged,
   pages, pullBinding, readOfficialConfig, readOfficialManifest, requireCandidate,
@@ -135,6 +135,10 @@ async function inspectWaiting(get, product) {
   });
 }
 
+async function completedCandidate(get, product, roundId, record) {
+  return { result: await observeOfficialCandidatePull({ get, product, botId, record }), roundId, pulls: [record] };
+}
+
 export async function prepareOfficialCandidate({ identity, get, getPages, directory, store, token, prepareParticipation,
   buildCandidate = computeOfficialCandidate, collectEvidence = officialCandidateEvidence }) {
   const { product, event, sourceSha } = identity;
@@ -172,7 +176,7 @@ export async function prepareOfficialCandidate({ identity, get, getPages, direct
     }
   }
   requireCandidate(round.source && officialCandidateRoundId(product, round.source) === roundId, 'ROUND_IDENTITY');
-  if (round.pull) return { result: 'candidate_unchanged', roundId, pulls: [round.pull] };
+  if (round.pull) return completedCandidate(get, product, roundId, round.pull);
   const { candidate } = round.source;
 
   // On cutover an already rendered official PR can be carried forward unchanged
@@ -269,6 +273,7 @@ export async function main(stage, env = process.env) {
     return withCandidateState(env, identity, async ({ get, store, admit }) => {
       const round = await store.read(roundId);
       requireCandidate(round.source && officialCandidateRoundId(product, round.source) === roundId, 'ROUND_IDENTITY');
+      if (round.pull) return finish(identity, await completedCandidate(get, product, roundId, round.pull));
       const draft = round.draft ?? await stateRead('draft');
       verifyCandidateDraft(candidate, draft, roundId);
       if (!round.draft) await store.save(roundId, 'draft', draft);
@@ -287,6 +292,7 @@ export async function main(stage, env = process.env) {
   return withCandidateState(env, identity, async ({ get, store, admit }) => {
     const round = await store.read(roundId);
     requireCandidate(round.source && officialCandidateRoundId(product, round.source) === roundId, 'ROUND_IDENTITY');
+    if (round.pull) return finish(identity, await completedCandidate(get, product, roundId, round.pull));
     const configuration = await readOfficialConfig(get, sourceSha);
     const pull = await writeOfficialCandidate({ get, product, botId, round, roundId, sourceSha, configuration, admit,
       request: (method, path, data) => fetchJson(productToken, '/repos/' + product.name + '/' + path, method, data),
