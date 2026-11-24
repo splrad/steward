@@ -14,7 +14,7 @@ workflow_run 只接收 main 分支事件，job 先筛选中央仓库的成功 ma
 
 其他规则与未知字段取自写前最新的完整读取。证据保存完整写前、写后对象。原生 PUT 没有 CAS 保证。丢失响应时先回读，已采用目标 SHA 即成功，仍为旧值才可重试，出现第三个 SHA 时停止。
 
-切换 pin 前，治理 App 以独立的 Actions Variables 权限将补验意图写到私有的 `splrad/steward-settings`。切换完成后只盘点受这套规则约束的开放 PR。已有该 pin 的原生 Run 时，按准确 head、工作流来源、Run、attempt 和汇总 job 记录实际状态。缺少 Run 时，现有 Steward App 用仅限目标仓的 PR 权限执行原生关闭和重开，GitHub 据 reopened 事件运行必需工作流。草稿、发行候选、自动合并和合并队列保留待办。补验通过已有 GitHub App 安装完成，使用已登记的 `steward-automation/STEWARD_APP_PRIVATE_KEY`。
+切换 pin 前，治理 App 以独立的 Actions Variables 权限将补验意图写到私有的 `splrad/steward-settings`。切换完成后只盘点受这套规则约束的开放 PR。已有该 pin 的原生 Run 时，按准确 head、工作流来源、Run、attempt 和汇总 job 记录实际状态。缺少 Run 时，现有 Steward App 用仅限目标仓的 PR 权限执行原生关闭和重开，GitHub 据 reopened 事件运行必需工作流。Dependabot 和 Renovate 创建的 PR 按 GitHub 作者 ID 识别。缺少新验证器的运行时，PR 保持开放，补验记录为 `dependency-managed`。机器人更新分支或维护者同步基底后，补验按新提交与生效验证器核验原生运行；等待期间，合并仍须满足组织必需检查。草稿、发行候选、自动合并和合并队列保留待办。补验通过已有 GitHub App 安装完成，使用已登记的 `steward-automation/STEWARD_APP_PRIVATE_KEY`。
 
 GitHub 在 PR 有合并冲突时不会启动 `pull_request` 工作流。补验在关闭前重新确认 GitHub 报告的合并状态。合并冲突、落后基底或合并状态待计算时，保留 PR 和等待原因。落后 PR 的 reopened 事件可能继续携带旧基底，Native Validation 仍要求事件基底与同次 checkout 的目标分支一致。发生差异时，`VALIDATION_BASE_MOVED` 记录这两个提交。正常同步后按新 head 查找原生 Run。已经由 App 重开的同一 head 继续观察原生结果。
 

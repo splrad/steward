@@ -13,7 +13,7 @@ test('deployed bundle dispatches in workerd and never follows API redirects', as
     const calls = [];
     const mf = new Miniflare(convertV4MiniflareOptions({
       host: '127.0.0.1', modules: true,
-      scriptPath: fileURLToPath(new URL('../.cloudflare/output/v0/workers/default/bundle/index.js', import.meta.url)),
+      scriptPath: fileURLToPath(new URL('../.cloudflare/output/v1/workers/default/bundle/index.js', import.meta.url)),
       compatibilityDate: '2026-11-06',
       bindings: {ENABLED: 'true', WEBHOOK_SECRET: secret, GOVERNANCE_APP_PRIVATE_KEY: key},
       outboundService: async request => {
