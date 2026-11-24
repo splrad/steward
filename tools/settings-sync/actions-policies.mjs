@@ -10,8 +10,7 @@ const sameEvents=(a,b)=>events(a)&&events(b)&&equal(sorted(a),sorted(b));
 const fields=['id','name','source_type','source','enforcement'];
 const titlePath='.github/workflows/pr-title.yml';
 const labelerPath='.github/workflows/pr-labeler.yml';
-const genericExclusions=[titlePath,'.github/workflows/sync-managed.yml','.github/workflows/repository-configuration.yml',
-  labelerPath,'.github/workflows/pr-validation-native.yml','.github/workflows/steward-source.yml'];
+const genericExclusions=[titlePath,'.github/workflows/sync-managed.yml','.github/workflows/repository-configuration.yml',labelerPath];
 const genericEvents=['pull_request','push','schedule','workflow_dispatch','workflow_run','release','workflow_call'];
 const publicRepositories={include:[{name:'visibility',property_values:['public'],source:'system'}],exclude:[]};
 

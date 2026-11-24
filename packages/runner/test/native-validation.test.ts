@@ -54,39 +54,6 @@ it('reads real complete Git base/head and detects stale base, wrong checkout and
     git('checkout',head);const payload=JSON.parse(await readFile(event,'utf8'));payload.pull_request.base.sha=S;await writeFile(event,JSON.stringify(payload));await expect(validationInput(root,env)).rejects.toThrow();
   }finally{await rm(root,{recursive:true,force:true});}
 },30000);
-it('uses the Steward group base even if main advances and requires the actual combination checkout',async()=>{
-  const {validationInput}=await script('validation-input');
-  const {stewardRunName,matchesRun}=await script('product-ci-evidence');
-  const root=await mkdtemp(join(tmpdir(),'validation-merge-group-'));registerOfflineFixtureRoot(root);
-  const git=(...args:string[])=>execFileSync('git',args,{cwd:root,encoding:'utf8'}).trim();
-  try{
-    git('init','--initial-branch=main');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid');
-    const repository={id:1296724484,full_name:'splrad/steward',default_branch:'main'};
-    const path='.github/workflows/steward-source.yml';
-    await mkdir(join(root,'.github/workflows'),{recursive:true});
-    await writeFile(join(root,'.github/product-ci.json'),JSON.stringify([path]));
-    await writeFile(join(root,path),`on: [push, pull_request, merge_group]\nrun-name: ${stewardRunName}\n`);
-    git('add','.');git('commit','--no-gpg-sign','-qm','base');const base=git('rev-parse','HEAD');
-    await writeFile(join(root,'source.mjs'),'export const combined = true;\n');
-    git('add','.');git('commit','--no-gpg-sign','-qm','combined');const head=git('rev-parse','HEAD');
-    git('update-ref','refs/remotes/origin/main',head);
-    const headBranch='gh-readonly-queue/main/pr-12-fixture';
-    const group={base_ref:'refs/heads/main',head_ref:'refs/heads/'+headBranch,base_sha:base,head_sha:head};
-    const event={repository,action:'checks_requested',merge_group:group};
-    const eventPath=join(root,'.git/event.json');await writeFile(eventPath,JSON.stringify(event));
-    const env={GITHUB_EVENT_PATH:eventPath,GITHUB_EVENT_NAME:'merge_group',GITHUB_REPOSITORY_ID:String(repository.id),
-      GITHUB_REPOSITORY:repository.full_name,GITHUB_SHA:head,GITHUB_REF:group.head_ref,
-      WORKFLOW_REPOSITORY:'splrad/steward',WORKFLOW_PATH:'.github/workflows/pr-validation-native.yml',WORKFLOW_SHA:S};
-    await expect(validationInput(root,env)).resolves.toMatchObject({input:{base,head,changedPaths:['source.mjs']},workflows:[path],productApplicable:true});
-    await expect(validationInput(root,{...env,GITHUB_SHA:base})).rejects.toThrow('VALIDATION_MERGE_GROUP_EVENT');
-    const run={repository,head_repository:repository,path,event:'merge_group',head_branch:headBranch,head_sha:head,
-      display_title:`Product CI merge_group ${base} ${head}`};
-    expect(matchesRun(run,path,event,'merge_group')).toBe(true);
-    for(const mismatch of [{head_branch:'main'},{head_sha:base},{event:'push'},{display_title:`Product CI merge_group ${S} ${head}`}])
-      expect(matchesRun({...run,...mismatch},path,event,'merge_group')).toBe(false);
-    expect(matchesRun(run,path,{...event,repository:{...repository,id:42}},'merge_group')).toBe(false);
-  }finally{await rm(root,{recursive:true,force:true});}
-},30000);
 it('keeps CI registered while scoping modified prose on both PR and single-parent promotion inputs',async()=>{
   const {validationInput}=await script('validation-input');
   const root=await mkdtemp(join(tmpdir(),'validation-diff-scope-'));

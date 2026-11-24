@@ -210,38 +210,11 @@ export async function authorizePull(api, number, expectedHead, defaultBranch, or
 }
 
 export async function checkEvent(api,event) {
-  if(event.pull_request) {
-    const pr=event.pull_request;
-    const currentActor=event.action==='opened' && pr.user.id===event.sender?.id || event.action==='synchronize' && event.after===pr.head.sha;
-    const origin=currentActor?{number:pr.number,head:pr.head.sha,actor:event.sender}:undefined;
-    return authorizePull(api,pr.number,pr.head.sha,event.repository.default_branch,origin);
-  }
-  if(!event.merge_group) return;
-  const group=event.merge_group;
-  const compare=(await api.rest.repos.compareCommitsWithBasehead({...api.target,basehead:group.base_sha+'...'+group.head_sha})).data;
-  if(compare.files?.length>=300 || compare.commits.length!==compare.total_commits) throw Error('Incomplete merge group comparison');
-  if(!Array.isArray(compare.files)) throw Error('Missing merge group diff');
-  const protectedPaths=await protectedChanges(api,compare.files,group.base_sha,group.head_sha);
-  if(!protectedPaths.size) return;
-  const prs = new Map();
-  for(const commit of compare.commits) {
-    const associated=await api.paginate(api.rest.repos.listPullRequestsAssociatedWithCommit,{...api.target,commit_sha:commit.sha,per_page:100});
-    for(const pr of associated.filter(p=>p.state==='open' && p.base.ref===event.repository.default_branch)) prs.set(pr.number,pr);
-  }
-  if(!prs.size) throw Error('Missing merge group pull requests');
-  const covered=new Set();
-  for(const pr of prs.values()) {
-    if(!await authorizePull(api,pr.number,pr.head.sha,event.repository.default_branch)) continue;
-    const files=await api.paginate(api.rest.pulls.listFiles,{...api.target,pull_number:pr.number,per_page:100});
-    for(const change of compare.files) {
-      if(files.some(f=>f.filename===change.filename && f.sha===change.sha && f.status===change.status
-        && f.previous_filename===change.previous_filename)) {
-        covered.add(change.filename);
-        if(change.previous_filename) covered.add(change.previous_filename);
-      }
-    }
-  }
-  if([...protectedPaths].some(path=>!covered.has(path))) throw Error('Merge group contains configuration bytes without exact pull approval');
+  const pr=event.pull_request;
+  if(!pr) return;
+  const currentActor=event.action==='opened' && pr.user.id===event.sender?.id || event.action==='synchronize' && event.after===pr.head.sha;
+  const origin=currentActor?{number:pr.number,head:pr.head.sha,actor:event.sender}:undefined;
+  return authorizePull(api,pr.number,pr.head.sha,event.repository.default_branch,origin);
 }
 
 if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {
