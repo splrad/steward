@@ -18,7 +18,7 @@
 
 Actions 事件策略通过 GitHub 设置页或官方 REST 在采用阶段配置并读回。设置同步只运行 safe-settings 支持的设置；事件策略不由定时 settings-sync 读取或修复。
 
-`tools/settings-sync/actions-policies.mjs` 保留为部署准备辅助模块：`readActionsPolicies` 完整读取组织、仓库及继承策略，403 或未知响应保持失败；`reconcileActionsPolicies` 只处理明确登记 ID、作用范围和预期旧值的一次性变更。调用者在 E10 的具体授权范围内使用官方 Octokit request 适配器，先预览，再采用并核验读回。该模块没有定时入口，不自动创建策略。`config/governance/actions-policies.json` 当前未登记任何策略 ID，不能据此认定生产策略为空或已经采用。
+`tools/settings-sync/actions-policies.mjs` 保留为部署准备辅助模块。`readActionsPolicies` 完整读取组织、仓库及继承策略，403 或未知响应保持失败。`reconcileActionsPolicies` 只处理明确登记 ID、作用范围和预期旧值的一次性变更，支持准确标题路径、公开仓准确贴标路径，以及保留全部专用路径排除项的通用事件。调用者在 E10 的具体授权范围内使用官方 Octokit request 适配器，先预览，再采用并核验读回。该模块没有定时入口。`config/governance/actions-policies.json` 当前未登记任何策略 ID。
 
 新入口采用前，先保存完整原生快照，核对全部继承策略和实际拒绝来源。标题策略仅匹配 `.github/workflows/pr-title.yml`，采用后使用 `pull_request`。公开仓贴标策略按系统属性 `visibility=public` 和准确的 `.github/workflows/pr-labeler.yml` 覆盖当前与未来采用仓。Steward 的 `merge_group` 许可限定在原生验证及 Product CI 两条工作流。通用策略应排除需要专属事件的相同路径，并为原有非 Steward 路径保留原许可。作用范围变更使用已审原生请求。
 

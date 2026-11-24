@@ -3,12 +3,14 @@ import {pathToFileURL} from 'node:url';
 import {resolve} from 'node:path';
 const module=()=>import(pathToFileURL(resolve('tools/settings-sync/actions-policies.mjs')).href);
 const registration=()=>({id:7,name:'Reviewed events',source_type:'Organization',source:'splrad',enforcement:'active',
-  conditions:{repository_id:{repository_ids:[12]},workflow_path:{include:['~ALL'],exclude:['.github/workflows/pr-title.yml']}},
+  conditions:{repository_id:{repository_ids:[12]},workflow_path:{include:['~ALL'],exclude:[
+    '.github/workflows/pr-title.yml','.github/workflows/sync-managed.yml','.github/workflows/repository-configuration.yml',
+    '.github/workflows/pr-labeler.yml','.github/workflows/pr-validation-native.yml','.github/workflows/steward-source.yml']}},
   acceptedEvents:['push'],desiredEvents:['push','pull_request','workflow_dispatch','workflow_run','schedule','release','workflow_call']});
 const registry=()=>({schemaVersion:1,organization:{login:'splrad',id:302208797},repositories:[{full_name:'splrad/fixture',id:12}],policies:[registration()]});
-function fixture(){
-  const row:any=registration();delete row.acceptedEvents;delete row.desiredEvents;
-  const state:any={value:{...row,target:'actions',rules:[{type:'restrict_action_events',parameters:{allowed_events:['push']}},
+type Registration=Omit<ReturnType<typeof registration>,'conditions'> & {conditions:Record<string,unknown>};
+function fixture({acceptedEvents,desiredEvents,...row}:Registration=registration()){
+  const state:any={value:{...row,target:'actions',rules:[{type:'restrict_action_events',parameters:{allowed_events:[...acceptedEvents]}},
     {type:'restrict_actions_actors',parameters:{allowed_actors:[{id:35,type:'Team'}]}}]},calls:[],loseResponse:false,loseBefore:false};
   const request=async(method:string,path:string,body?:any)=>{
     state.calls.push({method,path,body:structuredClone(body)});state.hook?.(method,path);
@@ -64,7 +66,7 @@ it('prewrite concurrency aborts before replacing newly added actor restrictions'
   await expect(reconcileActionsPolicies(f.request,registry(),true)).rejects.toThrow('CONCURRENT_CHANGE');
   expect(f.state.calls.every((r:any)=>r.method==='GET')).toBe(true);
 });
-it('title permission requires the exact executing path and other workflows exclude that event',async()=>{
+it('title permission requires the exact executing path and the pull request event',async()=>{
   const {validateActionsRegistry}=await module();
   const title=registry();title.policies[0]!.conditions.workflow_path={include:['.github/workflows/pr-title.yml'],exclude:[]};
   title.policies[0]!.desiredEvents=['pull_request'];expect(validateActionsRegistry(title)).toBe(title);
@@ -73,7 +75,39 @@ it('title permission requires the exact executing path and other workflows exclu
   for(const path of ['.github/workflows/*.yml','templates/repository/.github/workflows/pr-title.yml']){
     const bad=structuredClone(title);bad.policies[0]!.conditions.workflow_path.include=[path];expect(()=>validateActionsRegistry(bad)).toThrow('WORKFLOW_PATH');
   }
-  const bad=registry();bad.policies[0]!.desiredEvents.push('pull_request_target');expect(()=>validateActionsRegistry(bad)).toThrow('TITLE_ONLY');
+});
+it('generic permissions preserve the registered event set and exclude all dedicated workflow paths',async()=>{
+  const {validateActionsRegistry}=await module();
+  const valid=registry();expect(validateActionsRegistry(valid)).toBe(valid);
+  for(const path of ['.github/workflows/pr-labeler.yml','.github/workflows/pr-validation-native.yml','.github/workflows/steward-source.yml']){
+    const bad=registry(),scope=bad.policies[0]!.conditions.workflow_path;
+    scope.exclude=scope.exclude.filter(excluded=>excluded!==path);
+    expect(()=>validateActionsRegistry(bad)).toThrow('WORKFLOW_PATH');
+  }
+  for(const event of ['pull_request_target','merge_group']){
+    const bad=registry();bad.policies[0]!.desiredEvents.push(event);
+    expect(()=>validateActionsRegistry(bad)).toThrow('GENERIC_EVENTS');
+  }
+});
+it('reads back a registered public labeler change using the exact native scope',async()=>{
+  const {reconcileActionsPolicies,validateActionsRegistry}=await module();
+  const row={...registration(),acceptedEvents:['workflow_run','pull_request_target'],desiredEvents:['pull_request_target'],
+    conditions:{repository_property:{include:[{name:'visibility',property_values:['public'],source:'system'}],exclude:[]},
+      workflow_path:{include:['.github/workflows/pr-labeler.yml'],exclude:[]}}};
+  const permit={...registry(),policies:[row]},f=fixture(row);
+  expect((await reconcileActionsPolicies(f.request,permit,true)).results[0].status).toBe('APPLIED');
+  expect(f.state.value.conditions).toEqual(row.conditions);
+  expect(f.state.calls.find((call:any)=>call.method==='PUT').body).toEqual({rules:f.state.value.rules});
+  expect(f.state.value.rules[0].parameters.allowed_events).toEqual(['pull_request_target']);
+  expect((await reconcileActionsPolicies(f.request,permit,true)).results[0].status).toBe('UNCHANGED');
+  for(const change of ['source','visibility','path','event']){
+    const bad=structuredClone(permit),test=bad.policies[0]!;
+    if(change==='source')test.conditions.repository_property.include[0]!.source='custom';
+    if(change==='visibility')test.conditions.repository_property.include[0]!.property_values.push('private');
+    if(change==='path')test.conditions.workflow_path.include=['.github/workflows/*.yml'];
+    if(change==='event')test.desiredEvents.push('workflow_run');
+    expect(()=>validateActionsRegistry(bad)).toThrow();
+  }
 });
 it('complete pagination retains inherited policy details and rejects duplicates, count drift or untrusted detail hosts',async()=>{
   const {readActionsPolicies}=await module();
