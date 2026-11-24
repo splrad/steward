@@ -1,8 +1,10 @@
+import re
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from promotion import template_tag_plan
+from copier import run_copy, run_update
+from promotion import TITLE_CALLER, TITLE_SOURCE, template_tag_plan
 
 
 class PromotionTests(unittest.TestCase):
@@ -41,6 +43,75 @@ class PromotionTests(unittest.TestCase):
         self.assertEqual(plan['tag'],'v1.2.4');self.assertEqual(plan['commit'],current)
         self.git('tag',plan['tag'],current)
         self.assertEqual(template_tag_plan(self.root,current)['status'],'UNCHANGED')
+
+    def test_title_supplier_changes_reach_existing_and_new_copier_consumers(self):
+        source_tree=Path(__file__).resolve().parents[2]
+        source=self.root/TITLE_SOURCE
+        caller=self.root/TITLE_CALLER
+        previous_caller=caller.with_suffix('')
+        caller.parent.mkdir(parents=True)
+        source.parent.mkdir(parents=True)
+        source.write_bytes((source_tree/TITLE_SOURCE).read_bytes())
+        previous_caller.write_text('name: Legacy title\n',encoding='utf-8')
+        answers=Path('templates/repository/.copier-answers.yml.jinja')
+        (self.root/answers).write_bytes((source_tree/answers).read_bytes())
+        legacy=self.commit()
+        self.git('tag','v1.2.4',legacy)
+
+        with tempfile.TemporaryDirectory(prefix='title-copier-consumers-') as directory:
+            consumers=Path(directory)
+            current=consumers/'existing'
+            run_copy(str(self.root),current,vcs_ref=legacy,defaults=True,quiet=True)
+            product_workflow=current/'.github/workflows/pr-title.yml'
+            self.assertEqual(product_workflow.read_text(encoding='utf-8'),'name: Legacy title\n')
+            def target_git(*args):
+                subprocess.run(['git','-c','core.hooksPath=','-C',str(current),*args],check=True,
+                               capture_output=True)
+            target_git('init','--initial-branch=main')
+            target_git('config','user.name','Fixture')
+            target_git('config','user.email','fixture@example.invalid')
+            def record_adoption():
+                target_git('add','--all')
+                target_git('commit','--no-gpg-sign','-m','adopt template')
+            record_adoption()
+
+            previous_caller.unlink()
+            caller.write_bytes((source_tree/TITLE_CALLER).read_bytes())
+            initial=self.commit()
+            first=template_tag_plan(self.root,initial)
+            self.assertEqual((first['status'],first['tag']),('CREATE','v1.2.5'))
+            self.git('tag',first['tag'],initial)
+            run_update(current,vcs_ref=initial,defaults=True,overwrite=True,quiet=True,conflict='rej')
+            self.assertIn(TITLE_SOURCE+'@'+initial,product_workflow.read_text(encoding='utf-8'))
+            record_adoption()
+
+            # A normal adoption in Steward also changes its consumer workflow and
+            # answers. Those files must not cause another template release.
+            (self.root/'.github/workflows/pr-title.yml').write_bytes(product_workflow.read_bytes())
+            (self.root/'.copier-answers.yml').write_bytes((current/'.copier-answers.yml').read_bytes())
+            consumer_only=self.commit()
+            self.assertEqual(template_tag_plan(self.root,consumer_only)['status'],'UNCHANGED')
+
+            # An upstream update changes only the centrally supplied reusable.
+            updated, count=re.subn(
+                rb'(amannn/action-semantic-pull-request@)[a-f0-9]{40} # v[0-9]+\.[0-9]+\.[0-9]+',
+                rb'\g<1>'+b'a'*40+b' # v99.0.0',source.read_bytes())
+            self.assertEqual(count,1)
+            source.write_bytes(updated)
+            supplier_only=self.commit()
+            second=template_tag_plan(self.root,supplier_only)
+            self.assertEqual((second['status'],second['tag'],second['commit']),('CREATE','v1.2.6',supplier_only))
+            self.git('tag',second['tag'],supplier_only)
+            run_update(current,vcs_ref=supplier_only,defaults=True,overwrite=True,quiet=True,conflict='rej')
+            fresh=consumers/'new'
+            run_copy(str(self.root),fresh,vcs_ref=supplier_only,defaults=True,quiet=True)
+            existing=product_workflow.read_text(encoding='utf-8')
+            self.assertEqual(existing,(fresh/'.github/workflows/pr-title.yml').read_text(encoding='utf-8'))
+            self.assertEqual(existing,caller.read_text(encoding='utf-8').replace(
+                '{{ _copier_conf.vcs_ref_hash }}',supplier_only))
+            self.assertIn(TITLE_SOURCE+'@'+supplier_only,existing)
+            self.assertNotIn('_copier_conf',existing)
+            self.assertEqual(template_tag_plan(self.root,supplier_only)['status'],'UNCHANGED')
 
     def test_first_and_later_security_policy_changes_publish_without_other_template_changes(self):
         policy=self.root/'config/review/security-common.md'

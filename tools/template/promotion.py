@@ -7,6 +7,9 @@ from pathlib import Path
 from packaging.version import Version, InvalidVersion
 from copier_bridge import environment, git, require
 
+TITLE_CALLER = 'templates/repository/.github/workflows/pr-title.yml.jinja'
+TITLE_SOURCE = '.github/workflows/pr-title-reusable.yml'
+
 def template_tag_plan(central, commit):
     central=Path(central).resolve()
     require(re.fullmatch(r'[a-f0-9]{40}',commit),'PROMOTION_COMMIT')
@@ -41,6 +44,14 @@ def template_tag_plan(central, commit):
         before=tree(comparison['commit'],*template_paths)
         after=tree(commit,*template_paths)
         require(after,'TEMPLATE_SOURCE_MISSING')
+        if tree(commit,TITLE_CALLER):
+            # Copier renders the title caller with this template's commit SHA.
+            # A supplier change requires delivery even if the Jinja bytes match.
+            title=tree(commit,TITLE_SOURCE)
+            require(re.fullmatch(rb'100644 blob [0-9a-f]{40}\t\.github/workflows/pr-title-reusable\.yml\0',title),
+                    'TEMPLATE_TITLE_SOURCE_MODE')
+            before+=tree(comparison['commit'],TITLE_SOURCE)
+            after+=title
         policy_path='config/review/security-common.md'
         old_policy=tree(comparison['commit'],policy_path)
         new_policy=tree(commit,policy_path)
