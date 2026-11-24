@@ -1,0 +1,74 @@
+name: Steward 晋级与生产状态
+on:
+  push:
+    tags: ['controller-v*']
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+permissions: {}
+jobs:
+  governance:
+    name: 已晋级控制器
+    if: github.repository_id == '1296724484' && (github.ref == 'refs/heads/main' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/controller-v')))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      deployments: write
+    concurrency:
+      group: steward-governance-receipts
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d
+        env:
+          MISE_SAFE: '1'
+          MISE_NODE_COMPILE: 'false'
+        with:
+          version: 2026.11.14
+          install_args: --locked node
+          cache: false
+          env: false
+          persist_github_token: false
+      - name: 读取受保护控制器和版本标签
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/deployment-receipts.mjs governance-promotion
+  production:
+    name: 生产 Worker
+    if: github.repository_id == '1296724484' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      deployments: write
+    environment:
+      name: steward-production-observer
+      deployment: false
+    concurrency:
+      group: steward-production-receipts
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d
+        env:
+          MISE_SAFE: '1'
+          MISE_NODE_COMPILE: 'false'
+        with:
+          version: 2026.11.14
+          install_args: --locked node
+          cache: false
+          env: false
+          persist_github_token: false
+      - name: 核对生产流量和健康状态
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_READ_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_READ_TOKEN }}
+        run: node scripts/deployment-receipts.mjs production
