@@ -171,9 +171,15 @@ export function officialRootSettings(settings) {
   return { ...settings, ...root, path: '.' };
 }
 
-function officialUnit(settings, ref, base, version) {
+export function officialCandidateSettings(settings) {
   const unit = officialRootSettings(settings);
   requireCandidate(unit, 'ROOT_CONFIG');
+  requireCandidate(!unit['include-component-in-tag'], 'ROOT_TAG_CONFIG');
+  return unit;
+}
+
+function officialUnit(settings, ref, base, version) {
+  const unit = officialCandidateSettings(settings);
   requireCandidate(officialRef(ref, base), 'BRANCH');
   const parsed = parseVersion(version);
   const suffix = parsed?.build.length ? '+' + parsed.build.join('.') : '';
@@ -297,6 +303,14 @@ async function optionalEvidence(read) {
   }
 }
 
+async function sourceTree(get, sourceSha) {
+  const commit = await get('git/commits/' + sourceSha);
+  requireCandidate(commit.sha === sourceSha && sha(commit.tree?.sha), 'CONTENT_SOURCE');
+  const tree = await get('git/trees/' + commit.tree.sha + '?recursive=1');
+  requireCandidate(tree.sha === commit.tree.sha && tree.truncated === false && Array.isArray(tree.tree), 'CONTENT_SOURCE');
+  return tree.tree;
+}
+
 export async function officialCandidateEvidence({ product, sourceSha, baseline, candidate, get, getPages, directory }) {
   const configuration = await readOfficialConfig(get, sourceSha);
   const { unit: release, tag } = officialUnit(configuration, candidate.head, candidate.base, candidate.version);
@@ -305,14 +319,14 @@ export async function officialCandidateEvidence({ product, sourceSha, baseline, 
   const [commits, delivery, tree, previous, diffs] = await Promise.all([
     rangeCommits(get, sourceSha, baseline.sha),
     readOfficialDelivery(get, sourceSha),
-    get('git/trees/' + sourceSha + '?recursive=1'),
+    sourceTree(get, sourceSha),
     baseline.tag ? optionalEvidence(() => get('releases/tags/' + encodeURIComponent(baseline.tag))) : null,
     directory().then(workspace => officialCandidateDiff(workspace, sourceSha, baseline.sha)),
   ]);
   const { units, buildWorkflow } = parseDeliveryConfig(delivery, configuration);
   const unit = units.find(unit => unit.path === path);
-  requireCandidate(unit && tree.truncated === false && Array.isArray(tree.tree), 'CONTENT_SOURCE');
-  const files = tree.tree.filter(file => file.type === 'blob' && ['100644', '100755'].includes(file.mode));
+  requireCandidate(unit, 'CONTENT_SOURCE');
+  const files = tree.filter(file => file.type === 'blob' && ['100644', '100755'].includes(file.mode));
   const docPaths = files.map(file => file.path).filter(path =>
     /^README\.(?:md|rst|adoc)$/i.test(path) ||
     /^docs\/(?:product\/|.*(?:install|setup|download|upgrade|migrat|usage|getting-started)).*\.(?:md|mdx|rst|adoc)$/i.test(path));

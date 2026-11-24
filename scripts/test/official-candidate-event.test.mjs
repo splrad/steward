@@ -103,6 +103,13 @@ test('requires the official switch and the native product declaration to select 
   assert.deepEqual(officialCandidateRoute(settings), { result: 'official_candidate_disabled' });
   assert.deepEqual(officialCandidateRoute(settings, 'false'), { result: 'official_candidate_disabled' });
   assert.deepEqual(officialCandidateRoute(settings, 'true'), { route: 'official' });
+  const component = { ...settings, 'include-component-in-tag': true };
+  assert.throws(() => officialCandidateRoute(component, 'true'), /ROOT_TAG_CONFIG/);
+  const rootComponent = { ...settings, packages: { '.': { ...settings.packages['.'], 'include-component-in-tag': true } } };
+  assert.throws(() => officialCandidateRoute(rootComponent, 'true'), /ROOT_TAG_CONFIG/);
+  assert.deepEqual(officialCandidateRoute({ ...component, packages: {
+    '.': { ...settings.packages['.'], 'include-component-in-tag': false },
+  } }, 'true'), { route: 'official' });
   const multi = { ...settings, packages: { ...settings.packages, tools: { 'release-type': 'simple' } } };
   assert.throws(() => officialCandidateRoute(multi, 'true'), /ROOT_CONFIG/);
   assert.deepEqual(officialCandidateRoute(multi, 'false'), { result: 'official_candidate_disabled' });

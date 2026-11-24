@@ -9,7 +9,7 @@ import { fetchState, releaseParticipation } from './release-coordinator.mjs';
 import { assertReleaseUnpaused, releaseIsPaused } from './release-pause-policy.mjs';
 import { compatibleExistingCandidate, observeOfficialCandidatePull, openOfficialPull, verifyCandidateDraft, writeOfficialCandidate } from './official-candidate-write.mjs';
 import { bodyDigest, candidateBaseline, computeOfficialCandidate, defaultHead, draftOfficialCandidate, fitsOfficialEvent,
-  hasLabel, officialCandidateEvidence, officialCandidateRoundId, officialConfig, officialPending, officialRef, officialRootSettings, officialTagged,
+  hasLabel, officialCandidateEvidence, officialCandidateRoundId, officialCandidateSettings, officialConfig, officialPending, officialRef, officialTagged,
   pages, pullBinding, readOfficialConfig, readOfficialManifest, requireCandidate,
   verifyOfficialPull } from './official-release-candidate.mjs';
 
@@ -66,7 +66,7 @@ export function officialCandidateRoute(settings, enabled) {
   const official = officialConfig(settings);
   if (!official) return { result: 'official_candidate_not_adopted' };
   if (enabled !== 'true') return { result: 'official_candidate_disabled' };
-  requireCandidate(officialRootSettings(settings), 'ROOT_CONFIG');
+  officialCandidateSettings(settings);
   return { route: 'official' };
 }
 
@@ -146,8 +146,8 @@ export async function prepareOfficialCandidate({ identity, get, getPages, direct
   const [participation, configuration, versions] = await Promise.all([
     prepareParticipation(), readOfficialConfig(get, sourceSha), readOfficialManifest(get, sourceSha),
   ]);
-  requireCandidate(participation.status === 'APPLICABLE' && participation.sourceSha === sourceSha &&
-    officialRootSettings(configuration), 'ROOT_CONFIG');
+  requireCandidate(participation.status === 'APPLICABLE' && participation.sourceSha === sourceSha, 'ROOT_CONFIG');
+  officialCandidateSettings(configuration);
   if (event.kind === 'official-refresh') {
     const released = await get('pulls/' + event.prNumber);
     pullBinding(released, product, event.prNumber, botId);
