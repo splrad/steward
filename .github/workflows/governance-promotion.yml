@@ -16,10 +16,6 @@ jobs:
     name: Promote reviewed governance
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    outputs:
-      tag: ${{ steps.reconcile.outputs.tag }}
-      from: ${{ steps.reconcile.outputs.from }}
-      commit: ${{ steps.reconcile.outputs.commit }}
     environment:
       name: steward-automation
       deployment: false
@@ -56,7 +52,6 @@ jobs:
           NATIVE_VALIDATION_WORKFLOW_ID: ${{ vars.NATIVE_VALIDATION_WORKFLOW_ID }}
         run: node scripts/governance-promotion.mjs --check-source
       - name: Reconcile validated source, workflow SHA and template tag
-        id: reconcile
         if: steps.source.outputs.eligible == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -77,44 +72,3 @@ jobs:
             promotion-evidence/template-plan.json
           if-no-files-found: error
           retention-days: 90
-
-  template-release:
-    needs: promote
-    if: ${{ !cancelled() && needs.promote.outputs.tag != '' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: write
-      pull-requests: read
-    concurrency:
-      group: steward-template-releases
-      cancel-in-progress: false
-      queue: max
-    steps:
-      - name: Check the promoted tag and existing release
-        id: inspect
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.promote.outputs.tag }}
-          COMMIT: ${{ needs.promote.outputs.commit }}
-        run: |
-          set -euo pipefail
-          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.sha')" = "$COMMIT"
-          published=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
-            jq -rs --arg tag "$TAG" --arg commit "$COMMIT" '
-              add | if any(.[]; .draft and (.tag_name == $tag or (.target_commitish == $commit and (.tag_name | startswith("v")))))
-                then error("A draft conflicts with the promoted template release")
-                else any(.[]; .tag_name == $tag) end')
-          echo "published=$published" >> "$GITHUB_OUTPUT"
-      - name: Publish template release notes
-        if: steps.inspect.outputs.published == 'false'
-        uses: release-drafter/release-drafter@d1a19e60e81a7e650d00a7de9277f87e439117ea # v7.11.0
-        with:
-          config-name: .github/template-release.yml@${{ github.workflow_sha }}
-          tag: ${{ needs.promote.outputs.tag }}
-          name: Steward 仓库模板 ${{ needs.promote.outputs.tag }}
-          from: ${{ needs.promote.outputs.from }}
-          commitish: ${{ needs.promote.outputs.commit }}
-          footer: '[完整变更](https://github.com/splrad/steward/compare/${{ needs.promote.outputs.from }}...${{ needs.promote.outputs.tag }})'
-          latest: legacy
-          publish: true

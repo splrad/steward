@@ -357,16 +357,12 @@ export async function recordPromotionFailure(error,record) {
   await record({kind:'failure',code});throw Error(code);
 }
 
-export async function publishPromotedSources(io,plan,target,appId,guard,record,readVersionRefs,releaseOutput){
+export async function publishPromotedSources(io,plan,target,appId,guard,record,readVersionRefs){
   // Keep controller version operations outside the existing template tag-and-wake sequence.
   const baseline=await bootstrapControllerVersion(io,appId,guard,readVersionRefs);
   if(baseline) await record({kind:'controller-version-baseline',...baseline});
   const published=await publishTemplateTag(io,plan,guard,record);
   await record({kind:'template-result',...published});
-  // Hand off the confirmed tag before independent controller or delivery operations can fail.
-  if (published.status === 'PUBLISHED' && releaseOutput) {
-    await appendFile(releaseOutput, `tag=${published.tag}\nfrom=${plan.previous.tag}\ncommit=${plan.commit}\n`);
-  }
   const controller=await publishControllerSource(io,target,appId,guard,record);
   await record({kind:'controller-source-result',...controller});
   await wakePublishedTemplate(io,published,guard,record);
@@ -425,7 +421,7 @@ export async function main(env=process.env,transport=fetch) {
     const readVersionRefs=async()=>(await execute('git',['--no-replace-objects','-c','core.hooksPath=',
       '-c','credential.helper=','ls-remote','--tags','--refs','origin',controllerTagPrefix+'*'],
       {env:clean,windowsHide:true,timeout:90000,maxBuffer:8*1024*1024})).stdout;
-    await stage('publish-sources',()=>publishPromotedSources(io,plan,source.sha,appId,verifyCurrent,record,readVersionRefs,env.GITHUB_OUTPUT));
+    await stage('publish-sources',()=>publishPromotedSources(io,plan,source.sha,appId,verifyCurrent,record,readVersionRefs));
     await withJournal(async journal=>{
       const pending=await stage('journal-read',()=>journal.load());
       if(pending?.validator===adopted.sha&&hasPendingValidators(pending))await reconcile(pending,journal,verifyCurrent);
