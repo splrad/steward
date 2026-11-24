@@ -5,7 +5,7 @@ const module=()=>import(pathToFileURL(resolve('tools/settings-sync/actions-polic
 const registration=()=>({id:7,name:'Reviewed events',source_type:'Organization',source:'splrad',enforcement:'active',
   conditions:{repository_id:{repository_ids:[12]},workflow_path:{include:['~ALL'],exclude:[
     '.github/workflows/pr-title.yml','.github/workflows/sync-managed.yml','.github/workflows/repository-configuration.yml',
-    '.github/workflows/pr-labeler.yml','.github/workflows/pr-validation-native.yml','.github/workflows/steward-source.yml']}},
+    '.github/workflows/pr-labeler.yml']}},
   acceptedEvents:['push'],desiredEvents:['push','pull_request','workflow_dispatch','workflow_run','schedule','release','workflow_call']});
 const registry=()=>({schemaVersion:1,organization:{login:'splrad',id:302208797},repositories:[{full_name:'splrad/fixture',id:12}],policies:[registration()]});
 type Registration=Omit<ReturnType<typeof registration>,'conditions'> & {conditions:Record<string,unknown>};
@@ -79,12 +79,12 @@ it('title permission requires the exact executing path and the pull request even
 it('generic permissions preserve the registered event set and exclude all dedicated workflow paths',async()=>{
   const {validateActionsRegistry}=await module();
   const valid=registry();expect(validateActionsRegistry(valid)).toBe(valid);
-  for(const path of ['.github/workflows/pr-labeler.yml','.github/workflows/pr-validation-native.yml','.github/workflows/steward-source.yml']){
+  for(const path of valid.policies[0]!.conditions.workflow_path.exclude){
     const bad=registry(),scope=bad.policies[0]!.conditions.workflow_path;
     scope.exclude=scope.exclude.filter(excluded=>excluded!==path);
     expect(()=>validateActionsRegistry(bad)).toThrow('WORKFLOW_PATH');
   }
-  for(const event of ['pull_request_target','merge_group']){
+  for(const event of ['pull_request_target','issues']){
     const bad=registry();bad.policies[0]!.desiredEvents.push(event);
     expect(()=>validateActionsRegistry(bad)).toThrow('GENERIC_EVENTS');
   }
