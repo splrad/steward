@@ -8,6 +8,10 @@
 
 ## 生产状态
 
-上传版本时，在版本消息中写入 `source-sha=<完整 Git 提交 SHA>`，或将完整 SHA 用作版本标签。巡检从 Cloudflare 当前部署读取所有承载流量的版本和各自占比，再核对版本元数据、提交与 Steward 主线的关系，以及公网 `/health` 实际返回的版本。控制台切换或回滚后沿用该版本原有的源码关联。
+上传版本时，在版本消息中写入 `source-sha=<完整 Git 提交 SHA>`，或将完整 SHA 用作版本标签。巡检从 Cloudflare 读取每个在线版本的 UUID、流量比例和上传者声明，检查声明提交是否属于 `main`，并用公网 `/health` 确认响应版本属于当前流量分配。
 
-GitHub 约每 15 分钟巡检一次，也可在默认分支手动运行。生产作业使用仅允许 `main` 的 `steward-production-observer` 环境，读取环境变量 `CLOUDFLARE_ACCOUNT_ID` 和环境密钥 `CLOUDFLARE_WORKERS_READ_TOKEN`。令牌在目标账户具有 `Workers Scripts Read`。已确认的分流版本分别显示在 `production`，退出流量的旧回执标记为 inactive。来源不明的版本仍在巡检摘要中显示版本号和流量，并标记源码待核实。Cloudflare 或健康接口无法核实时，请结合最近成功回执的时间和最新巡检结果判断。
+对首次出现且声明属于主线的版本，独立的只读作业使用该提交锁定的 Wrangler 干运行重建 Worker。它将入口、每个模块的名称、类型和内容纳入 SHA-256 清单，与 Cloudflare 版本 API 的实际模块核对。证明范围为 Worker 模块，运行时绑定和配置另由 Cloudflare 管理。同一不可变版本与提交已有匹配凭证时，分流调整和回滚会复用该凭证。
+
+[GitHub Deployments](https://github.com/splrad/steward/deployments) 的 `production` 环境为每个承载流量的版本显示一条记录。模块一致时记为 success。源码缺失、重建不可用或摘要不同均记为 pending，说明中保留实际流量及原因。没有主线声明时，GitHub 记录使用巡检提交作为观察点。点击记录的环境链接可查看上传者声明、主线归属及模块比对结果。退出流量的回执标记为 inactive。
+
+GitHub 约每 15 分钟巡检一次，也可在默认分支手动运行。仅允许 `main` 的环境 `steward-production-observer` 提供环境变量 `CLOUDFLARE_ACCOUNT_ID` 和环境密钥 `CLOUDFLARE_WORKERS_READ_TOKEN`，令牌在目标账户具有 `Workers Scripts Read`。Cloudflare 或健康接口暂时不可用时，请结合最近回执时间和最新巡检结果判断。
