@@ -1,5 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import {mkdtemp, readFile, rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {publishPromotedSources} from './governance-promotion.mjs';
 import {
   bootstrapControllerVersion, controllerTagPrefix, controllerVersionNumber, latestControllerVersion, publishControllerVersion,
@@ -140,12 +143,17 @@ test('the production promotion coordinator records the baseline, advances the so
   ]);
 });
 
-test('version-rule failures leave template publication untouched before its write or already woken afterward', async () => {
+test('version-rule failures leave template publication untouched before its write or already woken afterward', async t => {
   const data = fixture({versions: 0, target: 101});
   const target = sha(102);
   const tag = 'v1.0.1';
   const templateRef = 'refs/tags/' + tag;
-  const newTemplate = {status: 'CREATE', commit: target, tag, tags: {}};
+  const previous = 'v1.0.0';
+  const newTemplate = {status: 'CREATE', commit: target, tag, previous: {tag: previous}, tags: {}};
+  const directory = await mkdtemp(join(tmpdir(), 'template-release-'));
+  t.after(() => rm(directory, {recursive: true, force: true}));
+  const output = join(directory, 'output');
+  const handoff = `tag=${tag}\nfrom=${previous}\ncommit=${target}\n`;
   let wakes = 0;
   let failVersionRules = true;
   const io = {async request(method, path, body) {
@@ -159,11 +167,12 @@ test('version-rule failures leave template publication untouched before its writ
     }
     return data.io.request(method, path, body);
   }};
-  const publish = plan => publishPromotedSources(io, plan, target, appId, async () => {}, async () => {}, data.read);
+  const publish = plan => publishPromotedSources(io, plan, target, appId, async () => {}, async () => {}, data.read, output);
 
   await assert.rejects(publish(newTemplate), /CONTROLLER_VERSION_READ/);
   assert.deepEqual(data.history, []);
   assert.equal(wakes, 0);
+  await assert.rejects(readFile(output), {code: 'ENOENT'});
 
   failVersionRules = false;
   await assert.rejects(publish(newTemplate), /CONTROLLER_VERSION_READ/);
@@ -171,9 +180,11 @@ test('version-rule failures leave template publication untouched before its writ
     {ref: ref(1), sha: sha(101)}, {ref: templateRef, sha: target}, {sha: target, force: false},
   ]);
   assert.equal(wakes, 1);
+  assert.equal(await readFile(output, 'utf8'), handoff);
 
   failVersionRules = false;
   await publish({status: 'UNCHANGED', commit: target, tags: {[templateRef]: target}});
+  assert.equal(await readFile(output, 'utf8'), handoff);
   assert.equal(wakes, 1);
   assert.deepEqual(data.history.at(-1), {ref: ref(2), sha: target});
 });
