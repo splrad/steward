@@ -15,7 +15,7 @@ gh workflow run ai-identity-acceptance.yml --repo splrad/steward --ref main -f a
 | job | Environment | 固定行为 |
 | --- | --- | --- |
 | quality | steward-release-notes | 一条公开合成发现，经既有 qualityLanguage 适配器生成一次 |
-| release | steward-release | quality 成功后，一份公开合成发布资料经既有 contentWireInput 和 releaseNotes 适配器生成一次 |
+| release | steward-release | quality 成功后，一份公开合成发布资料经既有 officialCandidateInput 和 releaseNotes 适配器生成一次 |
 
 默认费用授权为 false。非主仓、非 main、审批 SHA 与 workflow SHA 不符、非首次 attempt、缺 token 或 preflight 拒绝均失败关闭。SDK 只接收当前 job 的短时 github.token，不读取 Environment 静态秘密，不回退个人登录。只授予 contents:read 和 copilot-requests:write；不启动生产协调器，不写评论、Check、PR、候选、tag 或 Release。
 

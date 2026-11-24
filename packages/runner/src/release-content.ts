@@ -1,32 +1,14 @@
-import { contentOutputSchema, permittedContentPredecessor, verifyContentAttemptReceipts, retryableContentRejection, type ContentRecoveryReceipt } from '../../core/src/release-content.js';
 import { createHash } from 'node:crypto';
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { GitReleaseInputOptions } from './release-git-input.js';
-import { assertDeliveryPath } from '../../core/src/delivery-config.js';
-import { assertSelectedReleaseDownloads, assertVersionAcquisitionLinks, parseConditionalNotes } from '../../core/src/conditional-release-notes.js';
-import { committedVersionNotes } from '../../core/src/release-template.js';
+import { parseConditionalNotes } from '../../core/src/conditional-release-notes.js';
 import { isolatedBuildEnvironment } from './build-environment.js';
-import { RELEASE_WRITING_PROMPT, CONTENT_PROMPT, CONDITIONAL_CONTENT_PROMPT, validateContentResult, validateContentInput, renderUnitContent, buildConditionalDraft, splitContentText, releaseAffectedUnitIds, utf8Length,
-  type ContentInput, type ContentBatch, type ContentItem, type ContentParagraph, type ContentAttempt, type ContentStage } from '../../core/src/release-content.js';
+import { RELEASE_WRITING_PROMPT, contentOutputSchema, validateContentResult, buildConditionalDraft, splitContentText, type ContentInput } from '../../core/src/release-content.js';
 
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
-export interface ContentSource {
-  id: string; unitId: string; path: string; previousPath: string | null; status: string; oid: string;
-  mode: string; byteLength: number; encoding: string; sha256: string; start: number; end: number;
-  text: string; stage: 'CONTEXT' | 'DIFF';
-  documentationText?: true;
-}
-export interface ContentPayload { stage: ContentStage; unitIds: string[]; units: ContentInput['units']; sources: ContentSource[]; items: ContentItem[]; background: ContentItem[]; conditional?: true }
-export interface ContentWork { input: ContentInput; payloads: Record<string, ContentPayload>; results: Record<string, { items: ContentItem[] } | { paragraphs: ContentParagraph[] }>; evidence: { manifests: unknown[]; gaps: unknown[] } }
-export interface ContentCacheEntry { inputDigest: string; configDigest: string; attempts: ContentAttempt[]; result: { items: ContentItem[] } | { paragraphs: ContentParagraph[] } | null; split?: boolean; conditional?: true }
-export type ContentCache = Record<string, ContentCacheEntry>;
-export function contentWireInput(payload: ContentPayload) { return JSON.stringify({ prompt: payload.conditional ? CONDITIONAL_CONTENT_PROMPT : CONTENT_PROMPT,
-  outputSchema: contentOutputSchema(payload.conditional), constraints: 'Return only the schema object, without Markdown fences or extra keys. Omit optional paragraphs without product facts. For a relevant claim with uncertain verification, set qualification to UNVERIFIED and describe only the specific consequence for the reader; TEST_CONFIRMED is unavailable unless tested source IDs are explicitly supplied.', ...payload }); }
-
 /** Use the already fetched product history so GitHub's comparison and PR file limits cannot omit changes. */
 export async function officialCandidateDiff(directory: string, sourceSha: string, baselineSha: string | null) {
   const gitSha = /^[a-f0-9]{40}$/;
@@ -62,227 +44,29 @@ const officialCandidateConstraints = [
   '每段 textZh 的 UTF-8 长度上限为 2,048 字节，完整 JSON 上限为 12,288 字节。',
 ].join('\n\n');
 
-/** The official candidate is generated from read-only, source-bound GitHub evidence. */
-export async function generateOfficialCandidateNotes(options: {
+type CandidateInput = {
   unit: ContentInput['units'][number];
   template: string;
   evidence: readonly { kind: string; details: unknown }[];
-  call: (input: string) => Promise<{ text: string }>;
-}) {
+};
+
+export function officialCandidateInput(options: CandidateInput) {
   const sources = options.evidence.map(source => ({ id: hash(source), ...source }));
-  const sourceIds = [...new Set(sources.map(source => source.id))];
-  const response = await options.call(JSON.stringify({
+  return {
     prompt: RELEASE_WRITING_PROMPT,
     organizationTemplate: options.template,
     constraints: officialCandidateConstraints,
     outputSchema: contentOutputSchema(true),
     units: [options.unit],
     sources,
-  }));
+  };
+}
+
+export async function generateOfficialCandidateNotes(options: CandidateInput & { call: (input: string) => Promise<{ text: string }> }) {
+  const input = officialCandidateInput(options);
+  const sourceIds = [...new Set(input.sources.map(source => source.id))];
+  const response = await options.call(JSON.stringify(input));
   const result = validateContentResult('DRAFT', response.text, sourceIds, [], undefined, true);
   if (!('paragraphs' in result)) throw new Error('CONTENT_OUTPUT_SCHEMA');
   return parseConditionalNotes(buildConditionalDraft(result.paragraphs));
-}
-
-/** Read curated release changes and product context, not a model-coverage copy of every source blob. */
-export async function collectContentInput(options: { directory: string; candidateId: string; configDigest: string; units: (GitReleaseInputOptions & { changelogPath?: string })[];
-  allUnits?: { id: string; path: string }[]; dependencies?: Record<string, string[]>;
-  repository?: string; preparedChanges?: { path: string; content: string | null }[]; sourcePaths?: string[]; conditional?: boolean }) {
-  if (!options.units.length) throw new Error('CONTENT_UNITS_REQUIRED');
-  const first = options.units[0]!;
-  if (options.units.some(u => JSON.stringify(u.identity) !== JSON.stringify(first.identity))) throw new Error('CONTENT_IDENTITY_MISMATCH');
-  const sources: ContentSource[] = [], manifests = [];
-  const home = await mkdtemp(join(tmpdir(), 'steward-content-input-'));
-  try {
-    for (const unit of options.units) {
-      const git = (...args: string[]) => execFileSync('git', ['--no-replace-objects', '-c', 'core.hooksPath=', ...args], {
-        cwd: unit.workspace, env: { ...isolatedBuildEnvironment(process.env, home), GIT_NO_LAZY_FETCH: '1' },
-        windowsHide: true, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
-      const range = unit.boundary.kind === 'full-tree' ? unit.identity.targetSha : `${unit.boundary.sha}..${unit.identity.targetSha}`;
-      const commits = git('log', '--format=%H', range).trim().split('\n').filter(Boolean).map(sha => ({ sha }));
-      const changelog = unit.changelogPath ?? 'CHANGELOG.md'; assertDeliveryPath(changelog);
-      const changelogPath = (unit.unit.path === '.' ? '' : unit.unit.path + '/') + changelog;
-      const entries: {path:string; text:string; stage:'CONTEXT'|'DIFF'; documentationText?: true}[] = (options.preparedChanges ?? []).filter(f => f.path === changelogPath)
-          .map(f => ({ path: f.path, text: f.content ? committedVersionNotes(f.content, unit.unit.version, options.repository ?? (() => { throw new Error('CONTENT_REPOSITORY_REQUIRED'); })(), unit.identity.targetSha, unit.unit.tag).changelog : '', stage: 'DIFF' as const }));
-      for (const path of [...new Set([...(unit.contextPaths ?? []), ...(options.sourcePaths ?? [])])]) {
-        if (path.startsWith('/') || path.split(/[\\/]/).includes('..') || /[\0\r\n]/.test(path)) throw new Error('CONTENT_SOURCE_PATH');
-        entries.push({ path, text: git('show', `${unit.identity.targetSha}:${path}`), stage: 'CONTEXT' });
-      }
-      if (options.conditional) {
-        const rootPath = unit.unit.path === '.' ? '.' : unit.unit.path;
-        const baseline = unit.boundary.kind === 'full-tree' ? null : unit.boundary.sha;
-        const listing = baseline ? ['diff', '--no-renames', '--name-only', baseline, unit.identity.targetSha] : ['ls-tree', '-r', '--name-only', unit.identity.targetSha];
-        const scope = options.allUnits ? '.' : rootPath;
-        const paths = git(...listing, '-z', '--', scope).split('\0').filter(path =>
-          path !== changelogPath && /\.(?:md|mdx|rst|adoc)$/i.test(path) && !path.split('/').some(part => part.startsWith('.'))
-          && !/(?:^|\/)(?:AGENTS|CONTRIBUTING|CODE_OF_CONDUCT|SECURITY|CHANGELOG)\.[^.]+$/i.test(path)
-          && (!options.allUnits || releaseAffectedUnitIds(path, options.allUnits, options.dependencies ?? {}).includes(unit.unit.id)));
-        for (const path of paths) {
-          const source = baseline
-            ? git('diff', '--no-renames', '--no-ext-diff', '--no-textconv', '--unified=2', baseline, unit.identity.targetSha, '--', `:(literal)${path}`)
-            : git('show', `${unit.identity.targetSha}:${path}`);
-          if (!source.trim() || baseline && (!/^@@ /m.test(source)
-            || /^(?:(?:new|deleted) file mode|(?:old|new) mode|index .+) (?:120000|160000)$/m.test(source))) continue;
-          if (!baseline && !/^100(?:644|755) blob /.test(git('ls-tree', unit.identity.targetSha, '--', `:(literal)${path}`))) continue;
-          const existing = entries.find(entry => entry.path === path && entry.text === source);
-          if (existing) existing.documentationText = true;
-          else entries.push({ path, text: source, stage: baseline ? 'DIFF' : 'CONTEXT', documentationText: true });
-        }
-      }
-      for (const entry of entries) {
-        const bytes = utf8Length(entry.text), digest = hash(entry.text);
-        const chunks = entry.documentationText ? splitContentText(entry.text) : [{ start: 0, end: bytes, text: entry.text }];
-        for (const chunk of chunks) {
-          const identity = [unit.unit.id, entry.path, digest, ...(chunks.length > 1 ? [chunk.start] : [])];
-          sources.push({ id: hash(identity), unitId: unit.unit.id, path: entry.path, previousPath: null,
-            status: 'CURATED', oid: unit.identity.targetSha, mode: '100644', byteLength: bytes, encoding: 'utf8', sha256: digest,
-            ...chunk, stage: entry.stage, ...(entry.documentationText ? { documentationText: true } : {}) });
-        }
-      }
-      manifests.push({ unit: unit.unit, identity: unit.identity, boundary: unit.boundary, commits });
-    }
-  } finally { await rm(home, { recursive: true, force: true }); }
-  const input: ContentInput = { schemaVersion: 2, repositoryId: first.identity.repositoryId, candidateId: options.candidateId,
-    baseSha: first.identity.targetSha, controllerSha: first.identity.controllerSha, units: options.units.map(u => u.unit),
-    boundaries: options.units.map(u => ({ unitId: u.unit.id, kind: u.boundary.kind, sha: u.boundary.kind === 'full-tree' ? null : u.boundary.sha,
-      reference: u.boundary.kind === 'full-tree' ? null : u.boundary.reference })), sourceManifestDigest: hash(manifests), configDigest: options.configDigest, batches: [] };
-  return { input, sources, gaps: [], manifests };
-}
-/** One direct draft per unit; no fixed stages, recursive splitting, or per-source coverage obligation. */
-export async function planContentBatches(input: ContentInput, sources: ContentSource[], evidence: ContentWork['evidence'] = { manifests: [], gaps: [] },
-  conditional = false): Promise<ContentWork> {
-  const work: ContentWork = { input: { ...structuredClone(input), schemaVersion: 2, batches: [] }, payloads: {}, results: {}, evidence };
-  for (const unit of input.units) {
-    const payload: ContentPayload = { stage: 'DRAFT', unitIds: [unit.id], units: [unit], sources: sources.filter(s => s.unitId === unit.id), items: [], background: [],
-      ...(conditional ? { conditional: true } : {}) };
-    const inputDigest = hash(payload), id = hash([input.candidateId, input.configDigest, inputDigest]);
-    const batch: ContentBatch = { id, stage: 'DRAFT', unitIds: [unit.id], sourceIds: payload.sources.map(s => s.id), inputDigest,
-      status: 'PENDING', attempts: [], nextCheckAt: null, resultPath: null, errorCode: null };
-    work.input.batches.push(batch); work.payloads[id] = payload;
-  }
-  validateContentInput(work.input); return work;
-}
-export interface ContentRecovery extends ContentRecoveryReceipt { candidateId: string; batchId: string }
-export interface ContentRuntime {
-  recovery?: ContentRecovery;
-  repository?: string;
-  now(): string;
-  editing(): Promise<boolean>;
-  preflight(): Promise<'READY' | 'WAIT_AUTH' | 'WAIT_QUOTA'>;
-  call(input: string): Promise<{ text: string; model: string; usage: object | null }>;
-  save(work: ContentWork, cache: ContentCache): Promise<void>;
-}
-/** Persist a request before sending; unknown results need native maintenance, not an automatic replay loop. */
-export async function resumeContentBatches(work: ContentWork, cache: ContentCache, runtime: ContentRuntime) {
-  if (work.input.schemaVersion !== 2) throw new Error('CONTENT_LEGACY_READ_ONLY');
-  validateContentInput(work.input);
-  if (runtime.recovery && (work.input.batches.length !== 1 || work.input.units.length !== 1
-    || runtime.recovery.candidateId !== work.input.candidateId || runtime.recovery.batchId !== work.input.batches[0]!.id)) throw Error('CONTENT_RECOVERY_BINDING');
-  let calls = 0;
-  for (const batch of work.input.batches) {
-    if (batch.status === 'READY') continue;
-    if (await runtime.editing()) return { status: 'EDITING', calls };
-    const key = hash([batch.inputDigest, work.input.configDigest]);
-    const payload = work.payloads[batch.id]!;
-    const conditional = payload.conditional === true;
-    const entry = cache[key] ??= { inputDigest: batch.inputDigest, configDigest: work.input.configDigest, attempts: [], result: null,
-      ...(conditional ? { conditional: true } : {}) };
-    if ((entry.conditional === true) !== conditional) throw Error('CONTENT_CACHE_CONTRACT');
-    const validate = (text: string) => {
-      let result: { paragraphs: ContentParagraph[] };
-      try { result = validateContentResult('DRAFT', text, batch.sourceIds, [], undefined, conditional) as typeof result; }
-      catch (error) {
-        if (conditional && error instanceof Error && error.message === 'CONTENT_DOCUMENT_STRUCTURE')
-          throw conditionalOutputError('releaseNotesStructure');
-        throw error;
-      }
-      if (conditional && result.paragraphs.some(item => item.section === 'documentation'
-        && (item.qualification !== 'SOURCE_CONFIRMED' || !payload.sources.some(source => source.documentationText && item.sourceIds.includes(source.id)))))
-        throw conditionalOutputError('documentationEvidence');
-      if (conditional && runtime.repository) {
-        const draft = buildConditionalDraft(result.paragraphs);
-        const notes = parseConditionalNotes(draft);
-        const tag = payload.units[0]!.tag;
-        try {
-          assertVersionAcquisitionLinks(notes, runtime.repository, tag);
-          assertSelectedReleaseDownloads(draft, runtime.repository, tag);
-        }
-        catch { throw conditionalOutputError('acquisitionVersion'); }
-      }
-      return result;
-    };
-    await verifyContentAttemptReceipts(entry.attempts, conditional); await verifyContentAttemptReceipts(batch.attempts, conditional);
-    if (entry.result) {
-      work.results[batch.id] = validate(JSON.stringify(entry.result));
-      batch.status = 'READY'; batch.resultPath = `results/${batch.id}.json`; await runtime.save(work, cache); continue;
-    }
-    const blocked = (attempts: ContentAttempt[]) => attempts.some(a => !!a.recovery) || attempts.some((a,i) => i === attempts.length-1 ? !retryableContentRejection(a) : !permittedContentPredecessor(a,i,attempts));
-    let recovery: ContentRecoveryReceipt | undefined;
-    if (runtime.recovery && !blocked(entry.attempts) && !blocked(batch.attempts)) throw Error('CONTENT_RECOVERY_BINDING');
-    if (runtime.recovery && (blocked(entry.attempts) || blocked(batch.attempts))) {
-      const grant = runtime.recovery, prior = entry.attempts[0];
-      if (grant.candidateId !== work.input.candidateId || grant.batchId !== batch.id || entry.attempts.length !== 1
-        || JSON.stringify(entry.attempts) !== JSON.stringify(batch.attempts) || prior?.status !== 'REJECTED' || prior.errorCode !== 'CONTENT_OUTPUT_SCHEMA'
-        || grant.previousAttemptSha256 !== hash(prior) || grant.outputContractSha256 !== hash(contentOutputSchema(conditional))
-        || !/^[a-f0-9]{64}$/.test(grant.authorizationId)) throw Error('CONTENT_RECOVERY_BINDING');
-      recovery = { previousAttemptSha256: grant.previousAttemptSha256, authorizationId: grant.authorizationId, outputContractSha256: grant.outputContractSha256 };
-      if (grant.archiveContentDigest !== undefined || grant.archiveProtectionDigest !== undefined) {
-        if (typeof grant.archiveContentDigest!=='string' || typeof grant.archiveProtectionDigest!=='string'
-          || ![grant.archiveContentDigest,grant.archiveProtectionDigest].every(v=>/^[a-f0-9]{64}$/.test(v))) throw Error('CONTENT_RECOVERY_BINDING');
-        recovery.archiveContentDigest=grant.archiveContentDigest;recovery.archiveProtectionDigest=grant.archiveProtectionDigest;
-      }
-    }
-    if (!recovery && (blocked(entry.attempts) || blocked(batch.attempts))) {
-      batch.status = 'FAILED'; batch.errorCode = entry.attempts.at(-1)?.errorCode ?? 'RESPONSE_UNKNOWN';
-      await runtime.save(work, cache); return { status: 'FAILED', calls };
-    }
-    if (batch.nextCheckAt && Date.parse(batch.nextCheckAt) > Date.parse(runtime.now())) return { status: batch.status, calls };
-    const preflight = await runtime.preflight();
-    if (preflight !== 'READY') { batch.status = preflight; await runtime.save(work, cache); return { status: preflight, calls }; }
-    if (await runtime.editing()) return { status: 'EDITING', calls };
-    const attempt: ContentAttempt = { ordinal: Math.max(entry.attempts.length, batch.attempts.length) + 1, startedAt: runtime.now(), status: 'SENT', model: 'server-selected', usage: null, errorCode: null };
-    if (recovery) attempt.recovery = recovery;
-    batch.attempts = [...(entry.attempts.length >= batch.attempts.length ? entry.attempts : batch.attempts), attempt]; entry.attempts = batch.attempts; batch.nextCheckAt = null; batch.status = 'RUNNING'; await runtime.save(work, cache); calls++;
-    let returnedText: string | undefined;
-    try {
-      const response = await runtime.call(contentWireInput(payload));
-      returnedText = response.text;
-      attempt.status = 'RETURNED'; attempt.model = response.model; attempt.usage = response.usage;
-      const result = validate(response.text);
-      work.results[batch.id] = result; entry.result = result; batch.resultPath = `results/${batch.id}.json`; batch.status = 'READY'; batch.errorCode = null;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '';
-      const code = /^(?:CONTENT_[A-Z_]+|WAIT_AUTH|WAIT_QUOTA|RESPONSE_UNKNOWN)$/.test(message) ? message : 'RESPONSE_UNKNOWN';
-      const responseBytes = returnedText === undefined ? null : utf8Length(returnedText);
-      if (returnedText !== undefined && responseBytes !== null && responseBytes <= 12 * 1024) attempt.diagnostic = {
-        responseSha256: createHash('sha256').update(returnedText).digest('hex'), responseBytes, responseText: returnedText,
-        validationErrors: code === 'CONTENT_OUTPUT_SCHEMA' ? (error as {validationErrors?: {instancePath:string;schemaPath:string;keyword:string}[]}).validationErrors ?? [] : [],
-      };
-      attempt.status = code === 'RESPONSE_UNKNOWN' ? 'UNKNOWN' : 'REJECTED'; attempt.errorCode = code;
-      batch.status = code === 'WAIT_AUTH' || code === 'WAIT_QUOTA' ? code : 'FAILED'; batch.errorCode = code;
-      if (batch.status !== 'FAILED') {
-        const delay = (error as { retryAfterMs?: number }).retryAfterMs;
-        batch.nextCheckAt = new Date(Date.parse(runtime.now()) + (typeof delay === 'number' && Number.isFinite(delay) ? Math.max(60_000, delay) : 60_000)).toISOString();
-      }
-    }
-    await runtime.save(work, cache);
-    if (batch.status !== 'READY') return { status: batch.status, calls };
-  }
-  return { status: 'READY', calls };
-}
-function conditionalOutputError(keyword: string) {
-  return Object.assign(new Error('CONTENT_OUTPUT_SCHEMA'), {
-    validationErrors: [{ instancePath: '/paragraphs', schemaPath: '#/properties/paragraphs', keyword }],
-  });
-}
-export function assembleUnitNotes(work: ContentWork, notesPaths?: Record<string,string>) {
-  if (!work.input.batches.every(b => b.status === 'READY')) throw new Error('CONTENT_NOT_READY');
-  return work.input.units.map(unit => {
-    const batches = work.input.batches.filter(b => b.unitIds.includes(unit.id));
-    const paragraphs = batches.flatMap(b => (work.results[b.id] as { paragraphs: ContentParagraph[] }).paragraphs);
-    const render = batches.some(batch => work.payloads[batch.id]?.conditional) ? buildConditionalDraft : renderUnitContent;
-    const path=notesPaths ? notesPaths[unit.id] : `.release-notes/${unit.id}.md`;
-    if(!path)throw Error('CONTENT_NOTES_PATH');
-    return { path, mode: '100644' as const, content: render(paragraphs) };
-  });
 }
