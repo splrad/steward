@@ -382,7 +382,13 @@ export async function officialCandidateEvidence({ product, sourceSha, baseline, 
     for (const id of [...excluded]) {
       for (const side of merges.get(id) ?? []) excluded.add(side);
     }
-    const selected = commits.filter(commit => !excluded.has(commit.sha));
+    const mixedMerges = new Set(), coveredByMerge = new Set();
+    for (const [merge, side] of merges) {
+      if (excluded.has(merge)) continue;
+      if ([...side].some(id => excluded.has(id))) mixedMerges.add(merge);
+      else for (const id of side) coveredByMerge.add(id);
+    }
+    const selected = commits.filter(commit => !excluded.has(commit.sha) && !coveredByMerge.has(commit.sha));
     const evidence = [...pulls];
     if (selected.length) {
       const workspace = await directory();
@@ -391,10 +397,9 @@ export async function officialCandidateEvidence({ product, sourceSha, baseline, 
         // A clean merge has no combined patch. Use its first-parent diff unless
         // that would reintroduce an Internal side commit. In a mixed merge the
         // selected side commits supply their own patches plus merge resolutions.
-        const mixedMerge = [...(merges.get(commit.sha) ?? [])].some(id => excluded.has(id));
         evidence.push({ kind: 'selected-commit', details: { sha: commit.sha, message: commit.commit.message } });
         evidence.push(...await officialCandidateDiff(workspace, commit.sha, commit.parents[0]?.sha ?? null,
-          { exclude, mixedMerge }));
+          { exclude, mixedMerge: mixedMerges.has(commit.sha) }));
       }
       evidence.push({ kind: 'release-page', details: { url: repository + '/releases/tag/' + tag } });
     } else {

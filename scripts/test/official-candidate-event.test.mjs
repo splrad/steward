@@ -130,6 +130,9 @@ test('Internal labels filter every writing source and preserve mixed PRs and dir
     .filter(item => item.kind === 'source-range-diff' && item.details.sourceSha === merge)
     .map(item => item.details.text).join('');
   assert.match(await mergePatch(), /\+feature-from-merge/);
+  const cleanMerge = (await collect(merge)).evidence.filter(item => item.kind === 'source-range-diff');
+  assert.equal(cleanMerge.some(item => item.details.sourceSha === side), false);
+  assert.equal(cleanMerge.flatMap(item => item.details.text.match(/\+feature-from-merge/g) ?? []).length, 1);
   labels.set(side, [pull(44, ['Internal'], 'embedded maintenance')]);
   assert.doesNotMatch(JSON.stringify((await collect(merge)).evidence), /feature-from-merge|embedded maintenance/);
   labels.set(side, []);
