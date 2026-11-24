@@ -132,7 +132,7 @@ export async function protectedChanges(api,files,base,head,decisionOnly=false) {
   const paths=files.flatMap(f=>[f.filename,f.previous_filename].filter(Boolean));
   const ciPath='.github/product-ci.json';
   const old=await fileText(api,ciPath,base),next=await fileText(api,ciPath,head);
-  const ci=new Set([ciPath,delegatesPath,repositoryPolicyAdoptionPath]);
+  const ci=new Set([ciPath,delegatesPath,repositoryPolicyAdoptionPath,'.github/workflows/pr-title.yml']);
   for(const bytes of [old,next]) {
     if(bytes===null) continue;
     const entries=JSON.parse(bytes);

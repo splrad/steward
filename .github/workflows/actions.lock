@@ -26,7 +26,7 @@ workflows:
     '.github/workflows/pr-labeler.yml':
         - 'actions/labeler@bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13'
     '.github/workflows/pr-title-reusable.yml':
-        - 'amannn/action-semantic-pull-request@2252a14e810aa9b85c2d560bd7070c802206ecf6'
+        - 'amannn/action-semantic-pull-request@c5e23b7e584519ee15caa684cf60d056aa9f035f'
     '.github/workflows/pr-title.yml':
         - 'amannn/action-semantic-pull-request@2252a14e810aa9b85c2d560bd7070c802206ecf6'
     '.github/workflows/pr-validation-native.yml':
@@ -91,6 +91,11 @@ dependencies:
     'amannn/action-semantic-pull-request@2252a14e810aa9b85c2d560bd7070c802206ecf6':
         ref: 'v6.1.2'
         commit: 'sha1-2252a14e810aa9b85c2d560bd7070c802206ecf6'
+        owner_id: 4038316
+        repo_id: 220418983
+    'amannn/action-semantic-pull-request@c5e23b7e584519ee15caa684cf60d056aa9f035f':
+        ref: 'v6.1.3'
+        commit: 'sha1-c5e23b7e584519ee15caa684cf60d056aa9f035f'
         owner_id: 4038316
         repo_id: 220418983
     'dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d':

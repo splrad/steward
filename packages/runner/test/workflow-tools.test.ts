@@ -227,8 +227,14 @@ it('still blocks unrelated actionlint errors alongside a valid queue', async () 
   await expect(scanWorkflows(root, ['.github/workflows/test.yml'])).rejects.toThrow(/jactionlint.*failed/);
 }, 120000);
 
+async function legacyTitle() {
+  const document=YAML.parse(await readFile('.github/workflows/pr-title-reusable.yml','utf8'));
+  document.on={pull_request_target:{types:['opened','edited','synchronize','reopened']}};
+  return document;
+}
+
 it.each(['adopted', 'native-sha-update'])('accepts only the trusted metadata title exception: %s', async kind => {
-  let text = await readFile('templates/repository/.github/workflows/pr-title.yml', 'utf8');
+  let text = YAML.stringify(await legacyTitle());
   if (kind === 'native-sha-update') text = text.replace(/(amannn\/action-semantic-pull-request@)[a-f0-9]{40}/, '$1' + 'a'.repeat(40));
   const root = await fixture(text);
   await rename(join(root, '.github/workflows/test.yml'), join(root, '.github/workflows/pr-title.yml'));
@@ -252,7 +258,7 @@ it.each(['adopted','action-sha','mise-release'])('accepts the approved central p
 
 it.each(['title-path','promotion-path','wrong-trigger','other-finding'])('rejects diagnostics outside the exact adopted trigger locations: %s',async kind=>{
   const title=kind==='title-path';
-  const document=YAML.parse(await readFile(title?'templates/repository/.github/workflows/pr-title.yml':'.github/workflows/governance-promotion.yml','utf8'));
+  const document=title?await legacyTitle():YAML.parse(await readFile('.github/workflows/governance-promotion.yml','utf8'));
   if(kind==='wrong-trigger')document.on.pull_request_target={};
   const root=await fixture(YAML.stringify(document));
   if(!kind.endsWith('-path'))await rename(join(root,'.github/workflows/test.yml'),join(root,'.github/workflows/governance-promotion.yml'));
@@ -262,7 +268,7 @@ it.each(['title-path','promotion-path','wrong-trigger','other-finding'])('reject
 
 it.each(['title','promotion'])('accepts a normal additional job without a duplicate YAML contract: %s',async kind=>{
   const path=kind==='title'?'.github/workflows/pr-title.yml':'.github/workflows/governance-promotion.yml';
-  const document=YAML.parse(await readFile(kind==='title'?'templates/repository/'+path:path,'utf8'));
+  const document=kind==='title'?await legacyTitle():YAML.parse(await readFile(path,'utf8'));
   document.jobs.documentation={name:'Reviewed documentation', 'runs-on':'ubuntu-24.04',permissions:{contents:'read'},steps:[{run:'echo documentation'}]};
   const root=await fixture(YAML.stringify(document));await rename(join(root,'.github/workflows/test.yml'),join(root,path));
   const result=await scanWorkflows(root,await discoverWorkflowFiles(root));
@@ -278,6 +284,22 @@ it.each(['.github/workflows/pr-labeler.yml','templates/repository/.github/workfl
   expect(result.results.at(-1)?.status).toBe(14);
   expect(result.exceptions).toHaveLength(1);
   expect(result.exceptions![0]).toMatchObject({decision:'E08-LABELER-TITLE-WORKFLOW-RUN-20261103',finding:{ident:'dangerous-triggers',ignored:false}});
+},120000);
+
+it('accepts the direct labeler template through the unmodified native diagnostics',async()=>{
+  const path='templates/repository/.github/workflows/pr-labeler.yml';
+  const text=await readFile(path,'utf8');
+  const root=await fixture(text);
+  await mkdir(join(root,path,'..'),{recursive:true});
+  await rename(join(root,'.github/workflows/test.yml'),join(root,path));
+  const result=await scanWorkflows(root,[path]);
+  expect(result.results.map(tool=>tool.status)).toEqual([0,0]);
+  expect(result.exceptions).toEqual([]);
+  const definition=YAML.parse(text);
+  definition.jobs.labels.steps.push({uses:'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
+    with:{ref:'${{ github.event.pull_request.head.sha }}','persist-credentials':false}});
+  await writeFile(join(root,path),YAML.stringify(definition));
+  await expect(scanWorkflows(root,[path])).rejects.toThrow(/zizmor.*failed/);
 },120000);
 
 it.each(['other-path','pull_request_target','other-finding'])('retains native labeler scan rejection: %s',async kind=>{
