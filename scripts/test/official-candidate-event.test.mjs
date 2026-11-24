@@ -175,6 +175,15 @@ test('Internal labels filter every writing source and preserve mixed PRs and dir
   const copyMaterial = JSON.stringify((await collect(copied)).evidence);
   assert.doesNotMatch(copyMaterial, /carried-internal-sentinel/);
   assert.match(copyMaterial, /genuine-new-behavior/);
+
+  const internalConfig = await commit('ci-settings.txt', 'ci-only configuration\nmode=full\ninternal switch for CI\n', 'CI config');
+  labels.set(internalConfig, [pull(48, ['Internal'], 'CI config')]);
+  const example = await commit('user-guide.txt', 'Run the following example with the public CLI:\nmode=full\n', 'document a CLI option');
+  labels.set(example, [pull(49, [], 'CLI example')]);
+  const examplePatch = (await collect(example)).evidence
+    .filter(item => item.kind === 'source-range-diff' && item.details.sourceSha === example)
+    .map(item => item.details.text).join('');
+  assert.match(examplePatch, /^\+mode=full$/m);
 });
 
 test('a native manual correction wins even when it lands inside the App label request', async () => {

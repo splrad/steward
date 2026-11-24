@@ -74,10 +74,11 @@ async function hideUnattributedLines(rows: Map<number, number>, path: string | n
   let blame = '';
   if (path && revision) {
     // Native blame follows renames. -C repeated also finds blocks copied from
-    // unmodified files. Incremental output contains locations, never line text.
+    // unmodified files. Keep Git's normal similarity thresholds so an independent
+    // short example in an unrelated file is not mistaken for a copied block.
     const locations = [...rows.values()];
     const range = locations[0] + ',' + locations.at(-1);
-    try { blame = await git(['blame', '--no-textconv', '--incremental', '--root', '-M1', '-C1', '-C1', '-C1', '-L', range, revision, '--', path]); }
+    try { blame = await git(['blame', '--no-textconv', '--incremental', '--root', '-M', '-C', '-C', '-C', '-L', range, revision, '--', path]); }
     catch { /* Omit lines without a verified origin, including gitlinks. */ }
   }
   const spans = [...blame.matchAll(/^([a-f0-9]{40}) \d+ (\d+) (\d+)$/gm)].map(m => ({
