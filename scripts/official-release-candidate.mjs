@@ -152,6 +152,7 @@ function officialUnit(settings, ref, base, version) {
   const parsed = parseVersion(version);
   const suffix = parsed?.build.length ? '+' + parsed.build.join('.') : '';
   requireCandidate(parsed && parsed.version + suffix === version, 'VERSION');
+  // Release Please uses the tag separator between a component name and its version.
   return { unit, tag: (unit['include-v-in-tag'] === false ? '' : 'v') + version };
 }
 

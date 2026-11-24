@@ -967,6 +967,22 @@ async function readWorkflowBuild(context:EvidenceContext,request:CycleRecord['di
 }
 const successfulBuild=(run:Awaited<ReturnType<typeof readWorkflowBuild>>)=>run.status==='completed'&&run.conclusion==='success';
 
+export async function selectWorkflowGithubDelivery(context:EvidenceContext,reader:NativeEvidenceReader,pages:NativePages,successAttempt?:number) {
+  const {cycle}=context,units=githubUnits(cycle),requests=cycle.dispatches.filter(dispatch=>dispatch.purpose==='build');
+  const request=requests[0];
+  if(!cycle.officialRelease||units.length!==1||requests.length!==1||!request?.canonicalRunId)
+    fail('official GitHub delivery binding');
+  const unit=units[0]!,frozen=unit.githubDelivery;
+  const run=await readWorkflowBuild(context,request,reader,frozen?(frozen.buildAttempt??frozen.attempt):successAttempt);
+  if(!successfulBuild(run)) fail('completed product Run required');
+  const jobName='delivery/'+unit.id;
+  const receipt=await githubDeliveryArtifact({fullName:context.repository,repositoryId:context.repositoryId,
+    sourceSha:cycle.sourceSha,runId:run.id,attempt:run.runAttempt},unit.id,jobName,pages,frozen?.attempt,
+    workflowDeliveryBuildAttempt(context,request,reader,run,jobName,pages,Boolean(frozen)));
+  if(frozen&&!sameWorkflowDelivery(receipt,frozen)) fail('workflow delivery receipt changed');
+  return {...receipt, name:['delivery','github-release',context.repositoryId,unit.id,cycle.sourceSha,receipt.runId,receipt.attempt].join('-')};
+}
+
 function workflowDeliveryBuildAttempt(context:EvidenceContext,request:CycleRecord['dispatches'][number],reader:NativeEvidenceReader,
   build:Awaited<ReturnType<typeof readWorkflowBuild>>,jobName:string,pages:NativePages,retained:boolean):DeliveryBuildAttempt {
   const ref='repos/'+context.repository+'/actions/runs/'+build.id;
@@ -1116,6 +1132,7 @@ async function prepareWorkflowPublication(options:{
   reader:NativeEvidenceReader;pages:NativePages;source:(path:string)=>Promise<string>;template:string;officialBody?:string;
   root:string;controllerDirectory:string;token:string;history:{path:string;commit:string;value:unknown}[];
   handoff:WorkflowHandoff;unavailable?:(unitId:string)=>void;reject?:(unitId:string,reason:string)=>void;
+  selectedDelivery?:WorkflowDeliveryReceipt;
 },download:typeof downloadWorkflowArtifact) {
   const {context,delivery,units,versions,releasePlease,reader,pages,source,root,controllerDirectory,token,history,handoff}=options;
   const {cycle}=context,requests=cycle.dispatches.filter(dispatch=>dispatch.purpose==='build');
@@ -1123,7 +1140,8 @@ async function prepareWorkflowPublication(options:{
     return {status:'WAIT' as const,reason:'BUILD_BINDING_REQUIRED',publishInvoked:false as const};
   const request=requests[0]!;
   const hasFrozen=units.some(unit=>unit.githubDelivery);
-  const latest=units.some(unit=>!unit.githubDelivery)?await readWorkflowBuild(context,request,reader).catch(error=>{
+  const selected=options.selectedDelivery;
+  const latest=units.some(unit=>!unit.githubDelivery)?await readWorkflowBuild(context,request,reader,selected?.buildAttempt??selected?.attempt).catch(error=>{
     if(!hasFrozen||!isWorkflowDeliveryUnavailable(error))throw error;
     return null;
   }):null;
@@ -1153,13 +1171,15 @@ async function prepareWorkflowPublication(options:{
     const directory=join(root,unit.id);
     let nativeReceipt:WorkflowDeliveryReceipt;
     try {
-      const frozen=target.githubDelivery,jobName='delivery/'+unit.id;
-      const run=frozen?await readWorkflowBuild(context,request,reader,frozen.buildAttempt??frozen.attempt):latest;
+      const frozen=target.githubDelivery??selected,jobName='delivery/'+unit.id;
+      const run=target.githubDelivery
+        ?await readWorkflowBuild(context,request,reader,target.githubDelivery.buildAttempt??target.githubDelivery.attempt):latest;
       if(!run||!successfulBuild(run))unavailable('original GitHub delivery build not ready: '+unit.id);
       nativeReceipt=await githubDeliveryArtifact({fullName:context.repository,repositoryId:context.repositoryId,sourceSha:cycle.sourceSha,
         runId:run.id,attempt:run.runAttempt},unit.id,jobName,pages,frozen?.attempt,
         workflowDeliveryBuildAttempt(context,request,reader,run,jobName,pages,Boolean(frozen)));
-      if(target.githubDelivery&&!sameWorkflowDelivery(nativeReceipt,target.githubDelivery))fail('workflow delivery receipt changed');
+      if(frozen&&!sameWorkflowDelivery(nativeReceipt,frozen)||selected&&!sameWorkflowDelivery(nativeReceipt,selected))
+        fail('workflow delivery receipt changed');
       await download({fullName:context.repository,artifactId:nativeReceipt.artifactId,digest:nativeReceipt.digest,directory,
         policyDirectory:controllerDirectory,home:join(root,'download-'+unit.id)},token);
     } catch(error) {
@@ -1209,9 +1229,11 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
   gh: GhCommand = args => nativeGhCommand(args, token), io: EvidenceTransport = nativeEvidenceTransport(token),
   controllerIo:EvidenceTransport=nativeEvidenceTransport(undefined),download:ReleaseDownload=nativeReleaseDownload(token),
   history:{path:string;commit:string;value:unknown}[]=[],unitIds?:ReadonlySet<string>,
-  workflowDownload=downloadWorkflowArtifact,unavailable?:(unitId:string)=>void,reject?:(unitId:string,reason:string)=>void,officialBody?:string) {
+  workflowDownload=downloadWorkflowArtifact,unavailable?:(unitId:string)=>void,reject?:(unitId:string,reason:string)=>void,officialBody?:string,
+  selectedDelivery?:WorkflowDeliveryReceipt) {
   const { cycle } = context, reader = new NativeEvidenceReader(io, context.repository);
   const units=githubUnits(cycle).filter(unit=>!unitIds||unitIds.has(unit.id));
+  if(selectedDelivery&&(!cycle.officialRelease||units.length!==1))fail('official workflow delivery selection');
   if(unitIds&&units.length!==unitIds.size)fail('unknown publication unit');
   const original=await readCycleDelivery(context,history,io);
   if(original.legacy) {
@@ -1300,6 +1322,7 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
       },
       root,controllerDirectory,token,history,handoff:original.handoff!,
       ...(officialBody===undefined?{}:{officialBody}),
+      ...(selectedDelivery?{selectedDelivery}:{}),
       ...(unavailable?{unavailable}:{}),...(reject?{reject}:{})},workflowDownload);
   }
   if (conditional && !reviewedIdentity) fail('frozen candidate identity required');

@@ -298,7 +298,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   main(stage).catch(error => {
     const message = error?.message;
     const allowed = /^(OFFICIAL_CANDIDATE|RELEASE|CONTENT)_[A-Z_0-9]+$/.test(message) ||
-      ['WAIT_AUTH', 'WAIT_QUOTA', 'RESPONSE_UNKNOWN'].includes(message);
+      ['WAIT_AUTH', 'WAIT_QUOTA', 'RESPONSE_UNKNOWN', 'BOUNDED_NOT_CONNECTED', 'BOUNDED_ENTRY_SOURCE',
+        'BOUNDED_MODE', 'BOUNDED_RUN_SOURCE', 'BOUNDED_ENTRY_DISABLED'].includes(message);
     const status = Number.isSafeInteger(error?.status) && error.status >= 400 && error.status <= 599
       ? ' status=' + error.status : '';
     console.error((allowed ? message : 'OFFICIAL_CANDIDATE_STOPPED') +

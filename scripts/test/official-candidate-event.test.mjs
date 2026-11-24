@@ -17,7 +17,7 @@ const product = { id: 17, name: 'splrad/fixture', defaultBranch: 'main' }, autho
 const versionHeader = '## [1.1.0](https://github.com/splrad/fixture/compare/v1.0.0...v1.1.0)';
 const upstreamBody = '请审阅本版。\n---\n\n' + versionHeader + '\n\n### 新增功能\n\n* 支持新版\n\n---\n产品文件差异。';
 const template = await readFile(new URL('../../templates/repository/.github/release-template.md.mustache', import.meta.url), 'utf8');
-const settings = { 'separate-pull-requests': true, 'include-component-in-tag': false,
+const settings = { 'separate-pull-requests': true, 'include-component-in-tag': false, 'tag-separator': '/',
   packages: { '.': { 'release-type': 'simple', 'version-file': 'VERSION', draft: true, 'force-tag-creation': true } } };
 const pr = { number: 29, user: { id: authorId }, head: { repo: { id: product.id }, sha: head,
   ref: 'release-please--branches--main' }, base: { repo: { id: product.id }, ref: product.defaultBranch },
