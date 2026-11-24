@@ -54,7 +54,7 @@ async function submitFixture(){
 }
 describe('submit artifact to durable PR/index integration',()=>{
  it('registers native submit evidence then preserves index time/budget on duplicate submit',async()=>{const f=await submitFixture();await registerWingetRun(f.env,'workflow_run',f.payload,f.g,async()=>f.pull);let r=(await f.store.read())!;expect(r.identity.upstreamPR).toEqual({number:33,nodeId:'PR_33'});expect(r.t0).toBe(Date.parse(f.pull.created_at));await f.engine.wake();f.setOutcome({kind:'pending'});await f.engine.wake();r=(await f.store.read())!;expect(r.identity.stage).toBe('winget-index');expect(r.t0).toBe(Date.parse(f.pull.merged_at));const original=structuredClone(r);await registerWingetRun(f.env,'workflow_run',f.payload,f.g,async()=>f.pull);expect(await f.store.read()).toEqual(original);});
- it.each(['missing','other repository','duplicate repository','duplicate adapter','wrong unit'] as const)('rejects %s in the cycle controller registry before registration',async kind=>{
+ it.each(['missing','other repository','duplicate repository','duplicate adapter','ambiguous location','wrong location','wrong unit'] as const)('rejects %s in the cycle controller registry before registration',async kind=>{
    const f=await submitFixture(),product=f.registry.find(row=>row.id===1187527897)!;
    const adapter=product.externalAdapters.find(row=>row.channelId==='winget')!;
    switch(kind){
@@ -62,10 +62,19 @@ describe('submit artifact to durable PR/index integration',()=>{
      case 'other repository': product.id=1234;break;
      case 'duplicate repository': f.registry.push({...structuredClone(product),id:1234,name:'splrad/another'});break;
      case 'duplicate adapter': product.externalAdapters.push({...adapter});break;
+     case 'ambiguous location': product.externalAdapters.push({...adapter,location:'Other.Package'});break;
+     case 'wrong location': adapter.location='Other.Package';break;
      case 'wrong unit': adapter.unitId='another';break;
    }
    await expect(registerWingetRun(f.env,'workflow_run',f.payload,f.g,async()=>f.pull)).rejects.toThrow('CHANNEL_WINGET_REGISTRATION');
    expect(await f.store.read()).toBeNull();
+ });
+ it('allows independently registered WinGet packages for other repositories and units',async()=>{
+   const f=await submitFixture(),product=f.registry.find(row=>row.id===1187527897)!;
+   product.externalAdapters.push({unitId:'other',channelId:'winget',location:'Other.Unit'});
+   f.registry.push({...product,id:1234,name:'splrad/another',externalAdapters:[{unitId:'layerscape',channelId:'winget',location:'Other.Product'}]});
+   await registerWingetRun(f.env,'workflow_run',f.payload,f.g,async()=>f.pull);
+   expect((await f.store.read())?.identity.upstreamPR?.number).toBe(f.pull.number);
  });
  it('observes and deduplicates an admitted cycle using its frozen identity',async()=>{
    const f=await submitFixture();
