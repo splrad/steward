@@ -5,11 +5,13 @@ import {readFileSync} from 'node:fs';
 import YAML from 'yaml';
 import {validatePlan,boundedClient,digest,executePlan} from '../../../scripts/business-flow-acceptance.mjs';
 const sha='a'.repeat(40),env={GITHUB_REPOSITORY:'splrad/steward',GITHUB_REPOSITORY_ID:'1296724484',GITHUB_REF:'refs/heads/main',GITHUB_EVENT_NAME:'workflow_dispatch',GITHUB_RUN_ATTEMPT:'1',GITHUB_WORKFLOW_REF:'splrad/steward/.github/workflows/business-flow-acceptance.yml@refs/heads/main',GITHUB_SHA:sha,WORKFLOW_SHA:sha};
-const plan={schemaVersion:1,kind:'release',controllerSha:sha,maxRequests:1,repository:{id:1,full_name:'test/product',private:true,default_branch:'main'},baseSha:sha,stateSha:sha};
+const plan={schemaVersion:1,kind:'quality',controllerSha:sha,maxRequests:1,
+  repository:{id:1,full_name:'test/product',private:true,default_branch:'main'},baseSha:sha,stateSha:sha,
+  pr:1,head:sha,sources:[{kind:'review',id:2,login:'quality'}],sourceSetDigest:'a'.repeat(64),governanceAppId:2,configVersion:'v1'};
 test('manual dispatch exposes only active consumers and selects their environments',()=>{
   const workflow=YAML.parse(readFileSync('.github/workflows/business-flow-acceptance.yml','utf8'));
-  assert.deepEqual(workflow.on.workflow_dispatch.inputs.consumer.options,['quality','release','quality-initialize']);
-  assert.equal(workflow.jobs.acceptance.environment.name,"${{ inputs.consumer == 'release' && 'steward-release' || 'steward-release-notes' }}");
+  assert.deepEqual(workflow.on.workflow_dispatch.inputs.consumer.options,['quality','quality-initialize']);
+  assert.equal(workflow.jobs.acceptance.environment.name,'steward-release-notes');
 });
 test('requires exact approved bytes and native main first-attempt provenance',()=>{
   const raw=JSON.stringify(plan);assert.equal(validatePlan(raw,digest(raw),env).maxRequests,1);
@@ -48,62 +50,6 @@ test('changed PR or store snapshot stops the actual acceptance entry before cach
   movedPr=true;await assert.rejects(executePlan(p,{root:'.',controllerDirectory:process.cwd(),app,modelToken:''}),/HEAD_CHANGED/);assert.equal(opened,0);
   movedPr=false;movedState=true;await assert.rejects(executePlan(p,{root:'.',controllerDirectory:process.cwd(),app,modelToken:''}),/STATE_CHANGED/);assert.equal(opened,1);assert.equal(saves,0);
   vi.doUnmock('../../../scripts/quality-language-summary.mjs');
-});
-
-test('native candidate rejects a changed actual initial Git snapshot before business writes',async()=>{
-  const {mkdtemp,mkdir,writeFile,rm}=await import('node:fs/promises'),{tmpdir}=await import('node:os'),{join}=await import('node:path');
-  const {execFile}=await import('node:child_process'),{promisify}=await import('node:util');
-  const {isolatedBuildEnvironment}=await import('../src/build-environment.js');
-  const {registerOfflineFixtureRoot}=await import('./offline-fixtures.js');
-  const root=await mkdtemp(join(tmpdir(),'candidate-state-pin-'));registerOfflineFixtureRoot(root);
-  try{
-    const remote=join(root,'remote'),directory=join(root,'read');await mkdir(remote);await mkdir(directory);
-    const env=isolatedBuildEnvironment(process.env,root),git=async(cwd,...args)=>(await promisify(execFile)('git',args,{cwd,env,encoding:'utf8',windowsHide:true})).stdout.trim();
-    await git(remote,'init','--initial-branch=main');await git(remote,'config','user.name','Fixture');await git(remote,'config','user.email','fixture@example.invalid');
-    await writeFile(join(remote,'release-please-config.json'),JSON.stringify({'separate-pull-requests':false}));
-    await git(remote,'add','.');await git(remote,'commit','-m','default branch');const source=await git(remote,'rev-parse','HEAD');
-    await git(remote,'switch','--orphan','steward/release-state');
-    await writeFile(join(remote,'state.json'),JSON.stringify({schemaVersion:3,repositoryId:1,defaultBranch:'main',revision:0,releaseAdoption:{sourceSha:sha,prNumber:1},lastObservedDefaultSha:sha,lastCompletedCycleId:null,activeCycleId:null,candidate:null,nextCheckAt:null,lastProgressAt:null,lastErrorCode:null})+'\n');
-    await git(remote,'add','.');await git(remote,'commit','-m','fixture');const actual=await git(remote,'rev-parse','HEAD');await git(directory,'init');
-    const {nativeReleaseCandidate}=await import('../../../scripts/release-candidate.mjs');let requests=0;
-    const fetcher=async(input:unknown)=>{
-      requests++;
-      return Response.json({object:{sha:String(input).endsWith('/main')?source:actual,type:'commit'}});
-    };
-    const request={directory,writeDirectory:join(root,'writes'),remote,repository:'test/product',repositoryId:1,defaultBranch:'main'};
-    await assert.rejects(nativeReleaseCandidate(request,{token:'write',readToken:'read',controllerSha:sha,expectedStateSha:'b'.repeat(40),fetcher,temporaryRoot:root}),/CANDIDATE_STATE_CHANGED/);
-    assert.equal(requests,2);assert.equal(await git(remote,'rev-parse','HEAD'),actual);
-  }finally{await rm(root,{recursive:true,force:true});}
-},120000);
-
-test('manual acceptance passes organization release candidates through the central choice',async()=>{
-  const target={...plan.repository,full_name:'splrad/product'};
-  let nativeReads=0;
-  vi.doMock('../../../scripts/quality-language-summary.mjs',()=>({qualityNativeIO:fullName=>({get:async path=>({
-    value:path.includes('/git/ref/')?{object:{sha}}:{...target,full_name:fullName,archived:false,disabled:false}
-  })})}));
-  vi.doMock('../../../scripts/release-coordinator.mjs',()=>({fetchState:async()=>({snapshot:{head:sha}})}));
-  vi.doMock('../../../scripts/release-candidate.mjs',()=>({nativeReleaseCandidate:async(_request,{checkRepositoryPolicy})=>{
-    await checkRepositoryPolicy?.(async()=>assert.fail('Disabled choice read native declarations'));
-    return {status:'READY'};
-  }}));
-  vi.doMock('../../../scripts/repository-policy-read.mjs',()=>({mergedRepositoryPolicy:async(_app,repo)=>{
-    assert.deepEqual(repo,target);
-    nativeReads++;
-    return {adoption:'central',policy:{release:null}};
-  }}));
-  const app={forCandidateRepository:async(_id,callback)=>callback('fixture-write','fixture-read')};
-  const options={root:'.',controllerDirectory:process.cwd(),app,modelToken:''};
-  try {
-    await assert.rejects(executePlan({...plan,repository:target},options),/CANDIDATE_REPOSITORY_POLICY_DISABLED/);
-    assert.deepEqual(await executePlan(plan,options),{kind:'release',calls:0,status:'READY'});
-    assert.equal(nativeReads,1);
-  } finally {
-    vi.doUnmock('../../../scripts/quality-language-summary.mjs');
-    vi.doUnmock('../../../scripts/release-coordinator.mjs');
-    vi.doUnmock('../../../scripts/release-candidate.mjs');
-    vi.doUnmock('../../../scripts/repository-policy-read.mjs');
-  }
 });
 
 test('rechecks approved base and full sources after generation before publishing a Check',async()=>{
@@ -152,25 +98,10 @@ test('controlled zero-call stop persists pending input and resumes once without 
   vi.doUnmock('../../../scripts/quality-language-summary.mjs');vi.doUnmock('../dist/index.js');
 });
 
-test('release local call limit preserves the first batch and stops before a second request intent',async()=>{
-  const {planContentBatches,resumeContentBatches}=await vi.importActual('../dist/index.js');
-  const input={schemaVersion:2,repositoryId:1,candidateId:digest('candidate'),baseSha:sha,controllerSha:sha,configDigest:digest('config'),sourceManifestDigest:digest('manifest'),
-    units:['app','second'].map(id=>({id,path:id,version:'1.0.0',tag:id+'/v1.0.0'})),boundaries:['app','second'].map(unitId=>({unitId,kind:'full-tree',sha:null,reference:null})),batches:[]};
-  const sources=input.units.map(({id})=>({id:digest(id),unitId:id,path:id+'/README.md',previousPath:null,status:'CURATED',oid:sha,mode:'100644',byteLength:6,encoding:'utf8',sha256:digest('示例'),start:0,end:6,text:'示例',stage:'CONTEXT'}));
-  const work=await planContentBatches(input,sources),cache={};let calls=0,preflights=0,persisted;
-  const client=boundedClient({preflight:async()=>{preflights++;return 'READY';},call:async text=>{calls++;const p=JSON.parse(text);return {model:'fake',usage:null,text:JSON.stringify({paragraphs:[{sourceIds:[p.sources[0].id],section:'changes',textZh:'增加使用说明。',qualification:'SOURCE_CONFIRMED'}]})};}},1);
-  await assert.rejects(resumeContentBatches(work,cache,{...client,now:()=>new Date().toISOString(),editing:async()=>false,save:async(w,c)=>{persisted=JSON.parse(JSON.stringify({work:w,cache:c}));}}),/ACCEPTANCE_CALL_LIMIT/);
-  assert.equal(calls,1);assert.equal(preflights,1);
-  assert.equal(persisted.work.input.batches[0].status,'READY');assert.equal(persisted.work.input.batches[0].attempts[0].status,'RETURNED');
-  assert.equal(persisted.work.input.batches[1].status,'PENDING');assert.deepEqual(persisted.work.input.batches[1].attempts,[]);
-  assert.deepEqual(work.input.batches[1].attempts,[]);assert.equal(Object.values(persisted.cache).filter(e=>e.result).length,1);
-});
-
-test('manual acceptance rejects a retired private target and recovery grants',()=>{
-  const grant=Object.fromEntries(['candidateId','batchId','previousAttemptSha256','authorizationId','outputContractSha256'].map(k=>[k,'a'.repeat(64)]));
-  const recovery={...plan,repository:{id:1448797077,full_name:'splrad/steward-e10-lifecycle-20261107',private:true,default_branch:'main'},releaseRecovery:grant};
+test('manual acceptance rejects the retired release consumer and private target',()=>{
   const check=p=>{const raw=JSON.stringify(p);return validatePlan(raw,digest(raw),env);};
-  assert.throws(()=>check(recovery),/RELEASE_RECOVERY_RETIRED/);
-  assert.throws(()=>check({...recovery,releaseRecovery:undefined}),/RETIRED_REPOSITORY/);
-  for(const change of [{maxRequests:0},{repository:plan.repository},{repository:{...recovery.repository,private:false}},{releaseRecovery:{...grant,extra:true}},{releaseRecovery:{...grant,batchId:'invalid'}}])assert.throws(()=>check({...recovery,...change}),/RELEASE_RECOVERY_RETIRED/);
+  assert.throws(()=>check({...plan,kind:'release'}),/ACCEPTANCE_MODE/);
+  assert.throws(()=>check({...plan,releaseRecovery:{}}),/RELEASE_RECOVERY_RETIRED/);
+  const retired={id:1448797077,full_name:'splrad/steward-e10-lifecycle-20261107',private:true,default_branch:'main'};
+  assert.throws(()=>check({...plan,repository:retired}),/RETIRED_REPOSITORY/);
 });

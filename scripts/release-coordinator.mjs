@@ -56,13 +56,19 @@ export async function releaseParticipation(repository,io,{includeUnits=false,req
         &&!(x.type==='blob'&&x.mode==='100644'&&/^maintenance\/[1-9][0-9]*\.json$/.test(x.path)));
   }
   let status='APPLICABLE',absenceFacts=null,units;
+  const candidateBranch='release-please--branches--'+repository.default_branch;
+  const readCandidate=async()=>{
+    const refs=await read('git/matching-refs/heads/'+encodeURIComponent(candidateBranch));
+    if(!validMatchingRefs(refs,candidateBranch))throw Error('RELEASE_PARTICIPATION_IDENTITY');
+    return refs.find(item=>item.ref==='refs/heads/'+candidateBranch)??null;
+  };
   if(files.every(x=>x.length===0)&&!obligation) {
-    const candidates=await read('git/matching-refs/heads/steward/release-candidate');
+    const candidate=await readCandidate();
     const builds=await read('git/matching-refs/heads/steward/build/');
     const releases=await read('releases?per_page=1');
-    if(!Array.isArray(candidates)||!Array.isArray(builds)||!Array.isArray(releases))throw Error('RELEASE_PARTICIPATION_INCOMPLETE');
-    if(candidates.length||builds.length||releases.length)throw Error('RELEASE_CONFIGURATION_REQUIRED');
-    absenceFacts=[candidates,builds,releases];
+    if(!Array.isArray(builds)||!Array.isArray(releases))throw Error('RELEASE_PARTICIPATION_INCOMPLETE');
+    if(candidate||builds.length||releases.length)throw Error('RELEASE_CONFIGURATION_REQUIRED');
+    absenceFacts=[candidate,builds,releases];
     status='NOT_APPLICABLE';
   } else {
     if(files.some(x=>x.length!==1||x[0].type!=='blob'||x[0].mode!=='100644'))throw Error('RELEASE_CONFIGURATION_REQUIRED');
@@ -99,7 +105,7 @@ export async function releaseParticipation(repository,io,{includeUnits=false,req
     }
   }
   if(absenceFacts) {
-    const after=[await read('git/matching-refs/heads/steward/release-candidate'),await read('git/matching-refs/heads/steward/build/'),await read('releases?per_page=1')];
+    const after=[await readCandidate(),await read('git/matching-refs/heads/steward/build/'),await read('releases?per_page=1')];
     if(JSON.stringify(after)!==JSON.stringify(absenceFacts))throw Error('RELEASE_PARTICIPATION_CHANGED');
   }
   const after=await readDefaultRef();

@@ -66,15 +66,18 @@ it.each(['missing-archive','missing-pair','path','facts','protection','pin','wor
   const before=JSON.stringify(f.work);await expect(restoreContentRecovery(f.work,f.cache,f.grant,f.io)).rejects.toThrow('CONTENT_RECOVERY_ARCHIVE');expect(JSON.stringify(f.work)).toBe(before);
 });
 it('bounds public failure diagnostics to machine codes',()=>{
-  expect(acceptanceErrorCode(Error('CONTENT_RECOVERY_BINDING'))).toBe('CONTENT_RECOVERY_BINDING');
-  expect(acceptanceErrorCode(Error('CONTENT_INTERNAL_TOKEN'))).toBe('BUSINESS_ACCEPTANCE_STOPPED');
+  expect(acceptanceErrorCode(Error('ACCEPTANCE_SOURCE_CHANGED'))).toBe('ACCEPTANCE_SOURCE_CHANGED');
+  expect(acceptanceErrorCode(Error('CONTENT_RECOVERY_BINDING'))).toBe('BUSINESS_ACCEPTANCE_STOPPED');
   expect(acceptanceErrorCode(Error('secret text'))).toBe('BUSINESS_ACCEPTANCE_STOPPED');
-  expect(acceptanceErrorCode(Error('CONTENT_RECOVERY_BINDING\nprivate'))).toBe('BUSINESS_ACCEPTANCE_STOPPED');
+  expect(acceptanceErrorCode(Error('ACCEPTANCE_SOURCE_CHANGED\nprivate'))).toBe('BUSINESS_ACCEPTANCE_STOPPED');
 });
-it('rejects archived recovery grants at the retired manual entry',async()=>{
+it('rejects archived recovery grants at business acceptance',async()=>{
   const {grant}=await fixture(),controllerSha='c'.repeat(40),plan={schemaVersion:1,kind:'release',controllerSha,maxRequests:1,repository:{id:1448797077,full_name:'splrad/steward-e10-lifecycle-20261107',private:true,default_branch:'main'},baseSha:'a'.repeat(40),stateSha:'d'.repeat(40),releaseRecovery:grant};
   const env={GITHUB_REPOSITORY:'splrad/steward',GITHUB_REPOSITORY_ID:'1296724484',GITHUB_REF:'refs/heads/main',GITHUB_EVENT_NAME:'workflow_dispatch',GITHUB_RUN_ATTEMPT:'1',GITHUB_WORKFLOW_REF:'splrad/steward/.github/workflows/business-flow-acceptance.yml@refs/heads/main',GITHUB_SHA:controllerSha,WORKFLOW_SHA:controllerSha};
-  const check=()=>{const raw=JSON.stringify(plan);return validatePlan(raw,digest(raw),env);};expect(check).toThrow('ACCEPTANCE_RELEASE_RECOVERY_RETIRED');
+  const check=value=>{const raw=JSON.stringify(value);return validatePlan(raw,digest(raw),env);};
+  expect(()=>check(plan)).toThrow('ACCEPTANCE_MODE');
+  const quality={...plan,kind:'quality',pr:1,head:'e'.repeat(40),sources:[{id:1}],sourceSetDigest:hash('sources'),governanceAppId:5639432,configVersion:'fixture'};
+  expect(()=>check(quality)).toThrow('ACCEPTANCE_RELEASE_RECOVERY_RETIRED');
 });
 it('rejects an archived recovery receipt with only one locator',async()=>{
   const {attempt,grant}=await fixture();

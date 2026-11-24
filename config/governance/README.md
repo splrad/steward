@@ -2,23 +2,25 @@
 
 `node scripts/prepare-governance.mjs native-snapshot.json native-drafts.json` 从原生回读生成 Ruleset 请求正文。脚本仅在本地生成新文件，拒绝覆盖已有输出。它用于部署准备，不参与产品运行。
 
-输入包含基础组织 Ruleset `base`（ID `18883080`）、例外团队 `team`、完整成员列表 `members`、独立治理 App `governanceApp` 及其组织安装 `installation`、成功的 `SPLRAD Validation` 检查 `validationCheck`、已审提交 `policySha`。团队和治理 App 的 ID 必须来自实际对象；测试中的 ID 只用于夹具。`legacyCandidates` 可列出已发现的旧候选分支，每项提供准确 `repositoryId` 和 `branch`。
+输入包含基础组织 Ruleset `base`（ID `18883080`）、例外团队 `team`、完整成员列表 `members`、独立治理 App `governanceApp` 及其组织安装 `installation`、成功的 `SPLRAD Validation` 检查 `validationCheck`、已审提交 `policySha`。团队和治理 App 的 ID 必须来自实际对象；测试中的 ID 只用于夹具。`legacyCandidates` 可列出仍需按仓保护的旧候选分支，每项提供准确 `repositoryId` 和 `branch`。已退役的 `steward/release-candidate` 不接受生成请求。
 
-输出分为基础规则、独立审批规则、五条运行时规则及按仓库限定的旧候选分支规则。基础规则保留无关限制、既有检查和其他 required workflow，清空旧批准者要求。独立规则 `SPLRAD 拉取请求审批` 仅给单成员团队 `stewardship` 提供 PR 范围的批准例外。
+输出包含基础规则、独立标题规则、独立审批规则、五条运行时规则及按仓库限定的旧候选分支规则。基础规则保留 `SPLRAD Validation`、其他既有检查及 required workflow，清空旧批准者要求。`默认分支 PR 标题检查（Steward 除外）` 在其余仓的默认分支要求 `SPLRAD PR Title`。`SPLRAD 拉取请求审批` 仅给单成员团队 `stewardship` 提供 PR 范围的批准例外。
 
-五条运行时规则的显示名称为 `Steward 运行状态写入限制`、`Steward 治理状态写入限制`、`Steward 自动化分支创建限制`、`Steward 自动化分支完整性保护` 和 `Steward 构建分支不可变`。按相同的规则参数和允许身份合并分支范围。状态及治理写入者分别授权，候选分支允许正常快进，构建分支创建后保持不可变。
+五条运行时规则的显示名称为 `Steward 运行状态写入限制`、`Steward 治理状态写入限制`、`Steward 自动化分支创建限制`、`Steward 自动化分支完整性保护` 和 `Steward 构建分支不可变`。按相同的规则参数和允许身份合并分支范围。状态及治理写入者分别授权，受管同步分支允许正常快进，构建分支创建后保持不可变。Release Please 正式候选使用适用产品仓的准确分支规则，保留 GitHub 合并后自动删枝。
 
 `assertApprovalUnion` 校验完整有效 Ruleset 集合及旧 branch protection，识别会抵消例外的附加批准要求。调用者须先通过原生接口枚举全部适用规则；只有确认旧保护不存在的 404 才能传入 `null`，权限或网络错误必须保留为失败。该函数检查配置，真实合并操作者、失败检查、未解决线程和未归属变更的效果另以原生 PR 验证。
 
-部署时先保存当前规则恢复点，再核对受信验证和标题入口在准确 PR/head 上的结果。新验证生效后才逐项移除被其替代的旧 Gate；脚本保留旧检查，不自动决定切换时机。请求正文使用原生 `sha` 固定 required workflow 来源。具体字段参考 [GitHub 组织 Rulesets API](https://docs.github.com/en/rest/orgs/rules)。
+部署时先保存当前规则恢复点，再核对受信验证和标题入口在准确 PR/head 上的结果。先启用独立标题规则并读回其生效范围，再从基础规则移除标题检查。脚本生成请求正文，执行顺序由维护者控制。请求正文使用原生 `sha` 固定 required workflow 来源。具体字段参考 [GitHub 组织 Rulesets API](https://docs.github.com/en/rest/orgs/rules)。
+
+组织所需 Native Validation 对 `.github/workflows/pr-title.yml` 的改动、移除和重命名执行既有配置授权。Copier 递送 PR 由管理员或已授权的委托人审核实际 head，并通过现有配置审核入口确认。GitHub 状态规则按检查名和 App 匹配，配置授权由已固定来源的 Native Validation 执行。
 
 ## Actions 事件策略采用
 
 Actions 事件策略通过 GitHub 设置页或官方 REST 在采用阶段配置并读回。设置同步只运行 safe-settings 支持的设置；事件策略不由定时 settings-sync 读取或修复。
 
-`tools/settings-sync/actions-policies.mjs` 保留为部署准备辅助模块：`readActionsPolicies` 完整读取组织、仓库及继承策略，403 或未知响应保持失败；`reconcileActionsPolicies` 只处理明确登记 ID、作用范围和预期旧值的一次性变更。调用者在 E10 的具体授权范围内使用官方 Octokit request 适配器，先预览，再采用并核验读回。该模块没有定时入口，不自动创建策略。`config/governance/actions-policies.json` 当前未登记任何策略 ID，不能据此认定生产策略为空或已经采用。
+`tools/settings-sync/actions-policies.mjs` 保留为部署准备辅助模块。`readActionsPolicies` 完整读取组织、仓库及继承策略，403 或未知响应保持失败。`reconcileActionsPolicies` 只处理明确登记 ID、作用范围和预期旧值的一次性变更，支持准确标题路径、公开仓准确贴标路径，以及保留全部专用路径排除项的通用事件。调用者在 E10 的具体授权范围内使用官方 Octokit request 适配器，先预览，再采用并核验读回。该模块没有定时入口。`config/governance/actions-policies.json` 当前未登记任何策略 ID。
 
-新标题入口采用前，先保存准确对象的完整原生快照，核对全部继承策略和实际拒绝来源。按现行规范使用组织 `repository_name.include=["~ALL"]` 覆盖当前与未来仓库；标题许可仅匹配 `.github/workflows/pr-title.yml`。其他工作流保留所需事件并排除 `pull_request_target`，不得用新增宽松策略抵消未知的继承限制。扩大到未来仓库或初次创建策略使用已审原生请求；现有按仓库 ID 登记的辅助模块不转换这类作用范围。
+新入口采用前，先保存完整原生快照，核对全部继承策略和实际拒绝来源。标题策略仅匹配 `.github/workflows/pr-title.yml`，采用后使用 `pull_request`。公开仓贴标策略按系统属性 `visibility=public` 和准确的 `.github/workflows/pr-labeler.yml` 覆盖当前与未来采用仓。Steward 的 `merge_group` 许可限定在原生验证及 Product CI 两条工作流。通用策略应排除需要专属事件的相同路径，并为原有非 Steward 路径保留原许可。作用范围变更使用已审原生请求。
 
 写响应未知时先 GET 准确策略，保留无关字段及后来修改，再决定后续操作。真实验收包含标题 edited/fork、其他路径拒绝，以及维护、发布和恢复所需事件；本地请求测试不替代原生事件验收。接口参见 [GitHub Actions policies](https://docs.github.com/en/rest/actions/policies)。
 

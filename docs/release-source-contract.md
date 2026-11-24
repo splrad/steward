@@ -4,7 +4,7 @@
 
 ## 候选与准确构建来源
 
-[候选入口](../scripts/release-candidate.mjs)使用 Release Please 的版本与候选结果，并接入内容收集、分批生成和人工稿保护。候选合并后读取原 PR、合并提交 S 和已审 head H，比较完整 Git 树，核对冻结作者集合及原生版本，再通过既有 Git 快进事务登记周期和 activeCycleId。构建及标签绑定准确 S，中央执行来源另存 controller SHA；不以运行时默认分支最新提交替代。
+[官方候选入口](../scripts/official-candidate-event.mjs)验证受审的产品来源，由固定版本的 Release Please Action 创建和刷新候选。Steward 核对 Action 回执并排版首页，保留人工稿和正式版本区段。候选合并后，中央验证原 PR、已审 head H、准确合并提交 S 与冻结正文，登记原生发行周期。构建及标签绑定 S，中央执行来源另存 controller SHA。
 
 公开产品按 S 中经审查的工作流交件。中央保存在受保护 Git 状态中的回执包含实际 Run/attempt、artifact ID 和摘要，并从这一制品冻结、发布和恢复原文件。构建身份不取得中央发布权限。历史完整冻结包继续按原有 producer 映射和证明核验。参见[产品工作流合同](product-build.md)和[发布管线](../packages/runner/src/release-pipeline.ts)。
 
@@ -38,6 +38,14 @@ GitHub Release的外层展示标题与正文标题、单位notes标题分别处�
 主发行与渠道分开判定。准确S对应的公开immutable GitHub Release及必需资产、来源、摘要和实际下载验证构成主发行结果；渠道根据已配置的发行单位、准确Release ID和manifest摘要分别派发及观察。渠道等待不改写已确认的主发行结果，未验证渠道不记为通过。
 
 当前交付主线为GitHub Release。已有GHCR/WinGet实现保留，实际分发另行完成对应产品接入与验收。无当前发布消费者的npm、NuGet、PyPI、Helm、cargo和Maven发布保持未启用，不因构建工具或资产格式存在而自动启用上传。根 `package.json` 的 `private: true` 包用于构建依赖；GitHub Release上的wheel/sdist资产不表示已向PyPI发布。
+
+## 逐仓发行暂停
+
+管理员通过私有设置仓 `splrad/steward-settings` 的受保护 `main` 提交审核变更，更新根目录 `release-pauses.json`。文件为不重复的正整数 GitHub 仓库 ID 数组。添加 ID 暂停该仓，移除 ID 恢复，`[]` 表示没有暂停仓库。Steward 使用仅限设置仓的只读令牌核对当前受保护提交及文件 Git blob。文件缺失、格式错误或读取中提交变化会停止领取发行写入任务。
+
+暂停拦截官方候选的令牌签发、Action 写入、首页写入和新合并周期登记。已写入状态分支的准确发行周期按原回执继续构建、发布、采集渠道观察与完成证据及恢复。同一运行中已获准开始的 Action 及其结果落盘可完成。要确认排空，核对进行中的候选运行及已登记周期。暂停解除后，原控制器和来源仍符合准入条件时可重跑原运行的失败步骤。如果候选已有投递预约且缺少 Action 结果，只有原运行各次尝试均证明 Action 步骤未执行时才允许续用该预约。
+
+迁移时先从旧设置的有效快照核对全部暂停 ID，再合入名单。旧读者仍运行期间同步两处暂停状态，或冻结旧入口编辑并在切换时复核最后一次快照。新读者采用后验证该仓暂停、恢复及其他仓隔离，再退役旧配置。
 
 ## 有限恢复与历史记录
 

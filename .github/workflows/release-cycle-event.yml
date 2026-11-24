@@ -16,7 +16,7 @@ permissions:
   contents: read
   actions: read
 concurrency:
-  group: ${{ contains(fromJSON('["candidate-head","candidate-status"]'), fromJSON(inputs.event_json).kind) && format('steward-candidate-homepage-{0}-{1}', fromJSON(inputs.event_json).repositoryId, fromJSON(inputs.event_json).prNumber) || 'steward-release-coordinator' }}
+  group: steward-release-coordinator
   cancel-in-progress: false
   queue: max
 jobs:
@@ -30,7 +30,6 @@ jobs:
     permissions:
       contents: read
       actions: read
-      copilot-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -49,10 +48,45 @@ jobs:
       - name: Install locked controller dependencies
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
-          npm ci --prefix tools/quality-language --ignore-scripts --no-audit --no-fund
           uv sync --project tools/template --frozen --only-group release-inspection --no-build
-      - name: Verify the original product Run and freeze its delivery
-        if: ${{ fromJSON(inputs.event_json).kind == 'run' && (vars.STEWARD_OFFICIAL_RELEASE == 'true' || (vars.STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID != '' && format('{0}', fromJSON(inputs.event_json).repositoryId) == vars.STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID)) }}
+      - name: Select the original product Run, attempt and artifact
+        if: ${{ fromJSON(inputs.event_json).kind == 'run' && vars.STEWARD_OFFICIAL_RELEASE == 'true' }}
+        id: official_delivery
+        env:
+          STEWARD_CENTRAL_TOKEN: ${{ github.token }}
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          STEWARD_CONTROLLER_SHA: ${{ github.workflow_sha }}
+          BOUNDED_MODE: cycle
+          BOUNDED_POLICY_SHA: ${{ inputs.policy_sha }}
+          BOUNDED_EVENT_JSON: ${{ inputs.event_json }}
+          BOUNDED_REQUEST_KEY: ${{ inputs.request_key }}
+          OFFICIAL_RELEASE_ENABLED: ${{ vars.STEWARD_OFFICIAL_RELEASE }}
+          OFFICIAL_RELEASE_PHASE: select
+        run: node scripts/release-cycle-event.mjs
+      - name: Issue the product Actions read token
+        if: ${{ steps.official_delivery.outputs.selected == 'true' }}
+        id: delivery_token
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc
+        with:
+          client-id: Iv23liuSr0qd4WLJdZhH
+          private-key: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          owner: ${{ steps.official_delivery.outputs.owner }}
+          repositories: ${{ steps.official_delivery.outputs.repo }}
+          permission-actions: read
+      - name: Download the exact product archive
+        if: ${{ steps.official_delivery.outputs.selected == 'true' }}
+        id: delivery_archive
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          repository: ${{ steps.official_delivery.outputs.repository }}
+          run-id: ${{ steps.official_delivery.outputs.run_id }}
+          artifact-ids: ${{ steps.official_delivery.outputs.artifact_id }}
+          github-token: ${{ steps.delivery_token.outputs.token }}
+          path: ${{ runner.temp }}/official-product-archive
+          skip-decompress: true
+          digest-mismatch: error
+      - name: Check the original product archive and freeze its delivery
+        if: ${{ steps.delivery_archive.outcome == 'success' }}
         id: official_plan
         env:
           STEWARD_CENTRAL_TOKEN: ${{ github.token }}
@@ -63,8 +97,8 @@ jobs:
           BOUNDED_EVENT_JSON: ${{ inputs.event_json }}
           BOUNDED_REQUEST_KEY: ${{ inputs.request_key }}
           OFFICIAL_RELEASE_ENABLED: ${{ vars.STEWARD_OFFICIAL_RELEASE }}
-          STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID: ${{ vars.STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID }}
           OFFICIAL_RELEASE_PHASE: prepare
+          OFFICIAL_RELEASE_ARCHIVE_DIR: ${{ steps.delivery_archive.outputs.download-path }}
         run: node scripts/release-cycle-event.mjs
       - name: Issue the product release installation token
         if: ${{ steps.official_plan.outputs.ready == 'true' }}
@@ -103,16 +137,15 @@ jobs:
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
           STEWARD_CONTROLLER_SHA: ${{ github.workflow_sha }}
           BOUNDED_MODE: cycle
-          STEWARD_COPILOT_TOKEN: ${{ github.token }}
           BOUNDED_POLICY_SHA: ${{ inputs.policy_sha }}
           BOUNDED_EVENT_JSON: ${{ inputs.event_json }}
           BOUNDED_REQUEST_KEY: ${{ inputs.request_key }}
           OFFICIAL_RELEASE_ENABLED: ${{ vars.STEWARD_OFFICIAL_RELEASE }}
-          STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID: ${{ vars.STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID }}
           OFFICIAL_RELEASE_TOKEN: ${{ steps.official_token.outputs.token }}
           OFFICIAL_RELEASE_ACTION_ID: ${{ steps.official_draft.outputs.id }}
           OFFICIAL_RELEASE_ACTION_TAG: ${{ steps.official_draft.outputs.tag_name }}
           OFFICIAL_RELEASE_ACTION_SHA: ${{ steps.official_draft.outputs.sha }}
+          OFFICIAL_RELEASE_ARCHIVE_DIR: ${{ steps.delivery_archive.outputs.download-path }}
         run: node scripts/release-cycle-event.mjs
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -120,6 +153,3 @@ jobs:
           path: result.json
           if-no-files-found: error
           retention-days: 90
-      - name: Report candidate preview failure
-        if: ${{ contains(fromJSON('["candidate-head","candidate-status"]'), fromJSON(inputs.event_json).kind) }}
-        run: node -e "if (require('./result.json').status === 'FAILED') process.exitCode = 1"

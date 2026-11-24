@@ -11,7 +11,8 @@ import { PullRequestBody as ActionPullRequestBody } from 'release-please-officia
 import { PullRequestBody } from 'release-please/build/src/util/pull-request-body.js';
 import { bodyDigest, officialMergeKey, officialNotes, renderOfficialHomepage, validateOfficialMergeEvent,
   renderOfficialPull, verifyOfficialMerge } from '../official-release-candidate.mjs';
-import { captureOfficialAction, finishOfficialPull, officialActionResult, officialCandidateRoute, prepareOfficialPush } from '../official-candidate-event.mjs';
+import { candidateEvent, captureOfficialAction, finishOfficialPull, officialActionResult, officialActionWasSkipped,
+  officialCandidateRoute, prepareOfficialPush } from '../official-candidate-event.mjs';
 
 const sourceSha = 'a'.repeat(40), head = 'b'.repeat(40), controllerSha = 'c'.repeat(40), previousSha = 'd'.repeat(40);
 const product = { id: 17, name: 'splrad/fixture', defaultBranch: 'main' }, authorId = 301115370;
@@ -37,29 +38,26 @@ const orgNotes = {
 const person = { id: 42, login: 'contributor', profileUrl: 'https://github.com/contributor',
   avatarUrl: 'https://avatars.githubusercontent.com/u/42?v=4', alt: 'contributor' };
 
-test('only the native product declaration selects a candidate writer while the official switch is off', async () => {
-  const push = { kind: 'push', repositoryId: product.id, sourceSha };
+test('requires the official switch and the native product declaration to select a candidate writer', async () => {
   const label = { repositoryId: product.id, prNumber: 29, eventId: 12 };
   const old = { 'separate-pull-requests': false };
-  assert.deepEqual(officialCandidateRoute(push, old, 'legacy'), { result: 'legacy_cycle_route' });
-  assert.deepEqual(officialCandidateRoute(label, old, 'central'), { route: 'legacy' });
-  assert.deepEqual(officialCandidateRoute(label, settings, 'central'), { result: 'official_candidate_adopted' });
-  assert.deepEqual(officialCandidateRoute(push, settings, 'central'), { result: 'official_candidate_disabled' });
-  assert.deepEqual(officialCandidateRoute(push, settings, 'central', 'false', '18'), { result: 'official_candidate_disabled' });
-  assert.deepEqual(officialCandidateRoute(push, settings, 'central', 'false', '17'), { route: 'official' });
-  assert.deepEqual(officialCandidateRoute(push, settings, 'central', 'true'), { route: 'official' });
+  assert.deepEqual(officialCandidateRoute(old, 'true'), { result: 'official_candidate_not_adopted' });
+  assert.throws(() => candidateEvent(label, 'a'.repeat(64)), /OFFICIAL_CANDIDATE_EVENT/);
+  assert.deepEqual(officialCandidateRoute(settings), { result: 'official_candidate_disabled' });
+  assert.deepEqual(officialCandidateRoute(settings, 'false'), { result: 'official_candidate_disabled' });
+  assert.deepEqual(officialCandidateRoute(settings, 'true'), { route: 'official' });
   const multi = { ...settings, packages: { ...settings.packages, tools: { 'release-type': 'simple' } } };
-  assert.throws(() => officialCandidateRoute(push, multi, 'central', 'true'), /ROOT_CONFIG/);
-  assert.deepEqual(officialCandidateRoute(push, multi, 'central', 'false'), { result: 'official_candidate_disabled' });
-  for (const [event, config] of [[push, settings], [push, old], [label, old]]) {
-    assert.deepEqual(officialCandidateRoute(event, config, 'paused', 'true', '17'), { result: 'paused' });
-  }
-  assert.throws(() => officialCandidateRoute(push, {}, 'legacy', 'false'), /ROUTE/);
+  assert.throws(() => officialCandidateRoute(multi, 'true'), /ROOT_CONFIG/);
+  assert.deepEqual(officialCandidateRoute(multi, 'false'), { result: 'official_candidate_disabled' });
+  assert.throws(() => officialCandidateRoute({}, 'false'), /ROUTE/);
 
   const workflow = YAML.parse(await readFile('.github/workflows/release-candidate-event.yml', 'utf8'));
   const steps = workflow.jobs.event.steps;
   assert.equal(steps.find(step => step.id === 'candidate-token').if, "steps.product.outputs.route == 'official'");
-  assert.equal(steps.find(step => step.run === 'node scripts/release-candidate-event.mjs').if, "steps.product.outputs.route == 'legacy'");
+  assert.equal(workflow.jobs.event.permissions['copilot-requests'], undefined);
+  const secretSteps = steps.filter(step => /secrets\./.test(JSON.stringify(step)));
+  assert.deepEqual(secretSteps.map(step => step.id), ['product', 'candidate-token', 'confirm-action-source', 'homepage']);
+  for (const step of secretSteps) assert.deepEqual(JSON.stringify(step).match(/secrets\.[A-Z_0-9]+/g), ['secrets.STEWARD_APP_PRIVATE_KEY']);
   assert.equal(steps.find(step => step.id === 'release-please').if, "steps.prepare.outputs.mode == 'action'");
 });
 
@@ -215,9 +213,34 @@ test('old open candidate can coexist while the official writer uses its own bran
   assert.deepEqual(await prepareOfficialPush({ ...options, restore: async () => true }), { mode: 'resume' });
   await assert.rejects(prepareOfficialPush({ ...options, restore: async name => name === 'before' }), /ACTION_RESULT_UNKNOWN/);
   assert.equal(branchChecks, 1);
-  open.push({ ...pr, number: 51, head: { ...pr.head, ref: pr.head.ref + '--components--tools' } });
+  open.pop();
+  const pausedReservation = { ...options, restore: async name => name === 'before' };
+  assert.deepEqual(await prepareOfficialPush({ ...pausedReservation, actionWasSkipped: async () => true }),
+    { mode: 'action', reservation: 'existing' });
+  assert.equal(fresh.reservation, 'new');
+  assert.equal(branchChecks, 2);
+  await assert.rejects(prepareOfficialPush({ ...pausedReservation, actionWasSkipped: async () => true,
+    checkBranch: async () => { throw Error('ROOT_BRANCH'); } }), /ROOT_BRANCH/);
+  open.push(pr, { ...pr, number: 51, head: { ...pr.head, ref: pr.head.ref + '--components--tools' } });
   await assert.rejects(prepareOfficialPush(options), /PR_IDENTITY/);
-  assert.equal(branchChecks, 1);
+  assert.equal(branchChecks, 2);
+});
+
+test('reuses a blocked reservation only when every prior attempt proves the official action never started', async () => {
+  const runId = 14;
+  const action = { name: 'Refresh the official candidate', status: 'completed', conclusion: 'skipped' };
+  const job = attempt => ({ name: 'event', run_id: runId, run_attempt: attempt, status: 'completed',
+    conclusion: 'failure', steps: [action] });
+  const success = async attempt => [job(attempt)];
+  assert.equal(await officialActionWasSkipped(success, runId, 3), true);
+  assert.equal(await officialActionWasSkipped(success, runId, 1), false);
+  for (const drift of [{ steps: [{ ...action, conclusion: 'success' }] }, { steps: [{ ...action, conclusion: 'failure' }] },
+    { steps: [{ ...action, conclusion: 'cancelled' }] }, { steps: [] }, { name: 'spoofed' }, { run_id: 1 },
+    { run_attempt: 1 }, { status: 'in_progress' },
+    { conclusion: 'skipped', steps: [{ ...action, conclusion: 'success' }] }]) {
+    const read = async attempt => [attempt === 1 ? job(attempt) : { ...job(attempt), ...drift }];
+    assert.equal(await officialActionWasSkipped(read, runId, 3), false);
+  }
 });
 
 test('a delayed refresh must still match the merged PR and current terminal labels', async () => {
@@ -248,7 +271,7 @@ test('a delayed refresh must still match the merged PR and current terminal labe
 test('only the action-produced head is rendered and retries protect human edits and stale heads', async () => {
   const output = JSON.stringify([{ number: pr.number, headBranchName: pr.head.ref, baseBranchName: 'main', body: upstreamBody }]);
   const before = { sourceSha, initial: [] };
-  let live = { ...pr }, writes = 0;
+  let live = { ...pr }, writes = 0, pauseChecks = 0, paused = true;
   const get = async path => {
     if (path === 'pulls/29') return live;
     if (path === 'git/commits/' + head) return { sha: head, parents: [{ sha: sourceSha }] };
@@ -262,7 +285,17 @@ test('only the action-produced head is rendered and retries protect human edits 
   assert.equal(checkpoint.upstreamDigest, bodyDigest(upstreamBody));
   const proposal = render();
   const options = { product, get, patch: async (_number, body) => { writes++; live = { ...live, body }; throw Error('response lost'); },
-    sourceSha, checkpoint, template, render: () => ({ body: proposal, templateDigest: bodyDigest(template), notes: officialNotes(proposal) }) };
+    sourceSha, checkpoint, template, render: () => ({ body: proposal, templateDigest: bodyDigest(template), notes: officialNotes(proposal) }),
+    admit: async () => {
+      pauseChecks++;
+      if (paused) throw Error('RELEASE_REPOSITORY_PAUSED');
+    } };
+  await assert.rejects(finishOfficialPull(options), /RELEASE_REPOSITORY_PAUSED/);
+  assert.equal(live.body, upstreamBody);
+  assert.equal(writes, 0);
+  await assert.rejects(finishOfficialPull(options), /RELEASE_REPOSITORY_PAUSED/);
+  assert.equal(writes, 0);
+  paused = false;
   assert.equal((await finishOfficialPull(options)).status, 'rendered');
   assert.equal((await finishOfficialPull(options)).status, 'body_retained');
   live.body = live.body.replace('检查安装', '核查正式版安装');
@@ -272,4 +305,5 @@ test('only the action-produced head is rendered and retries protect human edits 
   live.head = { ...live.head, sha: controllerSha };
   assert.equal((await finishOfficialPull(options)).status, 'superseded');
   assert.equal(writes, 1);
+  assert.equal(pauseChecks, 3);
 });

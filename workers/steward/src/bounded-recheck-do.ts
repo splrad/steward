@@ -3,9 +3,6 @@ import {WorkflowEvent} from './quality-event.js';
 import {ReleasePromotion} from './release-promotion.js';
 import {WingetSubmit} from './bounded-winget-submit.js';
 import {ReleaseRelay} from './release-cycle-relay.js';
-import {initialWake} from './bounded-initial-wake.js';
-import {NativeCandidateCoordinator} from './bounded-native-event.js';
-import { CandidateEventCoordinator } from './bounded-release-event.js';
 import {BoundedRecheck,type Store,type RecordState} from './bounded-recheck.js';
 import {FixedRecheckEffects} from './bounded-recheck-effects.js';
 import {type BoundedEnv,ensure} from './bounded-recheck-github.js';
@@ -24,10 +21,12 @@ export class DurableRecheckStore implements Store {
 /** Separate SQLite namespace; no shared ValidationCoordinator state or alarm slots. */
 export class BoundedRecheckCoordinator {
  private store:DurableRecheckStore; private engine:BoundedRecheck;
- constructor(private state:DurableObjectState,private env:BoundedEnv){this.store=new DurableRecheckStore(state.storage);this.engine=new BoundedRecheck(this.store,new FixedRecheckEffects(env),Date.now,env.BOUNDED_PRODUCT_SHA);}
+ constructor(private state:DurableObjectState,private env:BoundedEnv){
+  this.store=new DurableRecheckStore(state.storage);
+  this.engine=new BoundedRecheck(this.store,new FixedRecheckEffects(env),Date.now,env.BOUNDED_PRODUCT_SHA);
+ }
  async fetch(request:Request){
   ensure(request.method==='POST','INTERNAL_METHOD');const b=await request.json() as any;const action=new URL(request.url).pathname;
-  let value:unknown;
   if(action==='/pages-intake'){await new PagesRetry(this.state.storage,this.env).intake(b);return Response.json({accepted:true});}
   if(action==='/pages-receipt'){return Response.json({confirmed:await new PagesRetry(this.state.storage,this.env).receipt(b)});}
   if(action==='/pages-watch'){await new PagesRetry(this.state.storage,this.env).watch(b);return Response.json({accepted:true});}
@@ -49,28 +48,21 @@ export class BoundedRecheckCoordinator {
   if(action==='/winget-submit'){await new WingetSubmit(this.state.storage,this.env).register(b);return Response.json({accepted:true});}
   if(action==='/release-cycle-status')return Response.json(await this.state.storage.get('releaseCycle')??null);
   if(action==='/release-cycle'){await new ReleaseRelay(this.state.storage,this.env).register(b.hint??b,b.source);return Response.json({accepted:true});}
-  if(action==='/native-promoted'){await new NativeCandidateCoordinator(this.state.storage,this.env).wakePromoted(b.policy);return Response.json({accepted:true});}
-  if(action==='/native-receipt'){await new NativeCandidateCoordinator(this.state.storage,this.env).receipt(b);return Response.json({accepted:true});}
-  if(action==='/native-event'){ensure(this.env.BOUNDED_RECHECK_ENABLED==='true','QUIESCED');const value=await new NativeCandidateCoordinator(this.state.storage,this.env).register(b);return Response.json(value);}
-  if(action==='/event'){ensure(this.env.BOUNDED_RECHECK_ENABLED==='true','QUIESCED');await new CandidateEventCoordinator(this.state.storage,this.env).register(b);return Response.json({accepted:true});}
-  if(action==='/register'){ensure(this.env.BOUNDED_RECHECK_ENABLED==='true','QUIESCED');await this.engine.register(b.registration);await initialWake(this.state.storage,this.env,()=>this.engine.wake(),b.wakeContext);value=await this.store.read();}
-  else if(action==='/status')value=await this.store.read();
-  else if(['/pause','/resume','/cancel'].includes(action)){if(action==='/resume')ensure(this.env.BOUNDED_RECHECK_ENABLED==='true','QUIESCED');value=await this.engine.control(action.slice(1) as 'pause'|'resume'|'cancel',b.expectedGeneration);}
-  else if(action==='/receipt'){await this.engine.receipt(b);value=await this.store.read();}
-  else return new Response(null,{status:404});
-  return Response.json(value,{headers:{'Cache-Control':'no-store'}});
+  if(action!=='/status')return new Response(null,{status:404});
+  return Response.json(await this.store.read(),{headers:{'Cache-Control':'no-store'}});
  }
  async alarm(){
   if(await this.state.storage.get('pagesIntake')||await this.state.storage.get('pagesRetry')||await this.state.storage.get('pagesWatch')){await new PagesRetry(this.state.storage,this.env).alarm();return;}
-  // Existing configuration records have no active receiver.
-  if(await this.state.storage.get('configurationEvent'))return;
+  // Historical objects keep their stored receipts without a writer.
+  if(await this.state.storage.get('configurationEvent')||await this.state.storage.get('nativeEvent')||
+     await this.state.storage.get('event'))return;
   if(await this.state.storage.get('qualityEvent')){await new WorkflowEvent(this.state.storage,this.env).alarm();return;}
   if(await this.state.storage.get('promotionPolicy')){await new ReleasePromotion(this.state.storage,this.env).alarm();return;}
   if(await this.state.storage.get('wingetSubmit')){await new WingetSubmit(this.state.storage,this.env).alarm();return;}
   if(await this.state.storage.get('releaseCycle')||await this.state.storage.get('releaseIntake')){await new ReleaseRelay(this.state.storage,this.env).alarm();return;}
-  if(await this.state.storage.get('nativeEvent')){await new NativeCandidateCoordinator(this.state.storage,this.env).alarm();return;}
-  if(await this.state.storage.get('event')){await new CandidateEventCoordinator(this.state.storage,this.env).alarm();return;}
-  if(this.env.BOUNDED_RECHECK_ENABLED!=='true'){const r=await this.store.read();if(r?.status==='PENDING')await this.engine.control('pause',r.generation);return;}
+  const record=await this.store.read();
+  if(!record||record.identity.stage==='candidate')return;
+  if(this.env.BOUNDED_RECHECK_ENABLED!=='true'){if(record.status==='PENDING')await this.engine.control('pause',record.generation);return;}
   await this.engine.wake();
  }
 }

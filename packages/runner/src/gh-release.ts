@@ -276,10 +276,10 @@ export class NativeGitHubRelease {
     if (JSON.stringify(await this.read(target)) !== JSON.stringify(release) || JSON.stringify(await this.assets(target)) !== JSON.stringify(assets)) reject('published object changed during read');
     return { releaseId: release.id, url: release.html_url, mode: 'verified' as const, nativeEvidence };
   }
-  async publish(target: ReleaseTarget) {
+  async uploadDraft(target: ReleaseTarget, retained: readonly {assetId:number;name:string}[],
+    recordAsset: (asset:{assetId:number;name:string})=>Promise<void>,admit:()=>Promise<void>=async()=>{}) {
     if (!this.names(target).length) reject('GitHub channel disabled');
     await verifyPublicationFiles(target.directory, target.manifest);
-    if (!(await this.read(target)).draft) return this.verify(target);
     await this.claimOfficialDraft(target);
     const names = this.names(target);
     await this.freezeProof(target);
@@ -292,6 +292,7 @@ export class NativeGitHubRelease {
       } else await this.compareAsset(target, asset);
     }
     const guard = async () => {
+      await admit();
       await verifyPublicationFiles(target.directory, target.manifest);
       await this.claimOfficialDraft(target);
       const draft = await this.read(target);
@@ -303,6 +304,8 @@ export class NativeGitHubRelease {
       if (assets.some(asset => !names.includes(asset.name))) reject('unexpected draft asset');
       let asset = assets.find(asset => asset.name === name);
       const expected = await fileDigest(target.directory, name), label = `${uploadIntent}:${expected.sha256}`;
+      const saved=retained.find(receipt=>receipt.name===name);
+      if(saved&&(asset?.id!==saved.assetId||asset.state!=='uploaded')) reject('retained draft asset ID changed');
       if (asset?.state === 'starter') {
         if (asset.size !== 0 || asset.label !== label || asset.uploader?.id !== target.appBotId) reject('unproven starter asset');
         await guard(); const oldId = asset.id;
@@ -315,15 +318,18 @@ export class NativeGitHubRelease {
         const currentDraft = await guard();
         const upload = currentDraft.upload_url?.replace(/\{.*\}$/, '');
         if (upload !== `https://uploads.github.com/repos/${target.manifest.fullName}/releases/${target.releaseId}/assets`) reject('upload URL identity');
-        let uploadError: unknown;
-        try { await this.gh(['api', '--method', 'POST', `${upload}?name=${encodeURIComponent(name)}&label=${encodeURIComponent(label)}`,
+        let uploadError: unknown, uploaded: Asset|undefined;
+        try { uploaded = await this.json(['api', '--method', 'POST', `${upload}?name=${encodeURIComponent(name)}&label=${encodeURIComponent(label)}`,
           '-H', 'Content-Type: application/octet-stream', '--input', resolve(target.directory, name)]); }
         catch (error) { uploadError = error; }
         // A lost response is resolved by observing the same object, never by blind retransmission.
         await this.read(target);
         asset = (await this.assets(target)).find(asset => asset.name === name);
         if (!asset) { if (uploadError) throw uploadError; reject('upload not observed'); }
+        if(uploaded && (uploaded.id!==asset.id||uploaded.name!==asset.name||uploaded.state!=='uploaded'
+          || uploaded.size!==expected.size || uploaded.digest && uploaded.digest!==`sha256:${expected.sha256}`)) reject('upload response identity');
       }
+      if(!saved) await recordAsset({assetId:asset.id,name});
       await this.compareAsset(target, asset);
       if (asset.label !== name) {
         if ((asset.label && asset.label !== label) || asset.uploader?.id !== target.appBotId) reject('unproven draft label');
@@ -345,13 +351,9 @@ export class NativeGitHubRelease {
       await this.compareAsset(target, asset);
     }
     await guard();
-    if (JSON.stringify(await this.assets(target)) !== JSON.stringify(assets))
-      reject('draft assets changed before publication');
-    this.assertOfficialDraft(target, await this.read(target));
-    let publishError: unknown;
-    try { await this.mutate('PATCH', `repos/${target.manifest.fullName}/releases/${target.releaseId}`, { tag_name: target.manifest.tag, draft: false }); }
-    catch (error) { publishError = error; }
-    if ((await this.read(target)).draft) { if (publishError) throw publishError; reject('publication not observed'); }
-    return this.verify(target);
+    if (JSON.stringify(await this.assets(target)) !== JSON.stringify(assets)) reject('draft assets changed during upload');
+    const release=await this.read(target);
+    this.assertOfficialDraft(target,release);
+    return {releaseId:release.id,url:release.html_url,assets:assets.map(({id,name})=>({assetId:id,name}))};
   }
 }

@@ -1,15 +1,12 @@
 import { channelFiles } from '../../core/src/delivery-config.js';
 import { bindPipelineRun, parsePipelineRecord, pipelineSource, type BuildPipelineRecord } from './release-pipeline-record.js';
-import { sealProductArtifacts, validateProductManifest } from './release-artifacts.js';
 import { isDeepStrictEqual } from 'node:util';
 import { readFile, writeFile, appendFile, realpath } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { assertRegisteredAdapters, pipelineRecoverCycleFinal, pipelineIdentity, pipelineChannelIdentity, pipelineChannelDownload, pipelineProducers, pipelineDownloadProducers, pipelineCollect, pipelineInspect, pipelineNotes, pipelineExpectedNotes, pipelineVerifyPublished, pipelineDownloadPhase } from './release-pipeline.js';
-import { generateReleaseSbom } from './release-sbom.js';
-import { assertReleaseJobResults, productBusinessResults, channelBusinessResults, channelReadyTargets, channelPreparationResults, type ChannelProbe } from './release-run.js';
-import { nativePages, findFrozenFinal } from './release-pipeline.js';
+import { assertRegisteredAdapters, findFrozenFinal, nativePages, pipelineChannelDownload, pipelineChannelIdentity, pipelineDownloadPhase, pipelineIdentity, pipelineRecoverCycleFinal, pipelineVerifyPublished } from './release-pipeline.js';
+import { productBusinessResults, channelBusinessResults, channelReadyTargets, channelPreparationResults, type ChannelProbe } from './release-run.js';
 import { nativeRunFact, jobFact } from './native-release-evidence.js';
 import { nativeGhCommand, type GhCommand } from './gh-release.js';
 import { createHash } from 'node:crypto';
@@ -20,21 +17,15 @@ import { decodeBuildJson } from '../../core/src/build-manifest.js';
 export const nativeCommands = new Set(['release', 'release-pipeline']);
 const allowed: Record<string, string[]> = {
   'release inspect': ['repository', 'context', 'output'],
-  'release candidate': ['context', 'output'],
   'release dispatch-build': ['context', 'output'],
-  'release publish': ['context', 'output'],
   'release dispatch-channel': ['context', 'output'],
   'release observe-channel': ['context', 'output'],
   'release rerun': ['context', 'output'],
-  'release-pipeline gates': ['mode', 'results', 'output'],
   'release-pipeline identity': ['cycle-id', 'operation-key', 'source-sha', 'controller-sha', 'source-dir', 'controller-dir', 'state-dir', 'output'],
   'release-pipeline recover': ['record', 'unit', 'source-dir', 'controller-dir', 'state-dir', 'directory', 'home', 'output'],
   'release-pipeline evidence': ['record', 'unit', 'source-dir', 'controller-dir', 'state-dir', 'directory', 'home', 'output'],
   'release-pipeline result': ['record', 'unit', 'controller-dir', 'state-dir', 'job-name', 'objects', 'output'],
-  'release-pipeline collect': ['record', 'unit', 'source-dir', 'controller-dir', 'state-dir', 'raw-dir', 'output-dir', 'home', 'output'],
-  'release-pipeline inspect': ['record', 'unit', 'source-dir', 'controller-dir', 'state-dir', 'selection', 'directory', 'home', 'staging', 'sbom-home', 'output'],
   'release-pipeline download': ['record', 'unit', 'source-dir', 'controller-dir', 'state-dir', 'artifact-id', 'digest', 'phase', 'directory', 'home', 'output'],
-  'release-pipeline seal': ['record', 'unit', 'source-dir', 'controller-dir', 'state-dir', 'directory', 'manifest', 'output'],
   'release-pipeline verify': ['record', 'unit', 'app-bot-id', 'directory', 'output'],
   'release-pipeline channel-source': ['inputs', 'state-dir', 'controller-dir', 'stage', 'output'],
   'release-pipeline channel-download': ['inputs', 'state-dir', 'controller-dir', 'unit', 'channel', 'directory', 'output'],
@@ -150,11 +141,6 @@ export async function nativeReleaseCli(argv: readonly string[]) {
       const record = parsePipelineRecord(await json(required('record')));
       if (record.kind !== 'publish' || !/^[1-9][0-9]*$/.test(required('app-bot-id'))) throw new Error('NATIVE_CLI: publish identity');
       result = await pipelineVerifyPublished(record, required('unit'), required('directory'), Number(required('app-bot-id')));
-    } else if (command === 'release-pipeline gates') {
-      const mode = required('mode'); if (!['build', 'verify', 'product'].includes(mode)) throw new Error('NATIVE_CLI: invalid release mode');
-      const needs = JSON.parse(required('results'));
-      assertReleaseJobResults(mode as 'build' | 'verify' | 'product', 'none', Object.fromEntries(Object.entries(needs).map(([name, value]) => [name, (value as { result: string }).result])));
-      result = { mode, verifiedJobResults: true };
     } else {
       const controllerDirectory = resolve(required('controller-dir')), statePath = resolve(required('output') + '.state.json');
       const stateDirectory = resolve(required('state-dir'));
@@ -247,28 +233,9 @@ export async function nativeReleaseCli(argv: readonly string[]) {
         } else if (command === 'release-pipeline evidence') {
           const found = await findFrozenFinal(source, nativePages, 'evidence'); if (!found) throw new Error('RELEASE_RECORD: evidence artifact missing');
           result = await pipelineDownloadPhase(source, found.artifactId, found.digest, 'evidence', required('directory'), controllerDirectory, required('home'));
-        } else if (command === 'release-pipeline collect') {
-          const selection = await pipelineProducers(source);
-          await pipelineDownloadProducers(source, selection, required('raw-dir'), controllerDirectory, required('home'));
-          await pipelineCollect(source, selection, required('raw-dir'), required('output-dir')); result = selection;
-        } else if (command === 'release-pipeline inspect') {
-          const inspected = await pipelineInspect(record, required('unit'), await json(required('selection')), required('directory'), controllerDirectory, required('home'));
-          result = inspected;
-          await generateReleaseSbom(inspected, record.delivery.units.find(unit => unit.id === inspected.unitId)!, resolve(required('directory')), resolve(required('source-dir')), controllerDirectory, resolve(required('staging')), resolve(required('sbom-home')));
-          await writeFile(join(required('directory'), 'release-notes.md'), await pipelineNotes(record, required('unit'), required('source-dir'), controllerDirectory), { flag: 'wx' });
-        } else if (command === 'release-pipeline download') {
+        } else {
           result = await pipelineDownloadPhase(source, Number(required('artifact-id')), required('digest'), required('phase') as 'collected' | 'final',
             resolve(required('directory')), controllerDirectory, resolve(required('home')));
-        } else {
-          const manifest = await json(required('manifest')); validateProductManifest(manifest);
-          if (manifest.repositoryId !== record.repositoryId || manifest.runId !== record.runId || manifest.attempt !== record.runAttempt
-            || manifest.sourceSha !== record.sourceSha || manifest.controllerSha !== record.controllerSha || manifest.unitId !== source.unit.id
-            || manifest.cycleId !== record.cycleId || manifest.requestKey !== record.requestKey) throw new Error('RELEASE_RECORD: seal source');
-          const expectedNotes = await pipelineExpectedNotes(record, required('unit'), required('source-dir'), controllerDirectory);
-          if (expectedNotes !== undefined && (manifest.version !== source.unit.version || manifest.tag !== source.unit.tag
-            || manifest.templateSha256 !== record.templateSha256 || manifest.deliverySha256 !== record.deliverySha256))
-            throw new Error('RELEASE_RECORD: seal notes identity');
-          result = await sealProductArtifacts(required('directory'), manifest, expectedNotes);
         }
       }
     }

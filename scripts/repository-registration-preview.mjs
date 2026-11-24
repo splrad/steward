@@ -99,9 +99,17 @@ export async function validateRegistrationPreview(workspace,{input,files},env) {
     const id=Number(registrationPath.exec(path)[1]);
     if(!files.includes(path)) {
       const previous=parseRegistration(git(workspace,['show',input.base+':'+path]),id);
+      const centralRetirement=previous.adoption==='central';
+      if(env.GITHUB_EVENT_NAME==='push'&&!centralRetirement)continue;
       const evidence=await withPublicRepository(previous,token,async({reader})=>({
-        projection:await readRepositoryPolicySelection(reader,id,{useOptionalProjection:true})
+        projection:await readRepositoryPolicySelection(reader,id,{useOptionalProjection:true,requireProtectedBranch:centralRetirement})
       }));
+      if(centralRetirement) {
+        if(evidence?.projection===null)
+          summary.push('- '+path+'：已从受保护的治理分支确认旧投影撤回。');
+        else report(path,'仍有旧投影或无法确认其撤回，暂时保留逐仓登记。',true);
+        continue;
+      }
       if(!evidence) {
         if(neverAdopted(workspace,input.base,path,id))
           summary.push('- '+path+'：登记历史中没有已采用的中央投影。');
@@ -112,6 +120,7 @@ export async function validateRegistrationPreview(workspace,{input,files},env) {
         report(path,'请保留登记，先将目标仓回退到 legacy 并读回，再移除记录。',true);
       continue;
     }
+    if(env.GITHUB_EVENT_NAME==='push')continue;
     const selection=parseRegistration(await readFile(await regular(workspace,path)),id);
     const transition=selection.adoption==='paused'||selection.adoption==='legacy';
     const observed=await withPublicRepository(selection,token,target=>transition?{identityVerified:true}:publicProposal(target));

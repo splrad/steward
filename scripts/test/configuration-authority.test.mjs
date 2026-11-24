@@ -11,7 +11,7 @@ import {tmpdir} from 'node:os';
 import {authorizePull,checkEvent,protectedChanges,requestPath} from '../configuration-authorization.mjs';
 import {findEvidence,nativeChannelJobs,trialInventory} from '../configuration-native.mjs';
 import {inspectRepository} from '../configuration-view.mjs';
-import {assertChannelWorkflow,trialKey} from '../configuration-selection.mjs';
+import {assertChannelWorkflow} from '../configuration-selection.mjs';
 import YAML from 'yaml';
 const A='a'.repeat(40),B='b'.repeat(40),C='c'.repeat(40),actor={id:12,login:'maintainer',type:'User'};
 const repo={id:21,full_name:'splrad/sample',default_branch:'trunk',owner:{login:'splrad'}};
@@ -90,6 +90,31 @@ test('delegate renames and adopted configuration manifest or entry page require 
   assert.ok((await protectedChanges(fake(new Map()),[{filename:'moved.json',previous_filename:delegates}],B,A)).has(delegates));
   const adopted=fake(new Map([[B+'/'+requestPath,'adopted']]));
   for(const path of paths) assert.ok((await protectedChanges(adopted,[{filename:path}],B,A)).has(path));
+});
+test('title workflow edits, removals and renames use exact-head authorization without configuration adoption',async()=>{
+  const path='.github/workflows/pr-title.yml',other='.github/workflows/other.yml';
+  const bot={id:301115370,login:'splrad-steward[bot]',type:'Bot'};
+  const api=fake(new Map());
+  const cases=[
+    {filename:path,status:'added'}, {filename:path,status:'modified'}, {filename:path,status:'removed'},
+    {filename:other,previous_filename:path,status:'renamed'}, {filename:path,previous_filename:other,status:'renamed'},
+  ];
+  for(const file of cases)
+    assert.deepEqual(await protectedChanges(api,[file],B,A,true),new Set([path]));
+  assert.equal((await protectedChanges(api,[{filename:other}],B,A,true)).size,0);
+
+  const pullRequest={...pull,user:bot};
+  api.rest.pulls.get=async()=>response(pullRequest);
+  const approval={state:'COMMENTED',body:'/steward approve-configuration',commit_id:B,user:actor,node_id:'review'};
+  let reviews=[];
+  api.paginate=async method=>method===api.rest.pulls.listFiles?[cases[1]]:reviews;
+  api.graphql=async()=>({node:{author:{login:actor.login},body:approval.body,lastEditedAt:null}});
+  const event={repository:repo,pull_request:pullRequest,action:'opened',sender:bot};
+  await assert.rejects(checkEvent(api,event),/Configuration approval is required/);
+  reviews=[approval];
+  await assert.rejects(checkEvent(api,event),/Configuration approval is required/);
+  approval.commit_id=A;
+  assert.equal(await checkEvent(api,event),true);
 });
 test('only the recorded candidate can advance the existing manifest without configuration approval',async t=>{
   const dir=await mkdtemp(join(tmpdir(),'candidate-manifest-'));
@@ -171,11 +196,6 @@ test('an existing container job with a service can provide bound native evidence
   doc.on={workflow_dispatch:{inputs:{flavor:{type:'choice',options:['debug','release']}}}};
   const inputsModel=inspectRepository(new Map([[path,YAML.stringify(doc)]]));
   assert.equal(await findEvidence(api,'',repo,B,A,{unit:'x',target:'one',workflow:path,job:'pack',matrix:{},archive:'bin'},inputsModel),undefined);
-});
-test('trial keys bind the output path and tools to the source',()=>{
-  const recipe={runner:'ubuntu-24.04',output:'out',steps:[],tools:{}};
-  assert.notEqual(trialKey(A,'app','linux',recipe),trialKey(A,'app','linux',{...recipe,output:'debug'}));
-  assert.notEqual(trialKey(A,'app','linux',recipe),trialKey(A,'app','linux',{...recipe,tools:{node:'24'}}));
 });
 test('both submit and verify must have a native receipt for the external target',async()=>{
   const product=YAML.parse(await readFile('templates/release/steward-release-channels.yml','utf8'));

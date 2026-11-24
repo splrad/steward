@@ -1,7 +1,7 @@
 import { constants } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, mkdtemp, copyFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, copyFile, lstat, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isolatedBuildEnvironment } from './build-environment.js';
 import { artifactDownloadTimeout, downloadArtifactArchive } from './artifact-handoff.js';
@@ -18,6 +18,17 @@ export async function downloadNativeArtifact(input:ArtifactDownloadInput,token: 
   await expandArtifact(input,token,false);
 }
 
+/** The official Action downloaded this ZIP without extraction. Verify its bytes before unpacking. */
+export async function expandWorkflowArtifactArchive(input:Omit<ArtifactDownloadInput,'names'|'allowSubset'>,archive:string) {
+  if(!/^sha256:[a-f0-9]{64}$/.test(input.digest)) throw new Error('ARTIFACT_DOWNLOAD_IDENTITY');
+  const file=await lstat(archive);
+  if(!file.isFile()||file.isSymbolicLink()) throw new Error('ARTIFACT_DOWNLOAD_IDENTITY');
+  await mkdir(input.home,{recursive:true});
+  const scratch=await mkdtemp(join(input.home,'download-'));
+  try { await unpack({...input,names:[]},archive,scratch,artifactDownloadTimeout(file.size),true); }
+  finally { await rm(scratch,{recursive:true,force:true}); }
+}
+
 async function expandArtifact(input:ArtifactDownloadInput,token:string|undefined,discoverNames:boolean) {
   if (!token || !/^[\w.-]+\/[\w.-]+$/.test(input.fullName) || input.fullName.split('/').some(part => part === '.' || part === '..')
     || !Number.isSafeInteger(input.artifactId) || input.artifactId < 1 || !/^sha256:[a-f0-9]{64}$/.test(input.digest)) throw new Error('ARTIFACT_DOWNLOAD_IDENTITY');
@@ -31,8 +42,14 @@ async function expandArtifact(input:ArtifactDownloadInput,token:string|undefined
   await mkdir(input.home, { recursive: true });
   const scratch = await mkdtemp(join(input.home, 'download-'));
   try {
-    const archive = join(scratch, 'artifact.zip'), names = join(scratch, 'names.json');
+    const archive = join(scratch, 'artifact.zip');
     await downloadArtifactArchive(fetch, token, input.fullName, input.artifactId, metadata.size_in_bytes, input.digest, archive, async () => {});
+    await unpack(input,archive,scratch,timeout,discoverNames);
+  } finally { await rm(scratch, { recursive: true, force: true }); }
+}
+
+async function unpack(input:ArtifactDownloadInput,archive:string,scratch:string,timeout:number,discoverNames:boolean) {
+    const names=join(scratch,'names.json');
     await writeFile(names, JSON.stringify(input.names), { flag: 'wx' });
     await promisify(execFile)('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', join(input.policyDirectory, 'scripts/expand-release-artifact.ps1'),
       '-Archive', archive, '-ExpectedSha256', input.digest.slice(7), '-ExpectedNames', names, '-OutputDirectory', join(scratch, 'extracted'),
@@ -46,5 +63,4 @@ async function expandArtifact(input:ArtifactDownloadInput,token:string|undefined
       await rm(input.directory,{recursive:true,force:true});
       throw error;
     }
-  } finally { await rm(scratch, { recursive: true, force: true }); }
 }

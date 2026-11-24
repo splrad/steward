@@ -57,7 +57,8 @@ function next(r:RecordState, now:number, notBefore=now) {
   r.nextAt=r.nextSlot<p.offsets.length?r.t0+p.offsets[r.nextSlot]!*minute:r.deadline;
 }
 export class BoundedRecheck {
-  constructor(private store:Store,private effects:Effects,private clock:()=>number=Date.now,private executionSha?:string,private executionAnchorSha?:string) {}
+  constructor(private store:Store,private effects:Effects,private clock:()=>number=Date.now,private executionSha?:string,
+    private executionAnchorSha?:string) {}
   async register(input:Registration):Promise<RecordState> {
     const now=this.clock(); validateRegistration(input,now);if(input.identity.stage!=='candidate')assert(typeof this.executionSha==='string'&&/^[a-f0-9]{40}$/.test(this.executionSha),'EXECUTION_PIN_REQUIRED');
     return this.store.transaction(r=>{

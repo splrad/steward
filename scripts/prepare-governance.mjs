@@ -46,7 +46,7 @@ export function prepareGovernance(snapshot) {
   for (const context of ['SPLRAD Validation', 'SPLRAD PR Title']) {
     const existing = checks.filter(check => check.context === context);
     if (existing.length > 1 || existing.some(check => check.integration_id !== integration)) fail('CHECK_COLLISION');
-    if (!existing.length) checks.push({ context, integration_id: integration });
+    if (context === 'SPLRAD Validation' && !existing.length) checks.push({ context, integration_id: integration });
   }
   const workflowRows = structuredClone(workflows?.parameters.workflows ?? []);
   const matching = workflowRows.filter(row => row.repository_id === 1296724484 && row.path === '.github/workflows/pr-validation-native.yml');
@@ -61,8 +61,15 @@ export function prepareGovernance(snapshot) {
   for (const type of ['deletion', 'non_fast_forward', 'required_linear_history'])
     if (!foundation.rules.some(item => item.type === type)) foundation.rules.push(rule(type));
   foundation.rules.push(approval(0, true), { type: 'required_status_checks', parameters: {
-    ...(status?.parameters ?? {}), strict_required_status_checks_policy: true, required_status_checks: checks,
+    ...(status?.parameters ?? {}), strict_required_status_checks_policy: true,
+    required_status_checks: checks.filter(check => check.context !== 'SPLRAD PR Title'),
   } }, { type: 'workflows', parameters: { ...(workflows?.parameters ?? {}), do_not_enforce_on_create: true, workflows: workflowRows } });
+  const title = nativeRule('默认分支 PR 标题检查（Steward 除外）', ['~DEFAULT_BRANCH'], [], []);
+  title.conditions.repository_name.exclude.push('steward');
+  title.rules = [{ type: 'required_status_checks', parameters: {
+    ...(status?.parameters ?? {}), strict_required_status_checks_policy: true,
+    required_status_checks: [{ context: 'SPLRAD PR Title', integration_id: integration }],
+  } }];
   const independent = nativeRule('SPLRAD 拉取请求审批', ['~DEFAULT_BRANCH'], [], [
     { actor_id: team.id, actor_type: 'Team', bypass_mode: 'pull_request' },
   ]);
@@ -70,19 +77,19 @@ export function prepareGovernance(snapshot) {
   const state = ['refs/heads/steward/release-state'];
   const governance = ['refs/heads/steward/governance-state'];
   const build = ['refs/heads/steward/build/*'];
-  const pr = ['refs/heads/steward/managed-sync', 'refs/heads/steward/release-candidate'];
+  const managedSync = 'refs/heads/steward/managed-sync';
   const runtime = [
     nativeRule('Steward 运行状态写入限制', state, ['creation', 'update'], [actor(4243096)]),
     nativeRule('Steward 治理状态写入限制', governance, ['creation', 'update'], [actor(4243096), actor(governanceApp.id)]),
-    nativeRule('Steward 自动化分支创建限制', [...build, ...pr], ['creation'], [actor(4243096)]),
-    nativeRule('Steward 自动化分支完整性保护', [...state, ...governance, ...pr], ['non_fast_forward', 'deletion'], []),
+    nativeRule('Steward 自动化分支创建限制', [...build, managedSync], ['creation'], [actor(4243096)]),
+    nativeRule('Steward 自动化分支完整性保护', [...state, ...governance, managedSync], ['non_fast_forward', 'deletion'], []),
     nativeRule('Steward 构建分支不可变', build, ['update', 'deletion'], []),
   ];
   const legacy = []; const seen = new Set();
   for (const item of legacyCandidates) {
     if (!id(item.repositoryId) || typeof item.branch !== 'string' || !/^[A-Za-z0-9_-][A-Za-z0-9_./-]*$/.test(item.branch)
       || item.branch.includes('..') || item.branch.split('/').some(part => !part || part.startsWith('.') || part.endsWith('.') || part.endsWith('.lock'))
-      || pr.includes(`refs/heads/${item.branch}`) || seen.has(`${item.repositoryId}:${item.branch}`)) fail('LEGACY_BRANCH');
+      || item.branch === 'steward/release-candidate' || `refs/heads/${item.branch}` === managedSync || seen.has(`${item.repositoryId}:${item.branch}`)) fail('LEGACY_BRANCH');
     seen.add(`${item.repositoryId}:${item.branch}`);
     for (const [suffix, types, bypass] of [['创建限制', ['creation'], [actor(4243096)]], ['完整性保护', ['non_fast_forward', 'deletion'], []]]) {
       const entry = nativeRule(`Steward 旧版拉取请求分支${suffix}（${item.repositoryId}-${legacy.length}）`, [`refs/heads/${item.branch}`], types, bypass);
@@ -90,7 +97,7 @@ export function prepareGovernance(snapshot) {
       legacy.push(entry);
     }
   }
-  return { foundation, independent, runtime, legacy };
+  return { foundation, title, independent, runtime, legacy };
 }
 
 /** Check approval constraints from all natively applicable Rulesets and legacy branch protection. */

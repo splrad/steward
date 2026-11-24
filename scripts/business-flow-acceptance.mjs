@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 export const digest = text => createHash('sha256').update(text).digest('hex');
 const requireFact = (ok, code) => { if (!ok) throw Error('ACCEPTANCE_'+code); };
+const consumers = ['quality','quality-initialize'];
 export function validatePlan(raw, expectedHash, env) {
   requireFact(digest(raw)===expectedHash,'PLAN_DIGEST');
   const p=JSON.parse(raw),sha=x=>typeof x==='string'&&/^[a-f0-9]{40}$/.test(x);
@@ -13,7 +14,7 @@ export function validatePlan(raw, expectedHash, env) {
     &&env.GITHUB_REF==='refs/heads/main'&&env.GITHUB_EVENT_NAME==='workflow_dispatch'
     &&env.GITHUB_RUN_ATTEMPT==='1'&&env.GITHUB_WORKFLOW_REF==='splrad/steward/.github/workflows/business-flow-acceptance.yml@refs/heads/main'
     &&sha(p.controllerSha)&&p.controllerSha===env.GITHUB_SHA&&p.controllerSha===env.WORKFLOW_SHA,'CONTROLLER');
-  requireFact(p.schemaVersion===1&&['quality','release','quality-initialize'].includes(p.kind)&&[0,1].includes(p.maxRequests),'MODE');
+  requireFact(p.schemaVersion===1&&consumers.includes(p.kind)&&[0,1].includes(p.maxRequests),'MODE');
   requireFact(p.expectControlledStop===undefined||p.expectControlledStop===false||p.expectControlledStop===true&&p.kind==='quality'&&p.maxRequests===0,'CONTROLLED_STOP_PLAN');
   requireFact(p.repository&&/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(p.repository.full_name)
     &&Number.isSafeInteger(p.repository.id)&&p.repository.id>0&&p.repository.default_branch==='main'
@@ -34,6 +35,7 @@ export function boundedClient(client, maximum) {
   }};
 }
 export async function executePlan(p,{root,controllerDirectory,app,modelToken,fetcher=fetch}) {
+  requireFact(consumers.includes(p.kind),'MODE');
   const lib=await import(pathToFileURL(join(controllerDirectory,'packages/runner/dist/index.js')).href);
   const q=await import(pathToFileURL(join(controllerDirectory,'scripts/quality-language-summary.mjs')).href);
   const verifyRepository=async token=>{
@@ -48,7 +50,7 @@ export async function executePlan(p,{root,controllerDirectory,app,modelToken,fet
     const {initializeQualityState}=await import('./quality-state-initialize.mjs');
     return app.forQualityRepository(p.repository.id,token=>initializeQualityState(p,{root,token,fetcher}));
   }
-  if(p.kind==='quality')return app.forQualityRepository(p.repository.id,async token=>{
+  return app.forQualityRepository(p.repository.id,async token=>{
     const io=await verifyRepository(token);
     const ref=(await io.get('/repos/'+p.repository.full_name+'/git/ref/heads/steward/governance-state')).value;
     requireFact(ref.object?.sha===p.stateSha,'STATE_CHANGED');
@@ -77,30 +79,6 @@ export async function executePlan(p,{root,controllerDirectory,app,modelToken,fet
     }
     requireFact(result.pending===0,'QUALITY_PENDING');return {kind:p.kind,status:'COMPLETE',calls:client.calls,complete:result.complete};
   });
-  return app.forCandidateRepository(p.repository.id,async(token,readToken)=>{
-    await verifyRepository(token);
-    const {fetchState}=await import(pathToFileURL(join(controllerDirectory,'scripts/release-coordinator.mjs')).href);
-    const {nativeReleaseCandidate}=await import(pathToFileURL(join(controllerDirectory,'scripts/release-candidate.mjs')).href);
-    const {releasePolicyGuard}=await import(pathToFileURL(join(controllerDirectory,'scripts/release-repository-policy.mjs')).href);
-    const guardedFetch=async(url,init)=>{
-      const response=await fetcher(url,init);
-      const refs=new Map([
-        ['https://api.github.com/repos/'+p.repository.full_name+'/git/ref/heads/main',p.baseSha],
-      ]);
-      if(refs.has(String(url)))requireFact(response.ok&&(await response.clone().json()).object?.sha===refs.get(String(url)),'SOURCE_OR_STATE_CHANGED');
-      return response;
-    };
-    const state=await fetchState(root,p.repository,token,'steward/release-state',{fetcher:guardedFetch,includeHistory:false});
-    requireFact(state.snapshot.head===p.stateSha,'STATE_CHANGED');
-    const client=boundedClient(lib.copilotReleaseClient(controllerDirectory,modelToken),p.maxRequests);
-    const checkRepositoryPolicy=p.repository.full_name.startsWith('splrad/')?releasePolicyGuard(app,p.repository):undefined;
-    const result=await nativeReleaseCandidate({directory:state.directory,writeDirectory:join(root,'writes'),remote:state.remote,
-      repository:p.repository.full_name,repositoryId:p.repository.id,defaultBranch:'main',appBotId:app.appBotId,
-      identity:{name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'}},
-      {token,readToken,controllerSha:p.controllerSha,controllerDirectory,temporaryRoot:root,fetcher:guardedFetch,
-        language:client,expectedStateSha:p.stateSha,checkRepositoryPolicy});
-    requireFact(result.status==='READY','CANDIDATE_PENDING');return {kind:p.kind,calls:client.calls,status:result.status};
-  });
 }
 export async function main(env=process.env) {
   const plan=validatePlan(env.STEWARD_ACCEPTANCE_PLAN??'',env.APPROVED_PLAN_SHA256??'',env);
@@ -115,8 +93,7 @@ export async function main(env=process.env) {
     if(result.status==='INITIALIZED_BASE_CHANGED')process.exitCode=75;
   }finally{await rm(root,{recursive:true,force:true});}
 }
-const publicContentErrors=new Set(['CONTENT_RECOVERY_BINDING','CONTENT_RECOVERY_ARCHIVE','CONTENT_RECOVERY_ARCHIVE_EXISTS']);
-export const acceptanceErrorCode=error=>/^ACCEPTANCE_[A-Z_]+$/.test(error?.message??'')||publicContentErrors.has(error?.message)?error.message:'BUSINESS_ACCEPTANCE_STOPPED';
+export const acceptanceErrorCode=error=>/^ACCEPTANCE_[A-Z_]+$/.test(error?.message??'')?error.message:'BUSINESS_ACCEPTANCE_STOPPED';
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href)main().catch(error=>{
   const code=acceptanceErrorCode(error);
   process.stderr.write(JSON.stringify({status:'STOPPED',code})+'\n');process.exitCode=75;

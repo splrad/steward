@@ -16,20 +16,20 @@ export function assertActionInputs(doc,actions){
 
 // The loader must bind every byte to the allowed controller's exact ancestor SHA.
 // Native verification receives its complete workflow directory and unedited lock.
-export async function reusableActions(uses,{loadSource,verifyLock,inventory}){
+export async function reusableActions(uses,{loadSource,verifyLock,inventory,workflow}){
   let files;const evidence={uses,stage:'source'};
   try{
     const nested=await lifecycleReusable(uses,async(sha,path)=>{
       evidence.sha=sha;files=await loadSource(sha);
       assert(files instanceof Map && files.has(path),'REUSABLE_SOURCE_INCOMPLETE');
       return files.get(path);
-    });
+    },workflow);
     evidence.workflowSha256=digest(nested.bytes);evidence.stage='native-lock';
     const lock=files.get(lockPath);assert(lock,'REUSABLE_ACTION_LOCK_REQUIRED');
     evidence.lockSha256=digest(lock);
     const native=await verifyLock(files,nested.sha);
     evidence.stage='online-inventory';
-    const actions=await inventory(lock.toString('utf8'));
+    const actions=await inventory(lock.toString('utf8'),nested.sourcePath);
     evidence.stage='workflow-coverage';
     assertActionInputs(YAML.parse(nested.bytes.toString('utf8')),actions);
     return {...nested,actions,lockSha256:evidence.lockSha256,native};

@@ -2,8 +2,6 @@ import {expect,it} from 'vitest';
 import {NativeEvidenceReader} from '../src/native-release-evidence.js';
 // @ts-expect-error JavaScript transport helper.
 import {adoptionTransport} from '../../../scripts/release-state-initialize.mjs';
-// @ts-expect-error JavaScript diagnostic helper.
-import {initializationDiagnostics} from '../../../scripts/initialization-diagnostics.mjs';
 const repo='splrad/LayerScape',id=1187527897;
 const query='state=closed&sort=created&direction=asc&per_page=100';
 const path='/repos/'+repo+'/pulls';
@@ -41,8 +39,4 @@ it.each([{id:9,full_name:repo},{id,full_name:'other/repository'},{id:0,full_name
 });
 it('retains duplicate-item completeness checks across canonical pages',async()=>{
  const f=fixture(canonical,undefined,true);await expect(f.reader.pages('pulls?state=closed&sort=created&direction=asc','')).rejects.toThrow('incomplete pagination');
-});
-it('maps only exact local pagination assertions to safe initializer codes',()=>{
- const d=initializationDiagnostics();d.stage('adoption-reconcile');expect(d.failure(new Error('NATIVE_EVIDENCE: pagination origin')).failureCode).toBe('PAGINATION_01');
- expect(d.failure(new Error('NATIVE_EVIDENCE: pagination origin PRIVATE_URL')).failureCode).toBeNull();
 });

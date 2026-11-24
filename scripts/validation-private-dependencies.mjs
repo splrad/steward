@@ -9,7 +9,7 @@ import {pathToFileURL,fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import YAML from 'yaml';
 import {validationController,validationFileInputs,git} from './validation-input.mjs';
-import {assert,loadPolicy,checkInventory,highFindings,requireOnline,actionFindings,newActions,newPackageFindings,newTools,assertInputScope,assertGovernanceOnlyScope,assertCopierInputs,configurationCallers,licenseFacts} from './private-dependency-policy.mjs';
+import {assert,loadPolicy,checkInventory,highFindings,requireOnline,actionFindings,newActions,newPackageFindings,newTools,assertInputScope,assertGovernanceOnlyScope,assertCopierInputs,copierTitleBytes,configurationCallers,licenseFacts} from './private-dependency-policy.mjs';
 import {assertLifecycleScope,assertLifecycleSnapshot,lifecycleMiseVersions,assertLifecycleMissingActionLock} from './private-lifecycle-policy.mjs';
 import {assertActionInputs,reusableActions,verifyReusableLock} from './private-reusable-actions.mjs';
 import {miseFindings} from './private-tool-security.mjs';
@@ -93,10 +93,15 @@ export function assertVerifiedActionTag(ref,matching){
   assert(matching.includes(ref)&&matching.every(tag=>tag===ref||tag.length<ref.length),'ZIZMOR_TAG_AMBIGUOUS');
 }
 const actionTags=new Map();
-export async function actionsInventory(text,token){
+export async function actionsInventory(text,token,workflowPath){
   const lock=YAML.parse(text);assert(['v0.0.2','v0.0.3'].includes(lock.version)&&lock.dependencies&&lock.workflows,'ACTIONS_LOCK_FORMAT');
+  const keys=new Set(workflowPath?lock.workflows[workflowPath]:Object.keys(lock.dependencies));
+  if(workflowPath)assert(Array.isArray(lock.workflows[workflowPath]),'ACTION_WORKFLOW_LOCK_MISSING');
   const entries=[];
-  for(const [key,value] of Object.entries(lock.dependencies)){
+  for(const key of keys){
+    const value=lock.dependencies[key];
+    assert(value&&Array.isArray(value.uses??[]),'ACTION_LOCK_ENTRY');
+    for(const child of value.uses??[])keys.add(child);
     const match=/^([\w.-]+\/[\w.-]+)(?:\/[^@]+)?@([^@]+)$/.exec(key);
     assert(match&&key.startsWith(match[1]+'@')&&/^sha1-[a-f0-9]{40}$/.test(value.commit??''),'ACTION_LOCK_ENTRY');
     // Verify server identity and ref/commit association; comments are never a version source.
@@ -149,7 +154,13 @@ export async function main(env=process.env,resolveController=validationControlle
         const sha=git(controller,['rev-parse','--verify','refs/tags/'+ref+'^{commit}']).toString('utf8').trim();
         assert(/^[a-f0-9]{40}$/.test(sha),'COPIER_TEMPLATE_SOURCE');
         git(controller,['merge-base','--is-ancestor',sha,approvedController]);
-        return new Map(managedPaths.map(path=>[path,git(controller,['show',sha+':templates/repository/'+(path==='CONTRIBUTING.md'?'CONTRIBUTING.md.jinja':path)])]));
+        return new Map(managedPaths.map(path=>{
+          const source='templates/repository/'+path;
+          const read=ref=>git(controller,['show',sha+':'+ref]);
+          if(path==='.github/workflows/pr-title.yml'&&git(controller,['ls-tree',sha,'--',source+'.jinja']).length)
+            return [path,copierTitleBytes(read(source+'.jinja'),sha)];
+          return [path,read(path==='CONTRIBUTING.md'?source+'.jinja':source)];
+        }));
       },managedPaths,env.GITHUB_REPOSITORY);
       const control=blob(workspace,entries,'acceptance/bootstrap-target.json',true);
       if(control){assert(control.length<=1024,'CONTROL_SIZE');parseAcceptanceTarget(control.toString('utf8'));}
@@ -196,9 +207,12 @@ export async function main(env=process.env,resolveController=validationControlle
         const text=e.bytes.toString();const doc=YAML.parse(text);workflowDocuments.set(e.path,doc);
         for(const job of Object.values(doc.jobs??{})){
           if(job.uses){
-            assert(lifecycle,'REUSABLE_WORKFLOW_UNCOVERED');
+            const title=e.path==='.github/workflows/pr-title.yml'
+              &&/^splrad\/steward\/\.github\/workflows\/pr-title-reusable\.yml@[a-f0-9]{40}$/.test(job.uses);
+            assert(title||lifecycle,'REUSABLE_WORKFLOW_UNCOVERED');
             if(!reusableSeen.has(job.uses)){
               const nested=await reusableActions(job.uses,{
+                workflow:title?'pr-title-reusable':'product-release',
                 loadSource:sha=>{
                   git(controller,['merge-base','--is-ancestor',sha,approvedController]);
                   const sourceEntries=tree(controller,sha);
@@ -206,7 +220,7 @@ export async function main(env=process.env,resolveController=validationControlle
                 },
                 verifyLock:(files,sha)=>verifyReusableLock(files,join(temporary,side+'-controller-'+sha),{
                   ...cleanEnv(),GH_TOKEN:env.GH_TOKEN,...(env.GH_CONFIG_DIR?{GH_CONFIG_DIR:env.GH_CONFIG_DIR}:{})},run),
-                inventory:text=>actionsInventory(text,env.GH_TOKEN),
+                inventory:(text,path)=>actionsInventory(text,env.GH_TOKEN,title?path:undefined),
               });
               reusableSeen.add(job.uses);workflowInputs.push(nested);snapshot.actions.push(...nested.actions);
               snapshot.reusable.push({sha:nested.sha,sha256:hash(nested.bytes),lockSha256:nested.lockSha256,actions:nested.actions,native:nested.native});

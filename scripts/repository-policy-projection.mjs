@@ -57,10 +57,10 @@ async function readRepositoryAdoption(reader,repositoryId) {
 }
 
 export async function readRepositoryPolicySelection(reader,repositoryId,{
-  useOptionalProjection=false,read=readRepositoryProjection,readAdoption=readRepositoryAdoption
+  useOptionalProjection=false,requireProtectedBranch=false,read=readRepositoryProjection,readAdoption=readRepositoryAdoption
 }={}) {
   const {required,assertCurrent}=await readAdoption(reader,repositoryId);
-  const projection=required||useOptionalProjection?await read(reader,repositoryId):null;
+  const projection=required||useOptionalProjection?await read(reader,repositoryId,{requireProtectedBranch}):null;
   await assertCurrent();
   check(!required||projection?.adoption==='central','REQUIRED');
   return projection;
@@ -75,7 +75,7 @@ export function projectionBytes(policy) {
   return content;
 }
 
-export async function readRepositoryProjection(reader, repositoryId) {
+export async function readRepositoryProjection(reader, repositoryId, {requireProtectedBranch=false}={}) {
   const head=async () => {
     const response=await reader.io.request('GET',reader.path('git/ref/heads/'+repositoryPolicyBranch));
     if(response.status===404) {
@@ -88,8 +88,18 @@ export async function readRepositoryProjection(reader, repositoryId) {
     check(fact.ref===ref&&fact.object?.type==='commit'&&sha(fact.object.sha));
     return fact.object.sha;
   };
+  const verifyProtection=async()=>{
+    const rules=await reader.json('rules/branches/'+encodeURIComponent(repositoryPolicyBranch)+'?per_page=100');
+    check(Array.isArray(rules),'PROTECTION');
+    for(const [type,id] of [['creation',26678448],['update',26678448],['non_fast_forward',26678449],['deletion',26678449]])
+      check(rules.some(rule=>rule.type===type&&rule.ruleset_id===id),'PROTECTION');
+  };
   const commit=await head();
   const absent=async()=>{
+    if(requireProtectedBranch) {
+      check(commit,'PROTECTION');
+      await verifyProtection();
+    }
     check(await head()===commit,'MOVED');
     return null;
   };
@@ -103,10 +113,7 @@ export async function readRepositoryProjection(reader, repositoryId) {
   const blob=await treeEntry(reader,directory.sha,'repository.json');
   if(!blob)return absent();
   check(blob.mode==='100644'&&blob.type==='blob'&&sha(blob.sha));
-  const rules=await reader.json('rules/branches/'+encodeURIComponent(repositoryPolicyBranch)+'?per_page=100');
-  check(Array.isArray(rules),'PROTECTION');
-  for(const [type,id] of [['creation',26678448],['update',26678448],['non_fast_forward',26678449],['deletion',26678449]])
-    check(rules.some(rule=>rule.type===type&&rule.ruleset_id===id),'PROTECTION');
+  await verifyProtection();
   const bytes=await verifiedFile(reader,repositoryPolicyPath,commit,blob);
   const value=decodeRepositoryPolicyProjection(bytes,repositoryId);
   check(await head()===commit,'MOVED');

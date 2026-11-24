@@ -1,6 +1,6 @@
 import YAML from 'yaml';
 import {minimatch} from 'minimatch';
-import {forkRunName} from './product-ci-evidence.mjs';
+import {forkRunName,stewardMergeGroup,stewardRunName} from './product-ci-evidence.mjs';
 import {execFileSync} from 'node:child_process';
 import {readFile,appendFile,writeFile,lstat,realpath} from 'node:fs/promises';
 import {resolve,join,sep} from 'node:path';
@@ -10,6 +10,7 @@ import {parseRegistration,registrationPath,registrationWorkflow} from './reposit
 import {assertLifecycleScope} from './private-lifecycle-policy.mjs';
 import {assertRepositoryPolicyMarker,repositoryPolicyAdoptionPath} from './repository-policy-projection.mjs';
 import {parseReleasePauses,releasePausesPath} from './release-pauses.mjs';
+import {settingsRepositoryId} from './steward-settings-read.mjs';
 const check=(ok,code)=>{if(!ok)throw Error('VALIDATION_'+code);};
 export function git(workspace,args) {
   return execFileSync('git',['--no-replace-objects','-c','core.hooksPath=','-c','credential.helper=',...args],
@@ -127,6 +128,10 @@ export async function validationFileInputs(workspace,env=process.env) {
     base=event.pull_request.base.sha;head=event.pull_request.head.sha;
     baseRef=event.pull_request.base.ref;
     git(workspace,['check-ref-format','--branch',baseRef]);
+  }else if(env.GITHUB_EVENT_NAME==='merge_group'){
+    const group=stewardMergeGroup(event);
+    check(group&&env.GITHUB_SHA===group.head_sha&&env.GITHUB_REF===group.head_ref,'MERGE_GROUP_EVENT');
+    base=group.base_sha;head=group.head_sha;
   }else{check(env.GITHUB_EVENT_NAME==='push'&&typeof event.repository.default_branch==='string'&&event.ref==='refs/heads/'+event.repository.default_branch,'EVENT');base=event.before;head=event.after;}
   check([base,head].every(v=>typeof v==='string'&&/^[a-f0-9]{40}$/.test(v)&&!/^0+$/.test(v)),'COMMITS');
   if(baseRef){
@@ -136,6 +141,7 @@ export async function validationFileInputs(workspace,env=process.env) {
   for(const value of [base,head])check(git(workspace,['rev-parse','--verify',value+'^{commit}']).toString().trim()===value,'COMMITS');
   check(git(workspace,['rev-parse','HEAD']).toString().trim()===head,'CHECKOUT');
   check(git(workspace,['rev-parse','--is-shallow-repository']).toString().trim()==='false','SHALLOW');
+  if(env.GITHUB_EVENT_NAME==='merge_group')git(workspace,['merge-base','--is-ancestor',base,head]);
   // Native Git supplies both rename sides for DOC-LINK. Scope matching belongs to paths-filter in trusted YAML.
   const changedPaths=new TextDecoder('utf-8',{fatal:true}).decode(git(workspace,['diff','--no-ext-diff','--no-textconv','--name-only','--no-renames','-z',base,head])).split('\0').filter(Boolean);
   const input={complete:true,repositoryId,base,head,workflowSha:env.WORKFLOW_SHA,changedPaths};
@@ -156,7 +162,9 @@ export async function validationFileInputs(workspace,env=process.env) {
     }
     for(const path of changedPaths.filter(path=>registrationPath.test(path)&&!files.includes(path))) {
       const previous=parseRegistration(git(workspace,['show',base+':'+path]),Number(registrationPath.exec(path)[1]));
-      check(!previous.adoption||previous.adoption==='legacy','REPOSITORY_POLICY_ROLLBACK_REQUIRED');
+      const centralRetirement=repositoryId===settingsRepositoryId&&event.repository.full_name==='splrad/steward-settings'
+        &&previous.adoption==='central';
+      check(!previous.adoption||previous.adoption==='legacy'||centralRetirement,'REPOSITORY_POLICY_ROLLBACK_REQUIRED');
     }
   }
   // Reject product inputs before scope outputs can schedule any candidate build.
@@ -185,13 +193,15 @@ export async function validationInput(workspace,env=process.env) {
     const type=env.GITHUB_EVENT_NAME;
     const gap=productCITriggerGap({path,document:workflow},event.repository.default_branch);
     check(!gap && workflowEvent(triggers,type,event.action),'PRODUCT_CI_TRIGGER '+path+' '+gap);
-    if(workflow['run-name']===forkRunName)boundNames.push(path);
+    if(type==='merge_group')check(workflow['run-name']===stewardRunName,'PRODUCT_CI_MERGE_GROUP_NAME '+path);
+    if(workflow['run-name']===forkRunName||event.repository.id===1296724484&&workflow['run-name']===stewardRunName)boundNames.push(path);
   }
   return {input,files,productApplicable,workflows,boundNames,dependencyMode:dependency};
 }
 export async function main(env=process.env) {
   const workspace=resolve(env.VALIDATION_WORKSPACE??'target'),value=await validationInput(workspace,env);
-  if(value.dependencyMode==='private-administrator'&&env.GITHUB_EVENT_NAME==='pull_request') {
+  const registrationRemoved=value.input.changedPaths.some(path=>registrationPath.test(path)&&!value.files.includes(path));
+  if(value.dependencyMode==='private-administrator'&&(env.GITHUB_EVENT_NAME==='pull_request'||registrationRemoved)) {
     const {validateRegistrationPreview}=await import('./repository-registration-preview.mjs');
     await validateRegistrationPreview(workspace,value,env);
   }

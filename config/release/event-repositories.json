@@ -4,7 +4,6 @@
     "name": "splrad/LayerScape",
     "defaultBranch": "main",
     "channelWorkflowId": 410998651,
-    "legacyPublicationCallback": true,
     "externalAdapters": [
       {
         "unitId": "layerscape",

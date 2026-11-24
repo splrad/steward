@@ -1,41 +1,30 @@
-import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { NativeEvidenceReader, nativeEvidenceTransport, nativeReleaseApp, nativeGhCommand, nativeRunFact, verifyExecutionSource, githubUnits, channelTargetsDigest, downloadNativeArtifact, defaultBuildWorkflow } from '../packages/runner/dist/index.js';
+import { NativeEvidenceReader, nativeEvidenceTransport, nativeReleaseApp, nativeGhCommand, nativeRunFact, verifyExecutionSource, githubUnits, channelTargetsDigest, downloadNativeArtifact, expandWorkflowArtifactArchive, defaultBuildWorkflow } from '../packages/runner/dist/index.js';
 import { exact, sha, sha256, withParticipatingProduct } from './bounded-candidate-contract.mjs';
 import { entryGuard } from './bounded-release-entry.mjs';
-import {releasePolicyGuard} from './release-repository-policy.mjs';
+import {assertReleaseUnpaused} from './release-pause-policy.mjs';
 import { fetchState } from './release-coordinator.mjs';
-import { setTimeout as delay } from 'node:timers/promises';
-import { nativeReleaseCandidate } from './release-candidate.mjs';
 import { registerOfficialMergedCycle, releaseCommand } from './release-record.mjs';
-import { finishOfficialAction, readOfficialBody, sourceUsesOfficialRelease } from './official-release.mjs';
-import { mergedRepositoryPolicy } from './repository-policy-read.mjs';
+import { finishOfficialAction, readOfficialBody } from './official-release.mjs';
 
 const centralId = 1296724484, central = 'splrad/steward';
-// The promoted controller binds legacy callbacks and external adapter credentials.
-const isHomepageEvent=kind=>kind==='candidate-head'||kind==='candidate-status';
-const eventKinds=['push','run','publication','candidate-head','candidate-status','official-merge'];
-const deliveryGuid=/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
+const eventKinds=['push','run','publication','official-merge'];
 const registrations=JSON.parse(await readFile(new URL('../config/release/event-repositories.json',import.meta.url),'utf8'));
+const eventProductId=event=>event.kind==='publication'?event.productRepositoryId:event.repositoryId;
 function registeredRepository(event, registry=registrations) {
-  const id=event.kind==='publication'?event.productRepositoryId:event.repositoryId;
-  // Older central callbacks carry only the controller identity. They are unambiguous for the original pilot.
-  const matches=registry.filter(repository=>id===undefined?repository.legacyPublicationCallback===true:repository.id===id);
+  const id=eventProductId(event);
+  if(!positive(id))fail('CYCLE_EVENT_KIND');
+  const matches=registry.filter(repository=>repository.id===id);
   if(matches.length!==1)fail('CYCLE_EVENT_KIND');
   return matches[0];
 }
 export function withCycleEventProduct(app,event,operation,transport=nativeEvidenceTransport) {
-  const oldCallback=event.kind==='publication'&&!Object.hasOwn(event,'productRepositoryId');
-  const legacy=oldCallback?registeredRepository(event):undefined;
-  const id=legacy?legacy.id:event.kind==='publication'?event.productRepositoryId:event.repositoryId;
-  if(!eventKinds.includes(event.kind)||!Number.isSafeInteger(id)||id<1)fail('CYCLE_EVENT_KIND');
-  return withParticipatingProduct(app,id,product=>{
-    if(!legacy)return operation(product);
-    if(product.name!==legacy.name||product.defaultBranch!==legacy.defaultBranch)fail('CYCLE_EVENT_KIND');
-    return operation({...product,legacyPublicationCallback:true});
-  },transport);
+  const id=eventProductId(event);
+  if(!eventKinds.includes(event.kind)||!positive(id))fail('CYCLE_EVENT_KIND');
+  return withParticipatingProduct(app,id,operation,transport);
 }
 const identity = {name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'};
 const fail = reason => { throw Error(reason); };
@@ -51,21 +40,11 @@ export function validateEvent(event, requestKey, registry=registrations) {
     if (requestKey!==sha256([repositoryId,kind,event.prNumber,event.sourceSha,event.head])) fail('CYCLE_EVENT_KEY');
     return;
   }
-  if (isHomepageEvent(kind)) {
-    const fields = kind==='candidate-status' ? ['commentId'] : ['head',...(Object.hasOwn(event,'delivery') ? ['delivery'] : [])];
-    exact(event, ['repositoryId','kind','prNumber',...fields]);
-    if (!positive(event.prNumber)) fail('CYCLE_EVENT_ID');
-    if (kind==='candidate-status' ? !positive(event.commentId)
-      : !sha(event.head) || /^0+$/.test(event.head) ||
-        Object.hasOwn(event,'delivery') && (typeof event.delivery!=='string'||!deliveryGuid.test(event.delivery)))
-      fail('CYCLE_EVENT_ID');
-    if (requestKey !== sha256([repositoryId,kind,event.prNumber,...fields.map(key=>event[key])])) fail('CYCLE_EVENT_KEY');
-    return;
-  }
   const push = kind === 'push';
-  exact(event, ['repositoryId','kind',...(push ? ['sourceSha'] : ['runId','attempt']),...(kind==='publication' && event.productRepositoryId!==undefined?['productRepositoryId']:[])]);
+  const publication = kind==='publication';
+  exact(event, ['repositoryId','kind',...(push ? ['sourceSha'] : ['runId','attempt']),...(publication?['productRepositoryId']:[])]);
   if (push ? !sha(event.sourceSha) : !positive(event.runId) || !positive(event.attempt)) fail('CYCLE_EVENT_ID');
-  if (requestKey !== sha256([repositoryId,kind,...(push ? [event.sourceSha] : [event.runId,event.attempt]),...(event.productRepositoryId===undefined?[]:[event.productRepositoryId])])) fail('CYCLE_EVENT_KEY');
+  if (requestKey !== sha256([repositoryId,kind,...(push ? [event.sourceSha] : [event.runId,event.attempt]),...(publication?[event.productRepositoryId]:[])])) fail('CYCLE_EVENT_KEY');
 }
 const wait = reason => ({status:'WAIT',reason});
 const only = items => items.length === 1 ? items[0] : fail('CYCLE_EVENT_AMBIGUOUS');
@@ -105,34 +84,14 @@ function publicationStarts(state,runId,attempt,sha) {
   return state.domainRecords.filter(r=>r.path.startsWith('evidence/publication/') && r.value.startEvidencePath===null
     && r.value.centralRun.id===runId && r.value.centralRun.runAttempt<=attempt && r.value.centralRun.headSha===sha);
 }
-export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invoke,botId,producer,probeArtifacts,probeReport,probeWorkflow,homepage,officialStage,officialMerge,waitForPreview=delay,registry=registrations}) {
+export async function advanceEvent(event,{snapshot,get,centralGet,invoke,botId,producer,probeArtifacts,probeReport,probeWorkflow,officialStage,officialMerge,selectedDelivery,registry=registrations}) {
   const product=registeredRepository(event,registry);
-  if (officialStage==='prepare' && event.kind!=='run') return wait('OFFICIAL_RELEASE_BUILD_EVENT_REQUIRED');
+  if (officialStage && event.kind!=='run') return wait('OFFICIAL_RELEASE_BUILD_EVENT_REQUIRED');
   if (event.kind==='official-merge') {
     if (!officialMerge) return wait('OFFICIAL_RELEASE_DISABLED');
     const result=await cycleStage('OFFICIAL_MERGE',()=>officialMerge(event));
     if (result.status!=='CYCLE_READY') return result;
     return {...await invoke('dispatch-build',result.cycleId,null,true),cycleId:result.cycleId};
-  }
-  if (isHomepageEvent(event.kind)) {
-    let reason = 'CANDIDATE_HOMEPAGE_NOT_READY';
-    for (const interval of [0, 3000, 10000]) {
-      if (interval) await waitForPreview(interval);
-      try {
-        const result = await homepage({prNumber:event.prNumber,
-          ...(event.kind==='candidate-status' ? {commentId:event.commentId} : {})});
-        if (result.status !== 'WAIT') return result;
-        reason = result.reason;
-      } catch (error) {
-        const code = error?.message;
-        if (code === 'CANDIDATE_REF_DRIFT' || code === 'RELEASE_STATE_MOVED' || code === 'CANDIDATE_STATE_UNAVAILABLE') {
-          reason = 'CANDIDATE_HOMEPAGE_STATE_MOVED';
-          continue;
-        }
-        return {status:'FAILED',reason:publicCodes.has(code) ? code : 'CANDIDATE_HOMEPAGE_FAILED'};
-      }
-    }
-    return {status:'FAILED',reason};
   }
   const state=await cycleStage('LEDGER_READ',snapshot), cycles=state.cycles.map(record=>record.value);
   let cycleId=null;
@@ -153,22 +112,24 @@ export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invo
         return {...await execute('dispatch-build'),cycleId};
       return {...wait('MERGED_SOURCE_REGISTERED'),cycleId};
     }
-    if (event.sourceSha!==head) {
-      const number=state.repository?.candidate?.prNumber;
-      if (!number) return wait('SUPERSEDED_PUSH');
-      const pull=await cycleStage('SOURCE_READ',()=>get('pulls/'+number));
-      if (!pull.merged || pull.merge_commit_sha!==event.sourceSha) return wait('SUPERSEDED_PUSH');
-    }
-    const reconcile=expectedState=>cycleStage('CANDIDATE',()=>candidate(head,expectedState));
-    const result=await reconcile(state.head);
-    if (result.status!=='CYCLE_READY') return result;
-    cycleId=result.cycleId;
-    const build=await execute('dispatch-build');
-    if (head===event.sourceSha && result.sourceSha!==head) await reconcile((await cycleStage('LEDGER_READ',snapshot)).head);
-    return {...build,cycleId};
+    return wait(event.sourceSha===head?'OFFICIAL_MERGE_REQUIRED':'SUPERSEDED_PUSH');
   }
   const readRun=event.kind==='publication'?centralGet:get;
-  const run=await cycleStage('SOURCE_READ',async()=>nativeRunFact(await readRun(`actions/runs/${event.runId}`)));
+  const buildCycle=event.kind==='run'&&cycles.find(cycle=>cycle.officialRelease
+    &&cycle.dispatches.some(request=>request.purpose==='build'&&request.canonicalRunId===event.runId));
+  const readyCycle=buildCycle&&state.domainRecords?.some(record=>record.path===`official/draft/${buildCycle.id}.json`&&record.value.readyAt)
+    ?buildCycle:null;
+  const retainedDelivery=buildCycle?.units?.[0]?.githubDelivery;
+  const retainedCallback=retainedDelivery?.runId===event.runId
+    && (retainedDelivery?.buildAttempt??retainedDelivery?.attempt)===event.attempt;
+  const selectedCallback=event.kind==='run'&&selectedDelivery?.repository===product.name
+    &&selectedDelivery.runId===event.runId&&selectedDelivery.callbackAttempt===event.attempt;
+  const run=await cycleStage('SOURCE_READ',async()=>{
+    const path=`actions/runs/${event.runId}`;
+    const latest=nativeRunFact(await readRun(path));
+    return (readyCycle||retainedCallback||selectedCallback)&&latest.runAttempt!==event.attempt
+      ?nativeRunFact(await readRun(`${path}/attempts/${event.attempt}`)):latest;
+  });
   if (run.id!==event.runId || run.runAttempt!==event.attempt || run.status!=='completed') fail('CYCLE_EVENT_RUN');
   if (event.kind==='publication') {
     if (run.repositoryId!==centralId || run.headRepositoryId!==centralId || run.actorId!==botId || run.headBranch!=='main'
@@ -180,7 +141,7 @@ export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invo
     const prior=await execute('reconcile-publication');
     if(prior.status!=='OBSERVED')return {...prior,cycleId};
   } else if (run.path==='.github/workflows/steward-release-channels.yml'&&run.displayTitle.startsWith('Channels observe ')) {
-    if (officialStage==='prepare') return wait('OFFICIAL_RELEASE_BUILD_EVENT_REQUIRED');
+    if (officialStage) return wait('OFFICIAL_RELEASE_BUILD_EVENT_REQUIRED');
     const workflow=probeWorkflow?await cycleStage('SOURCE_READ',probeWorkflow):null;
     if(probeWorkflow&&(!Number.isSafeInteger(workflow?.id)||workflow.id<=0||workflow.state!=='active'||
        workflow.path!=='.github/workflows/steward-release-channels.yml'))fail('CYCLE_PROBE_ORIGIN');
@@ -205,7 +166,8 @@ export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invo
       : run.displayTitle==='Channels '+d.inputs.mode+' '+d.requestKey).map(request=>({cycle,request}))));
     verifyExecutionSource(run,{repositoryId:product.id,appBotId:botId,cycle,request});
     cycleId=cycle.id;
-    if (officialStage==='prepare') {
+    if(cycle===readyCycle&&request.purpose==='build') return {...await execute('publish'),cycleId};
+    if (officialStage) {
       if (!cycle.officialRelease || request.purpose!=='build' || run.conclusion!=='success') return wait('OFFICIAL_RELEASE_BUILD_EVENT_REQUIRED');
     }
     if (!request.canonicalRunId) {
@@ -250,21 +212,34 @@ export async function main(env=process.env) {
     const processProduct=product=>cycleStage('PRODUCT_ACCESS',async()=>{
       validateEvent(event,requestKey,[product]);
       const repository={id:product.id,full_name:product.name,default_branch:product.defaultBranch};
-      const officialEnabled=env.OFFICIAL_RELEASE_ENABLED==='true' ||
-        String(product.id)===env.STEWARD_OFFICIAL_RELEASE_TRIAL_REPOSITORY_ID;
-      if (officialStage==='prepare' && !officialEnabled) fail('OFFICIAL_RELEASE_DISABLED');
+      const officialEnabled=env.OFFICIAL_RELEASE_ENABLED==='true';
+      if (officialStage && !officialEnabled) fail('OFFICIAL_RELEASE_DISABLED');
       return app.forRepository(product.id,async token=>{
         const io=nativeEvidenceTransport(token),productReader=new NativeEvidenceReader(io,product.name);
         const refresh=()=>cycleStage('LEDGER_READ',()=>fetchState(root,repository,token));
-        const admit=async()=>{
-          if((await mergedRepositoryPolicy(app,repository)).adoption==='paused')fail('RELEASE_REPOSITORY_PAUSED');
-        };
+        const admit=()=>assertReleaseUnpaused(app,product.id);
         const request=async(cycleId,runId,state)=>({directory:(state??await refresh()).directory,writeDirectory:await mkdtemp(join(root,'write-')),
           remote:'https://github.com/'+product.name+'.git',repository:product.name,repositoryId:product.id,defaultBranch:product.defaultBranch,appBotId:app.appBotId,cycleId,runId,identity});
-        const official={enabled:officialEnabled,stage:officialStage,ready:Boolean(env.OFFICIAL_RELEASE_TOKEN),
+        const selectedDelivery=event.kind==='run'&&officialStage!=='select'
+          ?await readFile('official-release-delivery.json','utf8').then(JSON.parse,error=>{
+            if(error.code==='ENOENT')return null;
+            throw error;
+          }):null;
+        const official={enabled:officialEnabled,stage:officialStage,attempt:event.attempt,admit,selectedDelivery,ready:Boolean(env.OFFICIAL_RELEASE_TOKEN),
           readBody:approval=>app.forCandidateReadRepository(product.id,readToken=>readOfficialBody(approval,readToken)),
+          download:async input=>{
+            const selected=selectedDelivery;
+            const archiveDir=env.OFFICIAL_RELEASE_ARCHIVE_DIR;
+            if(!archiveDir||!selected||selected.repository!==input.fullName||selected.artifactId!==input.artifactId||selected.digest!==input.digest)
+              fail('OFFICIAL_RELEASE_ARCHIVE_IDENTITY');
+            const files=await readdir(archiveDir,{withFileTypes:true});
+            if(files.length!==1||!files[0].isFile()) fail('OFFICIAL_RELEASE_ARCHIVE_IDENTITY');
+            await expandWorkflowArtifactArchive(input,join(archiveDir,files[0].name));
+          },
           preparation:async cycleId=>{
-            const previous=JSON.parse(await readFile('official-release-preparation.json','utf8'));
+            let previous;
+            try {previous=JSON.parse(await readFile('official-release-preparation.json','utf8'));}
+            catch(error) {if(error.code==='ENOENT')return wait('OFFICIAL_RELEASE_PREFLIGHT_REQUIRED');throw error;}
             return previous.cycleId===cycleId?previous:wait('OFFICIAL_RELEASE_PREFLIGHT_REQUIRED');
           },
           confirm:async approval=>{
@@ -287,10 +262,6 @@ export async function main(env=process.env) {
           const get=async path=>/^compare\/[a-f0-9]{40}\.\.\.[a-f0-9]{40}\?per_page=1$/.test(path)
             ? JSON.parse(await nativeGhCommand(['api',`repos/${product.name}/${path}`],readToken)) : read.json(path);
           const receipt=await verifyOfficialMerge(event,product,get,app.appBotId);
-          const approved=await readOfficialBody({repository:product.name,repositoryId:product.id,appBotId:app.appBotId,
-            defaultBranch:product.defaultBranch,prNumber:receipt.prNumber,sourceSha:receipt.sourceSha,headSha:receipt.candidateHead,
-            version:receipt.version,pullBodyDigest:receipt.pullBodyDigest,bodyDigest:receipt.bodyDigest},readToken);
-          if(approved!==receipt.body)fail('OFFICIAL_RELEASE_BODY_DIGEST');
           const [config,delivery]=await Promise.all([readSourceFile(get,configPath,receipt.sourceSha),readSourceFile(get,deliveryPath,receipt.sourceSha)]);
           const buildWorkflow=JSON.parse(delivery.toString('utf8')).buildWorkflow??defaultBuildWorkflow;
           const workflow=await readSourceFile(get,buildWorkflow,receipt.sourceSha);
@@ -298,15 +269,7 @@ export async function main(env=process.env) {
             {config,delivery,workflow,controllerSha:run.head_sha,token,io,readBytes:state.readBytes,admit});
         }):undefined;
         return cycleStage('EVENT_ROUTE',()=>advanceEvent(event,{registry:[product],
-          officialStage,officialMerge,
-          homepage: async homepageEvent => {
-            const ref=await productReader.json('git/ref/heads/'+encodeURIComponent(product.defaultBranch));
-            if(await sourceUsesOfficialRelease(productReader,ref.object?.sha))
-              return wait('OFFICIAL_CANDIDATE_ROUTE_REQUIRED');
-            await admit();
-            return app.forCandidateRepository(product.id, async (writer, readToken) =>
-              nativeReleaseCandidate(await request(null, null), {token: writer, readToken, controllerSha: run.head_sha, homepageEvent}));
-          },
+          officialStage,officialMerge,selectedDelivery,
           snapshot:async()=>(await refresh()).snapshot,get:path=>productReader.json(path),probeArtifacts:run=>productReader.pages('actions/runs/'+run.id+'/artifacts','artifacts'),
           probeWorkflow:()=>productReader.json('actions/workflows/steward-release-channels.yml'),
           probeReport:async artifact=>{
@@ -315,19 +278,20 @@ export async function main(env=process.env) {
               directory,policyDirectory:process.cwd(),home:join(root,'download-'+artifact.id)},token);
             return JSON.parse(await readFile(join(directory,'report.json'),'utf8'));
           },centralGet,botId:app.appBotId,producer,
-          candidate:async(expectedSourceSha,expectedStateSha)=>{
-            if(await sourceUsesOfficialRelease(productReader,expectedSourceSha))return wait('OFFICIAL_CANDIDATE_ROUTE_REQUIRED');
-            await admit();
-            return app.forCandidateRepository(product.id,async(writer,candidateReadToken)=>
-              releaseCommand('candidate',await request(null,null),{token:writer,io,centralIo,candidateReadToken,copilotToken:env.STEWARD_COPILOT_TOKEN,
-                controllerSha:run.head_sha,controllerDirectory:process.cwd(),
-                candidateRuntime:{expectedSourceSha,expectedStateSha,checkRepositoryPolicy:releasePolicyGuard(app,repository)}}));
-          },
           invoke:async(command,cycleId,runId,allowProbeDispatch,recoverDispatchOnly)=>releaseCommand(command,await request(cycleId,runId),{token,io,centralIo,allowProbeDispatch,controllerDirectory:process.cwd(),official,recoverDispatchOnly,
             centralInvocation:{runId:run.id,runAttempt:run.run_attempt,controllerSha:run.head_sha,defaultBranch:'main'}})}));
       });
     });
     const result=await cycleStage('PARTICIPATION',()=>withCycleEventProduct(app,event,processProduct));
+    if(officialStage==='select') {
+      const {officialDelivery}=result;
+      if(officialDelivery) {
+        const [owner,repo]=officialDelivery.repository.split('/');
+        await writeFile('official-release-delivery.json',JSON.stringify({...officialDelivery,callbackAttempt:event.attempt})+'\n',{flag:'wx'});
+        await appendFile(env.GITHUB_OUTPUT,`selected=true\nowner=${owner}\nrepo=${repo}\nrepository=${officialDelivery.repository}\nrun_id=${officialDelivery.runId}\nartifact_id=${officialDelivery.artifactId}\n`);
+      }
+      return;
+    }
     if (officialStage==='prepare') {
       const {officialPlan,...summary}=result;
       await writeFile('official-release-preparation.json',JSON.stringify(summary)+'\n',{flag:'wx'});
@@ -338,29 +302,50 @@ export async function main(env=process.env) {
       }
       return;
     }
-    await cycleStage('RESULT_WRITE',()=>writeFile('result.json',JSON.stringify({schemaVersion:1,requestKey,producer,event,status:result.status,reason:result.reason??null,
-      cycleId:result.cycleId??null,publishInvoked:result.publishInvoked===true,
-      ...(isHomepageEvent(event.kind) ? {previewHead:result.head??null} : {})})+'\n',{flag:'wx'}));
-    if (isHomepageEvent(event.kind)) console.log('Candidate preview: '+result.status+' '+result.reason);
+    await cycleStage('RESULT_WRITE',async()=>{
+      await writeFile('result.json',JSON.stringify({schemaVersion:1,requestKey,producer,event,status:result.status,reason:result.reason??null,
+        cycleId:result.cycleId??null,publishInvoked:result.publishInvoked===true,...(result.draft?{draft:result.draft}:{})})+'\n',{flag:'wx'});
+      if(result.status==='DRAFT_READY'&&env.GITHUB_STEP_SUMMARY) {
+        const {url,tag,sourceSha,runId,attempt,releaseId,assets}=result.draft;
+        await appendFile(env.GITHUB_STEP_SUMMARY,[
+          '## 发行草稿和附件就绪','',`[${tag} 草稿](${url}) · Release ID ${releaseId}`,
+          '',`合并提交 \`${sourceSha}\` · [产品构建](${url.split('/releases/')[0]}/actions/runs/${runId}/attempts/${attempt})`,
+          '',...assets.map(({name,assetId})=>`- \`${name}\` · Asset ID ${assetId}`),'',
+        ].join('\n'));
+      }
+    });
   },()=>rm(root,{recursive:true,force:true}));
 }
 const publicCodes=new Set([
   'CYCLE_ACTOR','CYCLE_EVENT_AMBIGUOUS','CYCLE_EVENT_ID','CYCLE_EVENT_KEY','CYCLE_EVENT_KIND',
   'CYCLE_EVENT_RUN','CYCLE_EVENT_SOURCE','CYCLE_POLICY','CYCLE_POLICY_UNPROMOTED',
   'CYCLE_PROBE_ORIGIN','CYCLE_PUBLICATION_ORIGIN','CYCLE_RECORD_RECONSTRUCTION_REQUIRED',
-  'CANDIDATE_HOMEPAGE_BODY_LIMIT','CANDIDATE_HOMEPAGE_MARKERS','CANDIDATE_HOMEPAGE_VERSION','CANDIDATE_HOMEPAGE_UNIT','CANDIDATE_HOMEPAGE_WRITE_REJECTED',
-  'RELEASE_REPOSITORY_PAUSED','REPOSITORY_POLICY_UNAVAILABLE',
-  'BOUNDED_RUN_SOURCE','CANDIDATE_REF_DRIFT','CANDIDATE_PR_HEAD_DRIFT','CANDIDATE_STATE_CONFLICT',
+  'RELEASE_REPOSITORY_PAUSED','RELEASE_PAUSE_POLICY_UNAVAILABLE',
+  'BOUNDED_RUN_SOURCE',
 ]);
 const categories=new Set([
   'BOUNDED_REPOSITORY','CANDIDATE_NOT_ENABLED','NATIVE_HTTP_401','NATIVE_HTTP_403',
   'NATIVE_HTTP_404','NATIVE_HTTP_429','NATIVE_HTTP_500','NATIVE_HTTP_502','NATIVE_HTTP_503','NATIVE_HTTP_504',
 ]);
 const isPublicCode=code=>publicCodes.has(code)||/^OFFICIAL_(?:RELEASE|CANDIDATE)_[A-Z_]+$/.test(code);
+const draftErrorCodes=new Map([
+  ['ARTIFACT_DOWNLOAD_IDENTITY','OFFICIAL_RELEASE_ARCHIVE_IDENTITY'],
+  ['GH_RELEASE: retained draft asset ID changed','OFFICIAL_RELEASE_ASSET_ID_CHANGED'],
+  ['GH_RELEASE: unexpected draft asset','OFFICIAL_RELEASE_ASSET_SET_CHANGED'],
+  ['GH_RELEASE: unproven starter asset','OFFICIAL_RELEASE_ASSET_STARTER_UNPROVEN'],
+  ['GH_RELEASE: same-name different bytes','OFFICIAL_RELEASE_ASSET_BYTES_CHANGED'],
+  ['GH_RELEASE: downloaded bytes mismatch','OFFICIAL_RELEASE_ASSET_BYTES_CHANGED'],
+  ['RELEASE_RECORD: official draft receipt assets changed','OFFICIAL_RELEASE_ASSET_BYTES_CHANGED'],
+  ['GH_RELEASE: draft asset set','OFFICIAL_RELEASE_ASSET_SET_INCOMPLETE'],
+  ['GH_RELEASE: official draft differs from approval','OFFICIAL_RELEASE_DRAFT_IDENTITY'],
+  ['GH_RELEASE: upload response identity','OFFICIAL_RELEASE_ASSET_UPLOAD_UNCONFIRMED'],
+  ['GH_RELEASE: upload not observed','OFFICIAL_RELEASE_ASSET_UPLOAD_UNCONFIRMED'],
+]);
 
 class CycleStageFailure extends Error {
   constructor(stage,error) {
-    super(isPublicCode(error?.message)?error.message:'CYCLE_EVENT_STOPPED');
+    const reason=draftErrorCodes.get(error?.message);
+    super(reason??(isPublicCode(error?.message)?error.message:'CYCLE_EVENT_STOPPED'));
     this.stage=stage;
     this.category=categories.has(error?.message)?error.message:'UNCLASSIFIED';
   }
