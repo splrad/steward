@@ -238,6 +238,9 @@ test('the pinned Action runs only after the gated product and branch checks, in 
   const workflow=YAML.parse(await readFile(new URL('../../.github/workflows/release-cycle-event.yml',import.meta.url),'utf8'));
   const lock=await readFile(new URL('../../.github/workflows/actions.lock',import.meta.url),'utf8');
   const steps=workflow.jobs['release-coordinator'].steps;
+  const cycleEntries=steps.filter(step=>step.run==='node scripts/release-cycle-event.mjs');
+  assert.equal(cycleEntries.length,3);
+  for(const step of cycleEntries)assert.equal(step.env.STEWARD_CENTRAL_TOKEN,'${{ github.token }}');
   const position=id=>steps.findIndex(step=>step.id===id);
   assert.ok(position('official_plan')<position('official_token') && position('official_token')<position('official_preflight')
     && position('official_preflight')<position('official_draft'));

@@ -42,7 +42,7 @@ function fake(contents) {
   pulls:{get:async()=>response(structuredClone(pull)),listFiles:()=>{},listReviews:()=>{}},
   issues:{listComments:()=>{}},actions:{getWorkflowRun:async()=>{},listWorkflowRuns:()=>{},listJobsForWorkflowRunAttempt:()=>{}}}};
 }
-test('first CI adoption, prior and proposed inputs, renames, exact heads and merge group bytes are protected',async()=>{
+test('first CI adoption, prior and proposed inputs, renames and exact heads are protected',async()=>{
   const old='.github/workflows/old.yml',next='.github/workflows/next.yml',ci='.github/product-ci.json';
   const api=fake(new Map([[A+'/'+ci,JSON.stringify([next])],[B+'/'+ci,JSON.stringify([old])]]));
   const changed={filename:next,previous_filename:old,status:'renamed',sha:C};
@@ -51,15 +51,7 @@ test('first CI adoption, prior and proposed inputs, renames, exact heads and mer
   assert.deepEqual([...(await protectedChanges(api,[changed],B,A))].sort(),[next,old].sort());
   assert.equal(await authorizePull(api,1,A,'trunk'),true);
   review.commit_id=B;
-  await assert.rejects(authorizePull(api,1,A,'trunk'),/required/);review.commit_id=A;
-  const groupRepo={...repo,default_branch:'trunk'};
-  const compare={files:[{...changed,sha:B}],commits:[{sha:A}],total_commits:1};
-  api.rest.repos.compareCommitsWithBasehead=async()=>response(compare);
-  api.rest.repos.listPullRequestsAssociatedWithCommit=()=>{};
-  const prior=api.paginate;api.paginate=async method=>method===api.rest.repos.listPullRequestsAssociatedWithCommit?
-    [{number:1,head:{sha:A},base:{ref:'trunk'},state:'open'}]:prior(method);
-  await assert.rejects(checkEvent(api,{repository:groupRepo,merge_group:{base_sha:B,head_sha:A}}),/without exact pull approval/);
-  compare.files=[changed];await checkEvent(api,{repository:groupRepo,merge_group:{base_sha:B,head_sha:A}});
+  await assert.rejects(authorizePull(api,1,A,'trunk'),/required/);
   const first=fake(new Map([[A+'/'+ci,JSON.stringify([next])]]));
   assert.ok((await protectedChanges(first,[{filename:ci}],B,A)).has(ci));
 });

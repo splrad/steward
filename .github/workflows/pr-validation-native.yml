@@ -1,10 +1,8 @@
 name: SPLRAD Steward / Native Validation
-run-name: ${{ github.event_name == 'pull_request' && format('Native validation PR {0} / {1} / {2}', github.event.pull_request.number, github.event.pull_request.head.sha, github.event.pull_request.base.ref) || github.event_name == 'merge_group' && format('Native validation merge_group {0} {1}', github.event.merge_group.base_sha, github.event.merge_group.head_sha) || format('Native validation {0}', github.ref) }}
+run-name: ${{ github.event_name == 'pull_request' && format('Native validation PR {0} / {1} / {2}', github.event.pull_request.number, github.event.pull_request.head.sha, github.event.pull_request.base.ref) || format('Native validation {0}', github.ref) }}
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-  merge_group:
-    types: [checks_requested]
   push:
     branches: ['**']
 permissions:
@@ -17,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   scope:
-    if: github.event_name == 'pull_request' || (github.event_name == 'merge_group' && github.repository_id == '1296724484' && github.event.merge_group.base_ref == 'refs/heads/main') || (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch)
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch)
     name: Validation scope
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -42,7 +40,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: target
           fetch-depth: 0
           persist-credentials: false
@@ -81,7 +79,7 @@ jobs:
           VALIDATION_EVIDENCE: validation-scope.json
           REPOSITORY_POLICY_TOKEN: ${{ github.token }}
       - name: Authorize repository configuration
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        if: github.event_name == 'pull_request'
         working-directory: policy
         env:
           GH_TOKEN: ${{ github.token }}
@@ -397,7 +395,7 @@ jobs:
   summary:
     name: SPLRAD Validation
     needs: [scope, source, governance, dependency, docs]
-    if: ${{ always() && (github.event_name == 'pull_request' || (github.event_name == 'merge_group' && github.repository_id == '1296724484' && github.event.merge_group.base_ref == 'refs/heads/main') || (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch)) }}
+    if: ${{ always() && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:

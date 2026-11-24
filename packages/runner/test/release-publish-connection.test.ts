@@ -476,7 +476,7 @@ it.each(['legacy','conditional','reviewed-conditional'])('prepares a native Node
     const body=target.publicBody;
     expect(body).toContain('~~~sh\nnpm install -g ./fixture-cli.tgz\n~~~');
     expect(body).toContain('alt="verified-contributor" width="48"');
-    expect(body.includes('贡献者 GitHub ID')).toBe(!retainedConditional);
+    expect(body.includes('<summary>查看贡献者名单</summary>')).toBe(!retainedConditional);
     expect(body).toContain('## 版本记录');
     const before=source[notesPath]!;
     source[notesPath]=before.replace('/fixture-cli.tgz>)','/internal.tgz>)');
