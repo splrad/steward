@@ -77,6 +77,7 @@ jobs:
       - name: Verify candidate against the trusted base contract
         shell: bash
         env:
+          GH_TOKEN: ${{ (needs.plan.outputs.profile == 'tool' || needs.plan.outputs.profile == 'docs') && github.token || '' }}
           PROFILE: ${{ needs.plan.outputs.profile }}
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -128,6 +129,7 @@ jobs:
       - name: Verify changed candidate lock assets on this platform
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
