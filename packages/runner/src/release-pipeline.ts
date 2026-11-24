@@ -5,13 +5,12 @@ import { tmpdir } from 'node:os';
 import registrations from '../../../config/release/event-repositories.json' with { type: 'json' };
 import { nativeGhCommand, NativeGitHubRelease, nativeReleaseDownload, releaseAssetNames, releaseReadIsAnonymous, type GhCommand, type ReleaseDownload } from './gh-release.js';
 import { localGitSnapshot, safeGitPath } from './git-snapshot.js';
-import type { CandidateSession } from './release-candidate.js';
 import { readLegacyReleaseTemplate, type HistoricalTemplate } from './release-template-source.js';
 import { selectReleaseProducers, producerArtifactName } from './release-run.js';
 import { jobFact } from './native-release-evidence.js';
 import { originalJobExecutions, type NativeJobAttempt } from '../../core/src/native-job-origins.js';
 import { verifySealedArtifacts, validateReleaseManifest, fileDigest, type ReleaseManifest } from './release-artifacts.js';
-import { inspectDeclaredAsset, inspectWorkflowAsset, readNativeUnitVersion, WorkflowDeliveryValidationError } from './release-native.js';
+import { inspectWorkflowAsset, readNativeUnitVersion, WorkflowDeliveryValidationError } from './release-native.js';
 import { committedVersionNotes } from '../../core/src/release-template.js';
 import { downloadNativeArtifact, downloadWorkflowArtifact } from './native-artifact-download.js';
 import { Octokit } from '@octokit/rest';
@@ -32,7 +31,7 @@ import { parseDocument } from 'yaml';
 import { Version } from 'release-please/build/src/version.js';
 import { TagName } from 'release-please/build/src/util/tag-name.js';
 import { productReleaseTemplatePath, sharedReleaseTemplatePath, projectFrozenReleaseDownloads, renderFrozenReleaseNotes } from '../../core/src/release-template.js';
-import { inspectProductArtifacts, validateProductManifest, validateWorkflowManifest, type ProductReleaseManifest, type WorkflowReleaseManifest } from './release-artifacts.js';
+import { validateProductManifest, validateWorkflowManifest, type ProductReleaseManifest, type WorkflowReleaseManifest } from './release-artifacts.js';
 
 export interface ProductBuildInput {
   cycleId: string; operationKey: string; sourceSha: string; controllerSha: string;
@@ -607,20 +606,6 @@ async function renderPipelineNotes(record: BuildPipelineRecord, unitId: string, 
     repositoryAuthors: record.delivery.repositoryAuthors, ...(record.contributorMode ? {contributorMode:record.contributorMode} : {}),
     selectedDownloads: publicNames, assets: unit.assets.filter(asset=>publicNames.has(asset.name)).map(asset => ({ ...asset, description: delivery.assets.find(item => item.id === asset.id)?.description })), channels: delivery.channels.filter(channel=>channel.required && channel.id!=='github-release') });
 }
-export async function pipelineInspect(record: BuildPipelineRecord, unitId: string, selection: Awaited<ReturnType<typeof pipelineProducers>>,
-  directory: string, controllerDirectory: string, home: string) {
-  const source = pipelineSource(record, unitId), unit = record.delivery.units.find(unit => unit.id === unitId)!;
-  if (selection.producers.length !== source.unit.builds.length || new Set(selection.producers.map(producer => producer.buildId)).size !== source.unit.builds.length
-    || selection.producers.some(producer => !source.unit.builds.some(build => build.id === producer.buildId) || (producer.runId??record.runId)===record.runId && producer.attempt > record.runAttempt)) fail('producer set');
-  await mkdir(home, { recursive: false });
-  return inspectProductArtifacts(unit, directory, { repositoryId: record.repositoryId, fullName: record.fullName, unitId, cycleId: record.cycleId,
-    ...(record.delivery.buildWorkflow === undefined ? {} : {buildWorkflow:record.delivery.buildWorkflow}),
-    requestKey: record.requestKey, version: source.unit.version, packageVersion: source.unit.packageVersion, tag: source.unit.tag,
-    sourceSha: record.sourceSha, controllerSha: record.controllerSha, buildRef: record.buildRef, deliverySha256: record.deliverySha256,
-    templateSha256: record.templateSha256, runId: record.runId, attempt: record.runAttempt, toolLocks: record.toolLocks, producers: selection.producers },
-  (path, asset) => inspectDeclaredAsset(path, asset, source.unit.packageVersion, controllerDirectory, home));
-}
-
 function fail(reason: string): never { throw new Error(`RELEASE_PIPELINE: ${reason}`); }
 function assertReviewedNotesPath(unit: DeliveryUnit, identity: { notesPath?: string } | undefined): void {
   if (!identity || (identity.notesPath ?? `.release-notes/${unit.id}.md`) !== unit.notesPath)
@@ -982,6 +967,22 @@ async function readWorkflowBuild(context:EvidenceContext,request:CycleRecord['di
 }
 const successfulBuild=(run:Awaited<ReturnType<typeof readWorkflowBuild>>)=>run.status==='completed'&&run.conclusion==='success';
 
+export async function selectWorkflowGithubDelivery(context:EvidenceContext,reader:NativeEvidenceReader,pages:NativePages,successAttempt?:number) {
+  const {cycle}=context,units=githubUnits(cycle),requests=cycle.dispatches.filter(dispatch=>dispatch.purpose==='build');
+  const request=requests[0];
+  if(!cycle.officialRelease||units.length!==1||requests.length!==1||!request?.canonicalRunId)
+    fail('official GitHub delivery binding');
+  const unit=units[0]!,frozen=unit.githubDelivery;
+  const run=await readWorkflowBuild(context,request,reader,frozen?(frozen.buildAttempt??frozen.attempt):successAttempt);
+  if(!successfulBuild(run)) fail('completed product Run required');
+  const jobName='delivery/'+unit.id;
+  const receipt=await githubDeliveryArtifact({fullName:context.repository,repositoryId:context.repositoryId,
+    sourceSha:cycle.sourceSha,runId:run.id,attempt:run.runAttempt},unit.id,jobName,pages,frozen?.attempt,
+    workflowDeliveryBuildAttempt(context,request,reader,run,jobName,pages,Boolean(frozen)));
+  if(frozen&&!sameWorkflowDelivery(receipt,frozen)) fail('workflow delivery receipt changed');
+  return {...receipt, name:['delivery','github-release',context.repositoryId,unit.id,cycle.sourceSha,receipt.runId,receipt.attempt].join('-')};
+}
+
 function workflowDeliveryBuildAttempt(context:EvidenceContext,request:CycleRecord['dispatches'][number],reader:NativeEvidenceReader,
   build:Awaited<ReturnType<typeof readWorkflowBuild>>,jobName:string,pages:NativePages,retained:boolean):DeliveryBuildAttempt {
   const ref='repos/'+context.repository+'/actions/runs/'+build.id;
@@ -1131,6 +1132,7 @@ async function prepareWorkflowPublication(options:{
   reader:NativeEvidenceReader;pages:NativePages;source:(path:string)=>Promise<string>;template:string;officialBody?:string;
   root:string;controllerDirectory:string;token:string;history:{path:string;commit:string;value:unknown}[];
   handoff:WorkflowHandoff;unavailable?:(unitId:string)=>void;reject?:(unitId:string,reason:string)=>void;
+  selectedDelivery?:WorkflowDeliveryReceipt;
 },download:typeof downloadWorkflowArtifact) {
   const {context,delivery,units,versions,releasePlease,reader,pages,source,root,controllerDirectory,token,history,handoff}=options;
   const {cycle}=context,requests=cycle.dispatches.filter(dispatch=>dispatch.purpose==='build');
@@ -1138,7 +1140,8 @@ async function prepareWorkflowPublication(options:{
     return {status:'WAIT' as const,reason:'BUILD_BINDING_REQUIRED',publishInvoked:false as const};
   const request=requests[0]!;
   const hasFrozen=units.some(unit=>unit.githubDelivery);
-  const latest=units.some(unit=>!unit.githubDelivery)?await readWorkflowBuild(context,request,reader).catch(error=>{
+  const selected=options.selectedDelivery;
+  const latest=units.some(unit=>!unit.githubDelivery)?await readWorkflowBuild(context,request,reader,selected?.buildAttempt??selected?.attempt).catch(error=>{
     if(!hasFrozen||!isWorkflowDeliveryUnavailable(error))throw error;
     return null;
   }):null;
@@ -1168,13 +1171,15 @@ async function prepareWorkflowPublication(options:{
     const directory=join(root,unit.id);
     let nativeReceipt:WorkflowDeliveryReceipt;
     try {
-      const frozen=target.githubDelivery,jobName='delivery/'+unit.id;
-      const run=frozen?await readWorkflowBuild(context,request,reader,frozen.buildAttempt??frozen.attempt):latest;
+      const frozen=target.githubDelivery??selected,jobName='delivery/'+unit.id;
+      const run=target.githubDelivery
+        ?await readWorkflowBuild(context,request,reader,target.githubDelivery.buildAttempt??target.githubDelivery.attempt):latest;
       if(!run||!successfulBuild(run))unavailable('original GitHub delivery build not ready: '+unit.id);
       nativeReceipt=await githubDeliveryArtifact({fullName:context.repository,repositoryId:context.repositoryId,sourceSha:cycle.sourceSha,
         runId:run.id,attempt:run.runAttempt},unit.id,jobName,pages,frozen?.attempt,
         workflowDeliveryBuildAttempt(context,request,reader,run,jobName,pages,Boolean(frozen)));
-      if(target.githubDelivery&&!sameWorkflowDelivery(nativeReceipt,target.githubDelivery))fail('workflow delivery receipt changed');
+      if(frozen&&!sameWorkflowDelivery(nativeReceipt,frozen)||selected&&!sameWorkflowDelivery(nativeReceipt,selected))
+        fail('workflow delivery receipt changed');
       await download({fullName:context.repository,artifactId:nativeReceipt.artifactId,digest:nativeReceipt.digest,directory,
         policyDirectory:controllerDirectory,home:join(root,'download-'+unit.id)},token);
     } catch(error) {
@@ -1224,9 +1229,11 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
   gh: GhCommand = args => nativeGhCommand(args, token), io: EvidenceTransport = nativeEvidenceTransport(token),
   controllerIo:EvidenceTransport=nativeEvidenceTransport(undefined),download:ReleaseDownload=nativeReleaseDownload(token),
   history:{path:string;commit:string;value:unknown}[]=[],unitIds?:ReadonlySet<string>,
-  workflowDownload=downloadWorkflowArtifact,unavailable?:(unitId:string)=>void,reject?:(unitId:string,reason:string)=>void,officialBody?:string) {
+  workflowDownload=downloadWorkflowArtifact,unavailable?:(unitId:string)=>void,reject?:(unitId:string,reason:string)=>void,officialBody?:string,
+  selectedDelivery?:WorkflowDeliveryReceipt) {
   const { cycle } = context, reader = new NativeEvidenceReader(io, context.repository);
   const units=githubUnits(cycle).filter(unit=>!unitIds||unitIds.has(unit.id));
+  if(selectedDelivery&&(!cycle.officialRelease||units.length!==1))fail('official workflow delivery selection');
   if(unitIds&&units.length!==unitIds.size)fail('unknown publication unit');
   const original=await readCycleDelivery(context,history,io);
   if(original.legacy) {
@@ -1261,7 +1268,12 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
   let legacyNotesTemplate: LegacyNotesTemplate | undefined;
   const currentTemplateText = currentTemplate.bytes.toString('utf8');
   let reviewedNotesTemplate: BuildPipelineRecord['reviewedNotesTemplate'];
-  let reviewedIdentity: CandidateSession['identity'] | undefined;
+  let reviewedIdentity: {
+    authorsDigest: string;
+    noteTemplate?: string;
+    contributorMode?: 'github-authors';
+    units: (Parameters<typeof replayReleaseContributors>[0] & { id: string })[];
+  } | null | undefined;
   if(delivery.schemaVersion!==3) {
     const chunks=mergedCandidateChunks(history,cycle.id);
     if(chunks.length) {
@@ -1310,6 +1322,7 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
       },
       root,controllerDirectory,token,history,handoff:original.handoff!,
       ...(officialBody===undefined?{}:{officialBody}),
+      ...(selectedDelivery?{selectedDelivery}:{}),
       ...(unavailable?{unavailable}:{}),...(reject?{reject}:{})},workflowDownload);
   }
   if (conditional && !reviewedIdentity) fail('frozen candidate identity required');

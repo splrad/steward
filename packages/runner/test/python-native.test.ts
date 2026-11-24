@@ -5,7 +5,6 @@ import {join,resolve} from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {createHash} from 'node:crypto';
-import YAML from 'yaml';
 import {nativeReleaseInspector} from '../src/release-native.js';
 import {collectFileBuildManifest} from '../src/build-manifest.js';
 import {inspectProductArtifacts,type ProductReleaseManifest} from '../src/release-artifacts.js';
@@ -122,12 +121,4 @@ it('checks gzip CRC after tar end blocks and padding',async()=>{
   await writeFile(config,JSON.stringify({source:join(fixtures,asset.file),output,mode:'gzip-crc'}));
   await promisify(execFile)(python,['-I',mutation,config],{env:isolatedBuildEnvironment(process.env,f.root),cwd:f.root,timeout:30000,windowsHide:true});
   await expect(f.inspector.inspectPath!(output)).rejects.toBeInstanceOf(BuildContractError);
-});
-it('installs the exact shared inspection group before the real product evidence consumer',async()=>{
-  const workflow=YAML.parse(await readFile('.github/workflows/product-release.yml','utf8')),steps=workflow.jobs.inspect.steps;
-  const installed=steps.findIndex((s:any)=>s.name==='Install locked native metadata reader'),inspected=steps.findIndex((s:any)=>s.name==='business-evidence');
-  expect(installed).toBeGreaterThan(0);expect(inspected).toBeGreaterThan(installed);
-  expect(steps[installed].run).toContain('uv sync --project controller/tools/template --frozen --only-group release-inspection --no-build');
-  expect(steps[installed].env).toBeUndefined();expect(steps[installed].run).not.toContain('secrets');
-  await access(python);
 });

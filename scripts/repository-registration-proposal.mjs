@@ -41,15 +41,9 @@ export async function registrationProposal(repo, read, productPaths) {
     if (choice.deploy && !choice.build) pending.push('确认公开部署所需的站点构建选择');
     if (choice.deploy) pending.push('确认公开部署授权');
   }
-  const matrix = model.publish?.jobs?.build?.strategy?.matrix?.include;
-  const rows = Array.isArray(matrix) ? matrix : [];
-  const releaseDetails = new Map((model.delivery?.units ?? []).map(unit => [unit.id, {
-    assets: new Map(unit.assets.map(asset => [asset.id, asset.name])),
-    targets: rows.filter(row => row?.unit === unit.id && typeof row.target === 'string' && row.target).map(row => row.target)
-  }]));
   const nativeReleaseSite=nativeReleaseUnits&&site?.source==='release'?site:null;
   return { policy: checkedRegistration({ schemaVersion: 1, repositoryId: repo.id, repository: repo.full_name,
-    productCi, release, site:nativeReleaseSite?null:site }, repo.id), pending, releaseDetails, productCiApplicable,
+    productCi, release, site:nativeReleaseSite?null:site }, repo.id), pending, productCiApplicable,
     releaseIncomplete, nativeReleaseUnits, nativeReleaseSite };
 }
 

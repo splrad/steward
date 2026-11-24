@@ -33,6 +33,39 @@ const decode = (bytes: Uint8Array): string => {
 };
 const sorted = (values: readonly string[]) => [...values].sort();
 
+/** A signed candidate on an older parent has the same Git delta only if all its base entries still match. */
+export function candidateBaseUnchanged(directory: string, previousSha: string, currentSha: string, paths: readonly string[]) {
+  sourceSha(previousSha);
+  sourceSha(currentSha);
+  if (!paths.length) throw Error('OFFICIAL_CANDIDATE_C2_BASE_UNAVAILABLE');
+  for (const path of paths) assertDeliveryPath(path);
+  const home = mkdtempSync(join(tmpdir(), 'steward-candidate-base-'));
+  try {
+    const git = (...args: string[]) => {
+      try {
+        return execFileSync('git', ['--no-replace-objects', '-c', 'core.hooksPath=', ...args], {
+          cwd: directory, env: { ...isolatedBuildEnvironment(process.env, home), GIT_NO_LAZY_FETCH: '1' },
+          stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8', windowsHide: true,
+        });
+      } catch (error) {
+        if ((error as { status?: number }).status === 1) return null;
+        throw Error('OFFICIAL_CANDIDATE_C2_BASE_UNAVAILABLE');
+      }
+    };
+    if (git('merge-base', '--is-ancestor', previousSha, currentSha) === null ||
+      git('diff', '--quiet', '--no-ext-diff', '--no-textconv', '--no-renames', previousSha, currentSha,
+        '--', ...paths.map(path => ':(literal)' + path)) === null) return false;
+    // A blob or submodule at a parent path can block an addition with an otherwise absent target.
+    const parents = [...new Set(paths.flatMap(path => {
+      const parts = path.split('/');
+      return parts.slice(0, -1).map((_, index) => ':(literal)' + parts.slice(0, index + 1).join('/'));
+    }))];
+    if (!parents.length) return true;
+    const entries = git('ls-tree', '-z', '--full-tree', currentSha, '--', ...parents);
+    return entries !== null && entries.split('\0').filter(Boolean).every(entry => entry.startsWith('040000 tree '));
+  } finally { rmSync(home, { recursive: true, force: true }); }
+}
+
 /** Read immutable objects only. Never execute product scripts, diff drivers, filters or hooks.
  * PR associations are supplementary evidence and are deliberately not a prerequisite.
  * This snapshot is input evidence, not a publication approval or a generated user narrative.

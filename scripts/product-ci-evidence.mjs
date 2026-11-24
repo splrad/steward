@@ -167,6 +167,7 @@ async function main(){
   const event=JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH,'utf8'));
   const type=process.env.GITHUB_EVENT_NAME,paths=JSON.parse(process.env.PRODUCT_WORKFLOWS);
   const head=event.pull_request?.head.sha??event.after;
+  if(!head)throw Error('Missing Product CI event head');
   const root=process.env.GITHUB_API_URL+'/repos/'+event.repository.full_name+'/';
   async function read(url){
     const response=await readEvidenceResponse(()=>fetch(url,{redirect:'error',headers:{Authorization:'Bearer '+process.env.GH_TOKEN,

@@ -2,9 +2,8 @@ import {GitHubRetryError,rejectedDispatch,retryAfterTime} from './bounded-retry-
 import {channelWorkflow as channelPath,defaultBuildWorkflow as publishPath,dispatchWorkflow,isBuildWorkflow} from '../../../packages/core/src/release-workflow.js';
 import {PendingPromotion,promotionMessage} from './release-promotion.js';
 import {promotedController} from './bounded-controller.js';
-import {readCycle} from './bounded-winget-evidence.js';
+import {readCycle,readOfficialDraftReceipt} from './bounded-winget-evidence.js';
 import {BoundedGitHub, candidateReader, CENTRAL, TARGET, digest, ensure, type ProductTarget, type BoundedEnv, type GitReader} from './bounded-recheck-github.js';
-import {legacyReleaseHandoff,legacyReleaseHandoffReason} from './legacy-release-handoff.js';
 
 const workflow = 'release-cycle-event.yml';
 const candidateWorkflow = 'release-candidate-event.yml';
@@ -16,7 +15,6 @@ const pendingLabel = 'autorelease: pending', taggedLabel = 'autorelease: tagged'
 function completesOfficialLabels(action: unknown, label: unknown): boolean {
   return (action === 'labeled' && label === taggedLabel) || (action === 'unlabeled' && label === pendingLabel);
 }
-const deliveryGuid = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
 type Hint = {repositoryId: number; kind: 'push'; sourceSha: string}
   | {repositoryId: number; kind: 'candidate-head'; prNumber: number; head: string; delivery?: string}
   | {repositoryId: number; kind: 'candidate-status'; prNumber: number; commentId: number}
@@ -26,25 +24,17 @@ type Hint = {repositoryId: number; kind: 'push'; sourceSha: string}
   | {repositoryId: number; kind: 'run'; runId: number; attempt: number} | {repositoryId:number;kind:'publication';runId:number;attempt:number;productRepositoryId?:number};
 type Stage = 'prepare' | 'confirm' | 'received' | 'unknown';
 type SignedSource=Pick<ProductTarget,'name'|'defaultBranch'>;
-type ReleaseIntake={hint:Hint;source:SignedSource;tries:number;next:number;handoffRedelivery?:true};
-type Relay = {hint: Hint; stage: Stage; tries: number; next: number; policy: string; reserved: number; officialCandidate?: true; officialRelease?: true; runId?: number; reason?: string; waitingFor?:string; resumedFor?:string; paused?:boolean;handoffRedelivery?:true};
+type ReleaseIntake={hint:Hint;source:SignedSource;tries:number;next:number};
+type Relay = {hint: Hint; stage: Stage; tries: number; next: number; policy: string; reserved: number; officialCandidate?: true; officialRelease?: true; runId?: number; reason?: string; waitingFor?:string; resumedFor?:string; paused?:boolean};
 
-const ownerId = (hint: Hint) => hint.kind === 'publication' ? hint.productRepositoryId ?? TARGET.id : hint.repositoryId;
 const legacyCandidate = (hint: Hint) => hint.kind === 'candidate-head' || hint.kind === 'candidate-status';
 const officialCandidateHint = (hint: Hint) => hint.kind==='official-edit'||hint.kind==='official-refresh'||hint.kind==='official-merge';
 const legacyCandidateRelay = (relay: Relay) => legacyCandidate(relay.hint) ||
-  (relay.hint.kind === 'push' && !relay.officialCandidate);
-const needsQualification = (relay: Relay) => relay.stage==='prepare' && relay.paused && !relay.reserved && !relay.policy &&
-  relay.reason===legacyReleaseHandoffReason && (relay.hint.kind==='push'||officialCandidateHint(relay.hint));
+  (relay.hint.kind === 'push' && !relay.officialCandidate) || relay.reason==='LEGACY_RELEASE_HANDOFF';
 const version3Candidate = (target: ProductTarget | undefined): target is ProductTarget & {officialCandidate:true;sourceSha:string} =>
   target?.officialCandidate === true && sha(target.sourceSha);
 const officialPush = (target: ProductTarget | undefined, hint: Extract<Hint,{kind:'push'}>) =>
   version3Candidate(target) && target.sourceSha === hint.sourceSha;
-async function currentPush(g:GitReader,target:ProductTarget,hint:Extract<Hint,{kind:'push'}>){
-  if(version3Candidate(target))return officialPush(target,hint);
-  const ref=await g.json(target.id,`/repos/${target.name}/git/ref/heads/${encodeURIComponent(target.defaultBranch)}`);
-  return ref.ref==='refs/heads/'+target.defaultBranch&&ref.object?.type==='commit'&&ref.object.sha===hint.sourceSha;
-}
 const hexDigest = (v: unknown): v is string => typeof v === 'string' && v.length === 64 && /^[a-f0-9]+$/.test(v);
 function officialCycle(cycle: Awaited<ReturnType<typeof readCycle>>['cycle'], buildRunId: number): boolean {
   const receipt=cycle.officialRelease;
@@ -64,31 +54,59 @@ function officialCycle(cycle: Awaited<ReturnType<typeof readCycle>>['cycle'], bu
         dispatch.canonicalRunId === delivery.runId).length === 1);
 }
 
+export function officialDraftReady(value: any, hint: Hint, target: Pick<ProductTarget,'id'|'name'>,
+  cycle: Awaited<ReturnType<typeof readCycle>>['cycle'], archived: any): boolean {
+  if (value.status !== 'DRAFT_READY') return false;
+  const ready = value.draft, unit = cycle.units?.[0], delivery = unit?.githubDelivery;
+  ensure(typeof archived?.url === 'string' && URL.canParse(archived.url), 'PUBLICATION_DRAFT_RECEIPT');
+  const url = new URL(archived.url);
+  ensure(value.reason === 'OFFICIAL_DRAFT_ATTACHMENTS_READY' && value.publishInvoked === false &&
+    ready && officialCycle(cycle, ready.runId) && value.cycleId === cycle.id && ready.sourceSha === cycle.sourceSha &&
+    target.id === hint.repositoryId && archived.schemaVersion === 1 && archived.repositoryId === target.id &&
+    archived.cycleId === cycle.id && Number.isFinite(Date.parse(archived.readyAt)) &&
+    positive(ready.releaseId) && ready.releaseId === archived.releaseId && ready.releaseId === unit.releaseId &&
+    typeof ready.tag === 'string' && ready.tag.length > 0 && ready.tag === unit.tag &&
+    ready.runId === delivery.runId && positive(ready.attempt) &&
+    ready.attempt === (delivery.buildAttempt ?? delivery.attempt) && ready.url === archived.url &&
+    url.origin === 'https://github.com' && !url.username && !url.password && url.pathname.startsWith(`/${target.name}/releases/`) &&
+    Array.isArray(ready.assets) && ready.assets.length > 0 &&
+    ready.assets.every((file: any) => positive(file.assetId) && typeof file.name === 'string' && file.name.length > 0) &&
+    Array.isArray(archived.assets) && ready.assets.length === archived.assets.length &&
+    ready.assets.every((file: any, index: number) => file.assetId === archived.assets[index]?.assetId &&
+      file.name === archived.assets[index]?.name) &&
+    (hint.kind === 'official-merge' ? value.cycleId === 'pr-' + hint.prNumber + '-' + hint.sourceSha &&
+        cycle.officialRelease.headSha === hint.head :
+      hint.kind === 'run' && ready.runId === hint.runId), 'PUBLICATION_DRAFT_RECEIPT');
+  return true;
+}
+
 async function boundBuildCycle(g:GitReader,run:any) {
-  const cycleId=run.head_branch.slice('steward/build/'.length),{cycle}=await readCycle(g,cycleId);
+  const cycleId=run.head_branch.slice('steward/build/'.length),read=await readCycle(g,cycleId),{cycle}=read;
   const matches=cycle.dispatches?.filter((d:any)=>d.purpose==='build' && d.ref===run.head_branch &&
     d.executionSha===run.head_sha && d.sourceSha===cycle.sourceSha && cycle.sourceSha===run.head_sha &&
     d.workflowId===run.workflow_id && dispatchWorkflow(d)===run.path && (d.canonicalRunId===null || d.canonicalRunId===run.id) &&
     (d.buildWorkflow===undefined?run.display_title==='Build '+d.operationKey:run.display_title.includes(d.operationKey)) &&
     Date.parse(run.created_at)>=Math.floor(Date.parse(d.sentAt)/1000)*1000);
   ensure(matches?.length===1,'RELEASE_BUILD_DISPATCH');
-  return cycle;
+  return read;
 }
 
-async function officialPublication(g:GitReader,parent:Relay,installation:string|undefined):Promise<boolean> {
+async function officialPublication(g:GitReader,parent:Relay,installation:string|undefined) {
   const hint=parent.hint;
-  if (hint.kind!=='official-merge' && hint.kind!=='run') return false;
+  if (hint.kind!=='official-merge' && hint.kind!=='run') return null;
   const scoped=await candidateReader(g,hint.repositoryId),target=scoped.target;
-  if (!version3Candidate(target)) return false;
-  if (hint.kind==='official-merge') return true;
+  if (!version3Candidate(target)) return null;
+  if (hint.kind==='official-merge') return {scoped,target,read:undefined};
   const run=await scoped.json(target.id,`/repos/${target.name}/actions/runs/${hint.runId}/attempts/${hint.attempt}`);
-  if (!isBuildWorkflow(run?.path) || run.repository?.id!==target.id || !sha(run.head_sha) || !positive(run.workflow_id)) return false;
+  if (!isBuildWorkflow(run?.path) || run.repository?.id!==target.id || !sha(run.head_sha) || !positive(run.workflow_id)) return null;
   // Check the original native Run against the final frozen cycle. A prior relay
   // may have claimed the build before GitHub delivery was recorded.
   const product={...target,publishWorkflowId:run.workflow_id,buildWorkflow:run.path};
   const observed=releaseHint('workflow_run',{action:'completed',repository:{id:target.id,full_name:target.name,
     default_branch:target.defaultBranch,fork:false,archived:false},installation:{id:Number(installation)},workflow_run:run},installation,product);
-  return Boolean(observed && relayKey(observed)===relayKey(hint) && officialCycle(await boundBuildCycle(scoped,run),run.id));
+  if (!observed || relayKey(observed)!==relayKey(hint)) return null;
+  const read=await boundBuildCycle(scoped,run);
+  return officialCycle(read.cycle,run.id)?{scoped,target,read}:null;
 }
 
 type RelayProduct=ProductTarget & {publishWorkflowId?:number;channelWorkflowId?:number;buildWorkflow?:string};
@@ -99,7 +117,7 @@ async function workflowProduct(g:GitReader,target:ProductTarget,path:string):Pro
   ensure(workflow.path===path&&positive(workflow.id)&&workflow.state==='active','RELEASE_NATIVE_WORKFLOW');
   return {...target,...(path===channelPath?{channelWorkflowId:workflow.id}:{publishWorkflowId:workflow.id,buildWorkflow:path})};
 }
-export function releaseHint(event: string, p: any, installation: string | undefined,product:RelayProduct=legacyWorkflowTarget, deliveryId=''): Hint | undefined {
+export function releaseHint(event: string, p: any, installation: string | undefined,product:RelayProduct=legacyWorkflowTarget): Hint | undefined {
   const repo = p.repository;
   if (p.installation?.id === Number(installation) && repo?.id === CENTRAL.id && repo.full_name === CENTRAL.name &&
       event === 'workflow_run' && p.action === 'completed' && p.workflow_run?.path === '.github/workflows/'+workflow &&
@@ -111,13 +129,6 @@ export function releaseHint(event: string, p: any, installation: string | undefi
       repo.full_name !== product.name || repo.default_branch !== product.defaultBranch || repo.archived !== false || repo.fork !== false) return;
   if (event === 'push' && p.ref === 'refs/heads/'+product.defaultBranch && p.deleted === false && sha(p.after) && !/^0+$/.test(p.after))
     return {repositoryId: product.id, kind: 'push', sourceSha: p.after};
-  if (event === 'issue_comment' && p.action === 'created') {
-    const issue = p.issue, comment = p.comment;
-    if (issue?.pull_request && issue.state === 'open' && positive(issue.number) && positive(comment?.id)
-      && p.sender?.id === stewardBotId && comment.user?.id === stewardBotId
-      && typeof comment.body === 'string' && /^<!-- steward:candidate-status:[a-f0-9]{64} -->/.test(comment.body))
-      return {repositoryId: product.id, kind:'candidate-status', prNumber:issue.number, commentId:comment.id};
-  }
   if (event === 'pull_request' && typeof p.pull_request?.head?.ref === 'string' &&
       p.pull_request.head.ref.startsWith('release-please--branches--')) {
     const pull = p.pull_request;
@@ -147,24 +158,6 @@ export function releaseHint(event: string, p: any, installation: string | undefi
     }
     return;
   }
-  if (event === 'pull_request' && ['opened','synchronize','edited'].includes(p.action)) {
-    const pull = p.pull_request;
-    const head = pull?.head?.sha;
-    const candidate = pull?.head?.ref === 'steward/release-candidate'
-      || typeof pull?.body === 'string' && /<!-- steward:candidate:[a-f0-9]{64} -->/.test(pull.body)
-      || Array.isArray(pull?.labels) && pull.labels.some((label: any) => label?.name === 'autorelease: pending');
-    // A PATCH that reached GitHub can be applied after its original run ends.
-    // Treat each native edit as its own wake, even at a previously seen head.
-    const delivery = deliveryId.toLowerCase();
-    const editedHomepage = p.action === 'edited' && p.sender?.id === stewardBotId && deliveryGuid.test(delivery)
-      && p.changes?.body && Object.hasOwn(p.changes.body, 'from')
-      && typeof pull?.body === 'string' && /<!-- steward:candidate-homepage:[a-f0-9]{64} -->/.test(pull.body);
-    if (candidate && positive(p.number) && pull?.number === p.number && pull.state === 'open' && (pull.merged === false || pull.merged === null)
-      && pull.base?.repo?.id === product.id && pull.base.ref === product.defaultBranch
-      && pull.head?.repo?.id === product.id && pull.head.ref !== product.defaultBranch
-      && sha(head) && !/^0+$/.test(head) && (p.action === 'opened' || p.action === 'synchronize' && p.after === head || editedHomepage))
-      return {repositoryId: product.id, kind: 'candidate-head', prNumber: p.number, head, ...(editedHomepage ? {delivery} : {})};
-  }
   if (event !== 'workflow_run' || p.action !== 'completed') return;
   const run = p.workflow_run;
   if (run?.head_repository?.id !== product.id || run.status !== 'completed' || run.event !== 'workflow_dispatch' ||
@@ -182,11 +175,11 @@ export function relayKey(h: Hint) {
   if (h.kind === 'candidate-status') return digest(JSON.stringify([h.repositoryId,h.kind,h.prNumber,h.commentId])).slice(7);
   return digest(JSON.stringify(h.kind === 'push' ? [h.repositoryId,h.kind,h.sourceSha] : [h.repositoryId,h.kind,h.runId,h.attempt,...(h.kind==='publication'&&h.productRepositoryId!==undefined?[h.productRepositoryId]:[])])).slice(7);
 }
-export async function acceptReleaseHint(env: BoundedEnv, event: string, payload: any, deliveryId='') {
+export async function acceptReleaseHint(env: BoundedEnv, event: string, payload: any) {
   if (env.BOUNDED_RECHECK_ENABLED !== 'true') return;
   const repo=payload.repository, run=payload.workflow_run;
   let source:SignedSource|undefined;
-  let hint=releaseHint(event,payload,env.INSTALLATION_ID,undefined,deliveryId);
+  let hint=releaseHint(event,payload,env.INSTALLATION_ID);
   if(hint?.kind==='publication') {
     const parentKey=run.display_title.slice('Release cycle '.length),ns=env.BOUNDED_RECHECK;
     ensure(ns,'PUBLICATION_NAMESPACE');
@@ -196,13 +189,12 @@ export async function acceptReleaseHint(env: BoundedEnv, event: string, payload:
     const prior=await response.json() as Relay|null;
     ensure(prior&&prior.reserved>0&&prior.policy===run.head_sha&&relayKey(prior.hint)===parentKey&&
       (prior.runId===undefined||prior.runId===run.id),'PUBLICATION_RESERVATION');
-    if(prior.hint.kind==='publication'||prior.hint.kind==='candidate-head'||prior.hint.kind==='candidate-status')return;
+    if(prior.hint.kind!=='official-merge'&&prior.hint.kind!=='run')return;
     hint={...hint,productRepositoryId:prior.hint.repositoryId};
-    if(legacyReleaseHandoff(env,ownerId(hint))&&prior.hint.kind!=='official-merge'&&prior.hint.kind!=='run')return;
   }else{
-    if(event!=='push' && !(event==='pull_request'&&(['opened','synchronize','edited','closed'].includes(payload.action) ||
+    if(event!=='push' && !(event==='pull_request'&&(['edited','closed'].includes(payload.action) ||
       completesOfficialLabels(payload.action,payload.label?.name)))
-      && !(event==='issue_comment'&&payload.action==='created') && !(event==='workflow_run'&&payload.action==='completed'&&run?.status==='completed'&&run.event==='workflow_dispatch'&&
+      && !(event==='workflow_run'&&payload.action==='completed'&&run?.status==='completed'&&run.event==='workflow_dispatch'&&
       run.actor?.id===301115370&&run.head_repository?.id===repo?.id&&(isBuildWorkflow(run.path)||run.path===channelPath)))return;
     if(!repo||repo.private!==false||repo.archived!==false||repo.fork!==false||repo.owner?.id!==302208797||
        !positive(repo.id)||!payload.installation?.id||payload.installation.id!==Number(env.INSTALLATION_ID))return;
@@ -213,13 +205,9 @@ export async function acceptReleaseHint(env: BoundedEnv, event: string, payload:
     source={name:repo.full_name,defaultBranch:repo.default_branch};
     if(event==='workflow_run'&&!positive(run.workflow_id))return;
     const product={id:repo.id,...source,publishWorkflowId:run?.workflow_id,channelWorkflowId:run?.workflow_id,buildWorkflow:run?.path};
-    hint=releaseHint(event,payload,env.INSTALLATION_ID,product,deliveryId);
+    hint=releaseHint(event,payload,env.INSTALLATION_ID,product);
   }
   if (!hint) return;
-  // Signed receipts are durable before GitHub eligibility reads. The same object
-  // verifies v3 adoption and frozen dispatch provenance before reserving work.
-  if (legacyReleaseHandoff(env,ownerId(hint)) &&
-      (legacyCandidate(hint)||(hint.kind==='run'&&run.path===channelPath))) return;
   ensure(env.BOUNDED_RECHECK,'RELEASE_RELAY_NAMESPACE');
   const stub = env.BOUNDED_RECHECK.get(env.BOUNDED_RECHECK.idFromName('cycle:v1:' + relayKey(hint)));
   const response = await stub.fetch(new Request('https://bounded.internal/release-cycle',{method:'POST',body:JSON.stringify(source?{hint,source}:hint)}));
@@ -228,17 +216,11 @@ export async function acceptReleaseHint(env: BoundedEnv, event: string, payload:
 export class ReleaseRelay {
   constructor(private storage: DurableObjectStorage, private env: BoundedEnv, private reader: () => GitReader = () => new BoundedGitHub(env), private now = Date.now) {}
   async register(hint: Hint,source?:SignedSource) {
-    if(legacyCandidate(hint)&&legacyReleaseHandoff(this.env,ownerId(hint)))return;
+    if(legacyCandidate(hint))return;
     if(source){
       await this.storage.transaction(async t=>{
-        const previous=await t.get<Relay>('releaseCycle');
-        if(previous){
-          if(!needsQualification(previous)||legacyReleaseHandoff(this.env,ownerId(previous.hint))||
-             this.env.BOUNDED_RECHECK_ENABLED!=='true'||relayKey(previous.hint)!==relayKey(hint))return;
-          await t.delete('releaseCycle');
-        }
-        const pending=await t.get<ReleaseIntake>('releaseIntake')??{hint:previous?.hint??hint,source,tries:0,next:this.now(),
-          ...(previous?{handoffRedelivery:true as const}:{})};
+        if(await t.get('releaseCycle'))return;
+        const pending=await t.get<ReleaseIntake>('releaseIntake')??{hint,source,tries:0,next:this.now()};
         await t.put('releaseIntake',pending);
         if(pending.tries<4 && this.env.BOUNDED_RECHECK_ENABLED==='true')await t.setAlarm(Math.max(this.now(),pending.next));
       });
@@ -246,6 +228,7 @@ export class ReleaseRelay {
       if(!existing)return;
     }
     const prior=await this.storage.get<Relay>('releaseCycle');
+    if(prior&&legacyCandidateRelay(prior))return;
     if(prior?.stage==='unknown' && !prior.reserved && prior.reason==='PREPARATION_EXHAUSTED' && prior.waitingFor){
       const policy=await promotedController(this.reader(),this.env.RELEASE_RELAY_DEPLOYMENT_SHA??this.env.BOUNDED_DEPLOYMENT_SHA,this.env);
       await this.wakePromoted(policy,true);return;
@@ -253,8 +236,8 @@ export class ReleaseRelay {
     await this.storage.transaction(async t => {
       const old=await t.get<Relay>('releaseCycle');
       if(old){
-        if(old.reason===legacyReleaseHandoffReason&&legacyReleaseHandoff(this.env,ownerId(old.hint)))return;
-        if(old.paused && !needsQualification(old) && this.env.BOUNDED_RECHECK_ENABLED==='true' && relayKey(old.hint)===relayKey(hint)){
+        if(legacyCandidateRelay(old))return;
+        if(old.paused && this.env.BOUNDED_RECHECK_ENABLED==='true' && relayKey(old.hint)===relayKey(hint)){
           delete old.paused;await t.put('releaseCycle',old);await t.setAlarm(Math.max(this.now(),old.next));
         }
         return;
@@ -269,7 +252,7 @@ export class ReleaseRelay {
       const r=await t.get<Relay>('releaseCycle');
       if(!r || r.paused || r.reserved || (!redelivery && r.waitingFor!==policy) || !r.waitingFor || r.resumedFor===controller ||
          (r.stage!=='prepare' && !(r.stage==='unknown'&&r.reason==='PREPARATION_EXHAUSTED')))return;
-      if(legacyCandidateRelay(r)&&legacyReleaseHandoff(this.env,ownerId(r.hint)))return;
+      if(legacyCandidateRelay(r))return;
       r.stage='prepare';r.next=this.now();r.resumedFor=controller;delete r.waitingFor;
       // One additional preflight for this newly verified promotion, retaining the prior count and business key.
       await t.put('releaseCycle',r);await t.setAlarm(r.next);
@@ -287,13 +270,8 @@ export class ReleaseRelay {
       return p;
     });
     if(!pending)return;
-    let target:ProductTarget|undefined,redeliveredPushCurrent=true;
-    try{
-      const scoped=await this.reader().forCandidate?.(pending.hint.repositoryId);
-      target=scoped?.target;
-      if(pending.handoffRedelivery&&pending.hint.kind==='push'&&scoped&&target)
-        redeliveredPushCurrent=await currentPush(scoped,target,pending.hint);
-    }
+    let target:ProductTarget|undefined;
+    try{target=(await this.reader().forCandidate?.(pending.hint.repositoryId))?.target;}
     catch(error){
       const retryAt=retryAfterTime(error,this.now(),pending.next);
       if(retryAt!==undefined&&pending.tries<4&&retryAt>pending.next){
@@ -309,49 +287,28 @@ export class ReleaseRelay {
       const current=await t.get<ReleaseIntake>('releaseIntake');
       if(!current||current.tries!==pending.tries||await t.get('releaseCycle'))return;
       await t.delete('releaseIntake');
-      const pause=async()=>{
-        await t.put('releaseCycle',{hint:pending.hint,stage:'prepare',tries:0,next:pending.next,policy:'',reserved:0,
-          reason:legacyReleaseHandoffReason,paused:true} satisfies Relay);
-        await t.deleteAlarm();
-      };
-      if(!target||target.id!==pending.hint.repositoryId||target.name!==pending.source.name||
-         target.defaultBranch!==pending.source.defaultBranch){
-        if(pending.handoffRedelivery)await pause();else await t.deleteAlarm();
-        return;
-      }
-      const kind=pending.hint.kind;
-      if((legacyReleaseHandoff(this.env,ownerId(pending.hint))&&
-          (legacyCandidate(pending.hint)||!version3Candidate(target)||(pending.hint.kind==='push'&&!officialPush(target,pending.hint)))) ||
-         (pending.handoffRedelivery&&(!redeliveredPushCurrent||(officialCandidateHint(pending.hint)&&!target.officialCandidate)))){
-        await pause();
-        return;
-      }
-      if ((!target.officialCandidate && (kind==='official-merge'||kind==='official-edit'||kind==='official-refresh')) ||
-          (target.officialCandidate && (kind==='candidate-head'||kind==='candidate-status'))) {
-        await t.deleteAlarm();
-        return;
-      }
-      const r:Relay={hint:pending.hint,stage:'prepare',tries:0,next:this.now(),policy:'',reserved:0,
-        ...(target.officialCandidate && (kind==='push'||kind==='official-edit'||kind==='official-refresh')?{officialCandidate:true}:{}),
-        ...(pending.handoffRedelivery?{handoffRedelivery:true}:{})};
+      const hint=pending.hint;
+      if(!version3Candidate(target)||target.id!==hint.repositoryId||target.name!==pending.source.name||
+         target.defaultBranch!==pending.source.defaultBranch||legacyCandidate(hint)||
+         (hint.kind==='push'&&!officialPush(target,hint))){await t.deleteAlarm();return;}
+      const r:Relay={hint,stage:'prepare',tries:0,next:this.now(),policy:'',reserved:0,
+        ...(hint.kind==='push'||hint.kind==='official-edit'||hint.kind==='official-refresh'?{officialCandidate:true}:{})};
       await t.put('releaseCycle',r);await t.setAlarm(r.next);
     });
   }
   async alarm() {
     if(!await this.storage.get('releaseCycle'))await this.qualify();
     const r = await this.storage.get<Relay>('releaseCycle');
-    if (!r || r.paused || r.stage === 'received' || r.stage === 'unknown' || r.next > this.now()) return;
+    if (!r || legacyCandidateRelay(r) || r.paused || r.stage === 'received' || r.stage === 'unknown' || r.next > this.now()) return;
     const g = this.reader(), key = relayKey(r.hint);
     const destination = r.officialCandidate ? candidateWorkflow : workflow;
     const title = r.officialCandidate ? 'Candidate event ' : 'Release cycle ';
-    const draining = legacyReleaseHandoff(this.env,ownerId(r.hint));
     let officialRelease = r.officialRelease === true || r.hint.kind === 'official-merge';
     // A transactional claim advances the budget and schedules recovery before external IO.
     const claim = await this.storage.transaction(async t => {
       const current = await t.get<Relay>('releaseCycle');
       if (!current || current.stage !== r.stage || current.tries !== r.tries || current.next !== r.next) return false;
-      if(this.env.BOUNDED_RECHECK_ENABLED!=='true'||(draining&&r.stage==='prepare'&&legacyCandidateRelay(r))){
-        if(draining&&r.stage==='prepare'&&legacyCandidateRelay(r))current.reason=legacyReleaseHandoffReason;
+      if(this.env.BOUNDED_RECHECK_ENABLED!=='true'){
         current.paused=true;await t.put('releaseCycle',current);await t.deleteAlarm();return false;
       }
       if (r.tries >= (r.resumedFor && r.stage==='prepare' ? 5 : 4)) {
@@ -372,7 +329,7 @@ export class ReleaseRelay {
       Object.assign(current,changes);
       if (changes.officialRelease===undefined && 'officialRelease' in changes) delete current.officialRelease;
       await t.put('releaseCycle',current);
-      if ((current.paused && current.reason === legacyReleaseHandoffReason) ||
+      if (current.paused ||
           current.stage === 'received' || current.stage === 'unknown') await t.deleteAlarm();
       else await t.setAlarm(current.next);
       return true;
@@ -380,32 +337,28 @@ export class ReleaseRelay {
     try {
       ensure(this.env.BOUNDED_RECHECK_ENABLED === 'true','RELEASE_RELAY_PAUSED');
       if (r.stage === 'prepare') {
-        const stopLegacy = () => save({paused:true,reason:legacyReleaseHandoffReason});
+        const stopIneligible = () => save({stage:'unknown',reason:'RELEASE_SOURCE_NOT_ADOPTED'});
         let candidate:GitReader|undefined;
-        if((draining||r.handoffRedelivery)&&(r.hint.kind==='push'||officialCandidateHint(r.hint))){
+        if(r.hint.kind==='push'||officialCandidateHint(r.hint)){
           candidate=await candidateReader(g,r.hint.repositoryId);
-          const target=candidate.target;
-          if(!target ||
-             (draining&&(!version3Candidate(target)||(r.hint.kind==='push'&&!officialPush(target,r.hint)))) ||
-             (r.handoffRedelivery&&(r.hint.kind==='push'?
-               ((target.officialCandidate===true)!==(r.officialCandidate===true)||!await currentPush(candidate,target,r.hint)):
-               !target.officialCandidate))){await stopLegacy();return;}
+          if(!version3Candidate(candidate.target)||(r.hint.kind==='push'&&!officialPush(candidate.target,r.hint))){await stopIneligible();return;}
         }
         if (r.hint.kind === 'run') {
           const scoped=await candidateReader(g,r.hint.repositoryId);
-          const target=scoped.target??TARGET;
+          if(!version3Candidate(scoped.target)){await stopIneligible();return;}
+          const target=scoped.target;
           const run=await scoped.json(target.id,'/repos/'+target.name+'/actions/runs/'+r.hint.runId+'/attempts/'+r.hint.attempt);
-          const product=scoped.target?await workflowProduct(scoped,target,run.path):legacyWorkflowTarget;
+          const product=await workflowProduct(scoped,target,run.path);
           const repeated=releaseHint('workflow_run',{action:'completed',repository:{id:target.id,full_name:target.name,default_branch:target.defaultBranch,fork:false,archived:false},
             installation:{id:Number(this.env.INSTALLATION_ID)},workflow_run:run},this.env.INSTALLATION_ID,product);
           ensure(run.repository?.id===target.id && sha(run.head_sha) && repeated && relayKey(repeated)===key,'RELEASE_PRODUCT_RUN');
-          if(draining&&(run.path===channelPath||!version3Candidate(scoped.target))){await stopLegacy();return;}
           if(run.path!==channelPath){
-            officialRelease=officialCycle(await boundBuildCycle(scoped,run),run.id);
-            if(draining&&!officialRelease){await stopLegacy();return;}
+            officialRelease=officialCycle((await boundBuildCycle(scoped,run)).cycle,run.id);
+            if(!officialRelease){await stopIneligible();return;}
           }
         }
         if (r.hint.kind === 'publication') {
+          if(!positive(r.hint.productRepositoryId)){await stopIneligible();return;}
           const run = await g.json(CENTRAL.id,prefix+'/actions/runs/'+r.hint.runId+'/attempts/'+r.hint.attempt);
           const parentKey = /^Release cycle ([a-f0-9]{64})$/.exec(run.display_title)?.[1];
           ensure(parentKey && run.id === r.hint.runId && run.run_attempt === r.hint.attempt && run.status === 'completed' &&
@@ -425,14 +378,26 @@ export class ReleaseRelay {
             first.path===run.path && first.head_branch==='main' && first.event==='workflow_dispatch' &&
             Date.parse(first.created_at)>=prior.reserved-60000 && Date.parse(first.created_at)<=prior.reserved+300000,'PUBLICATION_FIRST_ATTEMPT');
           if(prior.hint.kind==='publication'){await save({stage:'received',reason:'PUBLICATION_CONSUMED'});return;}
-          ensure(prior.hint.repositoryId===(r.hint.productRepositoryId??TARGET.id),'PUBLICATION_PRODUCT_BINDING');
-          if(draining&&!await officialPublication(g,prior,this.env.INSTALLATION_ID)){await stopLegacy();return;}
+          ensure(prior.hint.repositoryId===r.hint.productRepositoryId,'PUBLICATION_PRODUCT_BINDING');
+          const publication=await officialPublication(g,prior,this.env.INSTALLATION_ID);
+          if(!publication){await stopIneligible();return;}
           const artifact=await g.artifact(CENTRAL.id,run.id,'release-cycle-'+parentKey+'-'+run.run_attempt,'result.json');
           const v=artifact.value;
           ensure(v?.schemaVersion===1 && v.requestKey===parentKey && v.producer?.repositoryId===CENTRAL.id &&
             v.producer.runId===run.id && v.producer.attempt===run.run_attempt && v.producer.controllerSha===run.head_sha &&
             v.event?.repositoryId===prior.hint.repositoryId && v.event.kind===prior.hint.kind && relayKey(v.event)===parentKey &&
             typeof v.publishInvoked==='boolean','PUBLICATION_ARTIFACT');
+          if(v.status==='DRAFT_READY'){
+            ensure(prior.hint.kind==='official-merge'||prior.hint.kind==='run','PUBLICATION_DRAFT_RECEIPT');
+            const {scoped,target}=publication;
+            const read=prior.hint.kind==='official-merge'
+              ? await readCycle(scoped,'pr-'+prior.hint.prNumber+'-'+prior.hint.sourceSha) : publication.read;
+            ensure(read,'PUBLICATION_DRAFT_RECEIPT');
+            const {cycle,commit}=read;
+            const archived=await readOfficialDraftReceipt(scoped,cycle.id,commit);
+            officialDraftReady(v,prior.hint,target,cycle,archived);
+            await save({stage:'received',reason:'DRAFT_READY'});return;
+          }
           if(!v.publishInvoked){await save({stage:'received',reason:'NO_PUBLICATION'});return;}
         }
         const policy=await promotedController(g,this.env.RELEASE_RELAY_DEPLOYMENT_SHA??this.env.BOUNDED_DEPLOYMENT_SHA,this.env);

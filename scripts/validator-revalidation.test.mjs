@@ -212,21 +212,31 @@ test('a head change while the App close is outstanding restores the PR and track
 });
 
 test('never cycles a PR with an exact pending or failed Run, a draft, merge management, or a release candidate',async()=>{
-  for(const type of ['failed','running','draft','queue','autoMerge','release','legacyRelease','official']){
+  for(const type of ['failed','running','draft','queue','autoMerge','official','officialPending','officialTagged']){
     const f=fixture();
     if(type==='failed')f.addRun(99,validator,'completed','failure');
     if(type==='running')f.addRun(99,validator,'queued',null);
     if(type==='draft')f.pr.draft=true;
     if(type==='queue')f.runtime.mergeQueue=true;
     if(type==='autoMerge')f.pr.auto_merge={enabled_at:'record'};
-    if(type==='release')f.pr.head.ref='steward/release-candidate';
-    if(type==='legacyRelease')f.pr.labels=[{name:'autorelease: pending'}];
-    if(type==='official'){f.pr.head.ref='release-please--branches--'+f.pr.base.ref;f.pr.user={id:301115370};}
+    if(type.startsWith('official')){f.pr.head.ref='release-please--branches--'+f.pr.base.ref;f.pr.user={id:301115370};}
+    if(type==='officialPending')f.pr.labels=[{name:'autorelease: pending'}];
+    if(type==='officialTagged')f.pr.labels=[{name:'autorelease: tagged'}];
     const expected=type==='failed'?'failure':type==='running'?'in_progress':'waiting';
     assert.equal((await f.run()).pulls[0].status,expected);
     assert.equal((await f.run()).pulls[0].status,expected);
     assert.deepEqual(f.changes,[]);
   }
+});
+
+test('legacy markers and labels cannot exempt an ordinary PR from verifier revalidation',async()=>{
+  const f=fixture();
+  f.pr.head.ref='steward/release-candidate';
+  f.pr.labels=[{name:'release:editing'},{name:'autorelease: pending'}];
+  f.pr.body='<!-- steward:candidate:'+('a'.repeat(64))+' -->';
+  f.addRun(70,previous,'completed','success');
+  await f.run();
+  assert.deepEqual(f.changes,['closed','open']);
 });
 
 test('keeps the PR open when merge management appears immediately before the close',async()=>{

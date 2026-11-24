@@ -151,6 +151,14 @@ export function assertCopierInputs(files,resolveTemplate,paths=['.github/labeler
   }
 }
 
+export function copierTitleBytes(source,sha){
+  const marker='{{ _copier_conf.vcs_ref_hash }}';
+  const parts=new TextDecoder('utf-8',{fatal:true}).decode(source).split(marker);
+  // This template has one substitution. All other bytes are literal YAML.
+  assert(parts.length===2&&parts.every(part=>!/\{[{%#]/.test(part)),'COPIER_TITLE_TEMPLATE');
+  return Buffer.from(parts.join(sha));
+}
+
 export function assertGovernanceOnlyScope(paths){
   const allowed=new Set(['README.md','AGENTS.md','CONTRIBUTING.md','SECURITY.md','.copier-answers.yml','.github/labeler.yml',
     ...configurationTemplatePaths,repositoryPolicyAdoptionPath,

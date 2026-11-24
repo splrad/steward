@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { selectReleaseProducers, producerArtifactName, assertReleaseJobResults, type RunIdentity, type ProducerJob, type ProducerArtifact } from '../src/release-run.js';
+import { selectReleaseProducers, producerArtifactName, type RunIdentity, type ProducerJob, type ProducerArtifact } from '../src/release-run.js';
 const unit = { id: 'app', builds: [{ id: 'windows' }, { id: 'linux' }] };
 const identity: RunIdentity = { repositoryId: 1, unitId: 'app', sourceSha: 'a'.repeat(40), controllerSha: 'b'.repeat(40), runId: 42, attempt: 2 };
 const job = (buildId: string, attempt: number, conclusion = 'success'): ProducerJob => ({ id: attempt * 10 + (buildId === 'windows' ? 1 : 2), runId: 42, attempt, buildId, sourceSha: identity.sourceSha, controllerSha: identity.controllerSha, status: 'completed', conclusion });
@@ -35,15 +35,6 @@ it.each(['partial', 'cross-run', 'source', 'controller', 'expired', 'unknown-exp
   if (kind === 'digest') input.artifacts[0]!.digest = 'unknown';
   if (kind === 'active') input.jobs[0]!.status = 'in_progress';
   expect(() => selectReleaseProducers(unit, identity, input)).toThrow('RELEASE_RUN');
-});
-it('allows only deliberate signing skips and verify-only production skips', () => {
-  const results = { identity: 'success', build: 'success', collect: 'success', sign: 'skipped', inspect: 'success', attest: 'success', publish: 'success' };
-  expect(() => assertReleaseJobResults('build', 'none', results)).not.toThrow();
-  for (const key of ['identity', 'build', 'collect', 'inspect', 'attest', 'publish']) {
-    for (const status of ['skipped', 'failure', 'cancelled', '']) expect(() => assertReleaseJobResults('build', 'none', { ...results, [key]: status })).toThrow();
-  }
-  expect(() => assertReleaseJobResults('build', 'authenticode', results)).toThrow();
-  expect(() => assertReleaseJobResults('verify', 'none', { identity: 'success', build: 'skipped', collect: 'skipped', sign: 'skipped', inspect: 'skipped', attest: 'skipped', publish: 'skipped' })).not.toThrow();
 });
 
 import { prepareChannelDispatch, channelTargetsDigest, verifyChannelProbe, selectChannelDispatch, verifyChannelResult, channelBusinessResults } from '../src/release-run.js';

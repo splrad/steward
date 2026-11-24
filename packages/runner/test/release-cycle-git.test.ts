@@ -29,7 +29,7 @@ it('assigns valid collision-free metadata IDs and retains the original frozen ID
   expect(await publicationAssetFacts({assets},manifest,f.adapter.names(f.target),f.target.directory)).toEqual(assets);
 });
 
-it('publishes seven bytesets, waits for both channels, recovers protected consumption and opens the next-candidate gate',async()=>{
+it('publishes seven bytesets, waits for both channels and recovers protected consumption',async()=>{
   const root=await mkdtemp(join(tmpdir(),'release-cycle-git-'));roots.push(root);registerOfflineFixtureRoot(root);
   const seed=join(root,'seed'),remote=join(root,'remote.git');await mkdir(seed);
   const identity={name:'Offline cycle',email:'cycle@example.invalid'},env=isolatedBuildEnvironment(process.env,root);
@@ -93,10 +93,11 @@ it('publishes seven bytesets, waits for both channels, recovers protected consum
   const centralJob={id:901,run_id:900,run_attempt:1,head_sha:C,name:'release-coordinator',status:'in_progress',conclusion:null as string|null,started_at:NOW,completed_at:null as string|null,steps:[{number:3,name:'business-release-coordinator',started_at:NOW,completed_at:null as string|null,conclusion:null as string|null}]};
   const centralIo={request:async(method:string,path:string)=>{expect(method).toBe('GET');if(path.endsWith('/steward'))return response({id:1296724484,full_name:'splrad/steward',default_branch:'main',archived:false,disabled:false});if(path.includes('/workflows/20'))return response({id:20,path:centralRun.path});if(path.includes('/jobs?'))return response({total_count:1,jobs:[centralJob]});return response(centralRun);}};
   const options={io,centralIo,now:()=>now,centralInvocation:{runId:900,runAttempt:1,controllerSha:C,defaultBranch:'main'}};
-  f.state.loseUpload=f.state.losePublish=true;
+  f.state.loseUpload=true;
   const published=await releaseCommand('publish',input,{...options,publisher:async()=>{
     expect((await read()).domainRecords.some((r:any)=>r.path.startsWith('evidence/publication/')&&r.value.startEvidencePath===null)).toBe(true);
-    await f.adapter.publish(f.target);
+    await f.adapter.uploadDraft(f.target,[],async()=>{});
+    Object.assign(f.release,{draft:false,immutable:true});
   }});
   expect(published).toMatchObject({status:'OBSERVED',publishInvoked:true});expect(f.remote.size).toBe(7);
   Object.assign(centralRun,{status:'completed',conclusion:'success',updated_at:NOW});Object.assign(centralJob,{status:'completed',conclusion:'success',completed_at:NOW});Object.assign(centralJob.steps[0]!,{conclusion:'success',completed_at:NOW});
@@ -158,33 +159,4 @@ it('publishes seven bytesets, waits for both channels, recovers protected consum
   const recovered=await read();expect(recovered.domainRecords.filter((r:any)=>r.path.startsWith('evidence/')).length).toBeGreaterThan(6);
   expect(await inspectRepositoryHistory(input,{...options,completionReader:(value:any)=>readNativeCompletion(input,value,options)})).toMatchObject({result:'PASS',inventoryComplete:true,lastCompletedCycleId:cycle.id});
   const closed=await read();expect(closed.repository).toMatchObject({activeCycleId:null,candidate:null,lastCompletedCycleId:cycle.id});
-  // The candidate checkout still holds the pre-completion state. The native
-  // adapter must refresh it, then adopt the next ordinary candidate identity.
-  await git('-C',remote,'update-ref','refs/tags/v1.2.3',S);
-  const {nativeReleaseCandidate}=await import(pathToFileURL(resolve('scripts/release-candidate.mjs')).href);
-  let generations=0;
-  const fetcher=(async(input:any,init:any)=>{
-    expect(init.method).toBe('GET');const path=decodeURIComponent(new URL(String(input)).pathname);let value:any;
-    if(path.includes('/git/ref/heads/')){const branch=path.split('/git/ref/heads/')[1]!;let sha;try{sha=await git('-C',remote,'rev-parse','--verify',`refs/heads/${branch}`);}catch{return new Response('{}',{status:404});}value={ref:`refs/heads/${branch}`,object:{type:'commit',sha}};}
-    else if(path.endsWith('/rules/branches/main'))value=[{type:'non_fast_forward'},{type:'deletion'}];
-    else if(path.endsWith('/rulesets'))value=[{id:6,target:'tag',enforcement:'active'}];
-    else if(path.endsWith('/rulesets/6'))value={id:6,target:'tag',enforcement:'active',conditions:{ref_name:{include:['~ALL'],exclude:[]}},rules:[{type:'deletion'},{type:'non_fast_forward'}]};
-    else if(path.endsWith('/releases'))value=[f.release];
-    else if(path.endsWith('/releases/tags/'+unit.tag))value=f.release;
-    else if(path.endsWith('/tags'))value=[{name:unit.tag,commit:{sha:S}}];
-    else if(path.endsWith('/git/ref/tags/'+unit.tag))value={ref:'refs/tags/'+unit.tag,object:{type:'commit',sha:S}};
-    else if(path.endsWith('/actions/workflows'))value={total_count:0,workflows:[]};
-    else if(path.endsWith('/pulls'))value=[];
-    else {const result=await io.request('GET',path);return new Response(Buffer.from(result.bytes).toString('utf8'),{status:result.status});}
-    return new Response(JSON.stringify(value));
-  }) as typeof fetch;
-  expect(await nativeReleaseCandidate({...input,directory:seed,writeDirectory:join(root,'next-candidate')},{token:'fixture-write',readToken:'fixture-read',controllerSha:C,fetcher,temporaryRoot:root,now:()=>now,
-    generator:async(request:any)=>{generations++;expect(request.facts.releases[0]).toMatchObject({id:20,sha:S,draft:false});return {status:'UNCHANGED'};}})).toMatchObject({status:'WAIT',reason:'UNCHANGED'});
-  expect(generations).toBe(1);const next=await read();expect(next.repository.candidate.id).not.toBe(state.candidate.id);
-  expect(next.repository).toMatchObject({activeCycleId:null,lastCompletedCycleId:cycle.id,candidate:{prNumber:null,baseSha:S}});
-  // Reobserving completed history must preserve the next candidate and its
-  // original draft/session identity, including before its PR-create response.
-  const reobserved=await inspectRepositoryHistory(input,{...options,completionReader:(value:any)=>readNativeCompletion(input,value,options)});
-  expect(reobserved,JSON.stringify(reobserved)).toMatchObject({result:'PASS'});
-  expect((await read()).repository.candidate).toEqual(next.repository.candidate);
 },process.platform==='win32'?360_000:150_000);

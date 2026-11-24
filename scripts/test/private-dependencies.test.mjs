@@ -5,7 +5,7 @@ import {effectiveLock} from '../private-lock-exception.mjs';
 import {createHash} from 'node:crypto';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {dependencyMode,loadPolicy,inventory,checkInventory,highFindings,requireOnline,actionFindings,newActions,newPackageFindings,newTools,assertInputScope,assertGovernanceOnlyScope,assertCopierInputs,licenseFacts} from '../private-dependency-policy.mjs';
+import {dependencyMode,loadPolicy,inventory,checkInventory,highFindings,requireOnline,actionFindings,newActions,newPackageFindings,newTools,assertInputScope,assertGovernanceOnlyScope,assertCopierInputs,copierTitleBytes,licenseFacts} from '../private-dependency-policy.mjs';
 import {upstreamReference,run,assertVerifiedActionTag,main,docker} from '../validation-private-dependencies.mjs';
 import {nodeFindings,miseFindings,miseVersions,archiveInventory} from '../private-tool-security.mjs';
 import {npmToolLock} from '../npm-tool-lock.mjs';
@@ -38,8 +38,34 @@ test('reusable uses its exact source inventory; all locked transitive actions an
  assert.throws(()=>assertActionInputs(caller,nested.actions),/ACTION_INPUT_UNCOVERED/);
  assert.throws(()=>assertActionInputs(YAML.parse(nested.bytes.toString()),[{repo:'jdx/mise-action',sha:OTHER}]),/ACTION_INPUT_UNCOVERED/);
 });
+test('private PR title resolves only the approved reusable workflow and its locked actions',async()=>{
+ const path='.github/workflows/pr-title-reusable.yml',use='splrad/steward/'+path+'@'+SHA;
+ const bytes=await readFile(new URL('../../'+path,import.meta.url));
+ const action=YAML.parse(bytes.toString()).jobs.title.steps[0].uses;
+ const [repo,pin]=action.split('@'),files=reusableFiles();files.set(path,bytes);
+ await assert.rejects(reusableActions(use,reusableIO(files)),/REUSABLE_IDENTITY/);
+ const nested=await reusableActions(use,{
+  workflow:'pr-title-reusable',
+  loadSource:async sha=>{assert.equal(sha,SHA);return files;},
+  verifyLock:async actual=>{assert.equal(actual,files);return {stdout:'valid',stderr:''};},
+  inventory:async(_lock,sourcePath)=>{assert.equal(sourcePath,path);return [{repo,sha:pin}];},
+ });
+ assert.equal(nested.sourcePath,path);assert.equal(nested.sha,SHA);
+});
 test('reusable cannot borrow missing coverage from the consumer or another source',async()=>{
  await assert.rejects(reusableActions(reusableUse,{...reusableIO(),inventory:async()=>[{repo:'jdx/mise-action',sha:OTHER}]}),/ACTION_INPUT_UNCOVERED/);
+});
+test('Copier title caller must carry the source SHA selected by its adopted template tag',async()=>{
+ const path='.github/workflows/pr-title.yml';
+ const source=await readFile(new URL('../../templates/repository/'+path+'.jinja',import.meta.url));
+ const expected=copierTitleBytes(source,SHA);
+ const files=new Map([[path,expected],['.copier-answers.yml',Buffer.from('_src_path: https://github.com/splrad/steward.git\n_commit: v0.1.13\n')]]);
+ const resolve=()=>new Map([[path,expected]]);
+ assertCopierInputs(files,resolve,[path]);
+ files.set(path,copierTitleBytes(source,OTHER));
+ assert.throws(()=>assertCopierInputs(files,resolve,[path]),/COPIER_TEMPLATE_BYTES/);
+ for(const changed of [Buffer.concat([source,source]),Buffer.concat([source,Buffer.from('{% raw %}')])])
+  assert.throws(()=>copierTitleBytes(changed,SHA),/COPIER_TITLE_TEMPLATE/);
 });
 test('reusable rejects a missing source lock before any inventory can be substituted',async()=>{
  const files=reusableFiles();files.delete(actionLockPath);
@@ -152,7 +178,7 @@ test('workflow keeps private execution under dependency job, fixed policy source
  assert.equal(steps.find(s=>s.uses?.startsWith('actions/dependency-review-action@')).if,"needs.scope.outputs.dependency-mode == 'native'");
  const scan=steps.find(s=>s.name==='Scan private administrator dependencies');assert.equal(scan.if,"startsWith(needs.scope.outputs.dependency-mode, 'private-')");assert.equal(scan['working-directory'],'policy');
  const verifier=steps.find(s=>s.name==='Install trusted reusable workflow lock verifier');
- assert.equal(verifier.if,"needs.scope.outputs.dependency-mode == 'private-lifecycle'");
+ assert.equal(verifier.if,scan.if);
  assert.match(verifier.run,/cat policy\/config\/actions-lock-version\.txt/);assert.match(verifier.run,/--pin "\$ACTIONS_LOCK_VERSION"/);
  assert.equal(verifier.env.GH_CONFIG_DIR,scan.env.GH_CONFIG_DIR);assert.ok(steps.indexOf(verifier)<steps.indexOf(scan));
  assert.equal(workflow.permissions['security-events'],undefined);
