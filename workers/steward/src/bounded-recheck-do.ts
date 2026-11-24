@@ -1,5 +1,6 @@
 import {PagesRetry} from './pages-completion.js';
 import {WorkflowEvent} from './quality-event.js';
+import {ReleaseImpactIntake} from './pr-release-impact.js';
 import {ReleasePromotion} from './release-promotion.js';
 import {WingetSubmit} from './bounded-winget-submit.js';
 import {ReleaseRelay} from './release-cycle-relay.js';
@@ -21,12 +22,15 @@ export class DurableRecheckStore implements Store {
 /** Separate SQLite namespace; no shared ValidationCoordinator state or alarm slots. */
 export class BoundedRecheckCoordinator {
  private store:DurableRecheckStore; private engine:BoundedRecheck;
+ private impact:ReleaseImpactIntake;
  constructor(private state:DurableObjectState,private env:BoundedEnv){
   this.store=new DurableRecheckStore(state.storage);
+  this.impact=new ReleaseImpactIntake(state.storage,env);
   this.engine=new BoundedRecheck(this.store,new FixedRecheckEffects(env),Date.now,env.BOUNDED_PRODUCT_SHA);
  }
  async fetch(request:Request){
   ensure(request.method==='POST','INTERNAL_METHOD');const b=await request.json() as any;const action=new URL(request.url).pathname;
+  if(action==='/release-impact'){await this.impact.accept(b);return Response.json({accepted:true});}
   if(action==='/pages-intake'){await new PagesRetry(this.state.storage,this.env).intake(b);return Response.json({accepted:true});}
   if(action==='/pages-receipt'){return Response.json({confirmed:await new PagesRetry(this.state.storage,this.env).receipt(b)});}
   if(action==='/pages-watch'){await new PagesRetry(this.state.storage,this.env).watch(b);return Response.json({accepted:true});}
