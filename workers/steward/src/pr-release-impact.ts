@@ -41,7 +41,8 @@ export class ReleaseImpactIntake {
           (!notice.correction && previous?.revision === notice.revision)) return;
       if (!notice.correction) {
         const live = await this.pull(this.env, notice);
-        if (live.number !== notice.number || live.base.repo.id !== notice.id || live.state !== 'open' ||
+        const classifiable = live.state === 'open' || (live.state === 'closed' && live.merged === true);
+        if (live.number !== notice.number || live.base.repo.id !== notice.id || !classifiable ||
             revision(this.env, live) !== notice.revision) return;
       }
       await this.reader().json(CENTRAL.id, '/repos/splrad/steward/actions/workflows/pr-release-impact.yml/dispatches',

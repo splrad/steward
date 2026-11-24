@@ -37,5 +37,13 @@ it('dispatches signed PR changes without disclosing private PR metadata and igno
   await send({...event,action:'reopened'},next(4));
   await send(old,next(5));
   expect(json).toHaveBeenCalledTimes(4);
+  pr.title = 'final change';
+  const queued = structuredClone(event);
+  Object.assign(pr, {state:'closed',merged:false});
+  await send(queued,next(6));
+  expect(json).toHaveBeenCalledTimes(4);
+  Object.assign(pr, {merged:true});
+  await send(queued,next(6));
+  expect(json).toHaveBeenCalledTimes(5);
   expect(JSON.stringify([...records])).not.toContain('private');
 });
