@@ -84,7 +84,7 @@ describe('organization conditional release notes', () => {
     const preview = renderCandidateNote('release.md', input, selected.contributors, {template,repository,sourceSha});
     for (const body of [result, preview]) {
       expect(body).toContain('width="48" height="48"');
-      expect(body).toContain('<details>\n<summary>贡献者 GitHub ID</summary>\n\n- actual-author · `42`\n\n</details>');
+      expect(body).toContain('<details>\n<summary>贡献者 GitHub ID</summary>\n\n- <a href="https:&#x2F;&#x2F;github.com&#x2F;actual-author">actual-author</a> · `42`\n\n</details>');
     }
     expect(renderFrozenReleaseNotes(template, { ...frozen, notes: input })).not.toContain('<details>');
     expect(await isAdoptedOrganizationReleaseTemplate(template)).toBe(true);

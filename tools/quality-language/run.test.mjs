@@ -24,12 +24,14 @@ test('the installed SDK gets the exact supported schema call and isolated sessio
   const f=fixture(),result=await qualityLanguage('translate','{"items":[{}]}','fixture',f.create);
   assert.equal(result.status,'RETURNED');assert.equal(result.model,'actual-model');assert.equal(result.usage.aiCredits,1.5);assert.equal(result.usage.premiumRequests,2);
   const {clientOptions:c,sessionOptions:s,sendArgs:args}=f.options();
-  assert.equal(c.mode,'empty');assert.equal(c.gitHubToken,'fixture');assert.equal(c.useLoggedInUser,false);assert.deepEqual(c.builtinPluginDirectories,[]);
-  assert.equal(c.logLevel,'none');assert.equal(s.model,undefined);assert.deepEqual(s.availableTools,[]);assert.deepEqual(s.tools,[]);assert.deepEqual(s.mcpServers,{});
-  assert.deepEqual(s.customAgents,[]);assert.deepEqual(s.instructionDirectories,[]);assert.equal(s.enableConfigDiscovery,false);assert.deepEqual(s.onPermissionRequest(),{kind:'reject'});
-  assert.deepEqual(s.infiniteSessions,{enabled:false});assert.deepEqual(s.memory,{enabled:false});assert.equal(s.systemMessage.mode,'append');
+  assert.equal(c.mode,'empty');assert.deepEqual(c.github,{token:'fixture',useLoggedInUser:false});
+  assert.deepEqual(c.plugins,{builtinDirectories:[]});assert.deepEqual(c.observability,{logLevel:'none'});
+  assert.equal(s.model,undefined);assert.deepEqual(s.tools,{availableTools:[],definitions:[]});assert.deepEqual(s.mcp,{servers:{}});
+  assert.deepEqual(s.agents,{definitions:[],includedBuiltinAgents:[]});assert.deepEqual(s.instructions,{skipCustomInstructions:true,directories:[]});
+  assert.equal(s.enableConfigDiscovery,false);assert.deepEqual(s.permissions.onRequest(),{kind:'reject'});
+  assert.deepEqual(s.state,{infiniteSessions:{enabled:false},memory:{enabled:false}});assert.equal(s.systemMessage.mode,'append');
   assert.equal(args[0].prompt,'{"items":[{}]}');assert.equal(args[0].responseSchema.additionalProperties,false);assert.equal(args[1],120000);
-  assert.deepEqual(f.events,['start','session','send','disconnect','stop']);await assert.rejects(access(c.baseDirectory));
+  assert.deepEqual(f.events,['start','session','send','disconnect','stop']);await assert.rejects(access(c.runtime.baseDirectory));
 });
 test('malformed/model-injected output, timeout and metrics failure abort and sanitize errors',async()=>{
   for(const options of [{reply:{...item,tool:'exec'}},{failure:Error('secret token inside raw failure')},{metricsFailure:true}]) {

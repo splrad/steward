@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 export { replayReleaseContributors, selectReleaseContributors } from '../../core/src/release-candidate.js';
-export { assertVersionAcquisitionLinks, isAdoptedOrganizationReleaseTemplate, isConditionalTemplate, isPreviouslyAdoptedReleaseTemplate, parseConditionalNotes, renderConditionalNotes, reviewedConditionalReleaseTemplate } from '../../core/src/conditional-release-notes.js';
+export { assertSelectedReleaseDownloads, assertVersionAcquisitionLinks, isAdoptedOrganizationReleaseTemplate, isConditionalTemplate, isPreviouslyAdoptedReleaseTemplate, parseConditionalNotes, renderConditionalNotes, reviewedConditionalReleaseTemplate } from '../../core/src/conditional-release-notes.js';
 export { manualCandidateFacts, manualCandidatePreview, manualCandidateBody, validateManualCandidateRecord } from '../../core/src/manual-candidate.js';
 export { parseDeliveryConfig, deliveryAssetNames, assertDeliveryPath } from '../../core/src/delivery-config.js';
 export { defaultBuildWorkflow, dispatchWorkflow, encodeRepositoryPath, staticMatrixRows } from '../../core/src/release-workflow.js';
@@ -14,13 +14,14 @@ export { pipelineIdentity, pipelineNotes, pipelineRecoverCycleFinal, mergedBuild
 export { inspectProductArtifacts, sealProductArtifacts, validateProductManifest } from './release-artifacts.js';
 export { renderFrozenReleaseNotes } from '../../core/src/release-template.js';
 export { decodeCompletionArchive } from '../../core/src/release-history.js';
-export { collectContentInput, planContentBatches, resumeContentBatches, assembleUnitNotes, contentWireInput } from './release-content.js';
+export { collectContentInput, planContentBatches, resumeContentBatches, assembleUnitNotes, contentWireInput, generateOfficialCandidateNotes, officialCandidateDiff } from './release-content.js';
 export { copilotReleaseClient } from './copilot-release-client.js';
 export { copilotQualityClient } from './copilot-quality-client.js';
 export { collectQualitySources, qualityPages, translateQualitySources, publishQualityCheck, serviceQualityPullRequest } from './quality-language-summary.js';
 export { decodeQualityCache, reconcileQualitySources, renderQualitySummary } from '../../core/src/quality-language-summary.js';
 export { decodeCandidateArchive, decodeCandidateDocument } from '../../core/src/release-candidate-record.js';
 export { splitContentText, releaseAffectedUnitIds } from '../../core/src/release-content.js';
+export { candidateBaseUnchanged } from './release-git-input.js';
 export { inspectCycleHistory, verifyFrozenReceipts, completionFile } from './release-history.js';
 export { inspectPublications, invokePublication } from './release-publication.js';
 export { decodeReleaseRecord, decodeStateFile, stateRecordOwner, assertRepositoryWrite } from '../../core/src/release-observation.js';
