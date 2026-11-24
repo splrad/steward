@@ -6,6 +6,8 @@ export function artifactDownloadTimeout(size:number):number {
  check(Number.isSafeInteger(size) && size>0 && size<=maxArtifactArchiveBytes);
  return 60000+Math.ceil(size/(4*1024*1024))*1000;
 }
+export const archiveDigest=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
+
 /** Read the signed storage URL without forwarding the API credential. */
 export async function downloadArtifactArchive(transport:typeof fetch, token:string, fullName:string, artifactId:number, size:number, expectedDigest:string, destination:string, verify:()=>Promise<void>) {
  const timeout=artifactDownloadTimeout(size);

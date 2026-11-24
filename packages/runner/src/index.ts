@@ -14,7 +14,7 @@ export { pipelineIdentity, pipelineNotes, pipelineRecoverCycleFinal, mergedBuild
 export { inspectProductArtifacts, sealProductArtifacts, validateProductManifest } from './release-artifacts.js';
 export { renderFrozenReleaseNotes } from '../../core/src/release-template.js';
 export { decodeCompletionArchive } from '../../core/src/release-history.js';
-export { officialCandidateInput, generateOfficialCandidateNotes, officialCandidateDiff } from './release-content.js';
+export { collectContentInput, contentWireInput, generateOfficialCandidateNotes, officialCandidateDiff } from './release-content.js';
 export { copilotReleaseClient } from './copilot-release-client.js';
 export { copilotQualityClient } from './copilot-quality-client.js';
 export { collectQualitySources, qualityPages, translateQualitySources, publishQualityCheck, serviceQualityPullRequest } from './quality-language-summary.js';

@@ -6,8 +6,8 @@ import { existsSync, mkdtempSync, writeFileSync, rmSync, renameSync } from 'node
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { officialCandidateDiff } from '../src/release-content.js';
 import { freezeReleaseGitInput } from '../src/release-git-input.js';
+import { collectContentInput, officialCandidateDiff } from '../src/release-content.js';
 import { validateReleaseSource, validateReleaseSourceManifest, validateReleaseEvidence } from '../../core/src/release-bundle.js';
 import { frozenFixture } from '../../core/test/release-receipt-fixture.js';
 import { receiptDigest } from '../../core/src/release-note-receipt.js';
@@ -28,6 +28,14 @@ function fixture() {
   return { workspace, git, commit, base, options };
 }
 describe('完整 Git 发布输入', { timeout: 30_000 }, () => {
+  it('draft input retains commit IDs for attribution without duplicating history in model input', async () => {
+    const f=fixture(); f.commit('large.txt','未要求逐源码模型覆盖。'.repeat(10000),'feat: new feature');
+    const collected=await collectContentInput({directory:join(f.workspace,'collected'),candidateId:'d'.repeat(64),configDigest:'e'.repeat(64),units:[{...f.options(),contextPaths:['README.md']}]});
+    expect(collected.sources.some(s=>s.path==='large.txt')).toBe(false);
+    expect(collected.sources.some(s=>s.path==='commits'||s.text.includes('feat: new feature'))).toBe(false);
+    expect(collected.sources.find(s=>s.path==='README.md')!.text).toContain('Usage');
+    expect(collected.manifests[0]!.commits).toHaveLength(1);
+  });
   it.each([
     ['web-sdk', 'packages/web-sdk', 'web-sdk-v1.2.0-beta.1', '1.2.0-beta.1'],
     ['python-sdk', 'packages/python-sdk', 'python-sdk-v2.0.0-rc.2', '2.0.0-rc.2'],
@@ -182,6 +190,19 @@ describe('完整 Git 发布输入', { timeout: 30_000 }, () => {
     rmSync(join(f.workspace, '.git', 'shallow'));
     await expect(freezeReleaseGitInput({ ...f.options(), identity: { ...f.options().identity, targetSha: 'b'.repeat(40) } })).rejects.toThrow('Git read failed');
   });
+});
+
+
+it.each(['.', 'packages/app'])('selects only the configured HISTORY.md for unit %s', async path => {
+  const f=fixture(),notes='## 1.1.0\n\n### Bug Fixes\n\n* current repair\n\n## 1.0.0\n\n* old history\n';
+  const prefix=path==='.'?'':path+'/';
+  const collected=await collectContentInput({directory:f.workspace,candidateId:'d'.repeat(64),configDigest:'e'.repeat(64),repository:'fixture/product',
+    units:[{...f.options(),unit:{...f.options().unit,path},changelogPath:'HISTORY.md'}],
+    preparedChanges:[{path:prefix+'HISTORY.md',content:notes},{path:prefix+'CHANGELOG.md',content:notes.replace('current repair','wrong file')},
+      {path:prefix+'nested/HISTORY.md',content:notes.replace('current repair','nested file')} ]});
+  expect(collected.sources.map(source=>source.path)).toEqual([prefix+'HISTORY.md']);
+  expect(collected.sources[0]!.text).toContain('current repair');
+  expect(collected.sources[0]!.text).not.toMatch(/old history|wrong file|nested file/);
 });
 
 it('passes the complete changed source range into the official candidate',async()=>{

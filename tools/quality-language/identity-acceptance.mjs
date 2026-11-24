@@ -1,18 +1,16 @@
+import { createHash } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { qualityLanguage } from './run.mjs';
 import { releaseNotes } from './release-notes.mjs';
-import { officialCandidateInput } from '../../packages/runner/dist/index.js';
+import { contentWireInput } from '../../packages/runner/dist/index.js';
 
 // Fixed public fixtures; no caller-supplied prompt, repository, or output destination.
 const text = '修复认证暂不可用时的发布初稿恢复；未执行真实产品验收。';
+const digest = createHash('sha256').update(text).digest('hex');
 const qualityInput = JSON.stringify({ items: [{ bodyMarkdown: 'The retry delay is ignored after an authentication failure. Preserve the retry delay before the next request.', sourceCommentId: 'synthetic:1', sourceCommit: 'unknown', sourceUrl: 'https://github.com/splrad/steward', severity: '原文未说明', originalIdentifiers: [], segmentIndex: 0 }] });
-const releaseInput = JSON.stringify(officialCandidateInput({
-  unit: { id: 'example', path: '.', version: '0.0.0', tag: 'v0.0.0' },
-  template: '## 本版改动',
-  evidence: [{ kind: 'source-range-diff', details: { text } }],
-}));
+const releaseInput = contentWireInput({ stage: 'DRAFT', unitIds: ['example'], units: [{ id: 'example', path: '.', version: '0.0.0', tag: 'v0.0.0' }], sources: [{ id: digest, unitId: 'example', path: 'example.txt', previousPath: null, status: 'A:after', oid: '0'.repeat(40), mode: '100644', byteLength: Buffer.byteLength(text), encoding: 'utf8', sha256: digest, start: 0, end: Buffer.byteLength(text), text, stage: 'DIFF' }], items: [], background: [] });
 
 export function assertAdmission(purpose, env) {
   if (!['quality', 'release'].includes(purpose) || env.GITHUB_EVENT_NAME !== 'workflow_dispatch' ||
