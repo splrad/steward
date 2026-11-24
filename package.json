@@ -47,6 +47,6 @@
     "es-module-lexer": "2.3.2",
     "release-please": "17.11.2",
     "typescript": "7.0.2",
-    "vitest": "5.1.0"
+    "vitest": "5.1.1"
   }
 }
