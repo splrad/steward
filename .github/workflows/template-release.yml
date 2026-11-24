@@ -75,3 +75,17 @@ jobs:
           footer: '[完整变更](https://github.com/splrad/steward/compare/${{ needs.range.outputs.previous }}...${{ github.ref_name }})'
           latest: legacy
           publish: true
+      - name: Verify the published release and its tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_QUERY: >-
+            query($tag: String!, $ref: String!) { repository(owner: "splrad", name: "steward") {
+              ref(qualifiedName: $ref) { target { oid } }
+              release(tagName: $tag) { tagName isDraft tagCommit { oid } }
+            } }
+        run: |
+          set -euo pipefail
+          gh api graphql -f tag="$GITHUB_REF_NAME" -f ref="$GITHUB_REF" -f query="$RELEASE_QUERY" |
+            jq -e --arg tag "$GITHUB_REF_NAME" --arg sha "$GITHUB_SHA" '
+              .data.repository | .ref.target.oid == $sha and .release.tagName == $tag
+              and .release.isDraft == false and .release.tagCommit.oid == $sha'
