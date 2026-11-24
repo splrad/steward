@@ -27,7 +27,8 @@
   },
   "github-actions": {
     "managerFilePatterns": [
-      "/^templates/.*\\.ya?ml$/"
+      "/^templates/.*\\.ya?ml$/",
+      "templates/repository/.github/workflows/pr-title.yml.jinja"
     ]
   },
   "packageRules": [
