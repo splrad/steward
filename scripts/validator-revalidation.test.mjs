@@ -130,6 +130,38 @@ test('an actual rule shape with no per-rule ID limits discovery and private reco
   assert.doesNotMatch(JSON.stringify(f.records),/private-product|author\/policy-change|PR_fixture|"head"|"job"/);
 });
 
+test('keeps dependency updates open across retries and validates the synchronized head',async()=>{
+  for(const id of [49699333,29139614]){
+    const f=fixture();
+    f.pr.user={id};
+    f.addRun(80,previous,'completed','success');
+    for(let i=0;i<2;i++){
+      const entry=(await f.run()).pulls[0];
+      assert.deepEqual([entry.status,entry.reason],['waiting','dependency-managed']);
+    }
+    f.pr.head.sha='e'.repeat(40);
+    f.addRun(81,validator,'completed','success');
+    const {pulls}=await f.run();
+    assert.deepEqual(pulls.map(row=>row.status),['superseded','success']);
+    assert.equal(pulls[1].run.head,f.pr.head.sha);
+    assert.equal(pulls[1].run.job,810);
+    assert.equal(f.pr.state,'open');
+    assert.deepEqual(f.changes,[]);
+  }
+});
+
+test('recovers a dependency PR already closed by the previous validator during journal replay',async()=>{
+  const f=fixture();
+  f.runtime.crashAfterClose=true;
+  await assert.rejects(f.run(),/PULLS_PENDING/);
+  f.pr.user={id:49699333};
+  f.runtime.crashAfterClose=false;
+  assert.equal((await f.run({draining:true})).pulls[0].status,'reopened');
+  await f.run();
+  assert.deepEqual(f.changes,['closed','open']);
+  assert.equal(f.pr.state,'open');
+});
+
 test('recovers an App close exactly once after loss of the close or reopen readback',async()=>{
   const f=fixture();
   f.runtime.crashAfterClose=true;
