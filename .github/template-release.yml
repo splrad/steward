@@ -6,6 +6,11 @@ template: |+
   $CHANGES
 
 change-template: '- $TITLE（[#$NUMBER]($URL)）'
+change-title-escapes: '\`*_~|[]()<>!&@#:./'
+replacers:
+  - target: change-title
+    search: '/[\r\n]+/g'
+    replace: ' '
 categories:
   - type: pre-include
     when:
