@@ -161,15 +161,33 @@ export async function officialCandidateDiff(directory: string, sourceSha: string
       try { return new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(Buffer.concat(parts)); }
       catch { throw Error('CONTENT_SOURCE_ENCODING'); }
     };
-    let text = await readGit([...(selected ? ['-c','core.quotePath=false'] : []), ...diff, '--no-ext-diff',
+    const exclusions = selected?.exclude.map(path => ':(top,exclude,literal)' + path) ?? [];
+    const options = ['--no-ext-diff',
       '--no-textconv', '--no-color', ...(selected && !selected.mixedMerge ? ['--find-renames','--find-copies','--find-copies-harder'] : ['--no-renames']),
       ...(selected ? ['--src-prefix=a/','--dst-prefix=b/','--unified=0'] : ['--unified=2']),
-      ...revisions, '--', ...(selected?.exclude.map(path => ':(top,exclude,literal)' + path) ?? [])]);
-    // Git can append the preceding unchanged line to a hunk header even with --unified=0.
-    if (selected?.mixedMerge) text = await mergeResolutionLines(text, sourceSha, baselineSha, selected.excludedCommits, readGit);
-    else if (selected) {
-      text = text.replace(/^(@{2,} [0-9,+ -]+ @{2,}) [^\n]*/gm, '$1');
-      text = await filterPatchLines(text, baselineSha, sourceSha, selected.excludedCommits, readGit);
+    ];
+    let text: string;
+    if (selected?.mixedMerge && (await readGit(['show','-s','--format=%P',sourceSha])).trim().split(' ').length === 2) {
+      // Replay the automatic merge to identify manual resolutions, including
+      // files whose final tree happens to match one parent. Read only their
+      // first-parent delta and attribute its lines to the actual commits.
+      const resolved = await readGit(['show','--format=','--remerge-diff','--name-only','--no-renames','-z',
+        sourceSha,'--',...exclusions]);
+      const patches: string[] = [];
+      for (const path of resolved.split('\0').filter(Boolean)) {
+        const patch = await readGit(['-c','core.quotePath=false','diff',...options,baseline,sourceSha,'--',':(top,literal)' + path]);
+        patches.push(await filterPatchLines(patch.replace(/^(@@ [0-9,+ -]+ @@) [^\n]*/gm, '$1'),
+          baselineSha, sourceSha, selected.excludedCommits, readGit));
+      }
+      text = patches.join('');
+    } else {
+      text = await readGit([...(selected ? ['-c','core.quotePath=false'] : []), ...diff,...options,...revisions,'--',...exclusions]);
+      // Git can append the preceding unchanged line to a hunk header even with --unified=0.
+      if (selected?.mixedMerge) text = await mergeResolutionLines(text, sourceSha, baselineSha, selected.excludedCommits, readGit);
+      else if (selected) {
+        text = text.replace(/^(@{2,} [0-9,+ -]+ @{2,}) [^\n]*/gm, '$1');
+        text = await filterPatchLines(text, baselineSha, sourceSha, selected.excludedCommits, readGit);
+      }
     }
     if (selected && !text) return [];
     const details = { sourceSha, baselineSha };

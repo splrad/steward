@@ -9,7 +9,9 @@ import { authenticatedBotIdentityTransport } from './steward-bot-identity.mjs';
 const label = 'Internal';
 const appBot = 301115370;
 const internal = name => name?.toLowerCase() === 'internal';
-const live = (pr, target) => pr.number === target.number && pr.state === 'open' && !pr.merged &&
+// A delivery admitted while open can finish after the exact change was merged.
+const live = (pr, target) => pr.number === target.number &&
+  ((pr.state === 'open' && !pr.merged) || (pr.state === 'closed' && pr.merged === true)) &&
   pr.base?.repo?.id === target.repositoryId && pr.base.ref === target.branch && pr.head.sha === target.head;
 
 export function impactTarget(payload) {

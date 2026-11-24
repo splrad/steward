@@ -149,19 +149,23 @@ test('Internal labels filter every writing source and preserve mixed PRs and dir
   git('switch', '-q', baseBranch);
   const publicParent = await commit('feature.txt', 'main-visible-line\n', 'visible change');
   labels.set(publicParent, []);
+  const publicAddition = await commit('public.txt', 'public-command\n', 'public command');
+  labels.set(publicAddition, []);
   assert.throws(() => git('merge', '--no-ff', '-m', 'merge conflict-side', 'conflict-side'));
   await writeFile(join(directory, 'feature.txt'), 'new-resolution-line\n');
   git('add', 'feature.txt');
   git('update-index', '--chmod=+x', 'feature.txt');
+  git('rm', 'public.txt');
   git('commit', '-qm', 'resolve integration');
   const resolved = git('rev-parse', 'HEAD');
-  commits.push({sha:resolved,parents:[{sha:publicParent},{sha:hiddenParent}],commit:{message:'resolve integration'}});
+  commits.push({sha:resolved,parents:[{sha:publicAddition},{sha:hiddenParent}],commit:{message:'resolve integration'}});
   labels.set(resolved, [pull(45, [], 'visible integration')]);
   const conflict = await collect(resolved);
   const resolution = conflict.evidence.filter(item => item.details.sourceSha === resolved).map(item => item.details.text).join('');
   assert.match(resolution, /new-resolution-line/);
   assert.match(resolution, /^-main-visible-line$/m);
-  assert.match(resolution, /mode 100644,100644\.\.100755/);
+  assert.match(resolution, /new mode 100755/);
+  assert.match(resolution, /^-public-command$/m);
   assert.doesNotMatch(JSON.stringify(conflict.evidence), /hidden-parent-line/);
 
   const secretText = 'carried-internal-sentinel\n'.repeat(5);
@@ -239,6 +243,18 @@ test('App classifies the current PR, preserves manual changes and releases stale
   assert.equal(await classifyPull(target,io,internal),'internal');
   assert.deepEqual(writes,['ensure','add']);
   writes=[];
+  assert.equal(await classifyPull(target,io,async input => {
+    current.state = 'closed'; current.merged = true;
+    return internal(input);
+  }), 'internal');
+  assert.deepEqual(writes,['ensure','add']);
+  writes=[];
+  assert.equal(await classifyPull(target,io,internal),'internal');
+  assert.deepEqual(writes,['ensure','add']);
+  writes=[];
+  current.merged = false;
+  assert.equal(await classifyPull(target,io,()=>assert.fail('closed without merge')),'preserved');
+  current.state = 'open';
   const title = current.title;
   assert.equal(await classifyPull(target,{...io,readme:async()=>{current.title='changed during read';return 'Project';}},
     ()=>assert.fail('material changed before inference')),'superseded');
