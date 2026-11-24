@@ -215,8 +215,7 @@ def tool(key, item, root):
 
 
 def title(base, head, root):
-    path = next(p for p in (rules.ROOT_TITLE, rules.TEMPLATE_TITLE)
-                if rules.blob(base, p) != rules.blob(head, p))
+    path, = rules.changed_paths(base, head) - {rules.ACTION_LOCK}
     workflow = rules.blob(head, path)
     sha, tag = (v.decode() for v in rules.PINS.findall(workflow)[0])
     supplier = "https://github.com/amannn/action-semantic-pull-request.git"

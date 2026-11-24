@@ -10,7 +10,9 @@
   ],
   "scripts": {
     "build": "node scripts/build-runner.mjs",
-    "test": "uv sync --project tools/template --frozen --only-group release-inspection --inexact --no-build && npm run test:pages && npm run test:private-dependencies && npm run test:settings-events && npm run test:controller-source && npm run test:bounded-release && npm run test:configuration && vitest run",
+    "test": "node scripts/steward-tests.mjs",
+    "test:source-controller": "node scripts/steward-tests.mjs --controller-only",
+    "test:quality-language": "node scripts/steward-tests.mjs --quality-language",
     "test:configuration": "node --test scripts/test/configuration-authority.test.mjs scripts/test/repository-registration.test.mjs scripts/test/security-policy.test.mjs",
     "test:bounded-release": "node --test scripts/test/bounded-release-entry.test.mjs scripts/test/release-cycle-event.test.mjs scripts/test/official-candidate-event.test.mjs scripts/test/official-release.test.mjs scripts/test/release-pause-policy.test.mjs",
     "test:controller-source": "node --test scripts/controller-source.test.mjs scripts/validator-revalidation.test.mjs scripts/controller-pin-policy.test.mjs scripts/controller-version.test.mjs",

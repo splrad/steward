@@ -22,7 +22,7 @@ updates:
     open-pull-requests-limit: 5
   - package-ecosystem: github-actions
     directories: ["/", "/templates/release", "/templates/repository/.github/workflows"]
-    exclude-paths: [".github/workflows/pr-title.yml", ".github/workflows/pr-labeler.yml"]
+    exclude-paths: [".github/workflows/pr-title.yml", ".github/workflows/pr-labeler.yml", "pr-title.yml"]
     ignore:
       - dependency-name: splrad/steward
     schedule:
