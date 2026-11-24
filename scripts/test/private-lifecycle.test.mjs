@@ -64,7 +64,7 @@ test('release workflows must match trusted templates and controller ancestry',as
 });
 test('all admitted mise versions are collected; malformed versions fail',async()=>{
  const files=await sample();const docs=new Map(lifecycleWorkflows.map(p=>[p,YAML.parse(files.get(p).toString())]));
- assert(lifecycleMiseVersions(docs).includes('2026.10.18'));
+ assert.deepEqual(lifecycleMiseVersions(docs), ['2026.11.14']);
  docs.set('bad',{jobs:{a:{steps:[{uses:'jdx/mise-action@'+SHA,with:{version:'latest'}}]}}});assert.throws(()=>lifecycleMiseVersions(docs),/MISE_VERSION/);
 });
 test('actual sample compiles, tests emitted application, checks types and verifies repeatable output',async()=>{
