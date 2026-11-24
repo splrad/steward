@@ -28,6 +28,10 @@ it('uses explicit source metadata or corroborated legacy tags', async () => {
   expect(source('rel-bbbbbbbbbb-cfg1', 'Steward production release ' + sha)).toBeNull();
   expect(source('git-' + sha, 'source-sha=' + 'b'.repeat(40))).toBeNull();
   expect(source('', 'source-sha=' + sha)).toBe(sha);
+  expect(source('steward-aaaaaaaaaaaa', 'Steward #506 ' + sha)).toBe(sha);
+  expect(source('steward-bbbbbbbbbbbb', 'Steward #506 ' + sha)).toBeNull();
+  expect(source('steward-aaaaaaaaaaaa', 'Rollback review ' + sha)).toBeNull();
+  expect(source('steward-bbbbbbbbbbbb', 'source-sha=' + sha)).toBeNull();
 });
 
 const loadProof = () => import(pathToFileURL(resolve('scripts/worker-module-proof.mjs')).href);

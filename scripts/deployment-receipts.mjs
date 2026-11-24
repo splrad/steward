@@ -70,6 +70,13 @@ export function versionSource(version) {
     if (suffix && !suffix[1].startsWith(legacy[1])) return null;
     if (suffix) sources.add(suffix[1]);
   }
+  // Console uploads for a reviewed Steward PR use a short tag and a full SHA in the message.
+  const steward = /^steward-([0-9a-f]{7,40})$/.exec(tag);
+  if (steward) {
+    const release = /^Steward #[1-9][0-9]* ([0-9a-f]{40})$/.exec(message);
+    if (release) sources.add(release[1]);
+    if ([...sources].some(sha => !sha.startsWith(steward[1]))) return null;
+  }
   return sources.size === 1 ? [...sources][0] : null;
 }
 
