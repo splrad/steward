@@ -27,7 +27,8 @@
   },
   "github-actions": {
     "managerFilePatterns": [
-      "/^templates/.*\\.ya?ml$/"
+      "/^templates/.*\\.ya?ml$/",
+      "templates/repository/.github/workflows/pr-title.yml.jinja"
     ]
   },
   "packageRules": [
@@ -144,7 +145,7 @@
     "npm"
   ],
   "ignorePaths": [
-    ".github/workflows/pr-title.yml",
+    "[.]github/workflows/pr-title.yml",
     ".github/workflows/pr-labeler.yml",
     ".github/labeler.yml"
   ],
