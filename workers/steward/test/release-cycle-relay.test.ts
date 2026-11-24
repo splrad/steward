@@ -31,6 +31,11 @@ it('consumes the saved draft receipt for duplicate or delayed callbacks without 
  for(const wrong of [{sourceSha:deployment},{attempt:3},{runId:75},{releaseId:56},{tag:'v1.2.0'},
   {url:'https://github.com/splrad/AnotherRepo/releases/tag/v1.1.0'}])
   expect(()=>observe({...ready,draft:{...ready.draft,...wrong}})).toThrow('PUBLICATION_DRAFT_RECEIPT');
+ const temporary='https://github.com/splrad/LayerScape/releases/tag/untagged-a0304fd3f1d0';
+ expect(officialDraftReady({...ready,draft:{...ready.draft,url:temporary}},hint,TARGET,cycle,{...archived,url:temporary})).toBe(true);
+ const foreign=temporary.replace('/LayerScape/','/AnotherRepo/');
+ expect(()=>officialDraftReady({...ready,draft:{...ready.draft,url:foreign}},hint,TARGET,cycle,{...archived,url:foreign}))
+  .toThrow('PUBLICATION_DRAFT_RECEIPT');
  expect(observe({publishInvoked:true})).toBe(false);
 });
 const receipt={id:12,run_attempt:1,repository:{id:CENTRAL.id},head_repository:{id:CENTRAL.id},path:'.github/workflows/release-cycle-event.yml',

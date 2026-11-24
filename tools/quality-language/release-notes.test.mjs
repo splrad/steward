@@ -59,6 +59,19 @@ test('SDK capacity and output limits are explicit and always stop the client', a
     const f = fixture(setup); await assert.rejects(releaseNotes('generate', '{}', 'fixture-token', f.create), new RegExp(code)); assert.equal(f.events.at(-1), 'stop');
   }
 });
+test('the request-correlated SDK context error yields only a bounded diagnosis without retry', async () => {
+  const native = Object.assign(new Error('provider message containing untrusted input'), {
+    data: { errorType: 'context_limit', statusCode: 400, providerErrorCode: 'arbitrary-provider-details' },
+  });
+  const f = fixture({ failure: native });
+  await assert.rejects(releaseNotes('generate', '{}', 'fixture-token', f.create), error => {
+    assert.equal(error.message, 'CONTENT_CONTEXT_LIMIT');
+    assert.deepEqual({ ...error }, { status: 400 });
+    return true;
+  });
+  assert.equal(f.events.filter(event => event === 'send').length, 1);
+  assert.equal(f.events.at(-1), 'stop');
+});
 test('curated input above the retired byte threshold reaches the SDK and retains service capacity errors', async () => {
   const f = fixture(); const result=await releaseNotes('generate', 'x'.repeat(120 * 1024), 'fixture-token', f.create);
   assert.equal(result.status,'RETURNED');assert.deepEqual(f.events,['start','session','send','disconnect','stop']);

@@ -367,6 +367,13 @@ test('records each new source only after an exact round match and skips repeated
   assert.equal(restoredSource.evidenceSourceSha, archived.sourceSha);
   assert.deepEqual(restoredSource.candidate, archived.candidate);
   assert.equal(boundSource, controllerSha);
+  await assert.rejects(draftOfficialCandidate({ roundId: datedRound, candidate: archived.candidate, product,
+    sourceSha: archived.sourceSha, template, context: { evidence: [], unit: { id: 'root', path: '.' } },
+    call: async () => { throw Error('CONTENT_CONTEXT_LIMIT'); },
+  }), /CONTENT_CONTEXT_LIMIT/);
+  assert.equal(saved.draft, null);
+  assert.equal((await prepare()).mode, 'draft');
+  assert.equal(builds, 1);
   saved.draft = { body: expectedBody, templateDigest: bodyDigest(template) };
   const restoredDraft = await prepare();
   assert.equal(restoredDraft.mode, 'write');
