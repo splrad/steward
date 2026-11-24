@@ -23,7 +23,8 @@ export function impactTarget(payload) {
       pr.base?.repo?.id !== repo.id || pr.base.ref !== repo.default_branch || !/^[a-f0-9]{40}$/.test(pr.head?.sha ?? '') ||
       (pr.user?.id === appBot && pr.head.ref === 'release-please--branches--' + repo.default_branch)) return null;
   return { repository: repo.full_name, repositoryId: repo.id, number: pr.number, head: pr.head.sha,
-    branch: repo.default_branch, description: repo.description ?? '', correction };
+    branch: repo.default_branch, description: repo.description ?? '', correction,
+    title: pr.title, body: pr.body ?? '' };
 }
 
 // A truncated or binary patch cannot establish that the entire change is internal.
@@ -66,12 +67,16 @@ export async function classifyPull(target, io, classify) {
     await restoreOwner(before);
     return 'preserved';
   }
+  if (before.pr.title !== target.title || (before.pr.body ?? '') !== target.body) return 'superseded';
   let decision = 'eligible', unavailable = false;
   try {
     const files = await io.files();
     if (completeFiles(before.pr, files)) {
       const readme = await io.readme(before.pr.base.sha);
       if (readme.trim() || target.description.trim()) {
+        const latest = await state();
+        if (!latest || latest.manual || latest.eventId !== before.eventId || latest.pr.base.sha !== before.pr.base.sha ||
+            latest.pr.title !== target.title || (latest.pr.body ?? '') !== target.body) return 'superseded';
         const {text} = await classify(JSON.stringify({ project: target.description, readme, title: before.pr.title,
           body: before.pr.body, files: files.map(({filename,previous_filename,status,patch}) => ({filename,previous_filename,status,patch})) }));
         const result = JSON.parse(text);

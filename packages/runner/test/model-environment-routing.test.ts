@@ -21,6 +21,7 @@ it.each([
     expect(workflow.jobs.release.needs).toBe('quality');
   } else if (file === 'pr-release-impact.yml') {
     expect(Object.keys(workflow.on)).toEqual(['workflow_dispatch']);
+    expect(workflow.concurrency).toEqual({group:'pr-release-impact-${{ inputs.group }}','cancel-in-progress':false});
     for (const guard of ["github.actor_id == '301115370'", "github.repository_id == '1296724484'",
       "github.ref == 'refs/heads/main'", 'github.workflow_sha == github.sha']) expect(job.if).toContain(guard);
   } else {

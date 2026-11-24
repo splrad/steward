@@ -4,6 +4,8 @@
 
 ## 候选与准确构建来源
 
+公开仓接受外部贡献者和机器人提交的普通 PR。对同一 PR，Worker 按提交、基准分支、标题和正文识别重复内容。派发前和模型调用前均核对 GitHub 当前内容。GitHub Actions 为每个 PR 保留一个运行中的作业和最近的待运行作业。不同的有效改动仍可能分别消耗组织 Copilot 用量。若已派发的分类作业失败，可在 Actions 中重跑原作业。
+
 Steward 收到指向默认分支的 PR 打开、更新、重开或就绪事件后，通过中央 [PR 影响分类](../.github/workflows/pr-release-impact.yml) 调用组织现有的 Copilot SDK。判定对象是整个 PR 对该项目交付物使用者的影响。只有全部改动均属项目内部维护时，Steward App 才添加 `Internal`。维护者可以直接在 PR 的 Labels 中增删该标签，后续分类保留人工决定。分类会读取当前提交的完整文本补丁、PR 描述和基准提交的 README，补丁缺失或结论无法核实时保留发行素材。路径标签继续由各仓的 `actions/labeler` 管理。
 
 起草新稿时，Steward 从合入 PR 读取标签。范围内有 `Internal` 时，只向 Copilot 提供其余 PR 和直接提交的材料。若全部提交均来自内部 PR，组织模板使用一句维护说明。Release Please 按完整历史计算版本、变更文件和比较链接。贡献者折叠区按[发行说明的署名规则](release-notes.md)列出整个版本的贡献者。已交付候选继续按其保存的稿件恢复。

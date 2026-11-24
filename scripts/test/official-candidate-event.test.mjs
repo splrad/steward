@@ -211,6 +211,11 @@ test('App classifies the current PR, preserves manual changes and releases stale
   const current = {...pr, head:{...pr.head,ref:'change'}, base:{...pr.base,sha:sourceSha}, changed_files:1,labels:[]};
   const target = impactTarget({action:'opened',repository:repo,pull_request:current});
   assert.ok(target);
+  for (const swap of [{title:'a later title'}, {body:'a later description'}]) {
+    const changed = {...current,...swap};
+    assert.equal(await classifyPull(target,{pull:async()=>changed,events:async()=>[]},
+      ()=>assert.fail('obsolete delivery must not use Copilot')),'superseded');
+  }
   assert.equal(impactTarget({action:'opened',repository:repo,pull_request:pr}),null);
   let events = [], writes = [];
   const io = { pull:async()=>structuredClone(current), events:async()=>events, readme:async()=>'A deployment tool',
@@ -223,6 +228,10 @@ test('App classifies the current PR, preserves manual changes and releases stale
   assert.equal(await classifyPull(target,io,internal),'internal');
   assert.deepEqual(writes,['ensure','add']);
   writes=[];
+  const title = current.title;
+  assert.equal(await classifyPull(target,{...io,readme:async()=>{current.title='changed during read';return 'Project';}},
+    ()=>assert.fail('material changed before inference')),'superseded');
+  current.title = title;
   assert.equal(await classifyPull(target,{...io,readme:async()=>'  '},()=>assert.fail('no project context')),'eligible');
   assert.deepEqual(writes,[]);
   events=[{id:1,event:'unlabeled',actor:{id:9},label:{name:'Internal'}}];
