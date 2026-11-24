@@ -42,7 +42,7 @@ function fake(contents) {
   pulls:{get:async()=>response(structuredClone(pull)),listFiles:()=>{},listReviews:()=>{}},
   issues:{listComments:()=>{}},actions:{getWorkflowRun:async()=>{},listWorkflowRuns:()=>{},listJobsForWorkflowRunAttempt:()=>{}}}};
 }
-test('first CI adoption, prior and proposed inputs, renames, exact heads and merge group bytes are protected',async()=>{
+test('first CI adoption, prior and proposed inputs, renames and exact heads are protected',async()=>{
   const old='.github/workflows/old.yml',next='.github/workflows/next.yml',ci='.github/product-ci.json';
   const api=fake(new Map([[A+'/'+ci,JSON.stringify([next])],[B+'/'+ci,JSON.stringify([old])]]));
   const changed={filename:next,previous_filename:old,status:'renamed',sha:C};
@@ -51,15 +51,7 @@ test('first CI adoption, prior and proposed inputs, renames, exact heads and mer
   assert.deepEqual([...(await protectedChanges(api,[changed],B,A))].sort(),[next,old].sort());
   assert.equal(await authorizePull(api,1,A,'trunk'),true);
   review.commit_id=B;
-  await assert.rejects(authorizePull(api,1,A,'trunk'),/required/);review.commit_id=A;
-  const groupRepo={...repo,default_branch:'trunk'};
-  const compare={files:[{...changed,sha:B}],commits:[{sha:A}],total_commits:1};
-  api.rest.repos.compareCommitsWithBasehead=async()=>response(compare);
-  api.rest.repos.listPullRequestsAssociatedWithCommit=()=>{};
-  const prior=api.paginate;api.paginate=async method=>method===api.rest.repos.listPullRequestsAssociatedWithCommit?
-    [{number:1,head:{sha:A},base:{ref:'trunk'},state:'open'}]:prior(method);
-  await assert.rejects(checkEvent(api,{repository:groupRepo,merge_group:{base_sha:B,head_sha:A}}),/without exact pull approval/);
-  compare.files=[changed];await checkEvent(api,{repository:groupRepo,merge_group:{base_sha:B,head_sha:A}});
+  await assert.rejects(authorizePull(api,1,A,'trunk'),/required/);
   const first=fake(new Map([[A+'/'+ci,JSON.stringify([next])]]));
   assert.ok((await protectedChanges(first,[{filename:ci}],B,A)).has(ci));
 });
@@ -90,6 +82,31 @@ test('delegate renames and adopted configuration manifest or entry page require 
   assert.ok((await protectedChanges(fake(new Map()),[{filename:'moved.json',previous_filename:delegates}],B,A)).has(delegates));
   const adopted=fake(new Map([[B+'/'+requestPath,'adopted']]));
   for(const path of paths) assert.ok((await protectedChanges(adopted,[{filename:path}],B,A)).has(path));
+});
+test('title workflow edits, removals and renames use exact-head authorization without configuration adoption',async()=>{
+  const path='.github/workflows/pr-title.yml',other='.github/workflows/other.yml';
+  const bot={id:301115370,login:'splrad-steward[bot]',type:'Bot'};
+  const api=fake(new Map());
+  const cases=[
+    {filename:path,status:'added'}, {filename:path,status:'modified'}, {filename:path,status:'removed'},
+    {filename:other,previous_filename:path,status:'renamed'}, {filename:path,previous_filename:other,status:'renamed'},
+  ];
+  for(const file of cases)
+    assert.deepEqual(await protectedChanges(api,[file],B,A,true),new Set([path]));
+  assert.equal((await protectedChanges(api,[{filename:other}],B,A,true)).size,0);
+
+  const pullRequest={...pull,user:bot};
+  api.rest.pulls.get=async()=>response(pullRequest);
+  const approval={state:'COMMENTED',body:'/steward approve-configuration',commit_id:B,user:actor,node_id:'review'};
+  let reviews=[];
+  api.paginate=async method=>method===api.rest.pulls.listFiles?[cases[1]]:reviews;
+  api.graphql=async()=>({node:{author:{login:actor.login},body:approval.body,lastEditedAt:null}});
+  const event={repository:repo,pull_request:pullRequest,action:'opened',sender:bot};
+  await assert.rejects(checkEvent(api,event),/Configuration approval is required/);
+  reviews=[approval];
+  await assert.rejects(checkEvent(api,event),/Configuration approval is required/);
+  approval.commit_id=A;
+  assert.equal(await checkEvent(api,event),true);
 });
 test('only the recorded candidate can advance the existing manifest without configuration approval',async t=>{
   const dir=await mkdtemp(join(tmpdir(),'candidate-manifest-'));

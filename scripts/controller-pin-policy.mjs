@@ -92,7 +92,14 @@ function publisherAt(repo, revision) {
   }
   const settings = decodeBuildJson(git(repo, ['cat-file', 'blob', revision + ':' + releasePleaseFile]));
   const delivery = parseDeliveryConfig(raw, settings);
-  return {path: delivery.buildWorkflow, delivery};
+  return {path: delivery.buildWorkflow, delivery, settings};
+}
+
+function hasOfficialDraftSettings(settings) {
+  const packages=settings?.packages,root=packages?.['.'];
+  return Boolean(root && Object.keys(packages).length===1
+    && (root.draft??settings.draft)===true
+    && (root['force-tag-creation']??settings['force-tag-creation'])===true);
 }
 
 const successOnly = entry => !entry['continue-on-error'] &&
@@ -350,6 +357,13 @@ export function verifyLayerScapeControllerPins(workspace, input, policy, promote
     path === deliveryFile || path === releasePleaseFile || /^\.github\/workflows\/[^/]+\.ya?ml$/.test(path))) return;
   const priorPublisher = publisherAt(workspace, input.base);
   const nextPublisher = publisherAt(workspace, input.head);
+  // Release Please reads the target branch again when the draft Action starts.
+  // Keep these settings true even if a configuration PR merges during that window.
+  if (priorPublisher.delivery && hasOfficialDraftSettings(priorPublisher.settings)
+    && input.changedPaths.some(path=>path===releasePleaseFile||path===deliveryFile)
+    && (!nextPublisher.delivery || !hasOfficialDraftSettings(nextPublisher.settings))) {
+    throw Error('VALIDATION_CONTROLLER_OFFICIAL_DRAFT_REQUIRED');
+  }
   const watched = [...managedWorkflows, priorPublisher.path, nextPublisher.path];
   if (priorPublisher.delivery || nextPublisher.delivery) watched.push(deliveryFile, releasePleaseFile);
   if (!input.changedPaths.some(path => watched.includes(path))) return;

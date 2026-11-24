@@ -41,12 +41,19 @@ def blob(ref, path):
     return git("show", f"{ref}:{path}")
 
 
-def with_checksum_source(previous, candidate):
-    # Mise may add this marker for a public GitHub release checksum.
-    if (previous.get("url", "").startswith("https://github.com/")
-            and "checksum_source" not in previous and candidate.get("checksum_source") == "mise-versions"):
-        return {**previous, "checksum_source": "mise-versions"}
-    return previous
+def release_repository(url):
+    match = re.fullmatch(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/releases/download/[\w.+-]+/[\w.+-]+", url)
+    return match[1] if match else None
+
+
+def supplier_metadata(previous, candidate):
+    if not release_repository(previous.get("url", "")):
+        return previous
+    expected = dict(previous)
+    for field, marker in (("checksum_source", "mise-versions"), ("provenance", "github-attestations")):
+        if field not in previous and candidate.get(field) == marker:
+            expected[field] = marker
+    return expected
 
 
 def tool_changes(before, after):
@@ -72,7 +79,7 @@ def tool_changes(before, after):
             previous = base[platform]
             updated = item[platform]
             # Keep supplier, tag scheme, platform filename, provenance and backend.
-            asset = {**with_checksum_source(previous, updated), "url": previous["url"].replace(base["version"], version),
+            asset = {**supplier_metadata(previous, updated), "url": previous["url"].replace(base["version"], version),
                      "checksum": updated["checksum"], "url_api": updated["url_api"]}
             api = previous["url_api"].rsplit("/", 1)[0]
             if not re.fullmatch(re.escape(api) + r"/[1-9]\d*", asset["url_api"]):

@@ -8,6 +8,11 @@ const events=value=>Array.isArray(value)&&value.length>0&&value.every(v=>typeof 
 const sorted=value=>[...value].sort();
 const sameEvents=(a,b)=>events(a)&&events(b)&&equal(sorted(a),sorted(b));
 const fields=['id','name','source_type','source','enforcement'];
+const titlePath='.github/workflows/pr-title.yml';
+const labelerPath='.github/workflows/pr-labeler.yml';
+const genericExclusions=[titlePath,'.github/workflows/sync-managed.yml','.github/workflows/repository-configuration.yml',labelerPath];
+const genericEvents=['pull_request','push','schedule','workflow_dispatch','workflow_run','release','workflow_call'];
+const publicRepositories={include:[{name:'visibility',property_values:['public'],source:'system'}],exclude:[]};
 
 function policyPath(listed,scope){
   const url=new URL(listed?._links?.self?.href);
@@ -55,13 +60,21 @@ export function validateActionsRegistry(registry){
     check(equal(Object.keys(row).sort(),['acceptedEvents','conditions','desiredEvents','enforcement','id','name','source','source_type']),'REGISTRATION');
     check(positive(row.id)&&row.source_type==='Organization'&&row.source==='splrad'&&row.enforcement==='active'&&typeof row.name==='string'&&row.name.length>0,'REGISTRATION_IDENTITY');
     check(!known.has(row.id),'REGISTRATION_DUPLICATE');known.add(row.id);
-    const ids=row.conditions?.repository_id?.repository_ids,path=row.conditions?.workflow_path;
-    check(equal(Object.keys(row.conditions??{}).sort(),['repository_id','workflow_path'])&&Array.isArray(ids)&&ids.length>0&&new Set(ids).size===ids.length&&ids.every(id=>registry.repositories.some(r=>r.id===id)),'REGISTERED_TARGETS');
+    const conditions=row.conditions,path=conditions?.workflow_path;
     check(events(row.acceptedEvents)&&events(row.desiredEvents),'EVENTS');
-    const title=equal(path,{include:['.github/workflows/pr-title.yml'],exclude:[]});
-    const other=equal(path,{include:['~ALL'],exclude:['.github/workflows/pr-title.yml']});
-    check(title||other,'WORKFLOW_PATH');
-    check(title?sameEvents(row.desiredEvents,['pull_request_target']):!row.desiredEvents.includes('pull_request_target'),'TITLE_ONLY');
+    const title=equal(path,{include:[titlePath],exclude:[]});
+    const labeler=equal(path,{include:[labelerPath],exclude:[]});
+    const generic=equal(path,{include:['~ALL'],exclude:genericExclusions});
+    check(title||labeler||generic,'WORKFLOW_PATH');
+    if(labeler){
+      check(equal(conditions,{repository_property:publicRepositories,workflow_path:path}),'REGISTERED_TARGETS');
+      check(sameEvents(row.desiredEvents,['pull_request_target']),'LABELER_ONLY');
+    }else{
+      const ids=conditions.repository_id?.repository_ids;
+      check(equal(conditions,{repository_id:{repository_ids:ids},workflow_path:path})&&Array.isArray(ids)&&ids.length>0
+        &&new Set(ids).size===ids.length&&ids.every(id=>registry.repositories.some(r=>r.id===id)),'REGISTERED_TARGETS');
+      check(sameEvents(row.desiredEvents,title?['pull_request']:genericEvents),title?'TITLE_ONLY':'GENERIC_EVENTS');
+    }
   }
   return registry;
 }

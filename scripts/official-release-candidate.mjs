@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
-import { PullRequestBody } from 'release-please-official/build/src/util/pull-request-body.js';
-import { PullRequestTitle } from 'release-please-official/build/src/util/pull-request-title.js';
-import { TagName } from 'release-please-official/build/src/util/tag-name.js';
-import { Version } from 'release-please-official/build/src/version.js';
-import { assertVersionAcquisitionLinks, EvidenceReadError, parseConditionalNotes, parseDeliveryConfig,
-  renderConditionalNotes, selectReleaseContributors } from '../packages/runner/dist/index.js';
+import { GitHub, Manifest } from 'release-please';
+import { PullRequestBody } from 'release-please/build/src/util/pull-request-body.js';
+import { PullRequestTitle } from 'release-please/build/src/util/pull-request-title.js';
+import { parse as parseVersion } from 'semver';
+import { assertDeliveryPath, assertSelectedReleaseDownloads, assertVersionAcquisitionLinks, EvidenceReadError, generateOfficialCandidateNotes, officialCandidateDiff, splitContentText,
+  parseDeliveryConfig, renderConditionalNotes, selectReleaseContributors } from '../packages/runner/dist/index.js';
 
 export const officialPending = 'autorelease: pending';
 export const officialTagged = 'autorelease: tagged';
@@ -40,27 +40,125 @@ export function officialNotes(body) {
   return { version: data[0].version.toString(), body: content, bodyDigest: bodyDigest(content) };
 }
 
-export function renderOfficialHomepage({ upstreamBody, template, notes, sourceLink, contributors, candidateUrl, prUrl }) {
+export const officialRoundMarker = roundId => '<!-- steward-candidate-round:' + roundId + ' -->';
+
+export function renderOfficialHomepage({ upstreamBody, template, notes, sourceLink, contributors, roundId, filesUrl, creationLink }) {
   const upstream = officialNotes(upstreamBody);
   const lines = normalized(upstreamBody).trim().split('\n');
   const first = lines.indexOf('---'), last = lines.lastIndexOf('---');
-  const header = lines.slice(0, first + 1).join('\n');
+  const header = lines.slice(0, first).map(line => line ? '> ' + line : '>').join('\n');
   const footer = lines.slice(last + 1).join('\n').trim();
-  const versionHeading = upstream.body.split('\n', 1)[0];
+  const versionHeading = '## ' + upstream.version;
   const notesBody = renderConditionalNotes(template, notes, sourceLink, contributors).trimEnd();
   const expected = versionHeading + '\n\n' + notesBody;
-  const technical = upstream.body.replace(/^---$/gm, '- - -');
-  const extras = [
-    footer,
-    '[候选文件差异](<' + candidateUrl + '>) · [查看 PR](<' + prUrl + '>)',
-  ].filter(Boolean).join('\n\n');
-  const skeleton = header + '\n\n' + expected + '\n\n---\n\n' + extras;
-  let result = skeleton + '\n\n<details>\n<summary>技术变更记录</summary>\n\n' + technical + '\n\n</details>';
-  if (!fitsOfficialEvent(result)) result = skeleton;
+  const review = ['> **审阅提示**', header,
+    '> 请直接在本 PR 正文中编辑下方发行说明。合并时的说明将用于 Release 草稿。'].filter(Boolean).join('\n>\n');
+  // The first native separator underlines the PR-only title in GitHub Markdown.
+  const record = creationLink ?? sourceLink;
+  const details = ['<details>', '<summary>' + (creationLink ? '创建 PR 时的变更记录' : '本轮候选变更记录') + '</summary>', '',
+    '[' + record.label + '](<' + record.url + '>)', '', '</details>'].join('\n');
+  const files = filesUrl ? '[查看候选文件差异](<' + filesUrl + '>)' : '在本 PR 的 **Files changed** 页查看候选文件差异。';
+  const result = [review, '发行说明\n---', expected, '---', '## PR 信息', footer, files, details, officialRoundMarker(roundId)]
+    .filter(Boolean).join('\n\n');
   requireCandidate(fitsOfficialEvent(result), 'BODY_LIMIT');
   const readback = officialNotes(result);
   requireCandidate(readback.body === expected && readback.version === upstream.version, 'RENDER_PARSE');
   return result;
+}
+
+const generatedDateSuffix = / \(\d{4}-\d{2}-\d{2}\)$/;
+
+function comparableCandidateBody(candidate) {
+  const section = /^---\r?\n(?:\r?\n)*(?<heading>[^\r\n]+)/m.exec(candidate.body);
+  const heading = section?.groups?.heading;
+  const header = heading?.match(/^## (?:\[([^\]\r\n]+)\]\([^\r\n]+\)|([^ ()\r\n]+)) \(\d{4}-\d{2}-\d{2}\)$/);
+  if (!header || (header[1] ?? header[2]) !== candidate.version) return { body: candidate.body };
+  const stableHeading = heading.replace(generatedDateSuffix, '');
+  const start = section.index + section[0].length - heading.length;
+  return { heading: stableHeading, body: candidate.body.slice(0, start) + stableHeading + candidate.body.slice(start + heading.length) };
+}
+
+export function comparableCandidateFile(candidate, path, content, heading = comparableCandidateBody(candidate).heading) {
+  if (!heading || path !== candidate.changelogPath) return content;
+  let matched = false;
+  return content.replace(/^## [^\r\n]+/gm, line => {
+    if (matched || !generatedDateSuffix.test(line) || line.replace(generatedDateSuffix, '') !== heading) return line;
+    matched = true;
+    return heading;
+  });
+}
+
+export function officialCandidateRoundId(product, { baseline, candidate }) {
+  // Release Please stamps its current-version heading at calculation time.
+  const { body, heading } = comparableCandidateBody(candidate);
+  return bodyDigest(JSON.stringify([product.id, candidate.base, baseline.tag, baseline.sha, candidate.title,
+    candidate.head, candidate.version, body, candidate.labels,
+    candidate.files.map(file => [file.path, file.mode, comparableCandidateFile(candidate, file.path, file.content, heading)])]));
+}
+
+export async function candidateBaseline(get, product, sourceSha, configuration, manifest) {
+  const prior = manifest['.'];
+  const tag = prior ? officialUnit(configuration, 'release-please--branches--' + product.defaultBranch,
+    product.defaultBranch, prior).tag : null;
+  let taggedSha = null;
+  if (tag) {
+    try {
+      taggedSha = (await get('commits/' + encodeURIComponent('tags/' + tag))).sha;
+      requireCandidate(sha(taggedSha), 'BASELINE');
+    } catch (error) {
+      if (!(error instanceof EvidenceReadError && error.status === 404)) throw error;
+    }
+  }
+  const boundary = configuration['last-release-sha'] ?? taggedSha ?? configuration['bootstrap-sha'] ?? null;
+  requireCandidate(!boundary || sha(boundary), 'BASELINE');
+  if (boundary && boundary !== sourceSha) {
+    const comparison = await get('compare/' + boundary + '...' + sourceSha + '?per_page=1');
+    requireCandidate(comparison.merge_base_commit?.sha === boundary && comparison.status === 'ahead', 'BASELINE');
+  }
+  return { tag: taggedSha ? tag : null, sha: boundary };
+}
+
+export async function computeOfficialCandidate({ product, sourceSha, configuration, get, token, openManifest }) {
+  const [owner, repo] = product.name.split('/');
+  const defaultOpen = async () => {
+    const github = await GitHub.create({ owner, repo, token, defaultBranch: product.defaultBranch, logger });
+    const manifest = await Manifest.fromManifest(github, product.defaultBranch, configPath, manifestPath, { logger });
+    return { github, manifest };
+  };
+  const { github, manifest } = await (openManifest ?? defaultOpen)();
+  const strategies = await manifest.getStrategiesByPath();
+  requireCandidate(Object.keys(strategies).length === 1 && strategies['.'] &&
+    !(await strategies['.'].getBranchComponent()), 'ROOT_BRANCH');
+  const candidates = await manifest.buildPullRequests();
+  if (!candidates.length) {
+    requireCandidate(await defaultHead(get, product.defaultBranch) === sourceSha, 'SOURCE_CHANGED');
+    return null;
+  }
+  requireCandidate(candidates.length === 1, 'ROOT_CANDIDATE');
+  const [raw] = candidates;
+  const title = raw.title.toString();
+  const body = raw.body.toString();
+  const version = raw.version?.toString();
+  const head = raw.headRefName;
+  const labels = [...raw.labels].sort();
+  const { unit } = officialUnit(configuration, head, product.defaultBranch, version);
+  const changelogPath = unit['changelog-path'] ?? 'CHANGELOG.md';
+  const parsed = PullRequestTitle.parse(title, unit['pull-request-title-pattern'], unit['component-no-space'], logger);
+  requireCandidate(!raw.draft && labels.length === 1 && labels[0] === officialPending &&
+    officialNotes(body).version === version && parsed?.getVersion()?.toString() === version &&
+    (!parsed.getTargetBranch() || parsed.getTargetBranch() === product.defaultBranch), 'RAW_CANDIDATE_VERSION');
+  const changes = await github.buildChangeSet(raw.updates, sourceSha);
+  const files = [...changes].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([path, change]) => {
+    assertDeliveryPath(path);
+    requireCandidate(!path.split('/').some(part => part.toLowerCase() === '.git') &&
+      ['100644', '100755'].includes(change.mode) && typeof change.content === 'string' &&
+      Buffer.from(change.content).toString('utf8') === change.content, 'UPDATE_FILE');
+    return { path, mode: change.mode, content: change.content };
+  });
+  const versions = files.find(file => file.path === manifestPath);
+  requireCandidate(versions && JSON.parse(versions.content)['.'] === version && files.length > 1, 'UPDATE_MANIFEST');
+  requireCandidate(await defaultHead(get, product.defaultBranch) === sourceSha, 'SOURCE_CHANGED');
+  return { title, head, base: product.defaultBranch, body, version, changelogPath, files, labels };
 }
 
 export function officialConfig(settings) {
@@ -80,13 +178,21 @@ export function officialRootSettings(settings) {
   return { ...settings, ...root, path: '.' };
 }
 
-function officialUnit(settings, ref, base, version) {
+export function officialCandidateSettings(settings) {
   const unit = officialRootSettings(settings);
   requireCandidate(unit, 'ROOT_CONFIG');
+  requireCandidate(!unit['include-component-in-tag'], 'ROOT_TAG_CONFIG');
+  return unit;
+}
+
+function officialUnit(settings, ref, base, version) {
+  const unit = officialCandidateSettings(settings);
   requireCandidate(officialRef(ref, base), 'BRANCH');
-  const tag = value => new TagName(Version.parse(value), undefined, unit['tag-separator'],
-    unit['include-v-in-tag'] ?? true).toString();
-  return { unit, tag: tag(version) };
+  const parsed = parseVersion(version);
+  const suffix = parsed?.build.length ? '+' + parsed.build.join('.') : '';
+  requireCandidate(parsed && parsed.version + suffix === version, 'VERSION');
+  // Release Please uses the tag separator between a component name and its version.
+  return { unit, tag: (unit['include-v-in-tag'] === false ? '' : 'v') + version };
 }
 
 export function pullBinding(pull, product, number, botId) {
@@ -153,35 +259,11 @@ export async function verifyOfficialMerge(event, product, get, botId) {
   }
   const settings = JSON.parse(configuration);
   const frozen = verifyOfficialPull({...pull, title: event.title}, product, event.prNumber, botId, settings, manifest, event.body);
-  const current = verifyOfficialPull(pull, product, event.prNumber, botId, settings, manifest);
-  requireCandidate(current.bodyDigest === frozen.bodyDigest, 'MERGE_BODY_DRIFT');
   const { path, version, tag, body, bodyDigest: digest } = frozen;
   return { repositoryId: product.id, repository: product.name, defaultBranch: product.defaultBranch,
     prNumber: pull.number, candidateHead: event.head, sourceSha: event.sourceSha, mergedAt: event.mergedAt,
     authorId: botId, configDigest: bodyDigest(configuration), path, version, tag, body,
     pullBodyDigest: bodyDigest(event.body), bodyDigest: digest };
-}
-
-const conventionalCategories = { feat: 'added', fix: 'fixed', revert: 'fixed', perf: 'improved' };
-const headings = {added:'功能变更', fixed:'问题修复', improved:'性能改进'};
-const escapeMarkdown = value => value.replace(/[\\*_{}[\]<>~\x60]/g, '\\$&');
-function fallbackNotes(commits, repository) {
-  const changes = {};
-  let first = null;
-  for (const commit of commits) {
-    const subject = commit.commit?.message?.split(/\r?\n/, 1)[0] ?? '';
-    const match = /^(?<type>[a-z]+)(?:\([^)]*\))?!?: (?<summary>.+)$/.exec(subject);
-    const category = conventionalCategories[match?.groups?.type];
-    if (!subject) continue;
-    const url = 'https://github.com/' + repository + '/commit/' + commit.sha;
-    const description = escapeMarkdown(match?.groups?.summary ?? subject) + ' [查看提交](<' + url + '>)';
-    first ??= description;
-    if (!category) continue;
-    (changes[category] ??= { items: [] }).items.push({ title: match.groups.type === 'revert' ? '回退变更' : headings[category],
-      description });
-  }
-  requireCandidate(first, 'RELEASE_CHANGE_REQUIRED');
-  return Object.keys(changes).length ? { changes } : { summary: '本版变更包括 ' + first };
 }
 
 async function rangeCommits(get, sourceSha, priorSha) {
@@ -194,11 +276,11 @@ async function rangeCommits(get, sourceSha, priorSha) {
   const comparison = 'compare/' + priorSha + '...' + sourceSha;
   const result = [];
   let total;
-  for (let page = 1; page <= 100; page++) {
+  for (let page = 1; total === undefined || result.length < total; page++) {
     const value = await get(comparison + '?per_page=100&page=' + page);
     requireCandidate(value.base_commit?.sha === priorSha && value.merge_base_commit?.sha === priorSha
       && ['ahead', 'identical'].includes(value.status) && Number.isSafeInteger(value.total_commits)
-      && Array.isArray(value.commits), 'RANGE');
+      && value.total_commits >= 0 && Array.isArray(value.commits) && value.commits.length <= 100, 'RANGE');
     total ??= value.total_commits;
     requireCandidate(value.total_commits === total, 'RANGE');
     result.push(...value.commits);
@@ -220,39 +302,109 @@ export async function pages(get, path, field) {
   throw Error('OFFICIAL_CANDIDATE_PAGES');
 }
 
-export async function renderOfficialPull(pull, product, get, botId, sourceSha, template) {
-  const [configuration, before, manifest, delivery] = await Promise.all([
-    readOfficialConfig(get, sourceSha), readOfficialManifest(get, sourceSha),
-    readOfficialManifest(get, pull.head.sha), readOfficialDelivery(get, sourceSha),
-  ]);
-  const { path, tag } = verifyOfficialPull(pull, product, pull.number, botId, configuration, manifest);
-  const heading = officialNotes(pull.body).body.split('\n', 1)[0];
-  const comparePrefix = 'https://github.com/' + product.name + '/compare/';
-  const linkedTag = heading.split('](' + comparePrefix)[1]?.split('...')[0];
-  const priorTag = linkedTag && TagName.parse(linkedTag) ? linkedTag : null;
-  const backstop = configuration['last-release-sha'] ?? (!before[path] ? configuration['bootstrap-sha'] : null);
-  const priorSha = priorTag ? (await get('commits/' + encodeURIComponent('tags/' + priorTag))).sha : backstop;
-  requireCandidate(!priorSha || sha(priorSha), 'RANGE');
-  const relevant = await rangeCommits(get, sourceSha, priorSha);
-  const { units } = parseDeliveryConfig(delivery, configuration);
-  const unit = units.find(unit => unit.path === path);
-  requireCandidate(unit, 'UNIT');
-  let notes;
-  try {
-    notes = parseConditionalNotes((await readSourceFile(get, unit.notesPath, sourceSha)).toString('utf8'));
-  } catch (error) {
-    if (delivery.schemaVersion !== 3 || Object.hasOwn(delivery.notes ?? {}, path) ||
-        !(error instanceof EvidenceReadError && error.status === 404)) throw error;
-    notes = fallbackNotes(relevant, product.name);
+async function optionalEvidence(read) {
+  try { return await read(); }
+  catch (error) {
+    if (!(error instanceof EvidenceReadError && error.status === 404)) throw error;
+    return null;
   }
-  assertVersionAcquisitionLinks(notes, product.name, tag, sourceSha);
-  const actors = relevant.map(commit => commit.author ? { id: commit.author.id, login: commit.author.login,
+}
+
+async function sourceTree(get, sourceSha) {
+  const commit = await get('git/commits/' + sourceSha);
+  requireCandidate(commit.sha === sourceSha && sha(commit.tree?.sha), 'CONTENT_SOURCE');
+  const tree = await get('git/trees/' + commit.tree.sha + '?recursive=1');
+  requireCandidate(tree.sha === commit.tree.sha && tree.truncated === false && Array.isArray(tree.tree), 'CONTENT_SOURCE');
+  return tree.tree;
+}
+
+export async function officialCandidateEvidence({ product, sourceSha, baseline, candidate, get, getPages, directory }) {
+  const configuration = await readOfficialConfig(get, sourceSha);
+  const { unit: release, tag } = officialUnit(configuration, candidate.head, candidate.base, candidate.version);
+  const path = release.path;
+  const repository = 'https://github.com/' + product.name;
+  const [commits, delivery, tree, previous, diffs] = await Promise.all([
+    rangeCommits(get, sourceSha, baseline.sha),
+    readOfficialDelivery(get, sourceSha),
+    sourceTree(get, sourceSha),
+    baseline.tag ? optionalEvidence(() => get('releases/tags/' + encodeURIComponent(baseline.tag))) : null,
+    directory().then(workspace => officialCandidateDiff(workspace, sourceSha, baseline.sha)),
+  ]);
+  const { units, buildWorkflow } = parseDeliveryConfig(delivery, configuration);
+  const unit = units.find(unit => unit.path === path);
+  requireCandidate(unit, 'CONTENT_SOURCE');
+  const files = tree.filter(file => file.type === 'blob' && ['100644', '100755'].includes(file.mode));
+  const docPaths = files.map(file => file.path).filter(path =>
+    /^README\.(?:md|rst|adoc)$/i.test(path) ||
+    /^docs\/(?:product\/|.*(?:install|setup|download|upgrade|migrat|usage|getting-started)).*\.(?:md|mdx|rst|adoc)$/i.test(path));
+  const deliveryPaths = files.map(file => file.path).filter(path =>
+    path === buildWorkflow || /^(?:scripts|tools)\/(?:.*\/)?(?:Publish|Select)-ReleaseAssets\.[A-Za-z0-9]+$/i.test(path));
+  const paths = [...new Set([...docPaths, ...deliveryPaths, unit.notesPath])].filter(path => files.some(file => file.path === path));
+  const associated = new Map();
+  for (const commit of commits) {
+    const refs = await getPages('commits/' + commit.sha + '/pulls');
+    for (const pull of refs) {
+      if (positive(pull.number) && pull.merged_at && pull.base?.repo?.id === product.id && pull.base.ref === candidate.base) {
+        if (!associated.has(pull.number)) associated.set(pull.number, { pull, commits: [] });
+        associated.get(pull.number).commits.push(commit.sha);
+      }
+    }
+  }
+  const pulls = [...associated].map(([number, { pull, commits }]) => ({
+    kind: 'merged-pull-request', details: { number, url: pull.html_url, title: pull.title, body: pull.body, commits },
+  }));
+  const actors = commits.map(commit => commit.author ? { id: commit.author.id, login: commit.author.login,
     type: commit.author.type, profileUrl: commit.author.html_url, avatarUrl: commit.author.avatar_url } : null);
   const { contributors } = selectReleaseContributors(actors, [], 'github-authors');
-  const base = 'https://github.com/' + product.name;
-  const sourceLink = priorSha ? { label: '查看本版变更', url: base + '/compare/' + priorSha + '...' + sourceSha }
-    : { label: '查看本版源码', url: base + '/tree/' + sourceSha };
-  const body = renderOfficialHomepage({ upstreamBody: pull.body, template, notes, sourceLink, contributors,
-    candidateUrl: base + '/pull/' + pull.number + '/files', prUrl: base + '/pull/' + pull.number });
-  return { body, notes: officialNotes(body), templateDigest: bodyDigest(template) };
+  const sourceLink = candidateSourceLink(product, baseline.sha, sourceSha);
+  const docs = await Promise.all(paths.map(async path => {
+    const bytes = await readSourceFile(get, path, sourceSha);
+    let text;
+    try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
+    catch { throw Error('CONTENT_SOURCE_ENCODING'); }
+    const kind = deliveryPaths.includes(path) ? 'product-delivery-source' : 'product-documentation';
+    return splitContentText(text).map(chunk => ({ kind, details: { path, ...chunk } }));
+  }));
+  return {
+    tag, sourceLink, contributors, unit: { id: unit.id, path, version: candidate.version, tag },
+    evidence: [
+      { kind: 'official-candidate', details: {
+        sourceSha, baseline, body: candidate.body, version: candidate.version, title: candidate.title,
+        commits: commits.map(commit => ({ sha: commit.sha, message: commit.commit?.message })),
+      } },
+      ...candidate.files.flatMap(file => {
+        const digest = bodyDigest(file.content);
+        return splitContentText(file.content).map(chunk => ({
+          kind: 'official-candidate-file', details: { path: file.path, digest, ...chunk },
+        }));
+      }),
+      ...pulls, ...diffs, ...docs.flat(),
+      ...(previous ? [{ kind: 'previous-release', details: { tag: previous.tag_name, draft: previous.draft, body: previous.body } }] : []),
+      { kind: 'delivery', details: { expectedReleasePage: repository + '/releases/tag/' + tag, declaration: delivery } },
+    ],
+  };
+}
+
+function candidateSourceLink(product, base, head) {
+  requireCandidate(sha(head) && (base === null || sha(base)), 'CONTENT_SOURCE');
+  const repository = 'https://github.com/' + product.name;
+  return base ? { label: '查看本版变更', url: repository + '/compare/' + base + '...' + head }
+    : { label: '查看本版源码', url: repository + '/tree/' + head };
+}
+
+export async function draftOfficialCandidate({ roundId, candidate, context, product, sourceSha, template, call, creationRange, pullNumber }) {
+  const notes = await generateOfficialCandidateNotes({ unit: context.unit, evidence: context.evidence, template, call });
+  const body = renderOfficialHomepage({ upstreamBody: candidate.body, template, notes, sourceLink: context.sourceLink,
+    contributors: context.contributors, roundId,
+    filesUrl: positive(pullNumber) ? 'https://github.com/' + product.name + '/pull/' + pullNumber + '/files' : null,
+    creationLink: creationRange && candidateSourceLink(product, creationRange.base, creationRange.head) });
+  try {
+    // The product build hasn't selected or verified the downloadable files yet.
+    assertVersionAcquisitionLinks(notes, product.name, context.tag, sourceSha, []);
+    assertSelectedReleaseDownloads(body, product.name, context.tag, new Set());
+  } catch {
+    throw Error('OFFICIAL_CANDIDATE_C1_ACQUISITION_LINKS');
+  }
+  requireCandidate(officialNotes(body).version === candidate.version, 'C1_VERSION');
+  return { body, templateDigest: bodyDigest(template) };
 }

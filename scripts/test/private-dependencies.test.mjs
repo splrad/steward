@@ -5,7 +5,7 @@ import {effectiveLock} from '../private-lock-exception.mjs';
 import {createHash} from 'node:crypto';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {dependencyMode,loadPolicy,inventory,checkInventory,highFindings,requireOnline,actionFindings,newActions,newPackageFindings,newTools,assertInputScope,assertGovernanceOnlyScope,assertCopierInputs,licenseFacts} from '../private-dependency-policy.mjs';
+import {dependencyMode,loadPolicy,inventory,checkInventory,highFindings,requireOnline,actionFindings,newActions,newPackageFindings,newTools,assertInputScope,assertGovernanceOnlyScope,assertCopierInputs,copierTitleBytes,licenseFacts} from '../private-dependency-policy.mjs';
 import {upstreamReference,run,assertVerifiedActionTag,main,docker} from '../validation-private-dependencies.mjs';
 import {nodeFindings,miseFindings,miseVersions,archiveInventory} from '../private-tool-security.mjs';
 import {npmToolLock} from '../npm-tool-lock.mjs';
@@ -54,6 +54,18 @@ test('private PR title resolves only the approved reusable workflow and its lock
 });
 test('reusable cannot borrow missing coverage from the consumer or another source',async()=>{
  await assert.rejects(reusableActions(reusableUse,{...reusableIO(),inventory:async()=>[{repo:'jdx/mise-action',sha:OTHER}]}),/ACTION_INPUT_UNCOVERED/);
+});
+test('Copier title caller must carry the source SHA selected by its adopted template tag',async()=>{
+ const path='.github/workflows/pr-title.yml';
+ const source=await readFile(new URL('../../templates/repository/'+path+'.jinja',import.meta.url));
+ const expected=copierTitleBytes(source,SHA);
+ const files=new Map([[path,expected],['.copier-answers.yml',Buffer.from('_src_path: https://github.com/splrad/steward.git\n_commit: v0.1.13\n')]]);
+ const resolve=()=>new Map([[path,expected]]);
+ assertCopierInputs(files,resolve,[path]);
+ files.set(path,copierTitleBytes(source,OTHER));
+ assert.throws(()=>assertCopierInputs(files,resolve,[path]),/COPIER_TEMPLATE_BYTES/);
+ for(const changed of [Buffer.concat([source,source]),Buffer.concat([source,Buffer.from('{% raw %}')])])
+  assert.throws(()=>copierTitleBytes(changed,SHA),/COPIER_TITLE_TEMPLATE/);
 });
 test('reusable rejects a missing source lock before any inventory can be substituted',async()=>{
  const files=reusableFiles();files.delete(actionLockPath);

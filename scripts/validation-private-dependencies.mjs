@@ -9,7 +9,7 @@ import {pathToFileURL,fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import YAML from 'yaml';
 import {validationController,validationFileInputs,git} from './validation-input.mjs';
-import {assert,loadPolicy,checkInventory,highFindings,requireOnline,actionFindings,newActions,newPackageFindings,newTools,assertInputScope,assertGovernanceOnlyScope,assertCopierInputs,configurationCallers,licenseFacts} from './private-dependency-policy.mjs';
+import {assert,loadPolicy,checkInventory,highFindings,requireOnline,actionFindings,newActions,newPackageFindings,newTools,assertInputScope,assertGovernanceOnlyScope,assertCopierInputs,copierTitleBytes,configurationCallers,licenseFacts} from './private-dependency-policy.mjs';
 import {assertLifecycleScope,assertLifecycleSnapshot,lifecycleMiseVersions,assertLifecycleMissingActionLock} from './private-lifecycle-policy.mjs';
 import {assertActionInputs,reusableActions,verifyReusableLock} from './private-reusable-actions.mjs';
 import {miseFindings} from './private-tool-security.mjs';
@@ -154,7 +154,13 @@ export async function main(env=process.env,resolveController=validationControlle
         const sha=git(controller,['rev-parse','--verify','refs/tags/'+ref+'^{commit}']).toString('utf8').trim();
         assert(/^[a-f0-9]{40}$/.test(sha),'COPIER_TEMPLATE_SOURCE');
         git(controller,['merge-base','--is-ancestor',sha,approvedController]);
-        return new Map(managedPaths.map(path=>[path,git(controller,['show',sha+':templates/repository/'+(path==='CONTRIBUTING.md'?'CONTRIBUTING.md.jinja':path)])]));
+        return new Map(managedPaths.map(path=>{
+          const source='templates/repository/'+path;
+          const read=ref=>git(controller,['show',sha+':'+ref]);
+          if(path==='.github/workflows/pr-title.yml'&&git(controller,['ls-tree',sha,'--',source+'.jinja']).length)
+            return [path,copierTitleBytes(read(source+'.jinja'),sha)];
+          return [path,read(path==='CONTRIBUTING.md'?source+'.jinja':source)];
+        }));
       },managedPaths,env.GITHUB_REPOSITORY);
       const control=blob(workspace,entries,'acceptance/bootstrap-target.json',true);
       if(control){assert(control.length<=1024,'CONTROL_SIZE');parseAcceptanceTarget(control.toString('utf8'));}

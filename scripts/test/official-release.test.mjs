@@ -3,8 +3,9 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import YAML from 'yaml';
+import {Manifest} from 'release-please';
 import { EvidenceReadError } from '../../packages/runner/dist/index.js';
-import { approvedOfficialBody, inspectOfficialRelease, readBoundOfficialDraft, reconcileOfficialLifecycle } from '../official-release.mjs';
+import { approvedOfficialBody, inspectOfficialRelease, inspectPendingOfficialPulls, readBoundOfficialDraft, reconcileOfficialLifecycle } from '../official-release.mjs';
 
 const digest = value => createHash('sha256').update(value).digest('hex');
 const source = 'a'.repeat(40), head = 'b'.repeat(40), newer = 'c'.repeat(40), annotation = 'd'.repeat(40);
@@ -19,7 +20,7 @@ const approval = {repository:'splrad/Example', repositoryId:10, appBotId:41, def
 function fixture() {
   const matching = {path:'.', pullRequest:{number:18}, sha:source,
     tag:{toString:()=>approval.tag,version:{toString:()=>approval.version}}, notes:body, draft:true, forceTag:true};
-  const pull={number:18,state:'closed',merged:true,merged_at:'2026-11-23T00:00:00Z',user:{id:41,type:'Bot'},body:pullBody,
+  const pull={number:18,title:'chore(main): release 1.2.3',state:'closed',merged:true,merged_at:'2026-11-23T00:00:00Z',user:{id:41,type:'Bot'},body:pullBody,
     base:{ref:'main',repo:{id:10}},head:{ref:'release-please--branches--main',sha:head,repo:{id:10}},merge_commit_sha:source,labels:[{name:pending}]};
   const config={'separate-pull-requests':true,packages:{'.':{draft:true,'force-tag-creation':true}}};
   const old={id:1,tag_name:'v1.2.2',draft:false};
@@ -65,6 +66,31 @@ test('the pinned official parser preserves the approved Chinese body, inline HTM
   assert.equal(await approvedOfficialBody(pullBody),body);
 });
 
+test('C4 derives the exact official candidate from the default branch and pending lifecycle',async()=>{
+  const title='chore(main): release 1.2.3';
+  const merged={number:18,sha:source,title,headBranchName:'release-please--branches--main',
+    baseBranchName:'main',labels:[pending],body:pullBody};
+  let pulls=[merged,{...merged,number:22,labels:[tagged]}];
+  const settings={'separate-pull-requests':true,'include-component-in-tag':false,
+    packages:{'.':{'release-type':'simple',draft:true,'force-tag-creation':true}}};
+  const github={
+    repository:{owner:'splrad',repo:'Example'},
+    getFileJson:async path=>path===configPath?settings:{'.':approval.version},
+    pullRequestIterator:async function*(branch,state,limit,includeFiles) {
+      assert.deepEqual([branch,state,limit,includeFiles],['main','MERGED',200,false]);
+      yield* pulls;
+    },
+  };
+  const manifest=await Manifest.fromManifest(github,'main');
+  const facts={title,body,tag:approval.tag,prerelease:false};
+  const run=()=>inspectPendingOfficialPulls(manifest.findMergedReleasePullRequests(),approval,facts);
+  const [release]=await run();
+  assert.deepEqual([release.pullRequest.number,release.tag.toString(),release.tag.version.toString(),release.notes,release.sha,release.draft,release.forceTag],
+    [18,approval.tag,approval.version,body,source,true,true]);
+  pulls=[merged,{...merged,number:23}];
+  await assert.rejects(run(),/BRANCH_SCOPE prs=18,23/);
+});
+
 test('only one exact official object can be created; no output is needed to recover its real ID',async()=>{
   const f=fixture(), before=await f.perform();
   assert.equal(before.releaseId,null);
@@ -104,6 +130,16 @@ test('postmerge edits and config changes are rejected even when the official sca
     Object.keys(override).forEach(key=>delete f.facts.config[key]);
     f.facts.config['separate-pull-requests']=true;
   }
+});
+
+test('C4 reads the stored merge section and permits edits outside that section',async()=>{
+  const f=fixture(), stored={...approval,frozenBody:body};
+  const compare=async()=>({status:'ahead',merge_base_commit:{sha:source}});
+  const check=()=>inspectOfficialRelease(stored,{reader:f.reader,scan:async()=>f.facts.scan,compare});
+  f.facts.pull.body+='\nUpdated footer.';
+  assert.equal((await check()).body,body);
+  f.facts.pull.body=f.facts.pull.body.replace('修正安装。','变动内容。');
+  await assert.rejects(check(),/BODY_DIGEST/);
 });
 
 test('draft preparation inherits root defaults and rejects an explicit opt-out or another unit',async()=>{
@@ -161,6 +197,20 @@ test('release inventory changes between the preflight and postflight stop upload
   await assert.rejects(f.perform({previous:before}),/DRAFT_IDENTITY/);
 });
 
+test('the frozen range allows an earlier draft to go public and detects added tags with a frozen body',async()=>{
+  const f=fixture();
+  f.facts.releases[0].draft=true;
+  const before=await f.perform();
+  f.facts.releases[0].draft=false;
+  const options={scopeDigest:before.othersDigest};
+  assert.equal((await f.perform(options)).releaseId,null);
+  f.after();
+  assert.equal((await f.perform(options)).releaseId,2);
+  f.facts.otherTags.push({ref:'refs/tags/v9.0.0',object:{type:'commit',sha:newer}});
+  const compare=async()=>({status:'ahead',merge_base_commit:{sha:source}});
+  await assert.rejects(inspectOfficialRelease({...approval,frozenBody:body},{reader:f.reader,compare,...options}),/RECORDED_SCOPE_DRIFT/);
+});
+
 test('changes observed around the scan are rejected and ordinary descendant commits can continue',async()=>{
   const f=fixture();
   await assert.rejects(f.perform({scan:async()=>{f.facts.pull.labels.push({name:tagged});return [f.matching];}}),/SCAN_DRIFT/);
@@ -186,13 +236,20 @@ test('lifecycle recovery clears pending before adding tagged and resolves lost r
 
 test('the pinned Action runs only after the gated product and branch checks, in the shared coordinator queue',async()=>{
   const workflow=YAML.parse(await readFile(new URL('../../.github/workflows/release-cycle-event.yml',import.meta.url),'utf8'));
+  const lock=await readFile(new URL('../../.github/workflows/actions.lock',import.meta.url),'utf8');
   const steps=workflow.jobs['release-coordinator'].steps;
+  const cycleEntries=steps.filter(step=>step.run==='node scripts/release-cycle-event.mjs');
+  assert.equal(cycleEntries.length,3);
+  for(const step of cycleEntries)assert.equal(step.env.STEWARD_CENTRAL_TOKEN,'${{ github.token }}');
   const position=id=>steps.findIndex(step=>step.id===id);
   assert.ok(position('official_plan')<position('official_token') && position('official_token')<position('official_preflight')
     && position('official_preflight')<position('official_draft'));
-  assert.match(steps[position('official_plan')].if,/vars\.STEWARD_OFFICIAL_RELEASE == 'true'/);
+  assert.match(steps[position('official_delivery')].if,/vars\.STEWARD_OFFICIAL_RELEASE == 'true'/);
+  assert.ok(position('official_delivery')<position('delivery_archive') && position('delivery_archive')<position('official_plan'));
+  assert.equal(steps[position('delivery_archive')].with['skip-decompress'],true);
   const action=steps[position('official_draft')];
-  assert.equal(action.uses,'googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7');
+  assert.match(action.uses,/^googleapis\/release-please-action@[a-f0-9]{40}$/);
+  assert.ok(lock.includes(`'${action.uses}'`));
   assert.equal(action.if,"${{ steps.official_preflight.outputs.create == 'true' }}");
   assert.equal(action.with['skip-github-pull-request'],true);
   assert.equal(action.with['release-type'],undefined);
