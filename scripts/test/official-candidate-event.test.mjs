@@ -11,7 +11,7 @@ import { candidateBaseUnchanged, EvidenceReadError, isolatedBuildEnvironment, of
 import { Manifest } from 'release-please';
 import { PullRequestBody } from 'release-please/build/src/util/pull-request-body.js';
 import { bodyDigest, computeOfficialCandidate, draftOfficialCandidate, officialCandidateEvidence, officialCandidateRoundId, officialMergeKey,
-  officialNotes, renderOfficialHomepage, validateOfficialMergeEvent, verifyOfficialMerge } from '../official-release-candidate.mjs';
+  officialNotes, officialRoundMarker, renderOfficialHomepage, validateOfficialMergeEvent, verifyOfficialMerge } from '../official-release-candidate.mjs';
 import { candidateEvent, officialCandidateRoute, prepareOfficialCandidate } from '../official-candidate-event.mjs';
 import { compatibleExistingCandidate, writeOfficialCandidate } from '../official-candidate-write.mjs';
 import { classifyPull, impactTarget } from '../pr-release-impact.mjs';
@@ -378,10 +378,20 @@ test('native single-root extraction preserves every byte of rich notes and exclu
   assert.equal(login?.childNodes[0]?.value, person.login);
   assert.doesNotMatch(section, / · .42./);
   const page = render();
-  assert.ok(page.startsWith('> **审阅提示**\n>\n> 请审阅本版。'));
+  const notice = '请审阅下方版本说明。确认后合并，本次合并将启动该版本的正式构建。';
+  assert.ok(page.startsWith('> **审阅提示**\n>\n> ' + notice + '\n>\n> 如需修改，请编辑本 PR 首页描述中的「发行说明」区段。\n\n发行说明'));
   assert.match(page, /发行说明\n---\n\n## 1\.1\.0/);
-  assert.match(page, /\n---\n\n## PR 信息\n\n产品文件差异。/);
-  assert.match(page, /<summary>本轮候选变更记录<\/summary>/);
+  const info = page.slice(page.lastIndexOf('\n---\n') + '\n---\n\n'.length);
+  assert.deepEqual(info.split('\n'), [
+    '> <details>', '> <summary><strong>PR 信息（仅供审阅）</strong></summary>', '>',
+    '> 请审阅本版。', '>', '> 产品文件差异。', '>',
+    '> [查看候选文件差异](<https://github.com/splrad/fixture/pull/29/files>)', '>',
+    '> 本轮候选变更记录 · [查看本版变更](<https://github.com/splrad/fixture/compare/' + previousSha + '...' + sourceSha + '>)',
+    '>', '> </details>', '', officialRoundMarker('a'.repeat(64)),
+  ]);
+  const standardPage = render(upstreamBody.replace('请审阅本版。', notice));
+  assert.equal(standardPage.split(notice).length - 1, 1);
+  assert.equal(officialNotes(standardPage).body, section);
   assert.equal(officialNotes(page.replace('## 贡献者', '---\n\n## 贡献者')).body, section.replace('## 贡献者', '---\n\n## 贡献者'));
   assert.match(section, /兼容性与迁移/);
   assert.match(section, /steward doctor/);
@@ -735,7 +745,7 @@ test('renders only evidence-bound Copilot sections and validates the official se
   const section = officialNotes(draft.body);
   assert.ok(section.body.includes(templateNote));
   assert.equal(draft.templateDigest, bodyDigest(updatedTemplate));
-  assert.ok(draft.body.includes('<summary>创建 PR 时的变更记录</summary>'));
+  assert.ok(draft.body.includes('> 创建 PR 时的变更记录 · ['));
   assert.ok(draft.body.includes('/compare/' + previousSha + '...' + initialSha));
   assert.ok(!section.body.includes(initialSha));
   assert.ok(draft.body.includes('**Files changed**'));

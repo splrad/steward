@@ -46,20 +46,23 @@ export function renderOfficialHomepage({ upstreamBody, template, notes, sourceLi
   const upstream = officialNotes(upstreamBody);
   const lines = normalized(upstreamBody).trim().split('\n');
   const first = lines.indexOf('---'), last = lines.lastIndexOf('---');
-  const header = lines.slice(0, first).map(line => line ? '> ' + line : '>').join('\n');
+  const header = lines.slice(0, first).join('\n').trim();
   const footer = lines.slice(last + 1).join('\n').trim();
   const versionHeading = '## ' + upstream.version;
   const notesBody = renderConditionalNotes(template, notes, sourceLink, contributors).trimEnd();
   const expected = versionHeading + '\n\n' + notesBody;
-  const review = ['> **审阅提示**', header,
-    '> 请直接在本 PR 正文中编辑下方发行说明。合并时的说明将用于 Release 草稿。'].filter(Boolean).join('\n>\n');
-  // The first native separator underlines the PR-only title in GitHub Markdown.
+  const buildNotice = '请审阅下方版本说明。确认后合并，本次合并将启动该版本的正式构建。';
+  const review = ['> **审阅提示**', '> ' + buildNotice,
+    '> 如需修改，请编辑本 PR 首页描述中的「发行说明」区段。'].join('\n>\n');
   const record = creationLink ?? sourceLink;
-  const details = ['<details>', '<summary>' + (creationLink ? '创建 PR 时的变更记录' : '本轮候选变更记录') + '</summary>', '',
-    '[' + record.label + '](<' + record.url + '>)', '', '</details>'].join('\n');
+  const recordContext = creationLink ? '创建 PR 时的变更记录' : '本轮候选变更记录';
+  const recordLink = recordContext + ' · [' + record.label + '](<' + record.url + '>)';
   const files = filesUrl ? '[查看候选文件差异](<' + filesUrl + '>)' : '在本 PR 的 **Files changed** 页查看候选文件差异。';
-  const result = [review, '发行说明\n---', expected, '---', '## PR 信息', footer, files, details, officialRoundMarker(roundId)]
-    .filter(Boolean).join('\n\n');
+  const info = ['<details>\n<summary><strong>PR 信息（仅供审阅）</strong></summary>',
+    header !== buildNotice ? header : '', footer, files, recordLink, '</details>']
+    .filter(Boolean).join('\n\n').split('\n').map(line => line ? '> ' + line : '>').join('\n');
+  // The first native separator underlines the PR-only title in GitHub Markdown.
+  const result = [review, '发行说明\n---', expected, '---', info, officialRoundMarker(roundId)].join('\n\n');
   requireCandidate(fitsOfficialEvent(result), 'BODY_LIMIT');
   const readback = officialNotes(result);
   requireCandidate(readback.body === expected && readback.version === upstream.version, 'RENDER_PARSE');
