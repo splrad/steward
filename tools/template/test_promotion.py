@@ -11,7 +11,7 @@ class PromotionTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='promotion-git-')
         self.addCleanup(self.temp.cleanup)
-        self.root=Path(self.temp.name)
+        self.root=Path(self.temp.name).resolve()
         self.git('init','--initial-branch=main')
         self.git('config','user.name','Fixture')
         self.git('config','user.email','fixture@example.invalid')
@@ -59,7 +59,8 @@ class PromotionTests(unittest.TestCase):
         self.git('tag','v1.2.4',legacy)
 
         with tempfile.TemporaryDirectory(prefix='title-copier-consumers-') as directory:
-            consumers=Path(directory)
+            # Match the bridge's canonical paths when Windows TEMP uses an 8.3 name.
+            consumers=Path(directory).resolve()
             current=consumers/'existing'
             run_copy(str(self.root),current,vcs_ref=legacy,defaults=True,quiet=True)
             product_workflow=current/'.github/workflows/pr-title.yml'
