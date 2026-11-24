@@ -8,6 +8,8 @@ const check=(ok,reason,status)=>{if(!ok)throw Object.assign(Error('VALIDATOR_REV
 const number=value=>Number.isSafeInteger(value)&&value>0;
 const active=new Set(['queued','waiting','prepared','reopened','in_progress']);
 const actorId=301115370;
+// GitHub user IDs for dependabot[bot] and renovate[bot]. Both interpret a closed PR as a declined update.
+const dependencyBotIds=new Set([49699333,29139614]);
 const synchronizeGrace=2*60*1000;
 
 async function get(io,path) {
@@ -81,6 +83,7 @@ const ownedRelease=pr=>pr.user?.id===301115370&&typeof pr.head?.ref==='string'&&
   &&(pr.head.ref==='release-please--branches--'+pr.base.ref || pr.head.ref.startsWith('release-please--branches--'+pr.base.ref+'--components--'));
 
 function revalidationWait(pr) {
+  if(dependencyBotIds.has(pr.user?.id))return 'dependency-managed';
   if(ownedRelease(pr))return 'release-managed';
   if(pr.draft)return 'draft';
   // GitHub does not schedule pull_request for a conflicted merge. A behind PR
