@@ -1,5 +1,23 @@
 # 发布初稿输出合同与显式恢复
 
+## 只读核对历史归档
+
+从同一候选的受保护 Git 历史取原归档、原缓存、已登记的恢复授权和对照版本。对照版本可以是转存前的空批次，也可以是已经记下第二次尝试与恢复收据的批次。用 runner 的 `decodeCandidateDocument` 解码相应文档，将原缓存按键传入 `cache`，对照版本的 `input`、`payloads`、`evidence` 传入 `work`。`loadDocument` 只从原归档的固定提交读取并解码指定路径。`facts`、`protections` 取自对照版本，`authorsDigest` 取自该次生成记录。
+
+```js
+import { verifyContentRecoveryArchive } from './scripts/release-content-recovery.mjs';
+
+const verified = await verifyContentRecoveryArchive(work, cache, grant, {
+  loadDocument, facts, protections, authorsDigest
+});
+```
+
+返回值给出候选、批次和原失败尝试的摘要。来源、payload、验证器、保护、原缓存或收据不符时核对失败。这个入口只读取传入的快照。它核对原尝试的来源；第二次尝试的最终业务结果仍以对应结果归档为准。
+
+## 历史写入协议
+
+以下记录说明旧版如何生成现存收据，供解释归档字段时使用。
+
 每次 DRAFT 请求携带与本地校验器同源的 `outputSchema`。模型只返回 paragraphs 对象；qualification 的合法值为 SOURCE_CONFIRMED、TEST_CONFIRMED、UNVERIFIED。没有测试证据时不得使用 TEST_CONFIRMED。既有来源校验、中文内容要求、长度及证据确定程度约束保持有效。
 
 模型返回后被校验拒绝的正文，在不超过既有 12 KiB 限制时作为该尝试的 diagnostic 保存到目标仓库受保护状态中，包含正文、UTF-8 字节数、SHA256 和最多 16 条校验位置/schema路径/keyword。诊断是未验证模型输出，不得执行，也不得转为成功内容；不会打印到公共 workflow 日志。超出上限或未取得正文时不伪造诊断。历史没有保存正文的失败仍保持原状。
