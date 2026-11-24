@@ -25,6 +25,9 @@ workflows:
         - 'jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78'
     '.github/workflows/pr-labeler.yml':
         - 'actions/labeler@bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13'
+    '.github/workflows/pr-release-impact.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
+        - 'jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78'
     '.github/workflows/pr-title-reusable.yml':
         - 'amannn/action-semantic-pull-request@c5e23b7e584519ee15caa684cf60d056aa9f035f'
     '.github/workflows/pr-title.yml': []

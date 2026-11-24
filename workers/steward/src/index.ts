@@ -14,6 +14,7 @@ import {selectContractAuthority} from "../support/core/workflow-contract-authori
 import {evaluateRemoteWorkflowContract} from "../support/github/workflow-contract.js";
 import { createInstallationToken, GitHubClient, GitHubRequestError } from "../support/github/index.js";
 import { dispatchQualityEvent } from "./quality-event.js";
+import { dispatchReleaseImpact } from "./pr-release-impact.js";
 import repositoryCatalog from "../config/repositories.json" with { type: "json" };
 import { handleBodyWriteInternalRequest } from "./pr-body-api.js";
 
@@ -419,15 +420,17 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
   // Inline quality comments have no other consumer. Discard private or unknown visibility
   // before passing any payload to handlers that may persist, dispatch or log it.
   if (event === "pull_request_review_comment" && payload.repository?.private !== false) return response(204);
-  const [quality,existing,release,winget,promotion]=await Promise.allSettled([
+  const [quality,existing,release,winget,promotion,impact]=await Promise.allSettled([
     dispatchQualityEvent(env,event,payload,deliveryId),
     handleExistingEvent(env,event,payload,deliveryId,action),
     acceptReleaseHint(env,event,payload),
     acceptWingetSubmit(env,event,payload),
     acceptReleasePromotion(env,event,payload),
+    dispatchReleaseImpact(env,event,payload,deliveryId),
   ]);
   if (quality.status==='rejected') console.error(JSON.stringify({deliveryId,event,status:'quality-dispatch-failed'}));
-  if (quality.status==='rejected' || existing.status==='rejected' || release.status==='rejected' || winget.status==='rejected' || promotion.status==='rejected') return response(503);
+  if (impact.status==='rejected') console.error(JSON.stringify({deliveryId,event,status:'impact-dispatch-failed'}));
+  if (quality.status==='rejected' || existing.status==='rejected' || release.status==='rejected' || winget.status==='rejected' || promotion.status==='rejected' || impact.status==='rejected') return response(503);
   return existing.value;
 }
 

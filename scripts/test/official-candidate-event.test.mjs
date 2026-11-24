@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseFragment } from 'parse5';
@@ -10,10 +10,11 @@ import YAML from 'yaml';
 import { candidateBaseUnchanged, EvidenceReadError, isolatedBuildEnvironment, officialCandidateDiff } from '../../packages/runner/dist/index.js';
 import { Manifest } from 'release-please';
 import { PullRequestBody } from 'release-please/build/src/util/pull-request-body.js';
-import { bodyDigest, computeOfficialCandidate, draftOfficialCandidate, officialCandidateRoundId, officialMergeKey,
+import { bodyDigest, computeOfficialCandidate, draftOfficialCandidate, officialCandidateEvidence, officialCandidateRoundId, officialMergeKey,
   officialNotes, renderOfficialHomepage, validateOfficialMergeEvent, verifyOfficialMerge } from '../official-release-candidate.mjs';
 import { candidateEvent, officialCandidateRoute, prepareOfficialCandidate } from '../official-candidate-event.mjs';
 import { compatibleExistingCandidate, writeOfficialCandidate } from '../official-candidate-write.mjs';
+import { classifyPull, impactTarget } from '../pr-release-impact.mjs';
 
 const sourceSha = 'a'.repeat(40), head = 'b'.repeat(40), controllerSha = 'c'.repeat(40), previousSha = 'd'.repeat(40);
 const product = { id: 17, name: 'splrad/fixture', defaultBranch: 'main' }, authorId = 301115370;
@@ -63,6 +64,224 @@ test('candidate diff reads the complete immutable range beyond GitHub file pagin
   assert.equal(text, git(['diff', '--no-ext-diff', '--no-textconv', '--no-color', '--no-renames', '--unified=2', baselineSha, sourceSha, '--']));
   assert.equal((text.match(/^\+真实变更$/gm) ?? []).length, records.length);
   assert.deepEqual((await officialCandidateDiff(directory, sourceSha, null)).map(chunk => chunk.details.text).join(''), text);
+});
+
+test('Internal labels filter every writing source and preserve mixed PRs and direct commits', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'steward-release-labels-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const git = (...args) => execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com', ...args],
+    { cwd: directory, encoding: 'utf8', env: isolatedBuildEnvironment(process.env, directory) }).trim();
+  git('init', '--quiet');
+  const manual = '使用 手册.md';
+  await writeFile(join(directory, manual), 'old-public-option\n');
+  git('add', manual);
+  git('commit', '-qm', 'baseline');
+  const baseline = { tag: 'v1.0.0', sha: git('rev-parse', 'HEAD') };
+  const commits = [];
+  async function commit(path, contents, message) {
+    const parent = git('rev-parse', 'HEAD');
+    await writeFile(join(directory, path), contents);
+    git('add', path);
+    git('commit', '-qm', message);
+    const sha = git('rev-parse', 'HEAD');
+    commits.push({ sha, parents: [{ sha: parent }], commit: { message } });
+    return sha;
+  }
+  const internal = await commit(manual, 'old-public-option\ninternal-only-sentinel\nprivate-deleted-sentinel\n', 'internal-only-sentinel');
+  const visible = await commit(manual, 'internal-only-sentinel\nvisible-usage\n', 'mixed PR adds public usage');
+  const direct = await commit('direct.txt', 'direct-feature\n', 'direct feature');
+  const candidate = { base: 'main', head: pr.head.ref, version: '1.1.0', body: upstreamBody,
+    files: [{ path: 'CHANGELOG.md', content: 'range-wide-sentinel' }] };
+  const pull = (number, labels, title) => ({ number, labels: labels.map(name => ({ name })), title, body: title,
+    base: pr.base, merged_at: '2026-01-01T00:00:00Z' });
+  const labels = new Map([[internal, [pull(40, ['iNteRnal'], 'internal-only-sentinel')]],
+    [visible, [pull(41, ['auto/docs'], 'mixed change')]], [direct, []]]);
+  async function collect(sourceSha = direct) {
+    return officialCandidateEvidence({ product, sourceSha, baseline, candidate, directory: async () => directory,
+      getPages: async path => labels.get(path.split('/')[1]),
+      get: async path => {
+        if (path === 'contents/release-please-config.json?ref=' + sourceSha) return blob('release-please-config.json', settings);
+        if (path === 'contents/.github/delivery.json?ref=' + sourceSha) return blob('.github/delivery.json', { schemaVersion: 3 });
+        if (path.startsWith('compare/')) return { base_commit: baseline, merge_base_commit: baseline, status: 'ahead',
+          total_commits: commits.length, commits };
+        assert.fail('unexpected range-wide source: ' + path);
+      } });
+  }
+  const result = await collect();
+  const material = JSON.stringify(result.evidence);
+  assert.match(material, /mixed change/);
+  assert.match(material, /visible-usage/);
+  assert.match(material, /-old-public-option/);
+  assert.match(material, /direct-feature/);
+  assert.doesNotMatch(material, /internal-only-sentinel|private-deleted-sentinel|range-wide-sentinel/);
+  for (const sha of [visible, direct]) labels.set(sha, [pull(42, ['Internal'], 'internal-only-sentinel')]);
+  const context = await collect();
+  assert.deepEqual(context.evidence.map(item => item.kind), ['maintenance-only']);
+  const draft = await draftOfficialCandidate({ roundId: 'e'.repeat(64), candidate, context, product, sourceSha: direct,
+    template, call: () => assert.fail('purely internal release does not need model inference') });
+  assert.match(officialNotes(draft.body).body, /本版仅包含项目内部维护/);
+
+  const baseBranch = git('branch', '--show-current');
+  git('switch', '-qc', 'feature');
+  const side = await commit('feature.txt', 'feature-from-merge\n', 'changes on topic');
+  labels.set(side, []);
+  git('switch', '-q', baseBranch);
+  git('merge', '--no-ff', '-qm', 'merge topic', 'feature');
+  const merge = git('rev-parse', 'HEAD');
+  commits.push({ sha: merge, parents: [{sha:direct},{sha:side}], commit: {message:'merge topic'} });
+  labels.set(merge, [pull(43, [], 'visible PR')]);
+  const mergePatch = async () => (await collect(merge)).evidence
+    .filter(item => item.kind === 'source-range-diff' && item.details.sourceSha === merge)
+    .map(item => item.details.text).join('');
+  assert.match(await mergePatch(), /\+feature-from-merge/);
+  const cleanMerge = (await collect(merge)).evidence.filter(item => item.kind === 'source-range-diff');
+  assert.equal(cleanMerge.some(item => item.details.sourceSha === side), false);
+  assert.equal(cleanMerge.flatMap(item => item.details.text.match(/\+feature-from-merge/g) ?? []).length, 1);
+  labels.set(side, [pull(44, ['Internal'], 'embedded maintenance')]);
+  assert.doesNotMatch(JSON.stringify((await collect(merge)).evidence), /feature-from-merge|embedded maintenance/);
+  labels.set(side, []);
+  labels.set(merge, [pull(43, ['Internal'], 'internal merge')]);
+  assert.deepEqual((await collect(merge)).evidence.map(item => item.kind), ['maintenance-only']);
+
+  git('switch', '-qc', 'conflict-side');
+  const hiddenParent = await commit('feature.txt', 'hidden-parent-line\n', 'maintenance side');
+  labels.set(hiddenParent, [pull(44, ['Internal'], 'maintenance side')]);
+  git('switch', '-q', baseBranch);
+  const publicParent = await commit('feature.txt', 'main-visible-line\n', 'visible change');
+  labels.set(publicParent, []);
+  const publicAddition = await commit('public.txt', 'public-command\n', 'public command');
+  labels.set(publicAddition, []);
+  assert.throws(() => git('merge', '--no-ff', '-m', 'merge conflict-side', 'conflict-side'));
+  await writeFile(join(directory, 'feature.txt'), 'new-resolution-line\n');
+  git('add', 'feature.txt');
+  git('update-index', '--chmod=+x', 'feature.txt');
+  git('rm', 'public.txt');
+  git('commit', '-qm', 'resolve integration');
+  const resolved = git('rev-parse', 'HEAD');
+  commits.push({sha:resolved,parents:[{sha:publicAddition},{sha:hiddenParent}],commit:{message:'resolve integration'}});
+  labels.set(resolved, [pull(45, [], 'visible integration')]);
+  const conflict = await collect(resolved);
+  const resolution = conflict.evidence.filter(item => item.details.sourceSha === resolved).map(item => item.details.text).join('');
+  assert.match(resolution, /new-resolution-line/);
+  assert.match(resolution, /^-main-visible-line$/m);
+  assert.match(resolution, /new mode 100755/);
+  assert.match(resolution, /^-public-command$/m);
+  assert.doesNotMatch(JSON.stringify(conflict.evidence), /hidden-parent-line/);
+
+  const secretText = 'carried-internal-sentinel\n'.repeat(5);
+  const original = await commit('maintenance.txt', secretText, 'housekeeping');
+  labels.set(original, [pull(46, ['Internal'], 'housekeeping')]);
+  git('mv', 'maintenance.txt', 'renamed.txt');
+  await writeFile(join(directory, 'copy.txt'), secretText + 'genuine-new-behavior\n');
+  git('add', 'copy.txt');
+  git('commit', '-qm', 'publish new behavior');
+  const copied = git('rev-parse', 'HEAD');
+  commits.push({sha:copied,parents:[{sha:original}],commit:{message:'publish new behavior'}});
+  labels.set(copied, [pull(47, [], 'public contribution')]);
+  const copyMaterial = JSON.stringify((await collect(copied)).evidence);
+  assert.doesNotMatch(copyMaterial, /carried-internal-sentinel/);
+  assert.match(copyMaterial, /genuine-new-behavior/);
+
+  const internalConfig = await commit('ci-settings.txt', 'ci-only configuration\nmode=full\ninternal switch for CI\n', 'CI config');
+  labels.set(internalConfig, [pull(48, ['Internal'], 'CI config')]);
+  const example = await commit('user-guide.txt', 'Run the following example with the public CLI:\nmode=full\n', 'document a CLI option');
+  labels.set(example, [pull(49, [], 'CLI example')]);
+  const examplePatch = (await collect(example)).evidence
+    .filter(item => item.kind === 'source-range-diff' && item.details.sourceSha === example)
+    .map(item => item.details.text).join('');
+  assert.match(examplePatch, /^\+mode=full$/m);
+});
+
+test('a native manual correction wins even when it lands inside the App label request', async () => {
+  for (const desired of [true, false]) {
+    const repo = {id:pr.base.repo.id,full_name:product.name,owner:{id:302208797},default_branch:'main'};
+    const current = {...pr, head:{...pr.head,ref:'change'},base:{...pr.base,sha:sourceSha},changed_files:1,labels:[]};
+    const hook = {action:'opened',repository:repo,pull_request:current};
+    const events = [], writes = [];
+    function record(labeled, actor) {
+      events.push({id:events.length + 1,event:labeled?'labeled':'unlabeled',actor:{id:actor},label:{name:'Internal'}});
+      current.labels = labeled ? [{name:'Internal'}] : [];
+    }
+    if (desired) record(true, authorId);
+    function write(labeled) {
+      if (!writes.length) record(desired, 42);
+      writes.push(labeled);
+      record(labeled, authorId);
+    }
+    const io = {pull:async()=>structuredClone(current),events:async()=>events,readme:async()=>'Product',
+      files:async()=>[{filename:'ci',patch:'+test',additions:1,deletions:0}],
+      ensureLabel:async()=>{},add:async()=>write(true),remove:async()=>write(false)};
+    const model = async()=>({text:JSON.stringify({decision:desired?'eligible':'internal',reason:'fixture'})});
+    await classifyPull(impactTarget(hook),io,model);
+    assert.deepEqual(writes,[!desired,desired]);
+    assert.equal(current.labels.length,Number(desired));
+    const correction = impactTarget({...hook,action:desired?'labeled':'unlabeled',label:{name:'Internal'},sender:{id:42}});
+    assert.equal(await classifyPull(correction,io,()=>assert.fail('no model on label events')),'preserved');
+    assert.deepEqual(writes,[!desired,desired]);
+  }
+});
+
+test('App classifies the current PR, preserves manual changes and releases stale automatic labels on failure', async () => {
+  const repo = {id:17, full_name:product.name, owner:{id:302208797}, default_branch:'main'};
+  const current = {...pr, head:{...pr.head,ref:'change'}, base:{...pr.base,sha:sourceSha}, changed_files:1,labels:[]};
+  const target = impactTarget({action:'opened',repository:repo,pull_request:current});
+  assert.ok(target);
+  for (const swap of [{title:'a later title'}, {body:'a later description'}]) {
+    const changed = {...current,...swap};
+    assert.equal(await classifyPull(target,{pull:async()=>changed,events:async()=>[]},
+      ()=>assert.fail('obsolete delivery must not use Copilot')),'superseded');
+  }
+  assert.equal(impactTarget({action:'opened',repository:repo,pull_request:pr}),null);
+  let events = [], writes = [];
+  const io = { pull:async()=>structuredClone(current), events:async()=>events, readme:async()=>'A deployment tool',
+    files:async()=>[{filename:'ci.yml',patch:'@@ -0,0 +1 @@\n+verify',additions:1,deletions:0}],
+    ensureLabel:async()=>writes.push('ensure'), add:async()=>writes.push('add'), remove:async()=>writes.push('remove') };
+  const internal = async input => {
+    assert.match(input,/A deployment tool/);
+    return {text:JSON.stringify({decision:'internal',reason:'Only the project tests use this job.'})};
+  };
+  assert.equal(await classifyPull(target,io,internal),'internal');
+  assert.deepEqual(writes,['ensure','add']);
+  writes=[];
+  assert.equal(await classifyPull(target,io,async input => {
+    current.state = 'closed'; current.merged = true;
+    return internal(input);
+  }), 'internal');
+  assert.deepEqual(writes,['ensure','add']);
+  writes=[];
+  assert.equal(await classifyPull(target,io,internal),'internal');
+  assert.deepEqual(writes,['ensure','add']);
+  writes=[];
+  current.merged = false;
+  assert.equal(await classifyPull(target,io,()=>assert.fail('closed without merge')),'preserved');
+  current.state = 'open';
+  const title = current.title;
+  assert.equal(await classifyPull(target,{...io,readme:async()=>{current.title='changed during read';return 'Project';}},
+    ()=>assert.fail('material changed before inference')),'superseded');
+  current.title = title;
+  assert.equal(await classifyPull(target,{...io,readme:async()=>'  '},()=>assert.fail('no project context')),'eligible');
+  assert.deepEqual(writes,[]);
+  events=[{id:1,event:'unlabeled',actor:{id:9},label:{name:'Internal'}}];
+  assert.equal(await classifyPull(target,io,()=>assert.fail()),'preserved');
+  events=[];
+  assert.equal(await classifyPull(target,io,async input=>{
+    const output=await internal(input);
+    events.push({id:2,event:'labeled',actor:{id:9},label:{name:'Internal'}});
+    current.labels.push({name:'Internal'});
+    return output;
+  }),'superseded');
+  assert.deepEqual(writes,[]);
+  events[0].actor.id=authorId;
+  await assert.rejects(classifyPull(target,io,async()=>{throw Error('provider unavailable')}),/IMPACT_CLASSIFICATION_UNAVAILABLE/);
+  assert.deepEqual(writes,['remove']);
+  writes=[];
+  assert.equal(await classifyPull(target,{...io,files:async()=>[]},()=>assert.fail()),'eligible');
+  assert.deepEqual(writes,['remove']);
+  writes=[];
+  assert.equal(await classifyPull(target,io,async input=>{
+    const output=await internal(input);current.head.sha=sourceSha;return output;
+  }),'superseded');
+  assert.deepEqual(writes,[]);
 });
 
 test('C2 compares the Git objects and modes for every candidate path across an ancestor range', async t => {

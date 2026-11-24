@@ -17,7 +17,7 @@ export async function nativeReleaseApp(privateKey: string, transport: typeof fet
   if(installation.account?.id!==302208797 || installation.app_id!==4243096 || installation.suspended_at)throw new Error('RELEASE_INSTALLATION_IDENTITY');
   const bot=(await new Octokit(options).request('GET /users/{username}',{username:`${appFact.slug}[bot]`})).data;
   if(bot.id!==301115370 || bot.type!=='Bot')throw new Error('RELEASE_APP_BOT_IDENTITY');
-  const token=async(repositoryId?:number,kind:'release'|'candidate'|'candidate-read'|'quality'|'template'|'template-read'|'pages'|'maintenance'|'maintenance-rules'|'configuration-actions'|'configuration-read'|'configuration-issues'|'registration-read'|'registration-write'|'registry-read'|'registry-projection'|'validator-revalidation'='release')=>{
+  const token=async(repositoryId?:number,kind:'release'|'candidate'|'candidate-read'|'quality'|'template'|'template-read'|'pages'|'maintenance'|'maintenance-rules'|'configuration-actions'|'configuration-read'|'configuration-issues'|'registration-read'|'registration-write'|'registry-read'|'registry-projection'|'validator-revalidation'|'release-label'='release')=>{
     // GitHub exposes organization ruleset bypass actors only to organization rule managers.
     // Trusted rule readers request that capability explicitly; discovery and generation do not.
     const permissions=kind==='maintenance-rules'?{metadata:'read',organization_administration:'write'}
@@ -25,6 +25,7 @@ export async function nativeReleaseApp(privateKey: string, transport: typeof fet
       :kind==='registry-read'?{metadata:'read',contents:'read'}
       :kind==='registry-projection'?{metadata:'read',contents:'write'}
       :kind==='registration-write'?{metadata:'read',contents:'write',pull_requests:'write'}
+      :kind==='release-label'?{metadata:'read',contents:'read',pull_requests:'write'}
       :kind==='configuration-read'?{metadata:'read',contents:'read',pull_requests:'read',actions:'read'}
       :kind==='validator-revalidation'?{metadata:'read',pull_requests:'write',actions:'read'}
       :kind==='configuration-actions'?{metadata:'read',actions:'write'}
@@ -128,7 +129,21 @@ export async function nativeReleaseApp(privateKey: string, transport: typeof fet
       }
       throw new Error('RELEASE_INSTALLATION_INCOMPLETE');
     }finally {await credential.revoke();}
-  },async forRepository<T>(repositoryId:number,operation:(token:string)=>Promise<T>,purpose:'release'|'maintenance'|'maintenance-rules'|'configuration-actions'|'configuration-issues'|'registration-read'|'registration-write'|'registry-read'|'registry-projection'|'validator-revalidation'='release'):Promise<T>{
+  },async readPullDelivery(guid:string){
+    if(!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(guid))throw Error('PULL_DELIVERY_GUID');
+    for await(const page of app.paginate.iterator('GET /app/hook/deliveries',{per_page:100})){
+      const entry=page.data.find(row=>row.guid===guid && row.event==='pull_request' && row.installation_id===installation.id);
+      if(!entry)continue;
+      const {data}=await app.request('GET /app/hook/deliveries/{delivery_id}',{delivery_id:entry.id});
+      const payload=data.request.payload as {action?:string;repository?:{id?:number};installation?:{id?:number}}|null;
+      if(data.guid!==guid||data.event!=='pull_request'||data.installation_id!==installation.id||
+        data.repository_id!==entry.repository_id||data.action!==entry.action||!entry.repository_id||
+        payload?.repository?.id!==entry.repository_id||payload.installation?.id!==installation.id||
+        payload.action!==entry.action)throw Error('PULL_DELIVERY_IDENTITY');
+      return payload;
+    }
+    throw Error('PULL_DELIVERY_UNAVAILABLE');
+  },async forRepository<T>(repositoryId:number,operation:(token:string)=>Promise<T>,purpose:'release'|'maintenance'|'maintenance-rules'|'configuration-actions'|'configuration-issues'|'registration-read'|'registration-write'|'registry-read'|'registry-projection'|'validator-revalidation'|'release-label'='release'):Promise<T>{
     if(!Number.isSafeInteger(repositoryId)||repositoryId<1)throw new Error('RELEASE_REPOSITORY_ID');
     if(purpose==='maintenance'&&repositoryId!==1296724484)throw new Error('MAINTENANCE_REPOSITORY_ID');
     if((purpose==='registration-read'||purpose==='registration-write'||purpose==='registry-read')&&repositoryId!==1447987054)
