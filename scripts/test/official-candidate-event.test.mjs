@@ -126,7 +126,7 @@ test('the official package generates the three native files and chooses the froz
   assert.equal(release.forceTag, true);
 });
 
-test('verified merge uses the original event and exact source after the default branch has advanced', async () => {
+test('verified merge archives the merge-time edit after default head movement and subsequent PR edits', async () => {
   const edited = render().replace('适用于本版本的支持范围。', '仅支持已审定的安装范围。');
   const merged = { ...pr, body: edited, state: 'closed', merged: true, merged_at: '2026-11-23T00:00:00Z', merge_commit_sha: sourceSha };
   const event = { repositoryId: product.id, kind: 'official-merge', prNumber: pr.number, head, sourceSha,
@@ -147,8 +147,15 @@ test('verified merge uses the original event and exact source after the default 
   assert.equal(result.tag, 'v1.1.0');
   assert.equal(result.body, officialNotes(edited).body);
   assert.equal(result.pullBodyDigest, bodyDigest(edited));
-  merged.body = merged.body.replace('仅支持已审定', '合并后改为');
-  await assert.rejects(verifyOfficialMerge(event, product, get, authorId), /MERGE_BODY_DRIFT/);
+  merged.body = edited + '\n\n合并后追加页脚。';
+  assert.deepEqual(await verifyOfficialMerge(event, product, get, authorId), result);
+  merged.body = edited.replace('仅支持已审定', '合并后改为');
+  assert.deepEqual(await verifyOfficialMerge(event, product, get, authorId), result);
+  merged.body = '合并后清空发行说明区段。';
+  merged.title = '合并后的标题';
+  assert.deepEqual(await verifyOfficialMerge(event, product, get, authorId), result);
+  merged.head = { ...merged.head, sha: previousSha };
+  await assert.rejects(verifyOfficialMerge(event, product, get, authorId), /MERGE_IDENTITY/);
 });
 
 const updateFiles = [

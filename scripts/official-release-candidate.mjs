@@ -219,8 +219,6 @@ export async function verifyOfficialMerge(event, product, get, botId) {
   }
   const settings = JSON.parse(configuration);
   const frozen = verifyOfficialPull({...pull, title: event.title}, product, event.prNumber, botId, settings, manifest, event.body);
-  const current = verifyOfficialPull(pull, product, event.prNumber, botId, settings, manifest);
-  requireCandidate(current.bodyDigest === frozen.bodyDigest, 'MERGE_BODY_DRIFT');
   const { path, version, tag, body, bodyDigest: digest } = frozen;
   return { repositoryId: product.id, repository: product.name, defaultBranch: product.defaultBranch,
     prNumber: pull.number, candidateHead: event.head, sourceSha: event.sourceSha, mergedAt: event.mergedAt,
