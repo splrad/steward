@@ -122,6 +122,9 @@ test('requires the official switch and the native product declaration to select 
   const secretSteps = steps.filter(step => /secrets\./.test(JSON.stringify(step)));
   assert.deepEqual(secretSteps.map(step => step.id), ['product', 'compute', 'check', 'candidate-token', undefined]);
   for (const step of secretSteps) assert.deepEqual(JSON.stringify(step).match(/secrets\.[A-Z_0-9]+/g), ['secrets.STEWARD_APP_PRIVATE_KEY']);
+  const centralReads = steps.filter(step => step.env?.STEWARD_CENTRAL_TOKEN);
+  assert.deepEqual(centralReads.map(step => step.run.split(' ').at(-1)), ['identify', 'prepare', 'check', 'write']);
+  for (const step of centralReads) assert.equal(step.env.STEWARD_CENTRAL_TOKEN, '${{ github.token }}');
   assert.ok(!steps.some(step => /release-please-action/.test(step.uses ?? '')));
   const model = steps.filter(step => step.env?.STEWARD_COPILOT_TOKEN);
   assert.equal(model.length, 1);

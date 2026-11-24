@@ -68,6 +68,7 @@ jobs:
         if: steps.product.outputs.route == 'official'
         id: compute
         env:
+          STEWARD_CENTRAL_TOKEN: ${{ github.token }}
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
         run: node scripts/official-candidate-event.mjs prepare
       - name: Install and verify the locked Copilot runtime
@@ -84,6 +85,7 @@ jobs:
         id: check
         if: steps.compute.outputs.mode == 'draft' || steps.compute.outputs.mode == 'write'
         env:
+          STEWARD_CENTRAL_TOKEN: ${{ github.token }}
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
         run: node scripts/official-candidate-event.mjs check
       - name: Issue the product candidate token
@@ -101,6 +103,7 @@ jobs:
       - name: Create or refresh the candidate with validated inputs
         if: steps.check.outputs.mode == 'write'
         env:
+          STEWARD_CENTRAL_TOKEN: ${{ github.token }}
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
           STEWARD_CANDIDATE_TOKEN: ${{ steps.candidate-token.outputs.token }}
         run: node scripts/official-candidate-event.mjs write

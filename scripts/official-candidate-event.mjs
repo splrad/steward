@@ -7,6 +7,7 @@ import { candidateBaseUnchanged, copilotReleaseClient, NativeEvidenceReader, nat
 import { entryGuard } from './bounded-release-entry.mjs';
 import { fetchState, releaseParticipation } from './release-coordinator.mjs';
 import { assertReleaseUnpaused, releaseIsPaused } from './release-pause-policy.mjs';
+import { authenticatedBotIdentityTransport, isGitHubBotIdentityRead } from './steward-bot-identity.mjs';
 import { compatibleExistingCandidate, observeOfficialCandidatePull, openOfficialPull, verifyCandidateDraft, writeOfficialCandidate } from './official-candidate-write.mjs';
 import { bodyDigest, candidateBaseline, computeOfficialCandidate, defaultHead, draftOfficialCandidate, fitsOfficialEvent,
   hasLabel, officialCandidateEvidence, officialCandidateRoundId, officialCandidateSettings, officialConfig, officialPending, officialRef, officialTagged,
@@ -21,6 +22,7 @@ const templatePath = new URL('../templates/repository/.github/release-template.m
 const validSha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 const positive = value => Number.isSafeInteger(value) && value > 0;
 const candidateStages = ['identify', 'prepare', 'generate', 'check', 'write'];
+const candidateOperations = ['controller_guard', 'app_identity', 'app_bot_identity', 'pause_policy', 'product_route', 'controller_pin'];
 const inputs = {
   push: 'kind,repositoryId,sourceSha',
   'official-edit': 'bodyDigest,head,kind,prNumber,repositoryId,titleDigest',
@@ -70,6 +72,25 @@ export function officialCandidateRoute(settings, enabled) {
   return { route: 'official' };
 }
 
+async function candidateRead(operation, read) {
+  try {
+    return await read();
+  } catch (error) {
+    if (error instanceof Error) {
+      const botRead = operation === 'app_identity' && isGitHubBotIdentityRead(error.request?.url, error.request?.method);
+      Object.assign(error, { candidateOperation: botRead ? 'app_bot_identity' : operation });
+    }
+    throw error;
+  }
+}
+
+export function officialCandidateApp(env, transport = fetch) {
+  const token = env.STEWARD_CENTRAL_TOKEN;
+  requireCandidate(typeof token === 'string' && token.trim() && !/[\r\n\0]/.test(token), 'CENTRAL_READ_TOKEN');
+  return candidateRead('app_identity', () =>
+    nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY ?? '', authenticatedBotIdentityTransport(transport, token)));
+}
+
 async function identify(env) {
   const event = candidateEvent(JSON.parse(env.BOUNDED_EVENT_JSON), env.BOUNDED_REQUEST_KEY);
   requireCandidate(env.GITHUB_ACTOR_ID === String(botId)
@@ -79,7 +100,8 @@ async function identify(env) {
   const io = nativeEvidenceTransport(env.STEWARD_CENTRAL_TOKEN);
   const centralReader = new NativeEvidenceReader(io, central);
   const config = JSON.parse(await readFile(new URL('../config/bounded-recheck.json', import.meta.url), 'utf8'));
-  const run = await entryGuard(env, path => centralReader.json(path.slice(('/repos/' + central).length).replace(/^\//, '')), config);
+  const run = await candidateRead('controller_guard', () =>
+    entryGuard(env, path => centralReader.json(path.slice(('/repos/' + central).length).replace(/^\//, '')), config));
   requireCandidate(run.actor?.id === botId && run.display_title === 'Candidate event ' + env.BOUNDED_REQUEST_KEY, 'CONTROLLER');
   const repositoryPath = '/repositories/' + event.repositoryId;
   let response = await io.request('GET', repositoryPath);
@@ -87,24 +109,25 @@ async function identify(env) {
   requireCandidate(response.status === 200, 'REPOSITORY');
   const repository = JSON.parse(response.bytes);
   const product = target(repository, event.repositoryId);
-  const app = await nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY ?? '');
+  const app = await officialCandidateApp(env);
   const identity = { event, product, sourceSha: env.BOUNDED_SOURCE_SHA, controllerSha: run.head_sha,
     requestKey: env.BOUNDED_REQUEST_KEY, runId: run.id };
   const finish = async result => {
     await writeFile('result.json', JSON.stringify({ schemaVersion: 1, ...identity, result }) + '\n', { flag: 'wx' });
     await appendFile(env.GITHUB_OUTPUT, 'route=complete\n');
   };
-  if (await releaseIsPaused(app, product.id)) return finish('paused');
-  const route = await app.forCandidateReadRepository(product.id, async token => {
+  if (await candidateRead('pause_policy', () => releaseIsPaused(app, product.id))) return finish('paused');
+  const route = await candidateRead('product_route', () => app.forCandidateReadRepository(product.id, async token => {
     const reader = new NativeEvidenceReader(nativeEvidenceTransport(token), product.name);
     const get = path => reader.json(path);
     const source = await defaultHead(get, product.defaultBranch);
     const settings = await readOfficialConfig(get, source);
     requireCandidate(await defaultHead(get, product.defaultBranch) === source, 'SOURCE_CHANGED');
     return officialCandidateRoute(settings, env.STEWARD_OFFICIAL_CANDIDATES_ENABLED);
-  });
+  }));
   if (route.result) return finish(route.result);
-  requireCandidate((await centralReader.json('git/ref/heads/steward/validated-controller')).object?.sha === run.head_sha, 'CONTROLLER');
+  const current = await candidateRead('controller_pin', () => centralReader.json('git/ref/heads/steward/validated-controller'));
+  requireCandidate(current.object?.sha === run.head_sha, 'CONTROLLER');
   await mkdir(stateDirectory);
   await write('identity', identity);
   await appendFile(env.GITHUB_OUTPUT, 'route=official\nrepo=' + product.name.split('/')[1] + '\nbranch=' + product.defaultBranch + '\n');
@@ -201,7 +224,7 @@ export async function prepareOfficialCandidate({ identity, get, getPages, direct
 }
 
 async function withCandidateState(env, identity, operation) {
-  const app = await nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY ?? '');
+  const app = await officialCandidateApp(env);
   const { product } = identity;
   const repository = { id: product.id, full_name: product.name, default_branch: product.defaultBranch };
   const root = await mkdtemp(join(tmpdir(), 'steward-candidate-state-'));
@@ -247,7 +270,7 @@ export async function main(stage, env = process.env) {
   const identity = await stateRead('identity');
   const { product, sourceSha } = identity;
   if (stage === 'prepare' && identity.event.kind === 'official-edit') {
-    const app = await nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY ?? '');
+    const app = await officialCandidateApp(env);
     const result = await app.forCandidateReadRepository(product.id, async token => {
       const reader = new NativeEvidenceReader(nativeEvidenceTransport(token), product.name);
       return checkEdited(identity, path => reader.json(path));
@@ -303,17 +326,35 @@ export async function main(stage, env = process.env) {
   });
 }
 
+export function candidateDiagnostic(error, stage) {
+  const message = error?.message;
+  const allowed = /^(OFFICIAL_CANDIDATE|RELEASE|CONTENT)_[A-Z_0-9]+$/.test(message) ||
+    ['WAIT_AUTH', 'WAIT_QUOTA', 'RESPONSE_UNKNOWN', 'BOUNDED_NOT_CONNECTED', 'BOUNDED_ENTRY_SOURCE',
+      'BOUNDED_MODE', 'BOUNDED_RUN_SOURCE', 'BOUNDED_ENTRY_DISABLED'].includes(message);
+  const fields = [allowed ? message : 'OFFICIAL_CANDIDATE_STOPPED', 'stage=' + (candidateStages.includes(stage) ? stage : 'unknown')];
+  if (candidateOperations.includes(error?.candidateOperation)) fields.push('operation=' + error.candidateOperation);
+  if (Number.isSafeInteger(error?.status) && error.status >= 400 && error.status <= 599) fields.push('status=' + error.status);
+  if ([403, 429].includes(error?.status)) {
+    const headers = error.response?.headers;
+    const retryAfter = error.retryAfter ?? headers?.['retry-after'];
+    if (headers?.['x-ratelimit-remaining'] === '0') {
+      fields.push('rate_limit_remaining=0');
+      const reset = headers['x-ratelimit-reset'];
+      if (typeof reset === 'string' && /^\d+$/.test(reset) && Number.isSafeInteger(Number(reset))) {
+        fields.push('rate_limit_reset=' + Number(reset));
+      }
+    }
+    if (typeof retryAfter === 'string' && /^\d+$/.test(retryAfter) && Number.isSafeInteger(Number(retryAfter))) {
+      fields.push('retry_after_s=' + Number(retryAfter));
+    }
+  }
+  return fields.join(' ');
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const stage = process.argv[2];
   main(stage).catch(error => {
-    const message = error?.message;
-    const allowed = /^(OFFICIAL_CANDIDATE|RELEASE|CONTENT)_[A-Z_0-9]+$/.test(message) ||
-      ['WAIT_AUTH', 'WAIT_QUOTA', 'RESPONSE_UNKNOWN', 'BOUNDED_NOT_CONNECTED', 'BOUNDED_ENTRY_SOURCE',
-        'BOUNDED_MODE', 'BOUNDED_RUN_SOURCE', 'BOUNDED_ENTRY_DISABLED'].includes(message);
-    const status = Number.isSafeInteger(error?.status) && error.status >= 400 && error.status <= 599
-      ? ' status=' + error.status : '';
-    console.error((allowed ? message : 'OFFICIAL_CANDIDATE_STOPPED') +
-      ' stage=' + (candidateStages.includes(stage) ? stage : 'unknown') + status);
+    console.error(candidateDiagnostic(error, stage));
     process.exitCode = 1;
   });
 }
