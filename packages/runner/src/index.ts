@@ -7,10 +7,10 @@ export { defaultBuildWorkflow, dispatchWorkflow, encodeRepositoryPath, staticMat
 export { productReleaseTemplatePath, sharedReleaseTemplatePath } from '../../core/src/release-template.js';
 export { readLegacyReleaseTemplate, releaseTemplateControllerPin } from './release-template-source.js';
 export { githubUnits } from '../../core/src/release-observation.js';
-export { downloadNativeArtifact } from './native-artifact-download.js';
+export { downloadNativeArtifact, expandWorkflowArtifactArchive } from './native-artifact-download.js';
 export { assertProductDelivery, assertRegisteredAdapters } from './release-pipeline.js';
 export { parsePipelineRecord, pipelineSource } from './release-pipeline-record.js';
-export { pipelineIdentity, pipelineNotes, pipelineRecoverCycleFinal, mergedBuildCycle, findFrozenFinal, pipelineDownloadPhase, pipelineFrozenManifest, pipelineVerifyPublished, pipelinePreparePublication, readCycleDelivery, prepareNormalizedDelivery, prepareWorkflowChannelReceipts, githubDeliveryArtifact, applyWorkflowDelivery } from './release-pipeline.js';
+export { pipelineIdentity, pipelineNotes, pipelineRecoverCycleFinal, mergedBuildCycle, findFrozenFinal, pipelineDownloadPhase, pipelineFrozenManifest, pipelineVerifyPublished, pipelinePreparePublication, readCycleDelivery, prepareNormalizedDelivery, prepareWorkflowChannelReceipts, githubDeliveryArtifact, selectWorkflowGithubDelivery, applyWorkflowDelivery } from './release-pipeline.js';
 export { inspectProductArtifacts, sealProductArtifacts, validateProductManifest } from './release-artifacts.js';
 export { renderFrozenReleaseNotes } from '../../core/src/release-template.js';
 export { decodeCompletionArchive } from '../../core/src/release-history.js';

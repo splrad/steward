@@ -43,7 +43,20 @@ try { foreach($name in (Get-Content -LiteralPath $Entries -Raw | ConvertFrom-Jso
 }, 30_000);
 import { vi } from 'vitest';
 import { zip } from './fixtures/artifact-envelope.js';
-import { downloadNativeArtifact } from '../src/native-artifact-download.js';
+import { downloadNativeArtifact, expandWorkflowArtifactArchive } from '../src/native-artifact-download.js';
+
+it('verifies the original Action ZIP and only copies its original files',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'action-archive-'));roots.push(root);registerOfflineFixtureRoot(root);
+  permitOfflineScript(resolve('scripts/expand-release-artifact.ps1'));
+  const archive=join(root,'download.zip'),bytes=zip(),digest='sha256:'+createHash('sha256').update(bytes).digest('hex');
+  await writeFile(archive,bytes);
+  const input={fullName:'fixture/product',artifactId:19,digest,directory:join(root,'output'),policyDirectory:resolve('.'),home:join(root,'home')};
+  await expect(expandWorkflowArtifactArchive({...input,digest:'sha256:'+'0'.repeat(64)},archive)).rejects.toThrow();
+  await expect(stat(input.directory)).rejects.toThrow();
+  await expandWorkflowArtifactArchive(input,archive);
+  expect(await readFile(join(input.directory,'product.exe'),'utf8')).toBe('example');
+  expect(await readFile(archive)).toEqual(bytes);
+});
 
 it('reuses the collect destination after a failed signed download and keeps credentials on the API host',async()=>{
   const root=await mkdtemp(join(tmpdir(),'native-archive-')); roots.push(root); registerOfflineFixtureRoot(root);

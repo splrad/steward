@@ -8,6 +8,7 @@ import type { EvidenceContext } from '../src/native-release-evidence.js';
 import { verifyWorkflowDelivery } from '../src/release-pipeline.js';
 import { renderFrozenReleaseNotes } from '../../core/src/release-template.js';
 
+const recordAsset = async () => {};
 const writes = (f: Awaited<ReturnType<typeof fixture>>) => f.calls.filter(args => args.includes('--method'));
 it('honors a workflow subset even when the old delivery declares GitHub implicitly',async()=>{
   const f=await fixture(),staged=join(f.target.directory,'staged');
@@ -31,9 +32,9 @@ it('finishes a single-file workflow delivery from the same draft after a label w
   const target={...f.target,directory,manifest,publicBody:'Reviewed 1.2.3 release'};
   f.release.body=target.publicBody;
   f.state.originalAttempt=2;
-  await expect(f.adapter.publish(target)).rejects.toThrow('completed product Run required');
+  await expect(f.adapter.uploadDraft(target,[],recordAsset)).rejects.toThrow('completed product Run required');
   f.state.originalAttempt=1;f.state.originalConclusion='failure';
-  await expect(f.adapter.publish(target)).rejects.toThrow('completed product Run required');
+  await expect(f.adapter.uploadDraft(target,[],recordAsset)).rejects.toThrow('completed product Run required');
   f.state.originalConclusion='success';
   await expect(f.adapter.verifyAttestation(target,join(directory,'cli.tgz'))).rejects.toThrow('attestation run identity');
   f.state.invocation=f.state.invocation.replace('/attempts/2','/attempts/1');
@@ -48,17 +49,17 @@ it('finishes a single-file workflow delivery from the same draft after a label w
   f.calls.length=0;
   f.state.runStatus='in_progress';f.state.runConclusion='failure';
   f.state.blockLabel=true;
-  await expect(f.adapter.publish(target)).rejects.toThrow();
+  await expect(f.adapter.uploadDraft(target,[],recordAsset)).rejects.toThrow();
   expect(f.remote.get('cli.tgz')?.bytes.toString()).toBe('retained package');
   f.state.blockLabel=false;
-  await expect(f.adapter.publish(target)).resolves.toMatchObject({releaseId:20,mode:'verified'});
+  await expect(f.adapter.uploadDraft(target,[],recordAsset)).resolves.toMatchObject({releaseId:20});
   expect(writes(f).filter(args=>args.includes('POST'))).toHaveLength(1);
   expect([...f.remote.keys()]).toEqual(['cli.tgz']);
   expect(f.calls.some(args=>args[0]==='attestation')).toBe(false);
   expect(f.calls.some(args=>args.includes('repos/fixture/product/actions/runs/10/attempts/1'))).toBe(true);
   expect(f.calls.some(args=>args.includes('repos/fixture/product/actions/runs/10'))).toBe(false);
 });
-it('publishes and recovers the exact frozen conditional body and attachment bytes', async () => {
+it('stages and recovers the exact frozen conditional body and attachment bytes', async () => {
   const template = await readFile('templates/repository/.github/release-template.md.mustache', 'utf8');
   const repository = 'fixture/product', sourceSha = 'a'.repeat(40);
   const body = renderFrozenReleaseNotes(template, { repository, sourceSha, controllerSha: 'b'.repeat(40), unitId: 'app',
@@ -68,29 +69,41 @@ it('publishes and recovers the exact frozen conditional body and attachment byte
   });
   const f = await fixture(sourceSha, body);
   f.put('app.exe', Buffer.from('app'));
-  f.state.losePublish = true;
-  expect((await f.adapter.publish(f.target)).mode).toBe('verified');
+  expect((await f.adapter.uploadDraft(f.target,[],recordAsset)).releaseId).toBe(20);
   expect(f.release.body).toBe(body);
   expect(f.remote.get('release-notes.md')?.bytes).toEqual(Buffer.from(body));
   const prior = writes(f).length;
-  await f.adapter.publish(f.target);
+  await f.adapter.uploadDraft(f.target,[],recordAsset);
   expect(writes(f)).toHaveLength(prior);
 });
-it('recovers a partial seven-file release and lost upload/publication responses using exact IDs', async () => {
-  const f = await fixture(); f.put('app.exe', Buffer.from('app')); f.state.loseLabel = f.state.loseUpload = f.state.losePublish = true;
-  expect((await f.adapter.publish(f.target)).mode).toBe('verified');
+it('recovers a partial seven-file release and lost upload responses using exact IDs', async () => {
+  const f = await fixture(); f.put('app.exe', Buffer.from('app')); f.state.loseLabel = f.state.loseUpload = true;
+  expect((await f.adapter.uploadDraft(f.target,[],recordAsset)).releaseId).toBe(20);
   expect(f.remote.size).toBe(7); expect(writes(f).filter(args => args.includes('POST'))).toHaveLength(6);
   expect([...f.remote].every(([name, asset]) => asset.label === name)).toBe(true);
-  expect(f.downloads.filter(value => value.anonymous)).toHaveLength(7);
+  expect(f.downloads.every(value => !value.anonymous)).toBe(true);
+  expect(f.release.draft).toBe(true);
   expect(f.calls.some(args => args.includes('--clobber') || ['upload','edit','download'].includes(args[1]!))).toBe(false);
   expect(f.calls.find(args => args[0] === 'attestation')).toEqual(expect.arrayContaining(['--source-ref', (f.target.manifest as ProductReleaseManifest).buildRef,
     '--signer-workflow', 'fixture/product/.github/workflows/steward-release-publish.yml', '--signer-digest', f.target.manifest.sourceSha]));
+});
+it('records every exact asset before readiness and rejects an ID replaced with identical bytes', async () => {
+  const f=await fixture(), receipts:{assetId:number;name:string}[]=[];
+  const ready=await f.adapter.uploadDraft(f.target,[],async asset=>{ receipts.push(asset); });
+  expect(ready.assets).toEqual(receipts);
+  expect(f.release.draft).toBe(true);
+  expect(writes(f).some(args=>args.includes('repos/fixture/product/releases/20'))).toBe(false);
+  const [first]=receipts;
+  f.put(first!.name,f.remote.get(first!.name)!.bytes);
+  f.calls.length=0;
+  await expect(f.adapter.uploadDraft(f.target,receipts,recordAsset)).rejects.toThrow('retained draft asset ID changed');
+  expect(writes(f)).toHaveLength(0);
 });
 it.each([false,true])('adopts the existing official draft; partial=%s',async(partial)=>{
   const f=await fixture();if(partial)f.put('app.exe',Buffer.from('app'));
   const target=await f.adapter.claimOfficialDraft({...f.target,releaseId:null});
   expect(target.releaseId).toBe(20);expect(writes(f)).toHaveLength(0);
-  expect((await f.adapter.publish(target)).mode).toBe('verified');
+  expect((await f.adapter.uploadDraft(target,[],recordAsset)).releaseId).toBe(20);
   expect([...f.releases.keys()]).toEqual([20]);expect(f.remote.size).toBe(7);
   expect(writes(f).some(args=>args.includes('repos/fixture/product/releases'))).toBe(false);
 });
@@ -104,7 +117,8 @@ it.each(['body','target','prerelease'] as const)('rejects an unbound draft with 
 });
 it('published reentry is entirely read-only', async () => {
   const f = await fixture(); await f.preload(); Object.assign(f.release, { draft: false, immutable: true, body: await readFile(join(f.target.directory,'release-notes.md'),'utf8') });
-  await f.adapter.publish(f.target); expect(writes(f)).toHaveLength(0);
+  await expect(f.adapter.uploadDraft(f.target,[],recordAsset)).rejects.toThrow('official draft differs from approval');
+  expect(writes(f)).toHaveLength(0);
   await expect(f.adapter.claimOfficialDraft({...f.target,releaseId:null})).rejects.toThrow('unbound official release already public');
 });
 it('checks published signature and exact download bytes from the protected receipt after the Run archive expires',async()=>{
@@ -140,7 +154,7 @@ it.each(['run','attempt','repository','trigger'])('rejects a different attestati
   if (kind === 'attempt') f.state.invocation = f.state.invocation.replace('/attempts/2', '/attempts/1');
   if (kind === 'repository') f.state.certificateRepository = '2';
   if (kind === 'trigger') f.state.buildTrigger = 'push';
-  await expect(f.adapter.publish(f.target)).rejects.toThrow('attestation run identity'); expect(writes(f)).toHaveLength(0);
+  await expect(f.adapter.uploadDraft(f.target,[],recordAsset)).rejects.toThrow('attestation run identity'); expect(writes(f)).toHaveLength(0);
 });
 it.each(['inflight','failed'])('does not authorize official draft creation for %s product Run', async kind => {
   const f = await fixture(); if (kind === 'inflight') f.state.runStatus = 'in_progress'; else f.state.runConclusion = 'failure';
@@ -154,21 +168,21 @@ it.each(['bytes','source','extra','incomplete','download','creator'])('preserves
   if (kind === 'incomplete') f.state.incomplete = true;
   if (kind === 'download') { await f.preload(); f.state.corruptDownload = true; }
   if (kind === 'creator') f.release.author.id = 99;
-  await expect(f.adapter.publish(f.target)).rejects.toThrow(); expect(writes(f).some(args => args.includes('PATCH'))).toBe(false);
+  await expect(f.adapter.uploadDraft(f.target,[],recordAsset)).rejects.toThrow(); expect(writes(f).some(args => args.includes('PATCH'))).toBe(false);
 });
 it('rechecks disabled repository before every mutation', async () => {
   const f = await fixture(); f.state.disableAfterUpload = true;
-  await expect(f.adapter.publish(f.target)).rejects.toThrow('disabled'); expect(writes(f)).toHaveLength(1);
+  await expect(f.adapter.uploadDraft(f.target,[],recordAsset)).rejects.toThrow('disabled'); expect(writes(f)).toHaveLength(1);
 });
 it.each(['body','immutable'])('reports published %s drift without modifying it', async kind => {
   const f = await fixture(); await f.preload(); f.release.draft = false; f.release.immutable = kind !== 'immutable';
   if (kind==='body') f.release.body+=' drift';
-  await expect(f.adapter.publish(f.target)).rejects.toThrow(); expect(writes(f)).toHaveLength(0);
+  await expect(f.adapter.verify(f.target)).rejects.toThrow(); expect(writes(f)).toHaveLength(0);
 });
 it('requires the official draft and rejects historical draft writes', async () => {
   const f=await fixture();
   const legacy={...f.target};delete legacy.official;
-  await expect(f.adapter.publish(legacy)).rejects.toThrow('approved official body required');
+  await expect(f.adapter.uploadDraft(legacy,[],recordAsset)).rejects.toThrow('approved official body required');
   f.releases.clear();
   await expect(f.adapter.claimOfficialDraft({...f.target,releaseId:null})).rejects.toThrow('official release inventory');
   expect(writes(f)).toHaveLength(0);
@@ -187,34 +201,34 @@ it('rejects multiple or replaced official drafts and preserves their IDs', async
 });
 it('stops after an external body edit when uploading assets', async () => {
   const f=await fixture();f.state.changeBodyAfterUpload=true;
-  await expect(f.adapter.publish(f.target)).rejects.toThrow('official draft differs from approval');
+  await expect(f.adapter.uploadDraft(f.target,[],recordAsset)).rejects.toThrow('official draft differs from approval');
   expect(f.release.draft).toBe(true);
   expect(writes(f)).toHaveLength(1);
   f.release.body=f.target.publicBody!;
   f.state.changeBodyAfterUpload=false;
-  await expect(f.adapter.publish(f.target)).resolves.toMatchObject({releaseId:20,mode:'verified'});
+  await expect(f.adapter.uploadDraft(f.target,[],recordAsset)).resolves.toMatchObject({releaseId:20});
 });
 it('retains an unknown zero-byte starter', async () => {
   const f = await fixture(); f.put('app.exe', Buffer.alloc(0), { state: 'starter', label: 'unknown' });
-  await expect(f.adapter.publish(f.target)).rejects.toThrow('unproven starter'); expect(writes(f)).toHaveLength(0);
+  await expect(f.adapter.uploadDraft(f.target,[],recordAsset)).rejects.toThrow('unproven starter'); expect(writes(f)).toHaveLength(0);
 });
 it('recovers only an exact owned starter after the original upload failed', async () => {
   const f = await fixture(); f.state.blockLabel = true;
-  await expect(f.adapter.publish(f.target)).rejects.toThrow('label interrupted');
+  await expect(f.adapter.uploadDraft(f.target,[],recordAsset)).rejects.toThrow('label interrupted');
   f.state.blockLabel = false;
   const original = [...f.remote.values()][0]!; Object.assign(f.release, { draft: true, immutable: false });
   original.bytes = Buffer.alloc(0); original.state = 'starter'; f.calls.length = 0;
-  await f.adapter.publish(f.target); expect(writes(f).filter(args => args.includes('DELETE'))).toHaveLength(1);
+  await f.adapter.uploadDraft(f.target,[],recordAsset); expect(writes(f).filter(args => args.includes('DELETE'))).toHaveLength(1);
 });
 
-it('publishes only the selected GitHub files from a fully sealed multi-channel build', async () => {
+it('uploads only the selected GitHub files from a fully sealed multi-channel build', async () => {
   const f = await fixture();
   f.target.delivery = {id:'sample',path:'.',notesPath:'notes.md',
     assets:f.target.manifest.artifacts.map(a=>({id:a.id,name:a.path,mediaType:a.mediaType})),
     channels:[{id:'github-release',required:true,location:'github',artifactIds:['dll'],metadata:[]},
       {id:'ghcr-assets',required:true,location:'ghcr.io/fixture/sample',artifactIds:['fonts'],metadata:['SHA256SUMS']},
       {id:'winget',required:true,location:'Fixture.App',artifactIds:['app']}]};
-  expect((await f.adapter.publish(f.target)).mode).toBe('verified');
+  expect((await f.adapter.uploadDraft(f.target,[],recordAsset)).releaseId).toBe(20);
   expect([...f.remote.keys()]).toEqual(['dll.zip']);
   expect(f.target.manifest.artifacts).toHaveLength(3);
 });
@@ -222,7 +236,7 @@ it('publishes only the selected GitHub files from a fully sealed multi-channel b
 it('leaves an unowned blank draft label untouched', async () => {
   const f = await fixture();
   f.put('app.exe', Buffer.from('app'), { label: '', uploader: { id: 99 } });
-  await expect(f.adapter.publish(f.target)).rejects.toThrow('unproven draft label');
+  await expect(f.adapter.uploadDraft(f.target,[],recordAsset)).rejects.toThrow('unproven draft label');
   expect(f.remote.get('app.exe')!.label).toBe('');
   expect(f.release.draft).toBe(true);
 });
