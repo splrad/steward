@@ -1,4 +1,5 @@
 import { isAbsolute } from 'node:path';
+import { RuntimeConnection } from '@microsoft/copilot-sdk';
 
 /** @param {NodeJS.ProcessEnv} system @param {string} directory */
 export function isolatedCopilotEnvironment(system, directory) {
@@ -22,29 +23,36 @@ export function isolatedCopilotEnvironment(system, directory) {
  * @param {string} directory
  * @param {string} token
  * @param {NodeJS.ProcessEnv} [system]
- * @returns {import('@github/copilot-sdk').CopilotClientOptions}
+ * @returns {import('@microsoft/copilot-sdk').CopilotClientOptions}
  */
 export function isolatedCopilotClientOptions(directory, token, system = process.env) {
   if (!token?.trim() || /[\r\n\0]/.test(token)) throw new Error('COPILOT_CREDENTIAL_REQUIRED');
   return {
-    connection: { kind: 'stdio' }, mode: 'empty', baseDirectory: directory, workingDirectory: directory,
-    gitHubToken: token, useLoggedInUser: false, builtinPluginDirectories: [], logLevel: 'none',
-    env: isolatedCopilotEnvironment(system, directory),
+    mode: 'empty',
+    runtime: RuntimeConnection.forSpawnedStdio({
+      baseDirectory: directory, workingDirectory: directory, env: isolatedCopilotEnvironment(system, directory),
+    }),
+    github: { token, useLoggedInUser: false },
+    plugins: { builtinDirectories: [] },
+    observability: { logLevel: 'none' },
   };
 }
 
 /**
  * @param {string} directory
  * @param {string} systemMessage
- * @returns {import('@github/copilot-sdk').SessionConfig}
+ * @returns {import('@microsoft/copilot-sdk').CreateSessionOptions}
  */
 export function isolatedCopilotSessionOptions(directory, systemMessage) {
   if (!isAbsolute(directory)) throw new Error('COPILOT_ISOLATION_DIRECTORY');
   return {
     workingDirectory: directory, configDirectory: directory, enableConfigDiscovery: false,
-    availableTools: [], tools: [], mcpServers: {}, customAgents: [], instructionDirectories: [],
-    infiniteSessions: { enabled: false }, memory: { enabled: false },
-    onPermissionRequest: () => ({ kind: 'reject' }),
+    tools: { availableTools: [], definitions: [] },
+    mcp: { servers: {} },
+    agents: { definitions: [], includedBuiltinAgents: [] },
+    instructions: { skipCustomInstructions: true, directories: [] },
+    state: { infiniteSessions: { enabled: false }, memory: { enabled: false } },
+    permissions: { onRequest: () => ({ kind: 'reject' }) },
     systemMessage: { mode: 'append', content: systemMessage },
   };
 }

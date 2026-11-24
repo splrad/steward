@@ -48,5 +48,5 @@ it('only the production and explicitly gated acceptance jobs receive native Copi
     }
   }
   expect(consumers.sort()).toEqual(['ai-identity-acceptance.yml/quality', 'ai-identity-acceptance.yml/release',
-    'business-flow-acceptance.yml/acceptance', 'quality-language-summary.yml/quality-summary']);
+    'business-flow-acceptance.yml/acceptance', 'quality-language-summary.yml/quality-summary', 'release-candidate-event.yml/event']);
 });

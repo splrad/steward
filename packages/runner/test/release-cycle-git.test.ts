@@ -93,10 +93,11 @@ it('publishes seven bytesets, waits for both channels and recovers protected con
   const centralJob={id:901,run_id:900,run_attempt:1,head_sha:C,name:'release-coordinator',status:'in_progress',conclusion:null as string|null,started_at:NOW,completed_at:null as string|null,steps:[{number:3,name:'business-release-coordinator',started_at:NOW,completed_at:null as string|null,conclusion:null as string|null}]};
   const centralIo={request:async(method:string,path:string)=>{expect(method).toBe('GET');if(path.endsWith('/steward'))return response({id:1296724484,full_name:'splrad/steward',default_branch:'main',archived:false,disabled:false});if(path.includes('/workflows/20'))return response({id:20,path:centralRun.path});if(path.includes('/jobs?'))return response({total_count:1,jobs:[centralJob]});return response(centralRun);}};
   const options={io,centralIo,now:()=>now,centralInvocation:{runId:900,runAttempt:1,controllerSha:C,defaultBranch:'main'}};
-  f.state.loseUpload=f.state.losePublish=true;
+  f.state.loseUpload=true;
   const published=await releaseCommand('publish',input,{...options,publisher:async()=>{
     expect((await read()).domainRecords.some((r:any)=>r.path.startsWith('evidence/publication/')&&r.value.startEvidencePath===null)).toBe(true);
-    await f.adapter.publish(f.target);
+    await f.adapter.uploadDraft(f.target,[],async()=>{});
+    Object.assign(f.release,{draft:false,immutable:true});
   }});
   expect(published).toMatchObject({status:'OBSERVED',publishInvoked:true});expect(f.remote.size).toBe(7);
   Object.assign(centralRun,{status:'completed',conclusion:'success',updated_at:NOW});Object.assign(centralJob,{status:'completed',conclusion:'success',completed_at:NOW});Object.assign(centralJob.steps[0]!,{conclusion:'success',completed_at:NOW});

@@ -1,17 +1,15 @@
 name: Steward source tests
-run-name: ${{ github.event_name == 'merge_group' && format('Product CI merge_group {0} {1}', github.event.merge_group.base_sha, github.event.merge_group.head_sha) || format('Product CI {0} {1} {2}', github.event.pull_request.number, github.event.pull_request.base.sha, github.event.pull_request.head.sha) }}
+run-name: Product CI ${{ github.event.pull_request.number }} ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }}
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-  merge_group:
-    types: [checks_requested]
   push:
     branches: ['**']
 permissions:
   contents: read
 jobs:
   plan:
-    if: github.event_name == 'pull_request' || (github.event_name == 'merge_group' && github.event.merge_group.base_ref == 'refs/heads/main') || (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch)
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -21,21 +19,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ${{ github.event.repository.full_name }}
-          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.sha }}
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
           path: policy
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-          ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: target
           fetch-depth: 0
           persist-credentials: false
       - id: select
         shell: bash
         env:
-          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
-          HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           profile=full
           if [[ -n "$BASE" && -f policy/scripts/steward-ci-profile.py ]]; then
@@ -62,13 +60,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ${{ github.event.repository.full_name }}
-          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.sha }}
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
           path: policy
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-          ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: target
           fetch-depth: 0
           persist-credentials: false
@@ -79,9 +77,10 @@ jobs:
       - name: Verify candidate against the trusted base contract
         shell: bash
         env:
+          GH_TOKEN: ${{ (needs.plan.outputs.profile == 'tool' || needs.plan.outputs.profile == 'docs') && github.token || '' }}
           PROFILE: ${{ needs.plan.outputs.profile }}
-          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
-          HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: python policy/scripts/steward-ci-candidate.py "$PROFILE" "$BASE" "$HEAD"
   test:
     needs: plan
@@ -96,13 +95,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ${{ github.event.repository.full_name }}
-          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.sha }}
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
           path: policy
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-          ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: target
           fetch-depth: 0
           persist-credentials: false
@@ -130,8 +129,9 @@ jobs:
       - name: Verify changed candidate lock assets on this platform
         shell: bash
         env:
-          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
-          HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           if [[ -f policy/scripts/steward-ci-candidate.py ]]; then
             python policy/scripts/steward-ci-candidate.py full-lock "$BASE" "$HEAD"
@@ -199,7 +199,7 @@ jobs:
         run: python scripts/steward-test-summary.py
   result:
     needs: [plan, candidate, test]
-    if: always() && (github.event_name == 'pull_request' || (github.event_name == 'merge_group' && github.event.merge_group.base_ref == 'refs/heads/main') || (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch))
+    if: always() && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch))
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:

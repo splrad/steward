@@ -26,9 +26,8 @@ workflows:
     '.github/workflows/pr-labeler.yml':
         - 'actions/labeler@bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13'
     '.github/workflows/pr-title-reusable.yml':
-        - 'amannn/action-semantic-pull-request@2252a14e810aa9b85c2d560bd7070c802206ecf6'
-    '.github/workflows/pr-title.yml':
-        - 'amannn/action-semantic-pull-request@2252a14e810aa9b85c2d560bd7070c802206ecf6'
+        - 'amannn/action-semantic-pull-request@c5e23b7e584519ee15caa684cf60d056aa9f035f'
+    '.github/workflows/pr-title.yml': []
     '.github/workflows/pr-validation-native.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec'
@@ -42,11 +41,11 @@ workflows:
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc'
         - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
-        - 'googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7'
         - 'jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d'
     '.github/workflows/release-cycle-event.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc'
+        - 'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333'
         - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
         - 'googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7'
         - 'jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d'
@@ -72,6 +71,11 @@ dependencies:
         commit: 'sha1-bbc44d14a204704ccc493733616cd1e93a0321ec'
         owner_id: 44036562
         repo_id: 476372928
+    'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333':
+        ref: 'v8.0.2'
+        commit: 'sha1-9000827ccba6bdab643e8b6fd33ac0654aef8333'
+        owner_id: 44036562
+        repo_id: 192626254
     'actions/labeler@bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13':
         ref: 'v7.0.0'
         commit: 'sha1-bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13'
@@ -82,9 +86,9 @@ dependencies:
         commit: 'sha1-cf430e030ddbb5b0abf93d22962f4752f3646cd9'
         owner_id: 44036562
         repo_id: 192625955
-    'amannn/action-semantic-pull-request@2252a14e810aa9b85c2d560bd7070c802206ecf6':
-        ref: 'v6.1.2'
-        commit: 'sha1-2252a14e810aa9b85c2d560bd7070c802206ecf6'
+    'amannn/action-semantic-pull-request@c5e23b7e584519ee15caa684cf60d056aa9f035f':
+        ref: 'v6.1.3'
+        commit: 'sha1-c5e23b7e584519ee15caa684cf60d056aa9f035f'
         owner_id: 4038316
         repo_id: 220418983
     'dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d':

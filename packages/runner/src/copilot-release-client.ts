@@ -19,7 +19,12 @@ export function copilotReleaseClient(controllerDirectory: string, token: string)
       const code = await new Promise<number | null>((done, reject) => { child.once('error', () => reject(new Error('RESPONSE_UNKNOWN'))); child.once('close', done); child.stdin.end(input); });
       if (size > 32 * 1024) throw new Error('CONTENT_OUTPUT_LIMIT');
       let result; try { result = JSON.parse(Buffer.concat(bytes).toString('utf8')); } catch { throw new Error('RESPONSE_UNKNOWN'); }
-      if (code !== 0 || result.status === 'FAILED') throw new Error(/^(CONTENT_[A-Z_]+|RESPONSE_UNKNOWN)$/.test(result.errorCode) ? result.errorCode : 'RESPONSE_UNKNOWN');
+      if (code !== 0 || result.status === 'FAILED') {
+        const errorCode = /^(CONTENT_[A-Z_]+|RESPONSE_UNKNOWN)$/.test(result.errorCode) ? result.errorCode : 'RESPONSE_UNKNOWN';
+        const httpStatus = result.httpStatus;
+        throw Object.assign(new Error(errorCode), errorCode === 'CONTENT_CONTEXT_LIMIT' &&
+          Number.isInteger(httpStatus) && httpStatus >= 400 && httpStatus <= 599 ? { status: httpStatus } : {});
+      }
       return result;
     } finally { await rm(directory, { recursive: true, force: true }); }
   };

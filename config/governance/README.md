@@ -12,13 +12,15 @@
 
 部署时先保存当前规则恢复点，再核对受信验证和标题入口在准确 PR/head 上的结果。先启用独立标题规则并读回其生效范围，再从基础规则移除标题检查。脚本生成请求正文，执行顺序由维护者控制。请求正文使用原生 `sha` 固定 required workflow 来源。具体字段参考 [GitHub 组织 Rulesets API](https://docs.github.com/en/rest/orgs/rules)。
 
+组织所需 Native Validation 对 `.github/workflows/pr-title.yml` 的改动、移除和重命名执行既有配置授权。Copier 递送 PR 由管理员或已授权的委托人审核实际 head，并通过现有配置审核入口确认。GitHub 状态规则按检查名和 App 匹配，配置授权由已固定来源的 Native Validation 执行。
+
 ## Actions 事件策略采用
 
 Actions 事件策略通过 GitHub 设置页或官方 REST 在采用阶段配置并读回。设置同步只运行 safe-settings 支持的设置；事件策略不由定时 settings-sync 读取或修复。
 
-`tools/settings-sync/actions-policies.mjs` 保留为部署准备辅助模块：`readActionsPolicies` 完整读取组织、仓库及继承策略，403 或未知响应保持失败；`reconcileActionsPolicies` 只处理明确登记 ID、作用范围和预期旧值的一次性变更。调用者在 E10 的具体授权范围内使用官方 Octokit request 适配器，先预览，再采用并核验读回。该模块没有定时入口，不自动创建策略。`config/governance/actions-policies.json` 当前未登记任何策略 ID，不能据此认定生产策略为空或已经采用。
+`tools/settings-sync/actions-policies.mjs` 保留为部署准备辅助模块。`readActionsPolicies` 完整读取组织、仓库及继承策略，403 或未知响应保持失败。`reconcileActionsPolicies` 只处理明确登记 ID、作用范围和预期旧值的一次性变更，支持准确标题路径、公开仓准确贴标路径，以及保留全部专用路径排除项的通用事件。调用者在 E10 的具体授权范围内使用官方 Octokit request 适配器，先预览，再采用并核验读回。该模块没有定时入口。`config/governance/actions-policies.json` 当前未登记任何策略 ID。
 
-新入口采用前，先保存完整原生快照，核对全部继承策略和实际拒绝来源。标题策略仅匹配 `.github/workflows/pr-title.yml`，采用后使用 `pull_request`。公开仓贴标策略按系统属性 `visibility=public` 和准确的 `.github/workflows/pr-labeler.yml` 覆盖当前与未来采用仓。Steward 的 `merge_group` 许可限定在原生验证及 Product CI 两条工作流。通用策略应排除需要专属事件的相同路径，并为原有非 Steward 路径保留原许可。作用范围变更使用已审原生请求。
+新入口采用前，先保存完整原生快照，核对全部继承策略和实际拒绝来源。标题策略仅匹配 `.github/workflows/pr-title.yml`，采用后使用 `pull_request`。公开仓贴标策略按系统属性 `visibility=public` 和准确的 `.github/workflows/pr-labeler.yml` 覆盖当前与未来采用仓。原生验证和 Product CI 适用通用事件策略。通用策略应排除已有专属事件策略覆盖的路径。作用范围变更使用已审原生请求。
 
 写响应未知时先 GET 准确策略，保留无关字段及后来修改，再决定后续操作。真实验收包含标题 edited/fork、其他路径拒绝，以及维护、发布和恢复所需事件；本地请求测试不替代原生事件验收。接口参见 [GitHub Actions policies](https://docs.github.com/en/rest/actions/policies)。
 
