@@ -115,15 +115,19 @@ export async function advanceEvent(event,{snapshot,get,centralGet,invoke,botId,p
     return wait(event.sourceSha===head?'OFFICIAL_MERGE_REQUIRED':'SUPERSEDED_PUSH');
   }
   const readRun=event.kind==='publication'?centralGet:get;
-  const readyCycle=event.kind==='run'&&cycles.find(cycle=>cycle.officialRelease
-    &&cycle.dispatches.some(request=>request.purpose==='build'&&request.canonicalRunId===event.runId)
-    &&state.domainRecords?.some(record=>record.path===`official/draft/${cycle.id}.json`&&record.value.readyAt));
+  const buildCycle=event.kind==='run'&&cycles.find(cycle=>cycle.officialRelease
+    &&cycle.dispatches.some(request=>request.purpose==='build'&&request.canonicalRunId===event.runId));
+  const readyCycle=buildCycle&&state.domainRecords?.some(record=>record.path===`official/draft/${buildCycle.id}.json`&&record.value.readyAt)
+    ?buildCycle:null;
+  const retainedDelivery=buildCycle?.units?.[0]?.githubDelivery;
+  const retainedCallback=retainedDelivery?.runId===event.runId
+    && (retainedDelivery?.buildAttempt??retainedDelivery?.attempt)===event.attempt;
   const selectedCallback=event.kind==='run'&&selectedDelivery?.repository===product.name
     &&selectedDelivery.runId===event.runId&&selectedDelivery.callbackAttempt===event.attempt;
   const run=await cycleStage('SOURCE_READ',async()=>{
     const path=`actions/runs/${event.runId}`;
     const latest=nativeRunFact(await readRun(path));
-    return (readyCycle||selectedCallback)&&latest.runAttempt!==event.attempt
+    return (readyCycle||retainedCallback||selectedCallback)&&latest.runAttempt!==event.attempt
       ?nativeRunFact(await readRun(`${path}/attempts/${event.attempt}`)):latest;
   });
   if (run.id!==event.runId || run.runAttempt!==event.attempt || run.status!=='completed') fail('CYCLE_EVENT_RUN');

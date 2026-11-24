@@ -202,6 +202,14 @@ test('a delayed callback returns the same ready draft after the product Run adva
   assert.deepEqual(await advanceEvent(event,preparing),{status:'WAIT',reason:'OFFICIAL_RELEASE_PREFLIGHT_READY',cycleId:'cycle'});
   assert.deepEqual(reads,['actions/runs/83','actions/runs/83/attempts/1']);
   assert.deepEqual(calls,['publish']);
+
+  reads.length=0; calls.length=0;
+  const recovering={...preparing,officialStage:'select',selectedDelivery:undefined,snapshot:async()=>({
+    cycles:[{value:{...cycle,units:[{githubDelivery:{runId:83,attempt:1}}]}}],domainRecords:[],
+  })};
+  assert.deepEqual(await advanceEvent(event,recovering),{status:'WAIT',reason:'OFFICIAL_RELEASE_PREFLIGHT_READY',cycleId:'cycle'});
+  assert.deepEqual(reads,['actions/runs/83','actions/runs/83/attempts/1']);
+  assert.deepEqual(calls,['publish']);
 });
 
 test('official draft preparation recovers a lost canonical build binding on the original completed Run',async()=>{
