@@ -41,23 +41,25 @@ const sectionByHeading = new Map<string, ConditionalSection>(
   Object.entries(conditionalHeadings).map(([key, value]) => [value, key as ConditionalSection]),
 );
 export const isConditionalTemplate = (template: string): boolean => template.includes('{{#requiredActions}}');
-const firstConditionalDigest = '104ba109cfd13d3dca3b3ffb51d9d48eadae31fbc3c38c1ba517aceb94245231';
-const contributorIdsTemplateDigest = '120dc4498c5a8ab55e14caf222f0fce2dd09b366f072798c6d12a2db3945776a';
-const contributorLinksTemplateDigest = '5c4b14554ed6ad7729b8c13c7e8daedff23dba36bb83fa0e22319a70aa493763';
+const adoptedConditionalDigests = [
+  '104ba109cfd13d3dca3b3ffb51d9d48eadae31fbc3c38c1ba517aceb94245231', // avatars
+  '120dc4498c5a8ab55e14caf222f0fce2dd09b366f072798c6d12a2db3945776a', // avatars and numeric IDs
+  '5c4b14554ed6ad7729b8c13c7e8daedff23dba36bb83fa0e22319a70aa493763', // linked usernames and numeric IDs
+  'e7d54160c3c6811e223ad17b8d2d3284cd9b9e11ddf2d87dae3b8e846b839bb0', // linked usernames
+];
 const showsReleaseContributorIds = (template: string): boolean => template.includes('{{id}}');
 
 export async function isAdoptedOrganizationReleaseTemplate(template: string): Promise<boolean> {
   const digest = await sha256Hex(template);
-  return [firstConditionalDigest, contributorIdsTemplateDigest, contributorLinksTemplateDigest].includes(digest);
+  return adoptedConditionalDigests.includes(digest);
 }
 
 /** An already reviewed conditional note retains the exact format across template adoption. */
 export async function reviewedConditionalReleaseTemplate(current: string, reviewed?: string): Promise<string> {
   if (reviewed && reviewed !== current) {
     const currentDigest = await sha256Hex(current), reviewedDigest = await sha256Hex(reviewed);
-    const adopted = [firstConditionalDigest, contributorIdsTemplateDigest, contributorLinksTemplateDigest];
-    const reviewedVersion = adopted.indexOf(reviewedDigest);
-    if (reviewedVersion >= 0 && adopted.indexOf(currentDigest) > reviewedVersion) return reviewed;
+    const reviewedVersion = adoptedConditionalDigests.indexOf(reviewedDigest);
+    if (reviewedVersion >= 0 && adoptedConditionalDigests.indexOf(currentDigest) > reviewedVersion) return reviewed;
   }
   return current;
 }

@@ -42,16 +42,23 @@ export function officialNotes(body) {
 
 export const officialRoundMarker = roundId => '<!-- steward-candidate-round:' + roundId + ' -->';
 
-export function renderOfficialHomepage({ upstreamBody, template, notes, sourceLink, contributors, roundId }) {
+export function renderOfficialHomepage({ upstreamBody, template, notes, sourceLink, contributors, roundId, filesUrl, creationLink }) {
   const upstream = officialNotes(upstreamBody);
   const lines = normalized(upstreamBody).trim().split('\n');
   const first = lines.indexOf('---'), last = lines.lastIndexOf('---');
-  const header = lines.slice(0, first + 1).join('\n');
+  const header = lines.slice(0, first).map(line => line ? '> ' + line : '>').join('\n');
   const footer = lines.slice(last + 1).join('\n').trim();
   const versionHeading = '## ' + upstream.version;
   const notesBody = renderConditionalNotes(template, notes, sourceLink, contributors).trimEnd();
   const expected = versionHeading + '\n\n' + notesBody;
-  const result = [header + '\n\n' + expected + '\n\n---', footer, officialRoundMarker(roundId)]
+  const review = ['> **审阅提示**', header,
+    '> 请直接在本 PR 正文中编辑下方发行说明。合并时的说明将用于 Release 草稿。'].filter(Boolean).join('\n>\n');
+  // The first native separator underlines the PR-only title in GitHub Markdown.
+  const record = creationLink ?? sourceLink;
+  const details = ['<details>', '<summary>' + (creationLink ? '创建 PR 时的变更记录' : '本轮候选变更记录') + '</summary>', '',
+    '[' + record.label + '](<' + record.url + '>)', '', '</details>'].join('\n');
+  const files = filesUrl ? '[查看候选文件差异](<' + filesUrl + '>)' : '在本 PR 的 **Files changed** 页查看候选文件差异。';
+  const result = [review, '发行说明\n---', expected, '---', '## PR 信息', footer, files, details, officialRoundMarker(roundId)]
     .filter(Boolean).join('\n\n');
   requireCandidate(fitsOfficialEvent(result), 'BODY_LIMIT');
   const readback = officialNotes(result);
@@ -349,8 +356,7 @@ export async function officialCandidateEvidence({ product, sourceSha, baseline, 
   const actors = commits.map(commit => commit.author ? { id: commit.author.id, login: commit.author.login,
     type: commit.author.type, profileUrl: commit.author.html_url, avatarUrl: commit.author.avatar_url } : null);
   const { contributors } = selectReleaseContributors(actors, [], 'github-authors');
-  const sourceLink = baseline.sha ? { label: '查看本版变更', url: repository + '/compare/' + baseline.sha + '...' + sourceSha }
-    : { label: '查看本版源码', url: repository + '/tree/' + sourceSha };
+  const sourceLink = candidateSourceLink(product, baseline.sha, sourceSha);
   const docs = await Promise.all(paths.map(async path => {
     const bytes = await readSourceFile(get, path, sourceSha);
     let text;
@@ -379,10 +385,19 @@ export async function officialCandidateEvidence({ product, sourceSha, baseline, 
   };
 }
 
-export async function draftOfficialCandidate({ roundId, candidate, context, product, sourceSha, template, call }) {
-  const notes = await generateOfficialCandidateNotes({ unit: context.unit, evidence: context.evidence, call });
+function candidateSourceLink(product, base, head) {
+  requireCandidate(sha(head) && (base === null || sha(base)), 'CONTENT_SOURCE');
+  const repository = 'https://github.com/' + product.name;
+  return base ? { label: '查看本版变更', url: repository + '/compare/' + base + '...' + head }
+    : { label: '查看本版源码', url: repository + '/tree/' + head };
+}
+
+export async function draftOfficialCandidate({ roundId, candidate, context, product, sourceSha, template, call, creationRange, pullNumber }) {
+  const notes = await generateOfficialCandidateNotes({ unit: context.unit, evidence: context.evidence, template, call });
   const body = renderOfficialHomepage({ upstreamBody: candidate.body, template, notes, sourceLink: context.sourceLink,
-    contributors: context.contributors, roundId });
+    contributors: context.contributors, roundId,
+    filesUrl: positive(pullNumber) ? 'https://github.com/' + product.name + '/pull/' + pullNumber + '/files' : null,
+    creationLink: creationRange && candidateSourceLink(product, creationRange.base, creationRange.head) });
   try {
     // The product build hasn't selected or verified the downloadable files yet.
     assertVersionAcquisitionLinks(notes, product.name, context.tag, sourceSha, []);
