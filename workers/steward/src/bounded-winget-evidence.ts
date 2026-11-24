@@ -17,11 +17,24 @@ export async function readCycle(g:GitReader,id:string){
  ensure((await g.json(target.id,base+'git/ref/heads/steward/release-state')).object?.sha===ref.object.sha,'CYCLE_MOVED');return {cycle,commit:ref.object.sha};
 }
 async function readReleaseStateDocument(g:GitReader,path:string,commit:string){
- const target=g.target??TARGET,f=await g.json(target.id,`/repos/${target.name}/contents/${path}?ref=${commit}`);
+ return readPinnedDocument(g,g.target??TARGET,path,commit);
+}
+async function readPinnedDocument(g:GitReader,repository:{id:number;name:string},path:string,commit:string){
+ const f=await g.json(repository.id,`/repos/${repository.name}/contents/${path}?ref=${commit}`);
  ensure(f.type==='file'&&f.path===path&&f.encoding==='base64'&&Number.isSafeInteger(f.size)&&f.size<=512*1024,'CYCLE_FILE');
  const bytes=Buffer.from(f.content,'base64');
  ensure(bytes.length===f.size&&createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')===f.sha,'CYCLE_BLOB');
  return JSON.parse(bytes.toString('utf8'));
+}
+async function verifyWingetRegistration(g:GitReader,controllerSha:string,unitId:string){
+ const registry=await readPinnedDocument(g,CENTRAL,'config/release/event-repositories.json',controllerSha);
+ ensure(Array.isArray(registry),'CHANNEL_REGISTRY');
+ const owners=registry.flatMap(repository=>(repository.externalAdapters??[])
+   .filter((adapter:any)=>adapter.channelId==='winget'&&adapter.location==='SPLRAD.LayerScape.Deployer')
+   .map((adapter:any)=>({repository,adapter})));
+ ensure(owners.length===1,'CHANNEL_WINGET_REGISTRATION');
+ const {repository,adapter}=owners[0];
+ ensure(repository.id===TARGET.id&&repository.name===TARGET.name&&repository.defaultBranch===TARGET.defaultBranch&&adapter.unitId===unitId,'CHANNEL_WINGET_REGISTRATION');
 }
 export async function readOfficialDraftReceipt(g:GitReader,id:string,commit:string){
  ensure(/^pr-[1-9][0-9]*-[0-9a-f]{40}$/.test(id)&&sha(commit),'PUBLICATION_DRAFT_RECEIPT');
@@ -95,6 +108,7 @@ export async function registerWingetRun(env:BoundedEnv,event:string,payload:any,
  const current=await (await stub.fetch(new Request('https://bounded.internal/status',{method:'POST',body:'{}'}))).json() as RecordState|null;
  // A repeated submit event cannot replace the unique index stage or its clock.
  if(current){ensure(objectKey(current.identity)===objectKey(identity),'CHANNEL_OBJECT_CONFLICT');return true;}
+ await verifyWingetRegistration(g,c.controllerSha,u.id);
  const result=await stub.fetch(new Request('https://bounded.internal/winget-register',{method:'POST',body:JSON.stringify({registration,executionSha:run.head_sha,anchorSha:env.BOUNDED_PRODUCT_SHA})}));ensure(result.ok,'CHANNEL_REGISTRATION');
  return true;
 }
