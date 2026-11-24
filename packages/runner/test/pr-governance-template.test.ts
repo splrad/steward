@@ -10,6 +10,13 @@ it('reports the unprefixed title check from the actual shared workflow result',a
   const source=await readFile('templates/repository/.github/workflows/pr-title.yml.jinja','utf8');
   const sha='a'.repeat(40);
   const workflow=YAML.parse(source.replace('{{ _copier_conf.vcs_ref_hash }}',sha));
+  const shared=YAML.parse(await readFile('.github/workflows/pr-title-reusable.yml','utf8'));
+  for (const job of [workflow.jobs.title,shared.jobs.title]) {
+    const image=job['runs-on'];
+    expect(image).toMatch(/^ubuntu-\d{2}\.\d{2}$/);
+    // Both jobs support later Ubuntu images proposed by Renovate.
+    expect(image.localeCompare('ubuntu-26.04','en',{numeric:true})).toBeGreaterThanOrEqual(0);
+  }
   expect(workflow.on).toEqual({pull_request:{types:['opened','edited','synchronize','reopened']}});
   expect(workflow.permissions).toEqual({'pull-requests':'read'});
   expect(workflow.jobs.semantic.uses).toBe(`splrad/steward/.github/workflows/pr-title-reusable.yml@${sha}`);
