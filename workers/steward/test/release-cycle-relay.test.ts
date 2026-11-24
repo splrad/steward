@@ -17,11 +17,21 @@ it('consumes the saved draft receipt for duplicate or delayed callbacks without 
  const ready={status:'DRAFT_READY',reason:'OFFICIAL_DRAFT_ATTACHMENTS_READY',publishInvoked:false,
   cycleId:'pr-301-'+pin,draft:{releaseId:54,url:'https://github.com/splrad/LayerScape/releases/tag/v1.1.0',
    tag:'v1.1.0',sourceSha:pin,runId:74,attempt:2,assets:[{assetId:84,name:'Installer.exe'}]}};
- expect(officialDraftReady(ready,hint)).toBe(true);
- expect(officialDraftReady(ready,{repositoryId:TARGET.id,kind:'run',runId:74,attempt:3})).toBe(true);
- expect(()=>officialDraftReady({...ready,publishInvoked:true},hint)).toThrow('PUBLICATION_DRAFT_RECEIPT');
- expect(()=>officialDraftReady({...ready,draft:{...ready.draft,sourceSha:deployment}},hint)).toThrow('PUBLICATION_DRAFT_RECEIPT');
- expect(officialDraftReady({publishInvoked:true},hint)).toBe(false);
+ const archived={schemaVersion:1,repositoryId:TARGET.id,cycleId:ready.cycleId,readyAt:'2026-11-24T01:00:00Z',
+  releaseId:ready.draft.releaseId,url:ready.draft.url,assets:ready.draft.assets};
+ const cycle={id:ready.cycleId,prNumber:301,sourceSha:pin,workflowDelivery:true,officialDraftScopeDigest:'d'.repeat(64),
+  officialRelease:{headSha:deployment,bodyDigest:'e'.repeat(64),pullBodyDigest:'f'.repeat(64)},
+  units:[{tag:ready.draft.tag,notesDigest:null,releaseId:ready.draft.releaseId,
+   githubDelivery:{runId:74,attempt:3,buildAttempt:2,artifactId:55,digest:'sha256:'+'a'.repeat(64)}}],
+  dispatches:[{purpose:'build',sourceSha:pin,canonicalRunId:74}]};
+ const observe=(value:any,event=hint)=>officialDraftReady(value,event,TARGET,cycle,archived);
+ expect(observe(ready)).toBe(true);
+ expect(observe(ready,{repositoryId:TARGET.id,kind:'run',runId:74,attempt:3})).toBe(true);
+ expect(()=>observe({...ready,publishInvoked:true})).toThrow('PUBLICATION_DRAFT_RECEIPT');
+ for(const wrong of [{sourceSha:deployment},{attempt:3},{runId:75},{releaseId:56},{tag:'v1.2.0'},
+  {url:'https://github.com/splrad/AnotherRepo/releases/tag/v1.1.0'}])
+  expect(()=>observe({...ready,draft:{...ready.draft,...wrong}})).toThrow('PUBLICATION_DRAFT_RECEIPT');
+ expect(observe({publishInvoked:true})).toBe(false);
 });
 const receipt={id:12,run_attempt:1,repository:{id:CENTRAL.id},head_repository:{id:CENTRAL.id},path:'.github/workflows/release-cycle-event.yml',
   head_branch:'main',head_sha:pin,actor:{id:301115370},event:'workflow_dispatch',display_title:'Release cycle '+relayKey(hint)};

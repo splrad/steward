@@ -1,10 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { parseFragment } from 'parse5';
 import YAML from 'yaml';
-import { EvidenceReadError } from '../../packages/runner/dist/index.js';
+import { EvidenceReadError, isolatedBuildEnvironment, officialCandidateDiff } from '../../packages/runner/dist/index.js';
 import { Manifest } from 'release-please';
 import { PullRequestBody } from 'release-please/build/src/util/pull-request-body.js';
 import { bodyDigest, computeOfficialCandidate, draftOfficialCandidate, officialCandidateRoundId, officialMergeKey,
@@ -35,6 +38,32 @@ const orgNotes = {
 };
 const person = { id: 42, login: 'contributor', profileUrl: 'https://github.com/contributor',
   avatarUrl: 'https://avatars.githubusercontent.com/u/42?v=4', alt: 'contributor' };
+
+test('candidate diff reads the complete immutable range beyond GitHub file pagination', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'steward-candidate-diff-test-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const git = (args, input) => execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com', ...args],
+    { cwd: directory, env: isolatedBuildEnvironment(process.env, directory), encoding: 'utf8', input });
+  git(['init', '--quiet']);
+  const baselineSha = git(['commit-tree', git(['write-tree']).trim()], 'baseline\n').trim();
+  const oid = git(['hash-object', '-w', '--stdin'], '真实变更\n').trim();
+  const records = Array.from({ length: 3001 }, (_, index) => '100644 ' + oid + '\tfile-' + index + '.txt\n');
+  git(['update-index', '--index-info'], records.join(''));
+  const sourceSha = git(['commit-tree', git(['write-tree']).trim(), '-p', baselineSha], 'contents\n').trim();
+  const evidence = await officialCandidateDiff(directory, sourceSha, baselineSha);
+  const text = evidence.map((chunk, index) => {
+    const { start, end, text } = chunk.details;
+    assert.equal(chunk.kind, 'source-range-diff');
+    assert.equal(chunk.details.sourceSha, sourceSha);
+    assert.equal(chunk.details.baselineSha, baselineSha);
+    assert.equal(start, evidence[index - 1]?.details.end ?? 0);
+    assert.equal(end - start, Buffer.byteLength(text));
+    return text;
+  }).join('');
+  assert.equal(text, git(['diff', '--no-ext-diff', '--no-textconv', '--no-color', '--no-renames', '--unified=2', baselineSha, sourceSha, '--']));
+  assert.equal((text.match(/^\+真实变更$/gm) ?? []).length, records.length);
+  assert.deepEqual((await officialCandidateDiff(directory, sourceSha, null)).map(chunk => chunk.details.text).join(''), text);
+});
 
 test('requires the official switch and the native product declaration to select a candidate writer', async () => {
   const label = { repositoryId: product.id, prNumber: 29, eventId: 12 };
@@ -326,10 +355,16 @@ test('records each new source only after an exact round match and skips repeated
   const prepare = () => prepareOfficialCandidate({ identity, get, store,
     prepareParticipation: async () => ({ status: 'APPLICABLE', sourceSha: controllerSha }),
     buildCandidate: async () => { builds++; return recalculated; },
-    collectEvidence: ({ candidate }) => { assert.deepEqual(candidate, archived.candidate); return {}; },
+    collectEvidence: ({ candidate, sourceSha, baseline }) => {
+      assert.equal(sourceSha, archived.sourceSha);
+      assert.deepEqual(baseline, archived.baseline);
+      assert.deepEqual(candidate, archived.candidate);
+      return {};
+    },
   });
   const restoredSource = await prepare();
   assert.equal(restoredSource.mode, 'draft');
+  assert.equal(restoredSource.evidenceSourceSha, archived.sourceSha);
   assert.deepEqual(restoredSource.candidate, archived.candidate);
   assert.equal(boundSource, controllerSha);
   saved.draft = { body: expectedBody, templateDigest: bodyDigest(template) };

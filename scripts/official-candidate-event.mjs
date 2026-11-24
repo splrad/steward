@@ -135,7 +135,7 @@ async function inspectWaiting(get, product) {
   });
 }
 
-export async function prepareOfficialCandidate({ identity, get, store, token, prepareParticipation,
+export async function prepareOfficialCandidate({ identity, get, getPages, directory, store, token, prepareParticipation,
   buildCandidate = computeOfficialCandidate, collectEvidence = officialCandidateEvidence }) {
   const { product, event, sourceSha } = identity;
   if (await defaultHead(get, product.defaultBranch) !== sourceSha) return { result: 'source_changed' };
@@ -189,8 +189,11 @@ export async function prepareOfficialCandidate({ identity, get, store, token, pr
     }
     requireCandidate(!round.draft, 'ADOPTED_PULL_DRIFT');
   }
-  const evidence = round.draft ? null : await collectEvidence({ product, sourceSha, baseline, candidate, get });
-  return { roundId, candidate, mode: round.draft ? 'write' : 'draft', evidence };
+  const evidenceSourceSha = round.source.sourceSha;
+  const evidence = round.draft ? null : await collectEvidence({
+    product, sourceSha: evidenceSourceSha, baseline: round.source.baseline, candidate, get, getPages, directory,
+  });
+  return { roundId, candidate, evidenceSourceSha, mode: round.draft ? 'write' : 'draft', evidence };
 }
 
 async function withCandidateState(env, identity, operation) {
@@ -226,7 +229,7 @@ async function withCandidateState(env, identity, operation) {
         save: (roundId, phase, data) => writeCheckpoint(record.writeOfficialCandidateCheckpoint, { roundId, phase, data }),
         bind: (roundId, sourceSha) => writeCheckpoint(record.recordOfficialCandidateSource, { roundId, sourceSha }),
       };
-      return operation({ get, store, token: readToken, admit, prepareParticipation: () =>
+      return operation({ get, getPages: path => reader.pages(path, ''), directory, store, token: readToken, admit, prepareParticipation: () =>
         releaseParticipation(repository, nativeEvidenceTransport(readToken), { requireWorkflowGitHubDelivery: true }) });
     });
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -259,7 +262,7 @@ export async function main(stage, env = process.env) {
     const template = await readFile(templatePath, 'utf8');
     const client = copilotReleaseClient(controllerDirectory, env.STEWARD_COPILOT_TOKEN ?? '');
     return write('draft', await draftOfficialCandidate({
-      roundId, candidate, context: plan.evidence, product, sourceSha, template, call: client.call,
+      roundId, candidate, context: plan.evidence, product, sourceSha: plan.evidenceSourceSha, template, call: client.call,
     }));
   }
   if (stage === 'check') {

@@ -2,7 +2,7 @@ import {GitHubRetryError,rejectedDispatch,retryAfterTime} from './bounded-retry-
 import {channelWorkflow as channelPath,defaultBuildWorkflow as publishPath,dispatchWorkflow,isBuildWorkflow} from '../../../packages/core/src/release-workflow.js';
 import {PendingPromotion,promotionMessage} from './release-promotion.js';
 import {promotedController} from './bounded-controller.js';
-import {readCycle} from './bounded-winget-evidence.js';
+import {readCycle,readOfficialDraftReceipt} from './bounded-winget-evidence.js';
 import {BoundedGitHub, candidateReader, CENTRAL, TARGET, digest, ensure, type ProductTarget, type BoundedEnv, type GitReader} from './bounded-recheck-github.js';
 
 const workflow = 'release-cycle-event.yml';
@@ -54,49 +54,59 @@ function officialCycle(cycle: Awaited<ReturnType<typeof readCycle>>['cycle'], bu
         dispatch.canonicalRunId === delivery.runId).length === 1);
 }
 
-export function officialDraftReady(value: any, hint: Hint): boolean {
+export function officialDraftReady(value: any, hint: Hint, target: Pick<ProductTarget,'id'|'name'>,
+  cycle: Awaited<ReturnType<typeof readCycle>>['cycle'], archived: any): boolean {
   if (value.status !== 'DRAFT_READY') return false;
-  const ready = value.draft;
+  const ready = value.draft, unit = cycle.units?.[0], delivery = unit?.githubDelivery;
+  ensure(typeof archived?.url === 'string' && URL.canParse(archived.url), 'PUBLICATION_DRAFT_RECEIPT');
+  const url = new URL(archived.url);
   ensure(value.reason === 'OFFICIAL_DRAFT_ATTACHMENTS_READY' && value.publishInvoked === false &&
-    ready && sha(ready.sourceSha) && typeof value.cycleId === 'string' &&
-    /^pr-[1-9][0-9]*-[0-9a-f]{40}$/.test(value.cycleId) && value.cycleId.endsWith('-' + ready.sourceSha) &&
-    positive(ready.releaseId) && positive(ready.runId) && positive(ready.attempt) &&
-    typeof ready.tag === 'string' && ready.tag.length > 0 &&
-    typeof ready.url === 'string' && /^https:\/\/github\.com\/splrad\/[A-Za-z0-9_.-]+\/releases\//.test(ready.url) &&
+    ready && officialCycle(cycle, ready.runId) && value.cycleId === cycle.id && ready.sourceSha === cycle.sourceSha &&
+    target.id === hint.repositoryId && archived.schemaVersion === 1 && archived.repositoryId === target.id &&
+    archived.cycleId === cycle.id && Number.isFinite(Date.parse(archived.readyAt)) &&
+    positive(ready.releaseId) && ready.releaseId === archived.releaseId && ready.releaseId === unit.releaseId &&
+    typeof ready.tag === 'string' && ready.tag.length > 0 && ready.tag === unit.tag &&
+    ready.runId === delivery.runId && positive(ready.attempt) &&
+    ready.attempt === (delivery.buildAttempt ?? delivery.attempt) && ready.url === archived.url &&
+    url.origin === 'https://github.com' && !url.username && !url.password && url.pathname.startsWith(`/${target.name}/releases/`) &&
     Array.isArray(ready.assets) && ready.assets.length > 0 &&
     ready.assets.every((file: any) => positive(file.assetId) && typeof file.name === 'string' && file.name.length > 0) &&
-    new Set(ready.assets.map((file: any) => file.assetId)).size === ready.assets.length &&
-    new Set(ready.assets.map((file: any) => file.name)).size === ready.assets.length &&
-    (hint.kind === 'official-merge' ? value.cycleId === 'pr-' + hint.prNumber + '-' + hint.sourceSha :
+    Array.isArray(archived.assets) && ready.assets.length === archived.assets.length &&
+    ready.assets.every((file: any, index: number) => file.assetId === archived.assets[index]?.assetId &&
+      file.name === archived.assets[index]?.name) &&
+    (hint.kind === 'official-merge' ? value.cycleId === 'pr-' + hint.prNumber + '-' + hint.sourceSha &&
+        cycle.officialRelease.headSha === hint.head :
       hint.kind === 'run' && ready.runId === hint.runId), 'PUBLICATION_DRAFT_RECEIPT');
   return true;
 }
 
 async function boundBuildCycle(g:GitReader,run:any) {
-  const cycleId=run.head_branch.slice('steward/build/'.length),{cycle}=await readCycle(g,cycleId);
+  const cycleId=run.head_branch.slice('steward/build/'.length),read=await readCycle(g,cycleId),{cycle}=read;
   const matches=cycle.dispatches?.filter((d:any)=>d.purpose==='build' && d.ref===run.head_branch &&
     d.executionSha===run.head_sha && d.sourceSha===cycle.sourceSha && cycle.sourceSha===run.head_sha &&
     d.workflowId===run.workflow_id && dispatchWorkflow(d)===run.path && (d.canonicalRunId===null || d.canonicalRunId===run.id) &&
     (d.buildWorkflow===undefined?run.display_title==='Build '+d.operationKey:run.display_title.includes(d.operationKey)) &&
     Date.parse(run.created_at)>=Math.floor(Date.parse(d.sentAt)/1000)*1000);
   ensure(matches?.length===1,'RELEASE_BUILD_DISPATCH');
-  return cycle;
+  return read;
 }
 
-async function officialPublication(g:GitReader,parent:Relay,installation:string|undefined):Promise<boolean> {
+async function officialPublication(g:GitReader,parent:Relay,installation:string|undefined) {
   const hint=parent.hint;
-  if (hint.kind!=='official-merge' && hint.kind!=='run') return false;
+  if (hint.kind!=='official-merge' && hint.kind!=='run') return null;
   const scoped=await candidateReader(g,hint.repositoryId),target=scoped.target;
-  if (!version3Candidate(target)) return false;
-  if (hint.kind==='official-merge') return true;
+  if (!version3Candidate(target)) return null;
+  if (hint.kind==='official-merge') return {scoped,target,read:undefined};
   const run=await scoped.json(target.id,`/repos/${target.name}/actions/runs/${hint.runId}/attempts/${hint.attempt}`);
-  if (!isBuildWorkflow(run?.path) || run.repository?.id!==target.id || !sha(run.head_sha) || !positive(run.workflow_id)) return false;
+  if (!isBuildWorkflow(run?.path) || run.repository?.id!==target.id || !sha(run.head_sha) || !positive(run.workflow_id)) return null;
   // Check the original native Run against the final frozen cycle. A prior relay
   // may have claimed the build before GitHub delivery was recorded.
   const product={...target,publishWorkflowId:run.workflow_id,buildWorkflow:run.path};
   const observed=releaseHint('workflow_run',{action:'completed',repository:{id:target.id,full_name:target.name,
     default_branch:target.defaultBranch,fork:false,archived:false},installation:{id:Number(installation)},workflow_run:run},installation,product);
-  return Boolean(observed && relayKey(observed)===relayKey(hint) && officialCycle(await boundBuildCycle(scoped,run),run.id));
+  if (!observed || relayKey(observed)!==relayKey(hint)) return null;
+  const read=await boundBuildCycle(scoped,run);
+  return officialCycle(read.cycle,run.id)?{scoped,target,read}:null;
 }
 
 type RelayProduct=ProductTarget & {publishWorkflowId?:number;channelWorkflowId?:number;buildWorkflow?:string};
@@ -343,7 +353,7 @@ export class ReleaseRelay {
             installation:{id:Number(this.env.INSTALLATION_ID)},workflow_run:run},this.env.INSTALLATION_ID,product);
           ensure(run.repository?.id===target.id && sha(run.head_sha) && repeated && relayKey(repeated)===key,'RELEASE_PRODUCT_RUN');
           if(run.path!==channelPath){
-            officialRelease=officialCycle(await boundBuildCycle(scoped,run),run.id);
+            officialRelease=officialCycle((await boundBuildCycle(scoped,run)).cycle,run.id);
             if(!officialRelease){await stopIneligible();return;}
           }
         }
@@ -369,14 +379,25 @@ export class ReleaseRelay {
             Date.parse(first.created_at)>=prior.reserved-60000 && Date.parse(first.created_at)<=prior.reserved+300000,'PUBLICATION_FIRST_ATTEMPT');
           if(prior.hint.kind==='publication'){await save({stage:'received',reason:'PUBLICATION_CONSUMED'});return;}
           ensure(prior.hint.repositoryId===r.hint.productRepositoryId,'PUBLICATION_PRODUCT_BINDING');
-          if(!await officialPublication(g,prior,this.env.INSTALLATION_ID)){await stopIneligible();return;}
+          const publication=await officialPublication(g,prior,this.env.INSTALLATION_ID);
+          if(!publication){await stopIneligible();return;}
           const artifact=await g.artifact(CENTRAL.id,run.id,'release-cycle-'+parentKey+'-'+run.run_attempt,'result.json');
           const v=artifact.value;
           ensure(v?.schemaVersion===1 && v.requestKey===parentKey && v.producer?.repositoryId===CENTRAL.id &&
             v.producer.runId===run.id && v.producer.attempt===run.run_attempt && v.producer.controllerSha===run.head_sha &&
             v.event?.repositoryId===prior.hint.repositoryId && v.event.kind===prior.hint.kind && relayKey(v.event)===parentKey &&
             typeof v.publishInvoked==='boolean','PUBLICATION_ARTIFACT');
-          if(officialDraftReady(v,prior.hint)){await save({stage:'received',reason:'DRAFT_READY'});return;}
+          if(v.status==='DRAFT_READY'){
+            ensure(prior.hint.kind==='official-merge'||prior.hint.kind==='run','PUBLICATION_DRAFT_RECEIPT');
+            const {scoped,target}=publication;
+            const read=prior.hint.kind==='official-merge'
+              ? await readCycle(scoped,'pr-'+prior.hint.prNumber+'-'+prior.hint.sourceSha) : publication.read;
+            ensure(read,'PUBLICATION_DRAFT_RECEIPT');
+            const {cycle,commit}=read;
+            const archived=await readOfficialDraftReceipt(scoped,cycle.id,commit);
+            officialDraftReady(v,prior.hint,target,cycle,archived);
+            await save({stage:'received',reason:'DRAFT_READY'});return;
+          }
           if(!v.publishInvoked){await save({stage:'received',reason:'NO_PUBLICATION'});return;}
         }
         const policy=await promotedController(g,this.env.RELEASE_RELAY_DEPLOYMENT_SHA??this.env.BOUNDED_DEPLOYMENT_SHA,this.env);

@@ -3,7 +3,7 @@ import { GitHub, Manifest } from 'release-please';
 import { PullRequestBody } from 'release-please/build/src/util/pull-request-body.js';
 import { PullRequestTitle } from 'release-please/build/src/util/pull-request-title.js';
 import { parse as parseVersion } from 'semver';
-import { assertDeliveryPath, assertVersionAcquisitionLinks, EvidenceReadError, generateOfficialCandidateNotes,
+import { assertDeliveryPath, assertVersionAcquisitionLinks, EvidenceReadError, generateOfficialCandidateNotes, officialCandidateDiff, splitContentText,
   parseDeliveryConfig, renderConditionalNotes, selectReleaseContributors } from '../packages/runner/dist/index.js';
 
 export const officialPending = 'autorelease: pending';
@@ -263,11 +263,11 @@ async function rangeCommits(get, sourceSha, priorSha) {
   const comparison = 'compare/' + priorSha + '...' + sourceSha;
   const result = [];
   let total;
-  for (let page = 1; page <= 100; page++) {
+  for (let page = 1; total === undefined || result.length < total; page++) {
     const value = await get(comparison + '?per_page=100&page=' + page);
     requireCandidate(value.base_commit?.sha === priorSha && value.merge_base_commit?.sha === priorSha
       && ['ahead', 'identical'].includes(value.status) && Number.isSafeInteger(value.total_commits)
-      && Array.isArray(value.commits), 'RANGE');
+      && value.total_commits >= 0 && Array.isArray(value.commits) && value.commits.length <= 100, 'RANGE');
     total ??= value.total_commits;
     requireCandidate(value.total_commits === total, 'RANGE');
     result.push(...value.commits);
@@ -297,21 +297,17 @@ async function optionalEvidence(read) {
   }
 }
 
-const filterPatch = file => ({
-  path: file.filename, previousPath: file.previous_filename ?? null, status: file.status,
-  patch: typeof file.patch === 'string' ? file.patch : null,
-});
-
-export async function officialCandidateEvidence({ product, sourceSha, baseline, candidate, get }) {
+export async function officialCandidateEvidence({ product, sourceSha, baseline, candidate, get, getPages, directory }) {
   const configuration = await readOfficialConfig(get, sourceSha);
   const { unit: release, tag } = officialUnit(configuration, candidate.head, candidate.base, candidate.version);
   const path = release.path;
   const repository = 'https://github.com/' + product.name;
-  const [commits, delivery, tree, previous] = await Promise.all([
+  const [commits, delivery, tree, previous, diffs] = await Promise.all([
     rangeCommits(get, sourceSha, baseline.sha),
     readOfficialDelivery(get, sourceSha),
     get('git/trees/' + sourceSha + '?recursive=1'),
     baseline.tag ? optionalEvidence(() => get('releases/tags/' + encodeURIComponent(baseline.tag))) : null,
+    directory().then(workspace => officialCandidateDiff(workspace, sourceSha, baseline.sha)),
   ]);
   const { units, buildWorkflow } = parseDeliveryConfig(delivery, configuration);
   const unit = units.find(unit => unit.path === path);
@@ -324,44 +320,45 @@ export async function officialCandidateEvidence({ product, sourceSha, baseline, 
     path === buildWorkflow || /^(?:scripts|tools)\/(?:.*\/)?(?:Publish|Select)-ReleaseAssets\.[A-Za-z0-9]+$/i.test(path));
   const paths = [...new Set([...docPaths, ...deliveryPaths, unit.notesPath])].filter(path => files.some(file => file.path === path));
   const associated = new Map();
-  const diffs = [];
   for (const commit of commits) {
-    const refs = await pages(get, 'commits/' + commit.sha + '/pulls');
+    const refs = await getPages('commits/' + commit.sha + '/pulls');
     for (const pull of refs) {
       if (positive(pull.number) && pull.merged_at && pull.base?.repo?.id === product.id && pull.base.ref === candidate.base) {
-        associated.set(pull.number, pull);
+        if (!associated.has(pull.number)) associated.set(pull.number, { pull, commits: [] });
+        associated.get(pull.number).commits.push(commit.sha);
       }
     }
-    if (!refs.some(pull => associated.has(pull.number))) {
-      const changed = await pages(get, 'commits/' + commit.sha, 'files');
-      diffs.push({ kind: 'commit-diff', details: { sha: commit.sha, files: changed.map(filterPatch) } });
-    }
   }
-  const pulls = [];
-  for (const [number, pull] of associated) {
-    const changes = await pages(get, 'pulls/' + number + '/files');
-    pulls.push({ kind: 'merged-pull-request', details: {
-      number, url: pull.html_url, title: pull.title, body: pull.body, files: changes.map(filterPatch),
-    } });
-  }
+  const pulls = [...associated].map(([number, { pull, commits }]) => ({
+    kind: 'merged-pull-request', details: { number, url: pull.html_url, title: pull.title, body: pull.body, commits },
+  }));
   const actors = commits.map(commit => commit.author ? { id: commit.author.id, login: commit.author.login,
     type: commit.author.type, profileUrl: commit.author.html_url, avatarUrl: commit.author.avatar_url } : null);
   const { contributors } = selectReleaseContributors(actors, [], 'github-authors');
   const sourceLink = baseline.sha ? { label: '查看本版变更', url: repository + '/compare/' + baseline.sha + '...' + sourceSha }
     : { label: '查看本版源码', url: repository + '/tree/' + sourceSha };
-  const docs = await Promise.all(paths.map(async path => ({
-    kind: deliveryPaths.includes(path) ? 'product-delivery-source' : 'product-documentation',
-    details: { path, text: (await readSourceFile(get, path, sourceSha)).toString('utf8') },
-  })));
+  const docs = await Promise.all(paths.map(async path => {
+    const bytes = await readSourceFile(get, path, sourceSha);
+    let text;
+    try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
+    catch { throw Error('CONTENT_SOURCE_ENCODING'); }
+    const kind = deliveryPaths.includes(path) ? 'product-delivery-source' : 'product-documentation';
+    return splitContentText(text).map(chunk => ({ kind, details: { path, ...chunk } }));
+  }));
   return {
     tag, sourceLink, contributors, unit: { id: unit.id, path, version: candidate.version, tag },
     evidence: [
       { kind: 'official-candidate', details: {
         sourceSha, baseline, body: candidate.body, version: candidate.version, title: candidate.title,
-        files: candidate.files.map(file => ({ path: file.path, digest: bodyDigest(file.content) })),
         commits: commits.map(commit => ({ sha: commit.sha, message: commit.commit?.message })),
       } },
-      ...pulls, ...diffs, ...docs,
+      ...candidate.files.flatMap(file => {
+        const digest = bodyDigest(file.content);
+        return splitContentText(file.content).map(chunk => ({
+          kind: 'official-candidate-file', details: { path: file.path, digest, ...chunk },
+        }));
+      }),
+      ...pulls, ...diffs, ...docs.flat(),
       ...(previous ? [{ kind: 'previous-release', details: { tag: previous.tag_name, draft: previous.draft, body: previous.body } }] : []),
       { kind: 'delivery', details: { expectedReleasePage: repository + '/releases/tag/' + tag, declaration: delivery } },
     ],
