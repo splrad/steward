@@ -138,6 +138,25 @@ test('Internal labels filter every writing source and preserve mixed PRs and dir
   labels.set(side, []);
   labels.set(merge, [pull(43, ['Internal'], 'internal merge')]);
   assert.deepEqual((await collect(merge)).evidence.map(item => item.kind), ['maintenance-only']);
+
+  git('switch', '-qc', 'conflict-side');
+  const hiddenParent = await commit('feature.txt', 'hidden-parent-line\n', 'maintenance side');
+  labels.set(hiddenParent, [pull(44, ['Internal'], 'maintenance side')]);
+  git('switch', '-q', baseBranch);
+  const publicParent = await commit('feature.txt', 'main-visible-line\n', 'visible change');
+  labels.set(publicParent, []);
+  assert.throws(() => git('merge', '--no-ff', '-m', 'merge conflict-side', 'conflict-side'));
+  await writeFile(join(directory, 'feature.txt'), 'new-resolution-line\n');
+  git('add', 'feature.txt');
+  git('commit', '-qm', 'resolve integration');
+  const resolved = git('rev-parse', 'HEAD');
+  commits.push({sha:resolved,parents:[{sha:publicParent},{sha:hiddenParent}],commit:{message:'resolve integration'}});
+  labels.set(resolved, [pull(45, [], 'visible integration')]);
+  const conflict = await collect(resolved);
+  const resolution = conflict.evidence.filter(item => item.details.sourceSha === resolved).map(item => item.details.text).join('');
+  assert.match(resolution, /new-resolution-line/);
+  assert.doesNotMatch(resolution, /main-visible-line/);
+  assert.doesNotMatch(JSON.stringify(conflict.evidence), /hidden-parent-line/);
 });
 
 test('a native manual correction wins even when it lands inside the App label request', async () => {

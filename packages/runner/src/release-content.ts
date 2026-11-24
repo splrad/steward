@@ -27,6 +27,28 @@ export type ContentCache = Record<string, ContentCacheEntry>;
 export function contentWireInput(payload: ContentPayload) { return JSON.stringify({ prompt: payload.conditional ? CONDITIONAL_CONTENT_PROMPT : CONTENT_PROMPT,
   outputSchema: contentOutputSchema(payload.conditional), constraints: 'Return only the schema object, without Markdown fences or extra keys. Omit optional paragraphs without product facts. For a relevant claim with uncertain verification, set qualification to UNVERIFIED and describe only the specific consequence for the reader; TEST_CONFIRMED is unavailable unless tested source IDs are explicitly supplied.', ...payload }); }
 
+// Combined diffs include lines removed from each parent, including Internal
+// material. A '+' in every parent column identifies text introduced by the resolution.
+function mergeResolutionLines(diff: string) {
+  const additions: string[] = [];
+  let path = '', prefix = '', emittedPath = false;
+  for (const line of diff.split('\n')) {
+    const file = /^diff --(?:cc|combined) (.+)$/.exec(line);
+    if (file) {
+      path = file[1]!;
+      prefix = '';
+      emittedPath = false;
+      continue;
+    }
+    const hunk = /^(@{3,}) -/.exec(line);
+    if (hunk) { prefix = '+'.repeat(hunk[1]!.length - 1); continue; }
+    if (!path || !prefix || !line.startsWith(prefix)) continue;
+    if (!emittedPath) { additions.push(path); emittedPath = true; }
+    additions.push('+' + line.slice(prefix.length));
+  }
+  return additions.join('\n');
+}
+
 /** Use the already fetched product history so GitHub's comparison and PR file limits cannot omit changes. */
 export async function officialCandidateDiff(directory: string, sourceSha: string, baselineSha: string | null,
   selected?: { exclude: string[]; mixedMerge: boolean }) {
@@ -54,7 +76,9 @@ export async function officialCandidateDiff(directory: string, sourceSha: string
     try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Buffer.concat(parts)); }
     catch { throw Error('CONTENT_SOURCE_ENCODING'); }
     // Git can append the preceding unchanged line to a hunk header even with --unified=0.
-    if (selected) text = text.replace(/^(@{2,} [0-9,+ -]+ @{2,}) [^\n]*/gm, '$1');
+    if (selected?.mixedMerge) text = mergeResolutionLines(text);
+    else if (selected) text = text.replace(/^(@{2,} [0-9,+ -]+ @{2,}) [^\n]*/gm, '$1');
+    if (selected && !text) return [];
     const details = { sourceSha, baselineSha };
     return splitContentText(text).map(chunk => ({ kind: 'source-range-diff', details: { ...details, ...chunk } }));
   } finally { await rm(home, { recursive: true, force: true }); }
