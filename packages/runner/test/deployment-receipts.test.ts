@@ -26,6 +26,8 @@ it('uses explicit source metadata or corroborated legacy tags', async () => {
   expect(source('', 'revert ' + sha)).toBeNull();
   expect(source('rel-aaaaaaaaaa-cfg1', 'Steward production release ' + sha)).toBe(sha);
   expect(source('rel-bbbbbbbbbb-cfg1', 'Steward production release ' + sha)).toBeNull();
+  expect(source('rel-bbbbbbbbbbbb-cfg1', 'source-sha=' + sha)).toBeNull();
+  expect(source('rel-aaaaaaaaaaaa-cfg1', 'source-sha=' + sha)).toBe(sha);
   expect(source('git-' + sha, 'source-sha=' + 'b'.repeat(40))).toBeNull();
   expect(source('', 'source-sha=' + sha)).toBe(sha);
   expect(source('steward-aaaaaaaaaaaa', 'Steward #506 ' + sha)).toBe(sha);
@@ -104,24 +106,26 @@ it('reuses only immutable version evidence written by the Actions bot, including
     {...record, payload: {...record.payload, version: second}}, {...record, payload: {version: first}}]) {
     expect((await discover([other])).sha).toBeNull();
   }
+  const publish = (await production(main, cf, health, [record])).rows[0];
+  expect(publish).toMatchObject({sha, facts: {verification: 'verified'}});
   expect(cf.mock.calls.some(([path]) => path.includes('modules'))).toBe(false);
 });
 
 it('migrates a legacy success, keeps pending source separate from traffic, and deduplicates retries', async () => {
   const {reconcile, production} = await observer();
   const {servingDigest} = await loadProof();
-  const nodes = [{databaseId: 1, task: 'record_steward_status', commitOid: sha,
-    payload: JSON.stringify(JSON.stringify({key: deployment + '/' + first})), latestStatus: {state: 'SUCCESS'}}];
+  const nodes = [{databaseId: 1, creator: {id: 'backfill'}, task: 'record_steward_status', commitOid: sha,
+    payload: JSON.stringify(JSON.stringify({key: deployment + '/' + first})), latestStatus: {state: 'SUCCESS', creator: {id: 'backfill'}, description: ''}}];
   const writes: string[] = [];
   const gh = async (path: string, body: any) => {
     if (path === 'graphql') return {data: {repository: {deployments: {nodes, pageInfo: {hasNextPage: false}}}}};
     if (path === 'deployments') {
-      nodes.push({databaseId: nodes.length + 1, task: body.task, commitOid: body.ref,
-        payload: JSON.stringify(body.payload), latestStatus: {state: ''}});
+      nodes.push({databaseId: nodes.length + 1, creator: {id: 'MDM6Qm90NDE4OTgyODI='}, task: body.task, commitOid: body.ref,
+        payload: JSON.stringify(body.payload), latestStatus: {state: '', creator: {id: ''}, description: ''}});
       return {id: nodes.length, sha: body.ref, environment: body.environment};
     }
     const item = nodes.find(r => path === 'deployments/' + r.databaseId + '/statuses')!;
-    item.latestStatus.state = body.state.toUpperCase();
+    item.latestStatus = {state: body.state.toUpperCase(), creator: {id: 'MDM6Qm90NDE4OTgyODI='}, description: body.description};
     writes.push(item.databaseId + ' ' + body.state);
     return {state: body.state};
   };
@@ -136,5 +140,17 @@ it('migrates a legacy success, keeps pending source separate from traffic, and d
     await run({[sha]: servingDigest(artifact)});
     await run({[sha]: servingDigest(artifact)});
     expect(writes.slice(3)).toEqual(['4 success', '2 inactive']);
+    // A matching key/ref and state alone cannot supply a trusted receipt.
+    nodes[3]!.creator.id = 'other';
+    await run({[sha]: servingDigest(artifact)});
+    expect(writes.slice(-2)).toEqual(['5 success', '4 inactive']);
+    const changed = JSON.parse(nodes[4]!.payload);
+    nodes[4]!.payload = JSON.stringify({...changed, percentage: 99});
+    await run({[sha]: servingDigest(artifact)});
+    expect(writes.slice(-2)).toEqual(['6 success', '5 inactive']);
+    nodes[5]!.latestStatus.creator.id = 'other';
+    await run({[sha]: servingDigest(artifact)});
+    expect(writes.at(-1)).toEqual('6 success');
+    expect(nodes).toHaveLength(6);
   } finally {vi.unstubAllEnvs();}
 });

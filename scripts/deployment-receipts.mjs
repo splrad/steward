@@ -67,8 +67,8 @@ export function versionSource(version) {
   const legacy = /^rel-([0-9a-f]{7,40})(?:-cfg\d+)?$/.exec(tag);
   if (legacy) {
     const suffix = /\s([0-9a-f]{40})$/.exec(message);
-    if (suffix && !suffix[1].startsWith(legacy[1])) return null;
     if (suffix) sources.add(suffix[1]);
+    if ([...sources].some(sha => !sha.startsWith(legacy[1]))) return null;
   }
   // Console uploads for a reviewed Steward PR use a short tag and a full SHA in the message.
   const steward = /^steward-([0-9a-f]{7,40})$/.exec(tag);
@@ -136,7 +136,7 @@ export async function production(gh, cf, health = () => json(healthURL), records
     }
     const verified = verification === 'verified';
     const label = 'Worker ' + id + ' · ' + percentage + '% · ' + verificationLabels[verification];
-    rows.push({key: [proofSchema, deployment.id, id, verification].join('/'), sha: verified ? declared : null,
+    rows.push({key: [proofSchema, deployment.id, id].join('/'), sha: verified ? declared : null,
       label, url: healthURL, facts: {deployment: deployment.id, deployed_at: deployment.created_on, version: id, percentage,
         declared_sha: declared, on_main: onMain, verification, proof_schema: proofSchema, module_digest: digest,
         build_digest: known?.build_digest ?? builds[declared] ?? null}});
@@ -152,7 +152,7 @@ export async function production(gh, cf, health = () => json(healthURL), records
 const historyQuery = `query($environment: String!, $after: String) {
   repository(owner: "splrad", name: "steward") {
     deployments(environments: [$environment], first: 100, after: $after, orderBy: {field: CREATED_AT, direction: DESC}) {
-      nodes { databaseId creator { ... on Bot { id } } task commitOid payload latestStatus { state } }
+      nodes { databaseId creator { ... on Bot { id } } task commitOid payload latestStatus { state description creator { ... on Bot { id } } } }
       pageInfo { hasNextPage endCursor }
     }
   }
@@ -170,7 +170,8 @@ async function history(gh, environment) {
       let payload = row.payload;
       for (let layer = 0; layer < 2 && typeof payload === 'string'; layer++) payload = JSON.parse(payload);
       requireFact(typeof payload?.key === 'string' && Number.isSafeInteger(row.databaseId), 'Malformed Steward receipt');
-      records.push({id: row.databaseId, sha: row.commitOid, key: payload.key, payload, creator: row.creator?.id, state: row.latestStatus?.state});
+      records.push({id: row.databaseId, sha: row.commitOid, key: payload.key, payload, creator: row.creator?.id,
+        state: row.latestStatus?.state, statusCreator: row.latestStatus?.creator?.id, description: row.latestStatus?.description});
     }
     after = pageInfo.hasNextPage ? pageInfo.endCursor : null;
   } while (after);
@@ -199,7 +200,8 @@ export async function reconcile(gh, environment, observe, writeSummary = console
     const pending = !row.sha && environment === 'production';
     // GitHub requires a ref even for a pending observation. Use the observer commit if no main claim exists.
     // The label and run summary distinguish this anchor from a verified deployed commit.
-    const prior = previous.find(item => item.key === row.key);
+    const prior = previous.find(item => item.creator === actionsBot && item.key === row.key &&
+      Object.entries(row.facts).every(([field, value]) => item.payload[field] === value));
     const ref = row.sha ?? (row.facts.on_main ? row.facts.declared_sha : prior?.sha ?? process.env.GITHUB_SHA);
     requireFact(shaPattern.test(ref), 'Invalid receipt commit');
     const label = pending && !row.facts.on_main ? row.label + ' · 提交仅标识观察点' : row.label;
@@ -213,7 +215,7 @@ export async function reconcile(gh, environment, observe, writeSummary = console
     }
     keep.add(record.id);
     const state = pending ? 'pending' : 'success';
-    if (record.state !== state.toUpperCase()) {
+    if (record.state !== state.toUpperCase() || record.statusCreator !== actionsBot || record.description !== label) {
       const runId = process.env.GITHUB_RUN_ID;
       const evidence = /^\d+$/.test(runId ?? '') ? web + '/actions/runs/' + runId : api + '/deployments/' + record.id;
       const status = await gh('deployments/' + record.id + '/statuses', {state, auto_inactive: false,
