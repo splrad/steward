@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseFragment } from 'parse5';
 import YAML from 'yaml';
-import { EvidenceReadError, isolatedBuildEnvironment, officialCandidateDiff } from '../../packages/runner/dist/index.js';
+import { candidateBaseUnchanged, EvidenceReadError, isolatedBuildEnvironment, officialCandidateDiff } from '../../packages/runner/dist/index.js';
 import { Manifest } from 'release-please';
 import { PullRequestBody } from 'release-please/build/src/util/pull-request-body.js';
 import { bodyDigest, computeOfficialCandidate, draftOfficialCandidate, officialCandidateRoundId, officialMergeKey,
@@ -63,6 +63,36 @@ test('candidate diff reads the complete immutable range beyond GitHub file pagin
   assert.equal(text, git(['diff', '--no-ext-diff', '--no-textconv', '--no-color', '--no-renames', '--unified=2', baselineSha, sourceSha, '--']));
   assert.equal((text.match(/^\+真实变更$/gm) ?? []).length, records.length);
   assert.deepEqual((await officialCandidateDiff(directory, sourceSha, null)).map(chunk => chunk.details.text).join(''), text);
+});
+
+test('C2 compares the Git objects and modes for every candidate path across an ancestor range', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'steward-candidate-basis-test-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const git = (args, input) => execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com', ...args],
+    { cwd: directory, env: isolatedBuildEnvironment(process.env, directory), encoding: 'utf8', input }).trim();
+  git(['init', '--quiet']);
+  const baseOid = git(['hash-object', '-w', '--stdin'], '旧内容\n');
+  const changedOid = git(['hash-object', '-w', '--stdin'], '新内容\n');
+  const entry = (mode, oid, path) => mode + ' ' + oid + '\t' + path + '\n';
+  const commit = (rows, parent) => {
+    git(['read-tree', '--empty']);
+    git(['update-index', '--index-info'], rows.join(''));
+    return git(['commit-tree', git(['write-tree']), ...(parent ? ['-p', parent] : [])], 'fixture\n');
+  };
+  const paths = ['VERSION', 'nested/CHANGELOG.md'];
+  const stable = entry('100644', baseOid, paths[0]);
+  const before = commit([stable]);
+  const unrelated = entry('100644', changedOid, 'README.md');
+  const equivalent = commit([stable, unrelated], before);
+  assert.equal(candidateBaseUnchanged(directory, before, equivalent, paths), true);
+  for (const drift of [
+    commit([entry('100755', baseOid, paths[0])], before),
+    commit([entry('100644', changedOid, paths[0])], before),
+    commit([stable, entry('100644', baseOid, paths[1])], before),
+    commit([stable, entry('100644', baseOid, 'nested')], before),
+    commit([unrelated], before),
+    commit([stable, unrelated]),
+  ]) assert.equal(candidateBaseUnchanged(directory, before, drift, paths), false);
 });
 
 test('requires the official switch and the native product declaration to select a candidate writer', async () => {
@@ -449,6 +479,40 @@ test('C1 permits the versioned Release page and stops unverified asset links any
   await assert.rejects(draft('delivery', 'https://github.com/splrad/fixture/releases/latest/download/Unverified.exe'), /C1_ACQUISITION_LINKS/);
 });
 
+test('refresh replaces the older draft and preserves edits made after the current round was delivered', async () => {
+  const previousPull = { ...pr, body: '旧轮有人工修改。' };
+  const revisedBody = expectedBody.replace('支持范围', '本轮人工修订');
+  for (const scenario of ['older-round', 'current-round', 'closed']) {
+    const writes = [];
+    const round = { source: { ...source, prior: { number: pr.number, head: previousSha } },
+      draft: { body: expectedBody, templateDigest: bodyDigest(template) }, branch: { head, sourceSha }, pull: null };
+    let detailReads = 0;
+    let current = scenario === 'current-round' ? { ...previousPull, body: revisedBody }
+      : scenario === 'closed' ? { ...previousPull, state: 'closed' } : previousPull;
+    const get = async path => {
+      if (path === 'git/ref/heads/main') return { ref: 'refs/heads/main', object: { type: 'commit', sha: sourceSha } };
+      if (path === 'git/ref/heads/' + computed.head)
+        return { ref: 'refs/heads/' + computed.head, object: { type: 'commit', sha: head } };
+      if (path.startsWith('pulls?')) return [writes.length ? current : previousPull];
+      if (path === 'pulls/29') return scenario === 'current-round' && ++detailReads === 1 ? previousPull : current;
+      if (path === 'contents/.release-please-manifest.json?ref=' + head)
+        return blob('.release-please-manifest.json', { '.': computed.version });
+      assert.fail(path);
+    };
+    const write = () => writeOfficialCandidate({ roundId, round, product, botId: authorId, sourceSha, configuration: settings,
+      get, admit: async () => {}, save: async () => {}, request: async (method, path, fields) => {
+        writes.push([method, path]);
+        current = { ...current, ...fields };
+      },
+    });
+    if (scenario === 'closed') await assert.rejects(write, /PRIOR_PULL_DRIFT/);
+    else await write();
+    assert.deepEqual(writes, scenario === 'older-round' ? [['PATCH', 'pulls/29']] : []);
+    assert.equal(current.body, scenario === 'older-round' ? expectedBody
+      : scenario === 'current-round' ? revisedBody : previousPull.body);
+  }
+});
+
 test('reads back unknown candidate writes across Runs and preserves manual edits after the first PR write', async () => {
   const phases = [];
   const round = { source, draft: { body: expectedBody, templateDigest: bodyDigest(template) }, branch: null, pull: null };
@@ -491,18 +555,31 @@ test('reads back unknown candidate writes across Runs and preserves manual edits
     if (failCheckpoint) throw Error('checkpoint unavailable');
     round[phase] = data;
   };
-  const write = () => writeOfficialCandidate({ roundId, round, product, botId: authorId, sourceSha, configuration: settings,
-    get, request, save, admit: async () => {} });
+  const write = (source = sourceSha, sameCandidateBase = () => assert.fail('did not recover the already written PR')) =>
+    writeOfficialCandidate({ roundId, round, product, botId: authorId, sourceSha: source, configuration: settings,
+      get, request, save, sameCandidateBase, admit: async () => {} });
   defaultSource = controllerSha;
   await assert.rejects(write, /C2_SOURCE_CHANGED/);
   assert.deepEqual(phases, []);
   defaultSource = sourceSha;
   await assert.rejects(write, /checkpoint unavailable/);
   failCheckpoint = false;
-  const recorded = await write();
+  defaultSource = controllerSha;
+  await assert.rejects(() => write(controllerSha, (old, current, paths) => {
+    assert.deepEqual([old, current, paths], [sourceSha, controllerSha, computed.files.map(file => file.path)]);
+    return false;
+  }), /C2_STALE_BRANCH_BASE/);
+  assert.deepEqual(phases, ['git/refs']);
+  assert.deepEqual(round.branch, { head, sourceSha });
+  await assert.rejects(() => write(controllerSha, () => { defaultSource = previousSha; return true; }), /C2_SOURCE_CHANGED/);
+  assert.deepEqual(phases, ['git/refs']);
+  defaultSource = controllerSha;
+  const recorded = await write(controllerSha, () => true);
   assert.deepEqual(phases, ['git/refs', 'pulls', 'issues/29/labels']);
   actualPull.body = actualPull.body.replace('支持范围', '人工修订');
-  assert.deepEqual(await write(), recorded);
+  assert.deepEqual(await write(controllerSha), recorded);
+  round.pull = null;
+  assert.equal((await write(controllerSha)).head, recorded.head);
   assert.match(actualPull.body, /人工修订/);
   assert.deepEqual(phases, ['git/refs', 'pulls', 'issues/29/labels']);
 });

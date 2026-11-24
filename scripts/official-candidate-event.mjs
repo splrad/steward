@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import apiVersion from '../config/github-api.json' with { type: 'json' };
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { copilotReleaseClient, NativeEvidenceReader, nativeEvidenceTransport, nativeReleaseApp } from '../packages/runner/dist/index.js';
+import { candidateBaseUnchanged, copilotReleaseClient, NativeEvidenceReader, nativeEvidenceTransport, nativeReleaseApp } from '../packages/runner/dist/index.js';
 import { entryGuard } from './bounded-release-entry.mjs';
 import { fetchState, releaseParticipation } from './release-coordinator.mjs';
 import { assertReleaseUnpaused, releaseIsPaused } from './release-pause-policy.mjs';
@@ -289,13 +289,14 @@ export async function main(stage, env = process.env) {
   requireCandidate(scope.total_count === 1 && scope.repositories?.length === 1, 'TOKEN_SCOPE');
   const actual = target(scope.repositories[0], product.id);
   requireCandidate(actual.name === product.name && actual.defaultBranch === product.defaultBranch, 'TOKEN_SCOPE');
-  return withCandidateState(env, identity, async ({ get, store, admit }) => {
+  return withCandidateState(env, identity, async ({ get, directory, store, admit }) => {
     const round = await store.read(roundId);
     requireCandidate(round.source && officialCandidateRoundId(product, round.source) === roundId, 'ROUND_IDENTITY');
     if (round.pull) return finish(identity, await completedCandidate(get, product, roundId, round.pull));
     const configuration = await readOfficialConfig(get, sourceSha);
     const pull = await writeOfficialCandidate({ get, product, botId, round, roundId, sourceSha, configuration, admit,
       request: (method, path, data) => fetchJson(productToken, '/repos/' + product.name + '/' + path, method, data),
+      sameCandidateBase: async (parent, source, paths) => candidateBaseUnchanged(await directory(), parent, source, paths),
       save: (phase, data) => store.save(roundId, phase, data),
     });
     return finish(identity, { result: 'candidate_observed', roundId, pulls: [pull] });

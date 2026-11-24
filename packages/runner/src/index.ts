@@ -21,6 +21,7 @@ export { collectQualitySources, qualityPages, translateQualitySources, publishQu
 export { decodeQualityCache, reconcileQualitySources, renderQualitySummary } from '../../core/src/quality-language-summary.js';
 export { decodeCandidateArchive, decodeCandidateDocument } from '../../core/src/release-candidate-record.js';
 export { splitContentText, releaseAffectedUnitIds } from '../../core/src/release-content.js';
+export { candidateBaseUnchanged } from './release-git-input.js';
 export { inspectCycleHistory, verifyFrozenReceipts, completionFile } from './release-history.js';
 export { inspectPublications, invokePublication } from './release-publication.js';
 export { decodeReleaseRecord, decodeStateFile, stateRecordOwner, assertRepositoryWrite } from '../../core/src/release-observation.js';
