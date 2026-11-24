@@ -152,6 +152,7 @@ test('Internal labels filter every writing source and preserve mixed PRs and dir
   assert.throws(() => git('merge', '--no-ff', '-m', 'merge conflict-side', 'conflict-side'));
   await writeFile(join(directory, 'feature.txt'), 'new-resolution-line\n');
   git('add', 'feature.txt');
+  git('update-index', '--chmod=+x', 'feature.txt');
   git('commit', '-qm', 'resolve integration');
   const resolved = git('rev-parse', 'HEAD');
   commits.push({sha:resolved,parents:[{sha:publicParent},{sha:hiddenParent}],commit:{message:'resolve integration'}});
@@ -159,7 +160,8 @@ test('Internal labels filter every writing source and preserve mixed PRs and dir
   const conflict = await collect(resolved);
   const resolution = conflict.evidence.filter(item => item.details.sourceSha === resolved).map(item => item.details.text).join('');
   assert.match(resolution, /new-resolution-line/);
-  assert.doesNotMatch(resolution, /main-visible-line/);
+  assert.match(resolution, /^-main-visible-line$/m);
+  assert.match(resolution, /mode 100644,100644\.\.100755/);
   assert.doesNotMatch(JSON.stringify(conflict.evidence), /hidden-parent-line/);
 
   const secretText = 'carried-internal-sentinel\n'.repeat(5);
