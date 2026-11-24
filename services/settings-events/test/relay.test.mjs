@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {generateKeyPair, exportPKCS8, jwtVerify} from 'jose';
 import worker, {handle, eligible, dispatch, POLICY} from '../src/index.mjs';
-import {generateKeyPairSync, createPrivateKey} from 'node:crypto';
+import {createHash, generateKeyPairSync, createPrivateKey} from 'node:crypto';
 import {toPKCS8} from '../tools/key-format.mjs';
 
 const env = {ENABLED: 'true', WEBHOOK_SECRET: 'unit-test-only-not-a-production-secret', GOVERNANCE_APP_PRIVATE_KEY: 'test-placeholder'};
@@ -82,8 +82,12 @@ test('signed repository and installation events send only source event metadata'
       return {accepted:true,code:'dispatch_accepted'};
     });
     assert.equal(response.status,202);
-    assert.deepEqual(Object.keys(metadata).sort(), ['action', 'body_sha256', 'delivery', 'event']);
-    assert.ok(!JSON.stringify(metadata).includes('private-source'));
+    assert.deepEqual(metadata, {
+      delivery,
+      event,
+      action: event === 'create' ? 'default_branch_created' : body.action,
+      body_sha256: createHash('sha256').update(JSON.stringify(body)).digest('hex')
+    });
   }
 });
 
