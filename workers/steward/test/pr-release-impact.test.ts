@@ -16,4 +16,8 @@ it('dispatches signed PR changes without disclosing private PR metadata and igno
     {...event,pull_request:{...pr,user:{id:301115370},head:{...pr.head,ref:'release-please--branches--main'}}}])
     await dispatchReleaseImpact(env,'pull_request',payload,guid,reader);
   expect(json).toHaveBeenCalledTimes(1);
+  for (const sender of [301115370, 29]) {
+    await dispatchReleaseImpact(env,'pull_request',{...event,action:'unlabeled',label:{name:'Internal'},sender:{id:sender}},guid,reader);
+  }
+  expect(json).toHaveBeenCalledTimes(2);
 });

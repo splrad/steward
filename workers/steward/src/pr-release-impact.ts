@@ -5,8 +5,10 @@ import { BoundedGitHub, CENTRAL, ensure, type BoundedEnv, type GitReader } from 
 // Read the source PR from the App's own delivery, including for private repositories.
 export async function dispatchReleaseImpact(env: BoundedEnv & { STEWARD_WEBHOOK_SECRET?: string }, event: string, payload: any, delivery: string,
   reader: () => GitReader = () => new BoundedGitHub(env)) {
-  if (event !== 'pull_request' || env.BOUNDED_RECHECK_ENABLED !== 'true' ||
-      !['opened', 'reopened', 'synchronize', 'edited', 'ready_for_review'].includes(payload.action)) return;
+  if (event !== 'pull_request' || env.BOUNDED_RECHECK_ENABLED !== 'true') return;
+  const correction = ['labeled', 'unlabeled'].includes(payload.action) &&
+    payload.label?.name?.toLowerCase() === 'internal' && payload.sender?.id && payload.sender.id !== 301115370;
+  if (!correction && !['opened', 'reopened', 'synchronize', 'edited', 'ready_for_review'].includes(payload.action)) return;
   const repo = payload.repository, pull = payload.pull_request;
   if (repo?.owner?.id !== 302208797 || repo.archived || repo.disabled || repo.fork ||
       payload.installation?.id !== Number(env.INSTALLATION_ID) || !Number.isSafeInteger(repo.id) ||

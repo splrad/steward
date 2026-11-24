@@ -137,6 +137,35 @@ test('Internal labels filter every writing source and preserve mixed PRs and dir
   assert.deepEqual((await collect(merge)).evidence.map(item => item.kind), ['maintenance-only']);
 });
 
+test('a native manual correction wins even when it lands inside the App label request', async () => {
+  for (const desired of [true, false]) {
+    const repo = {id:pr.base.repo.id,full_name:product.name,owner:{id:302208797},default_branch:'main'};
+    const current = {...pr, head:{...pr.head,ref:'change'},base:{...pr.base,sha:sourceSha},changed_files:1,labels:[]};
+    const hook = {action:'opened',repository:repo,pull_request:current};
+    const events = [], writes = [];
+    function record(labeled, actor) {
+      events.push({id:events.length + 1,event:labeled?'labeled':'unlabeled',actor:{id:actor},label:{name:'Internal'}});
+      current.labels = labeled ? [{name:'Internal'}] : [];
+    }
+    if (desired) record(true, authorId);
+    function write(labeled) {
+      if (!writes.length) record(desired, 42);
+      writes.push(labeled);
+      record(labeled, authorId);
+    }
+    const io = {pull:async()=>structuredClone(current),events:async()=>events,readme:async()=>'Product',
+      files:async()=>[{filename:'ci',patch:'+test',additions:1,deletions:0}],
+      ensureLabel:async()=>{},add:async()=>write(true),remove:async()=>write(false)};
+    const model = async()=>({text:JSON.stringify({decision:desired?'eligible':'internal',reason:'fixture'})});
+    await classifyPull(impactTarget(hook),io,model);
+    assert.deepEqual(writes,[!desired,desired]);
+    assert.equal(current.labels.length,Number(desired));
+    const correction = impactTarget({...hook,action:desired?'labeled':'unlabeled',label:{name:'Internal'},sender:{id:42}});
+    assert.equal(await classifyPull(correction,io,()=>assert.fail('no model on label events')),'preserved');
+    assert.deepEqual(writes,[!desired,desired]);
+  }
+});
+
 test('App classifies the current PR, preserves manual changes and releases stale automatic labels on failure', async () => {
   const repo = {id:17, full_name:product.name, owner:{id:302208797}, default_branch:'main'};
   const current = {...pr, head:{...pr.head,ref:'change'}, base:{...pr.base,sha:sourceSha}, changed_files:1,labels:[]};

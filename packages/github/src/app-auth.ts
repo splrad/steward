@@ -135,9 +135,12 @@ export async function nativeReleaseApp(privateKey: string, transport: typeof fet
       const entry=page.data.find(row=>row.guid===guid && row.event==='pull_request' && row.installation_id===installation.id);
       if(!entry)continue;
       const {data}=await app.request('GET /app/hook/deliveries/{delivery_id}',{delivery_id:entry.id});
+      const payload=data.request.payload as {action?:string;repository?:{id?:number};installation?:{id?:number}}|null;
       if(data.guid!==guid||data.event!=='pull_request'||data.installation_id!==installation.id||
-        data.repository_id!==entry.repository_id||data.action!==entry.action)throw Error('PULL_DELIVERY_IDENTITY');
-      return data.request.payload;
+        data.repository_id!==entry.repository_id||data.action!==entry.action||!entry.repository_id||
+        payload?.repository?.id!==entry.repository_id||payload.installation?.id!==installation.id||
+        payload.action!==entry.action)throw Error('PULL_DELIVERY_IDENTITY');
+      return payload;
     }
     throw Error('PULL_DELIVERY_UNAVAILABLE');
   },async forRepository<T>(repositoryId:number,operation:(token:string)=>Promise<T>,purpose:'release'|'maintenance'|'maintenance-rules'|'configuration-actions'|'configuration-issues'|'registration-read'|'registration-write'|'registry-read'|'registry-projection'|'validator-revalidation'|'release-label'='release'):Promise<T>{

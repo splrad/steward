@@ -14,14 +14,16 @@ const live = (pr, target) => pr.number === target.number && pr.state === 'open' 
 
 export function impactTarget(payload) {
   const repo = payload?.repository, pr = payload?.pull_request;
-  if (!['opened', 'edited', 'synchronize', 'reopened', 'ready_for_review'].includes(payload?.action) ||
+  const correction = ['labeled', 'unlabeled'].includes(payload?.action) && internal(payload.label?.name) &&
+    Number.isSafeInteger(payload.sender?.id) && payload.sender.id !== appBot;
+  if ((!correction && !['opened', 'edited', 'synchronize', 'reopened', 'ready_for_review'].includes(payload?.action)) ||
       repo?.owner?.id !== 302208797 || !/^splrad\/[\w.-]+$/i.test(repo.full_name) ||
       !Number.isSafeInteger(repo.id) || repo.archived || repo.disabled || repo.fork ||
       !Number.isSafeInteger(pr?.number) || pr.number < 1 || pr.state !== 'open' ||
       pr.base?.repo?.id !== repo.id || pr.base.ref !== repo.default_branch || !/^[a-f0-9]{40}$/.test(pr.head?.sha ?? '') ||
       (pr.user?.id === appBot && pr.head.ref === 'release-please--branches--' + repo.default_branch)) return null;
   return { repository: repo.full_name, repositoryId: repo.id, number: pr.number, head: pr.head.sha,
-    branch: repo.default_branch, description: repo.description ?? '' };
+    branch: repo.default_branch, description: repo.description ?? '', correction };
 }
 
 // A truncated or binary patch cannot establish that the entire change is internal.
@@ -43,11 +45,27 @@ export async function classifyPull(target, io, classify) {
     const latest = events.at(-1);
     const labeled = pr.labels.some(item => internal(item.name));
     // An existing label without a matching native actor is maintained by its owner.
-    const manual = latest ? latest.actor?.id !== appBot || (latest.event === 'labeled') !== labeled : labeled;
-    return { pr, labeled, manual, eventId: latest?.id ?? null };
+    const owner = events.findLast(event => event.actor?.id !== appBot);
+    const manual = Boolean(owner) || (latest ? (latest.event === 'labeled') !== labeled : labeled);
+    return { pr, labeled, manual, owner, latest, eventId: latest?.id ?? null };
   };
+  // REST label writes have no conditional version. A later App event may have
+  // overtaken a maintainer. Restore the most recent owner's decision and never
+  // classify a label event. Manual deliveries also run in the same PR queue.
+  async function restoreOwner(snapshot) {
+    if (!snapshot?.owner?.actor?.id || snapshot.latest.actor?.id !== appBot) return;
+    const desired = snapshot.owner.event === 'labeled';
+    if (snapshot.labeled === desired) return;
+    const now = await state();
+    if (!now || now.eventId !== snapshot.eventId || now.owner?.id !== snapshot.owner.id || now.labeled === desired) return;
+    if (desired) await io.add();
+    else await io.remove();
+  }
   const before = await state();
-  if (!before || before.manual) return 'preserved';
+  if (!before || before.manual || target.correction) {
+    await restoreOwner(before);
+    return 'preserved';
+  }
   let decision = 'eligible', unavailable = false;
   try {
     const files = await io.files();
@@ -71,8 +89,10 @@ export async function classifyPull(target, io, classify) {
     await io.ensureLabel();
     if (!await writable()) return 'superseded';
     await io.add();
+    await restoreOwner(await state());
   } else if (decision === 'eligible' && before.labeled) {
     await io.remove();
+    await restoreOwner(await state());
   }
   if (unavailable) throw Error('IMPACT_CLASSIFICATION_UNAVAILABLE');
   return decision;
