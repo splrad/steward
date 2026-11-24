@@ -1,4 +1,4 @@
-import { CopilotClient } from '@github/copilot-sdk';
+import { CopilotClient } from '@microsoft/copilot-sdk';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -6,12 +6,12 @@ import { pathToFileURL } from 'node:url';
 import { isolatedCopilotClientOptions, isolatedCopilotSessionOptions } from './isolation.mjs';
 
 /** @param {'preflight'|'generate'} mode @param {string} input @param {string} token
- * @param {(options: import('@github/copilot-sdk').CopilotClientOptions) => import('@github/copilot-sdk').CopilotClient} [createClient] */
+ * @param {(options: import('@microsoft/copilot-sdk').CopilotClientOptions) => import('@microsoft/copilot-sdk').CopilotClient} [createClient] */
 export async function releaseNotes(mode, input, token, createClient = options => new CopilotClient(options)) {
   if (!['preflight', 'generate'].includes(mode)) throw new Error('CONTENT_MODE_INVALID');
   const directory = await mkdtemp(join(tmpdir(), 'steward-content-sdk-'));
   const client = createClient(isolatedCopilotClientOptions(directory, token));
-  /** @type {import('@github/copilot-sdk').CopilotSession | undefined} */ let session;
+  /** @type {import('@microsoft/copilot-sdk').CopilotSession | undefined} */ let session;
   let responseReceived = false;
   let generationObserved = false;
   try {
@@ -58,8 +58,14 @@ export async function releaseNotes(mode, input, token, createClient = options =>
     } };
   } catch (error) {
     try { await session?.abort(); } catch { /* Stop the client even when abort fails. */ }
-    const native = /** @type {{status?:number,response?:{status?:number,headers?:{get?:(key:string)=>string|null}},retryAfter?:number}} */ (error);
-    const status = native.status ?? native.response?.status;
+    const native = /** @type {{status?:number,data?:{errorType?:string,statusCode?:number},response?:{status?:number,headers?:{get?:(key:string)=>string|null}},retryAfter?:number}} */ (error);
+    if (native?.data?.errorType === 'context_limit') {
+      const status = native.data.statusCode;
+      throw Object.assign(new Error('CONTENT_CONTEXT_LIMIT'), {
+        status: typeof status === 'number' && Number.isInteger(status) && status >= 400 && status <= 599 ? status : undefined,
+      });
+    }
+    const status = native?.status ?? native?.response?.status;
     if (!responseReceived && !generationObserved && [401, 403, 429].includes(status ?? 0)) {
       const after = native.response?.headers?.get?.('retry-after');
       const retryAfterMs = after ? (/^\d+$/.test(after) ? Number(after) * 1000 : Math.max(0, Date.parse(after) - Date.now())) : 0;
@@ -81,6 +87,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     process.stdout.write(JSON.stringify(await releaseNotes(mode, input, token)) + '\n');
   } catch (error) {
     const message = error instanceof Error && /^(CONTENT_[A-Z_]+|RESPONSE_UNKNOWN)$/.test(error.message) ? error.message : 'RESPONSE_UNKNOWN';
-    process.stdout.write(JSON.stringify({ status: 'FAILED', errorCode: message }) + '\n'); process.exitCode = 1;
+    const status = /** @type {{status?:number}} */ (error)?.status;
+    process.stdout.write(JSON.stringify({ status: 'FAILED', errorCode: message,
+      ...(message === 'CONTENT_CONTEXT_LIMIT' && status !== undefined ? { httpStatus: status } : {}),
+    }) + '\n'); process.exitCode = 1;
   }
 }

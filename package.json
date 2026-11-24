@@ -46,7 +46,6 @@
     "@vercel/ncc": "0.45.0",
     "es-module-lexer": "2.3.2",
     "release-please": "17.11.2",
-    "release-please-official": "npm:release-please@17.6.0",
     "typescript": "7.0.2",
     "vitest": "5.1.0"
   }

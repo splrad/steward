@@ -6,7 +6,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
-import { CopilotClient } from '@github/copilot-sdk';
+import { CopilotClient } from '@microsoft/copilot-sdk';
 import { isolatedCopilotEnvironment, isolatedCopilotClientOptions, isolatedCopilotSessionOptions } from './isolation.mjs';
 
 test('the SDK child receives explicit isolation, no ambient credentials, and no auto-update', async t => {
@@ -61,19 +61,17 @@ test('an actual offline process sees only the permitted OS and TLS environment',
 
 test('each session disables discovery, persistence features and tools and rejects permission requests', () => {
   const options = isolatedCopilotSessionOptions(tmpdir(), 'fixture system message');
-  assert.deepEqual(options.availableTools, []);
-  assert.deepEqual(options.tools, []);
-  assert.deepEqual(options.mcpServers, {});
-  assert.deepEqual(options.customAgents, []);
-  assert.deepEqual(options.instructionDirectories, []);
+  assert.deepEqual(options.tools, { availableTools: [], definitions: [] });
+  assert.deepEqual(options.mcp, { servers: {} });
+  assert.deepEqual(options.agents, { definitions: [], includedBuiltinAgents: [] });
+  assert.deepEqual(options.instructions, { skipCustomInstructions: true, directories: [] });
   assert.equal(options.enableConfigDiscovery, false);
-  assert.deepEqual(options.memory, { enabled: false });
-  assert.deepEqual(options.infiniteSessions, { enabled: false });
-  assert.deepEqual(options.onPermissionRequest(), { kind: 'reject' });
+  assert.deepEqual(options.state, { memory: { enabled: false }, infiniteSessions: { enabled: false } });
+  assert.deepEqual(options.permissions.onRequest(), { kind: 'reject' });
   assert.deepEqual(options.systemMessage, { mode: 'append', content: 'fixture system message' });
   assert.ok(!Object.hasOwn(options, 'model'));
-  options.availableTools.push('untrusted');
-  assert.deepEqual(isolatedCopilotSessionOptions(tmpdir(), 'next').availableTools, []);
+  options.tools.availableTools.push('untrusted');
+  assert.deepEqual(isolatedCopilotSessionOptions(tmpdir(), 'next').tools.availableTools, []);
 });
 
 test('invalid directory and credentials fail before SDK startup', () => {
