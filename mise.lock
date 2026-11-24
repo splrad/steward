@@ -193,11 +193,11 @@ backend = "core:python"
 specifiers = ["latest"]
 
 [tools.python."platforms.linux-x64"]
-checksum = "sha256:18c56e105ba7713602536f49976c69d14d73cea7d32cfe2cb68eb8a79568de47"
-url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261123/cpython-3.15.2+20261123-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
+checksum = "sha256:d94bcba1ca1c63f591fa63109c3eeaacc76ee6796844ac7bdf2ae10715646f05"
+url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261124/cpython-3.15.2+20261124-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
 provenance = "github-attestations"
 
 [tools.python."platforms.windows-x64"]
-checksum = "sha256:84b3be14a44c25426e8487f4b6d25f68be8a6ff9eeae46037a7da10439c1ed08"
-url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261123/cpython-3.15.2+20261123-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
+checksum = "sha256:547cdbb844edc425b235513fdf0267f64e8e59c8f484527bb7ef92d3aad91dd9"
+url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261124/cpython-3.15.2+20261124-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
 provenance = "github-attestations"
