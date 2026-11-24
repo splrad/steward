@@ -930,6 +930,21 @@ async function verifyFormalPublication(context,io,token,unitIds) {
       await verifyOfficialPublicationProof(context,unit.id,args=>nativeGhCommand(args,token),nativeReleaseDownload(token));
   }
 }
+export async function verifyDraftAssetReceipts(reader,releaseId,receipts,expected) {
+  const assets=await reader.pages('releases/'+releaseId+'/assets','');
+  if(assets.length!==receipts.length)fail('official draft receipt assets changed');
+  for(const {assetId,name} of receipts) {
+    const asset=assets.find(item=>item.id===assetId),file=expected.find(item=>item.path===name);
+    if(!file||asset?.name!==name||asset.state!=='uploaded'||asset.size!==file.size)
+      fail('official draft receipt assets changed');
+    if(asset.digest) {
+      if(asset.digest!=='sha256:'+file.sha256)fail('official draft receipt assets changed');
+    } else {
+      const downloaded=await reader.downloadDigest('releases/assets/'+assetId);
+      if(downloaded.size!==file.size||downloaded.digest!==file.sha256)fail('official draft receipt assets changed');
+    }
+  }
+}
 async function observeReadyDraft(request,snapshot,context,{token,io,verifyPublic=true}) {
   const {cycle}=context,ready=draftReadyResult(snapshot,cycle);
   if(!ready)return null;
@@ -943,13 +958,7 @@ async function observeReadyDraft(request,snapshot,context,{token,io,verifyPublic
     return {status:'OBSERVED',reason:'FORMAL_RELEASES_VERIFIED',publishInvoked:false};
   }
   await readBoundOfficialDraft(approvedCycleTarget(context,request.defaultBranch),reader);
-  const assets=await reader.pages('releases/'+ready.draft.releaseId+'/assets','');
-  const expected=cycle.units[0].assets;
-  if(assets.length!==ready.draft.assets.length||ready.draft.assets.some(({assetId,name})=>{
-    const asset=assets.find(item=>item.id===assetId),file=expected.find(item=>item.path===name);
-    return asset?.name!==name||asset.state!=='uploaded'||asset.size!==file.size
-      || asset.digest&&asset.digest!=='sha256:'+file.sha256;
-  })) fail('official draft receipt assets changed');
+  await verifyDraftAssetReceipts(reader,ready.draft.releaseId,ready.draft.assets,cycle.units[0].assets);
   return ready;
 }
 export async function publishNativeCycle(request,{token,io=nativeEvidenceTransport(token),centralIo,centralInvocation,controllerDirectory,official,now=()=>new Date().toISOString()}) {

@@ -335,6 +335,7 @@ const draftErrorCodes=new Map([
   ['GH_RELEASE: unproven starter asset','OFFICIAL_RELEASE_ASSET_STARTER_UNPROVEN'],
   ['GH_RELEASE: same-name different bytes','OFFICIAL_RELEASE_ASSET_BYTES_CHANGED'],
   ['GH_RELEASE: downloaded bytes mismatch','OFFICIAL_RELEASE_ASSET_BYTES_CHANGED'],
+  ['RELEASE_RECORD: official draft receipt assets changed','OFFICIAL_RELEASE_ASSET_BYTES_CHANGED'],
   ['GH_RELEASE: draft asset set','OFFICIAL_RELEASE_ASSET_SET_INCOMPLETE'],
   ['GH_RELEASE: official draft differs from approval','OFFICIAL_RELEASE_DRAFT_IDENTITY'],
   ['GH_RELEASE: upload response identity','OFFICIAL_RELEASE_ASSET_UPLOAD_UNCONFIRMED'],
