@@ -162,6 +162,20 @@ async function completedCandidate(get, product, roundId, record) {
   return { result: await observeOfficialCandidatePull({ get, product, botId, record }), roundId, pulls: [record] };
 }
 
+function creationRange(source) {
+  return source.creationRange ?? (source.prior ? null : { base: source.baseline.sha, head: source.sourceSha });
+}
+
+async function previousCreationRange(pull, store, get) {
+  const commit = await get('git/commits/' + pull.head.sha);
+  if (commit.sha !== pull.head.sha || !commit.verification?.verified) return null;
+  const roundId = /^Steward-Candidate-Round: ([a-f0-9]{64})$/m.exec(commit.message)?.[1];
+  if (!roundId) return null;
+  const previous = await store.read(roundId);
+  if (previous?.pull?.number !== pull.number || previous.pull.head !== pull.head.sha) return null;
+  return creationRange(previous.source);
+}
+
 export async function prepareOfficialCandidate({ identity, get, getPages, directory, store, token, prepareParticipation,
   buildCandidate = computeOfficialCandidate, collectEvidence = officialCandidateEvidence }) {
   const { product, event, sourceSha } = identity;
@@ -191,7 +205,8 @@ export async function prepareOfficialCandidate({ identity, get, getPages, direct
     if (!round.source) {
       const pull = await openOfficialPull(get, product, botId);
       const prior = pull && { number: pull.number, head: pull.head.sha };
-      round = await store.save(roundId, 'source', { sourceSha, baseline, candidate, prior });
+      const original = pull ? await previousCreationRange(pull, store, get) : { base: baseline.sha, head: sourceSha };
+      round = await store.save(roundId, 'source', { sourceSha, baseline, candidate, prior, creationRange: original });
     } else if (round.source.sourceSha !== sourceSha) {
       requireCandidate(officialCandidateRoundId(product, round.source) === roundId, 'ROUND_IDENTITY');
       requireCandidate(await defaultHead(get, product.defaultBranch) === sourceSha, 'C2_SOURCE_CHANGED');
@@ -220,7 +235,8 @@ export async function prepareOfficialCandidate({ identity, get, getPages, direct
   const evidence = round.draft ? null : await collectEvidence({
     product, sourceSha: evidenceSourceSha, baseline: round.source.baseline, candidate, get, getPages, directory,
   });
-  return { roundId, candidate, evidenceSourceSha, mode: round.draft ? 'write' : 'draft', evidence };
+  return { roundId, candidate, evidenceSourceSha, creationRange: creationRange(round.source),
+    pullNumber: round.source.prior?.number, mode: round.draft ? 'write' : 'draft', evidence };
 }
 
 async function withCandidateState(env, identity, operation) {
@@ -290,6 +306,7 @@ export async function main(stage, env = process.env) {
     const client = copilotReleaseClient(controllerDirectory, env.STEWARD_COPILOT_TOKEN ?? '');
     return write('draft', await draftOfficialCandidate({
       roundId, candidate, context: plan.evidence, product, sourceSha: plan.evidenceSourceSha, template, call: client.call,
+      creationRange: plan.creationRange, pullNumber: plan.pullNumber,
     }));
   }
   if (stage === 'check') {

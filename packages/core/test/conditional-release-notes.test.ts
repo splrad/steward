@@ -72,7 +72,7 @@ describe('organization conditional release notes', () => {
     expect(() => renderFrozenReleaseNotes(originalTemplate, { ...input, contributors:[reviewed, reviewed] })).toThrow('frozen contributors');
   });
 
-  it('collects native authors and includes their IDs in a closed disclosure in both notes', async () => {
+  it('renders only linked usernames in the closed contributor list in both notes', async () => {
     const actor = (id: number, login: string, type = 'User') => ({ id, login, type,
       profileUrl: 'https://github.com/' + login, avatarUrl: 'https://avatars.githubusercontent.com/u/' + id });
     const human = actor(42, 'actual-author');
@@ -84,10 +84,14 @@ describe('organization conditional release notes', () => {
     const preview = renderCandidateNote('release.md', input, selected.contributors, {template,repository,sourceSha});
     for (const body of [result, preview]) {
       expect(body).toContain('width="48" height="48"');
-      expect(body).toContain('<details>\n<summary>贡献者 GitHub ID</summary>\n\n- <a href="https:&#x2F;&#x2F;github.com&#x2F;actual-author">actual-author</a> · `42`\n\n</details>');
+      expect(body).toContain('<details>\n<summary>查看贡献者名单</summary>\n\n- <a href="https:&#x2F;&#x2F;github.com&#x2F;actual-author">actual-author</a>\n\n</details>');
     }
     expect(renderFrozenReleaseNotes(template, { ...frozen, notes: input })).not.toContain('<details>');
     expect(await isAdoptedOrganizationReleaseTemplate(template)).toBe(true);
+    const previous = template.replace('查看贡献者名单', '贡献者 GitHub ID')
+      .replace('{{login}}</a>', '{{login}}</a> · `{{id}}`');
+    expect(await reviewedConditionalReleaseTemplate(template, previous)).toBe(previous);
+    expect(renderFrozenReleaseNotes(previous, { ...frozen, notes: input, contributors: selected.contributors })).toContain(' · `42`');
     expect(await reviewedConditionalReleaseTemplate(template, originalTemplate)).toBe(originalTemplate);
     expect(await reviewedConditionalReleaseTemplate(template, originalTemplate + '\n')).toBe(template);
     expect(await reviewedConditionalReleaseTemplate(originalTemplate, template)).toBe(originalTemplate);
