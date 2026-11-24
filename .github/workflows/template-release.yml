@@ -1,9 +1,15 @@
 name: Steward Template Release
-on: create
+on:
+  push:
+    tags: ['v[0-9]*']
 permissions: {}
 jobs:
   range:
-    if: github.repository_id == '1296724484' && github.event.ref_type == 'tag' && startsWith(github.event.ref, 'v') && github.ref == format('refs/tags/{0}', github.event.ref) && github.event.sender.id == 353238212 && github.event.sender.login == 'splrad-governance[bot]'
+    if: >-
+      github.repository_id == '1296724484' &&
+      github.event.created && !github.event.deleted &&
+      github.event.ref == github.ref && github.event.after == github.sha &&
+      github.event.sender.id == 353238212 && github.event.sender.login == 'splrad-governance[bot]'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
