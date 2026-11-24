@@ -399,7 +399,7 @@ export async function officialCandidateEvidence({ product, sourceSha, baseline, 
         // selected side commits supply their own patches plus merge resolutions.
         evidence.push({ kind: 'selected-commit', details: { sha: commit.sha, message: commit.commit.message } });
         evidence.push(...await officialCandidateDiff(workspace, commit.sha, commit.parents[0]?.sha ?? null,
-          { exclude, mixedMerge: mixedMerges.has(commit.sha) }));
+          { exclude, mixedMerge: mixedMerges.has(commit.sha), excludedCommits: excluded }));
       }
       evidence.push({ kind: 'release-page', details: { url: repository + '/releases/tag/' + tag } });
     } else {

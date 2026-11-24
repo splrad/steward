@@ -72,7 +72,10 @@ test('Internal labels filter every writing source and preserve mixed PRs and dir
   const git = (...args) => execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com', ...args],
     { cwd: directory, encoding: 'utf8', env: isolatedBuildEnvironment(process.env, directory) }).trim();
   git('init', '--quiet');
-  git('commit', '--allow-empty', '-qm', 'baseline');
+  const manual = '使用 手册.md';
+  await writeFile(join(directory, manual), 'old-public-option\n');
+  git('add', manual);
+  git('commit', '-qm', 'baseline');
   const baseline = { tag: 'v1.0.0', sha: git('rev-parse', 'HEAD') };
   const commits = [];
   async function commit(path, contents, message) {
@@ -84,8 +87,8 @@ test('Internal labels filter every writing source and preserve mixed PRs and dir
     commits.push({ sha, parents: [{ sha: parent }], commit: { message } });
     return sha;
   }
-  const internal = await commit('manual.md', 'internal-only-sentinel\n', 'internal-only-sentinel');
-  const visible = await commit('manual.md', 'internal-only-sentinel\nvisible-usage\n', 'mixed PR adds public usage');
+  const internal = await commit(manual, 'old-public-option\ninternal-only-sentinel\nprivate-deleted-sentinel\n', 'internal-only-sentinel');
+  const visible = await commit(manual, 'internal-only-sentinel\nvisible-usage\n', 'mixed PR adds public usage');
   const direct = await commit('direct.txt', 'direct-feature\n', 'direct feature');
   const candidate = { base: 'main', head: pr.head.ref, version: '1.1.0', body: upstreamBody,
     files: [{ path: 'CHANGELOG.md', content: 'range-wide-sentinel' }] };
@@ -108,8 +111,9 @@ test('Internal labels filter every writing source and preserve mixed PRs and dir
   const material = JSON.stringify(result.evidence);
   assert.match(material, /mixed change/);
   assert.match(material, /visible-usage/);
+  assert.match(material, /-old-public-option/);
   assert.match(material, /direct-feature/);
-  assert.doesNotMatch(material, /internal-only-sentinel|range-wide-sentinel/);
+  assert.doesNotMatch(material, /internal-only-sentinel|private-deleted-sentinel|range-wide-sentinel/);
   for (const sha of [visible, direct]) labels.set(sha, [pull(42, ['Internal'], 'internal-only-sentinel')]);
   const context = await collect();
   assert.deepEqual(context.evidence.map(item => item.kind), ['maintenance-only']);
