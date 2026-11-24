@@ -1,6 +1,6 @@
 import YAML from 'yaml';
 import {minimatch} from 'minimatch';
-import {forkRunName} from './product-ci-evidence.mjs';
+import {forkRunName,stewardMergeGroup,stewardRunName} from './product-ci-evidence.mjs';
 import {execFileSync} from 'node:child_process';
 import {readFile,appendFile,writeFile,lstat,realpath} from 'node:fs/promises';
 import {resolve,join,sep} from 'node:path';
@@ -128,6 +128,10 @@ export async function validationFileInputs(workspace,env=process.env) {
     base=event.pull_request.base.sha;head=event.pull_request.head.sha;
     baseRef=event.pull_request.base.ref;
     git(workspace,['check-ref-format','--branch',baseRef]);
+  }else if(env.GITHUB_EVENT_NAME==='merge_group'){
+    const group=stewardMergeGroup(event);
+    check(group&&env.GITHUB_SHA===group.head_sha&&env.GITHUB_REF===group.head_ref,'MERGE_GROUP_EVENT');
+    base=group.base_sha;head=group.head_sha;
   }else{check(env.GITHUB_EVENT_NAME==='push'&&typeof event.repository.default_branch==='string'&&event.ref==='refs/heads/'+event.repository.default_branch,'EVENT');base=event.before;head=event.after;}
   check([base,head].every(v=>typeof v==='string'&&/^[a-f0-9]{40}$/.test(v)&&!/^0+$/.test(v)),'COMMITS');
   if(baseRef){
@@ -137,6 +141,7 @@ export async function validationFileInputs(workspace,env=process.env) {
   for(const value of [base,head])check(git(workspace,['rev-parse','--verify',value+'^{commit}']).toString().trim()===value,'COMMITS');
   check(git(workspace,['rev-parse','HEAD']).toString().trim()===head,'CHECKOUT');
   check(git(workspace,['rev-parse','--is-shallow-repository']).toString().trim()==='false','SHALLOW');
+  if(env.GITHUB_EVENT_NAME==='merge_group')git(workspace,['merge-base','--is-ancestor',base,head]);
   // Native Git supplies both rename sides for DOC-LINK. Scope matching belongs to paths-filter in trusted YAML.
   const changedPaths=new TextDecoder('utf-8',{fatal:true}).decode(git(workspace,['diff','--no-ext-diff','--no-textconv','--name-only','--no-renames','-z',base,head])).split('\0').filter(Boolean);
   const input={complete:true,repositoryId,base,head,workflowSha:env.WORKFLOW_SHA,changedPaths};
@@ -188,7 +193,8 @@ export async function validationInput(workspace,env=process.env) {
     const type=env.GITHUB_EVENT_NAME;
     const gap=productCITriggerGap({path,document:workflow},event.repository.default_branch);
     check(!gap && workflowEvent(triggers,type,event.action),'PRODUCT_CI_TRIGGER '+path+' '+gap);
-    if(workflow['run-name']===forkRunName)boundNames.push(path);
+    if(type==='merge_group')check(workflow['run-name']===stewardRunName,'PRODUCT_CI_MERGE_GROUP_NAME '+path);
+    if(workflow['run-name']===forkRunName||event.repository.id===1296724484&&workflow['run-name']===stewardRunName)boundNames.push(path);
   }
   return {input,files,productApplicable,workflows,boundNames,dependencyMode:dependency};
 }

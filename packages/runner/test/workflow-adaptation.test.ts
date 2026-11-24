@@ -11,13 +11,16 @@ it('discovers current native workflows and actual product templates without a wo
 });
 it('uses platform workflow provenance and readonly validation jobs',async()=>{
   const d=YAML.parse(await readFile('.github/workflows/pr-validation-native.yml','utf8'));
-  for(const job of Object.values(d.jobs) as any[])for(const step of job.steps){
+  for(const [id,job] of Object.entries(d.jobs) as [string,any][])for(const step of job.steps){
     if(step.with?.path==='policy'){expect(step.with.repository).toBe('${{ job.workflow_repository }}');expect(step.with.ref).toBe('${{ job.workflow_sha }}');}
-    if(step.with?.path==='target'){expect(step.with.ref).toBe('${{ github.event.pull_request.head.sha || github.sha }}');expect(step.with['fetch-depth']).toBe(0);}
+    if(step.with?.path==='target'){expect(step.with.ref).toBe(id==='scope'
+      ? '${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}'
+      : '${{ needs.scope.outputs.head }}');expect(step.with['fetch-depth']).toBe(0);}
     if(step.run)expect(step.run).not.toContain('${{');
   }
   expect(d.permissions).toEqual({contents:'read','pull-requests':'read'});
-  expect(d.jobs.summary.if).toBe("${{ always() && (github.event_name == 'pull_request' || github.ref_name == github.event.repository.default_branch) }}");
+  expect(d.on.merge_group).toEqual({types:['checks_requested']});
+  expect(d.jobs.summary.if).toBe('${{ always() && ('+d.jobs.scope.if+') }}');
 });
 it('requires product selections before building or claiming signing is inapplicable',async()=>{
   const workflow=YAML.parse(await readFile('templates/release/steward-release-publish.yml','utf8'));
