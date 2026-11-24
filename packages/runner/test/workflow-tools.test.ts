@@ -233,14 +233,11 @@ async function legacyTitle() {
   return document;
 }
 
-it.each(['adopted', 'native-sha-update'])('accepts only the trusted metadata title exception: %s', async kind => {
-  let text = YAML.stringify(await legacyTitle());
-  if (kind === 'native-sha-update') text = text.replace(/(amannn\/action-semantic-pull-request@)[a-f0-9]{40}/, '$1' + 'a'.repeat(40));
-  const root = await fixture(text);
-  await rename(join(root, '.github/workflows/test.yml'), join(root, '.github/workflows/pr-title.yml'));
-  const result = await scanWorkflows(root, await discoverWorkflowFiles(root));
-  expect(result.results.at(-1)?.status).toBe(14);
-  expect(result.exceptions).toHaveLength(1);
+it.each(['.github/workflows/pr-title.yml','templates/repository/.github/workflows/pr-title.yml'])('rejects the retired title trigger at %s',async path=>{
+  const root=await fixture(YAML.stringify(await legacyTitle()));
+  await mkdir(join(root,path,'..'),{recursive:true});
+  await rename(join(root,'.github/workflows/test.yml'),join(root,path));
+  await expect(scanWorkflows(root,[path])).rejects.toThrow(/zizmor.*failed/);
 }, 120000);
 
 it.each(['adopted','action-sha','mise-release'])('accepts the approved central promotion trigger and retains native findings: %s',async kind=>{
@@ -266,24 +263,21 @@ it.each(['title-path','promotion-path','wrong-trigger','other-finding'])('reject
   await expect(scanWorkflows(root,await discoverWorkflowFiles(root))).rejects.toThrow(/zizmor.*failed|jactionlint.*failed/);
 },120000);
 
-it.each(['title','promotion'])('accepts a normal additional job without a duplicate YAML contract: %s',async kind=>{
-  const path=kind==='title'?'.github/workflows/pr-title.yml':'.github/workflows/governance-promotion.yml';
-  const document=kind==='title'?await legacyTitle():YAML.parse(await readFile(path,'utf8'));
+it('accepts a normal additional promotion job without a duplicate YAML contract',async()=>{
+  const path='.github/workflows/governance-promotion.yml';
+  const document=YAML.parse(await readFile(path,'utf8'));
   document.jobs.documentation={name:'Reviewed documentation', 'runs-on':'ubuntu-24.04',permissions:{contents:'read'},steps:[{run:'echo documentation'}]};
   const root=await fixture(YAML.stringify(document));await rename(join(root,'.github/workflows/test.yml'),join(root,path));
   const result=await scanWorkflows(root,await discoverWorkflowFiles(root));
   expect(result.exceptions).toHaveLength(1);
 },120000);
 
-it.each(['.github/workflows/pr-labeler.yml','templates/repository/.github/workflows/pr-labeler.yml'])('accepts the approved label metadata trigger at %s',async path=>{
+it.each(['.github/workflows/pr-labeler.yml','templates/repository/.github/workflows/pr-labeler.yml'])('rejects the retired label trigger at %s',async path=>{
   const text=clean.replace('on: pull_request','on:\n  workflow_run:\n    workflows: [SPLRAD PR Title]\n    types: [completed]');
   const root=await fixture(text);
   await mkdir(join(root,path,'..'),{recursive:true});
   await rename(join(root,'.github/workflows/test.yml'),join(root,path));
-  const result=await scanWorkflows(root,[path]);
-  expect(result.results.at(-1)?.status).toBe(14);
-  expect(result.exceptions).toHaveLength(1);
-  expect(result.exceptions![0]).toMatchObject({decision:'E08-LABELER-TITLE-WORKFLOW-RUN-20261103',finding:{ident:'dangerous-triggers',ignored:false}});
+  await expect(scanWorkflows(root,[path])).rejects.toThrow(/zizmor.*failed/);
 },120000);
 
 it('accepts the direct labeler template through the unmodified native diagnostics',async()=>{

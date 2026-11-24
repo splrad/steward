@@ -6,9 +6,9 @@
 
 Product CI 证据绑定工作流、提交、Run 和 attempt。已完成的 Run 在原 attempt 内有界复读。Actions 作业清单须与该 Run 的 GitHub Checks 作业逐项对应，并连续两次覆盖此前已观察到的本次作业。重跑时用 GitHub 的作业 ID 和 attempt 归属排除旧检查，保留平台归入本次重跑的继承作业。已见检查的 attempt 待确认时继续复读。身份冲突、作业明确失败、等待耗尽或读取期间 attempt 改变均阻断验证。
 
-jactionlint、shellcheck、pyflakes 与 zizmor 使用中央锁定工具扫描真实 YAML。候选的忽略配置不能关闭检查。标题入口按已批准的 `E07-TITLE-METADATA-20261028` 固定元数据例外处理；原始诊断、退出码和其他失败保留。扫描工具直接支持 queue 和 `job.workflow_*`，无需旧的工作流镜像或任务解释器。
+jactionlint、ShellCheck、Ruff 与 zizmor 使用中央锁定工具扫描真实 YAML。候选的忽略配置不能关闭检查。普通 PR 标题使用 `pull_request`，基于 PR 元数据贴标的官方 Labeler 由 zizmor 原生识别。扫描保留原始诊断、退出码和其他失败，并直接支持 queue 和 `job.workflow_*`。
 
-zizmor 保留原始扫描输出及退出码。标题、治理提升和标签入口的已审触发器按各自文件和事件位置核验。中央维护决定 `E11-CENTRAL-MAINTENANCE-WORKFLOW-RUN-20261118` 仅在原生事件已绑定中央仓 ID 1296724484 时接受 `.github/workflows/maintenance-event.yml` 的 `on.workflow_run` 主位置产生的原生 `dangerous-triggers` 诊断。其他仓、无仓身份的本地扫描、其他路径、事件、诊断、解析错误和工具失败仍阻断采用。维护接收器的来源、分支、权限、写入及暂停保护须随其实现独立审查。关于治理提升的既有决定见[治理提升](governance-promotion.md)。
+治理提升和中央维护的已审触发器按各自文件和事件位置核验。中央维护决定 `E11-CENTRAL-MAINTENANCE-WORKFLOW-RUN-20261118` 仅在原生事件已绑定中央仓 ID 1296724484 时接受 `.github/workflows/maintenance-event.yml` 的 `on.workflow_run` 主位置产生的原生 `dangerous-triggers` 诊断。其他仓、无仓身份的本地扫描、其他路径、事件、诊断、解析错误和工具失败仍阻断采用。维护接收器的来源、分支、权限、写入及暂停保护须随其实现独立审查。关于治理提升的既有决定见[治理提升](governance-promotion.md)。
 
 dependency-review 比较准确 base/head，采用 high 阈值，覆盖 runtime、development、unknown，等待原生快照告警最多 600 秒，不回写 PR。NuGet 实际直接/传递覆盖和组织 required workflow 的平台强制仍须在隔离及线上采用阶段取证。
 

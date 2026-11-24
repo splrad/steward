@@ -209,9 +209,11 @@ it('records a journal API failure and cleanup failure without masking the first 
 it('authenticates the shipped bot identity lookup when the anonymous IP bucket is exhausted',async()=>{
   const {promotionTransport}=await module();
   const {nativeReleaseApp}=await import(pathToFileURL(resolve('packages/runner/dist/index.js')).href);
+  const {officialCandidateApp,candidateDiagnostic}=await import(pathToFileURL(resolve('scripts/official-candidate-event.mjs')).href);
   const privateKey=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs8',format:'pem'});
   const workflowAuthorization='Bearer workflow-read-fixture';
   const calls:string[]=[];
+  let botReadLimited=false;
   const transport:typeof fetch=async(input,init)=>{
     const url=new URL(String(input));
     const route=decodeURIComponent(url.pathname);
@@ -221,6 +223,9 @@ it('authenticates the shipped bot identity lookup when the anonymous IP bucket i
       if(!authorization)return Response.json({message:'API rate limit exceeded'},{status:403});
       expect(authorization).toBe(workflowAuthorization);
       expect(init?.redirect).toBe('error');
+      if(botReadLimited)return Response.json({message:'untrusted API detail'},{status:403,headers:{
+        'x-ratelimit-remaining':'0','x-ratelimit-reset':'1795488000','retry-after':'61',
+      }});
       return Response.json({id:301115370,type:'Bot'});
     }
     expect(authorization).not.toBe(workflowAuthorization);
@@ -231,6 +236,12 @@ it('authenticates the shipped bot identity lookup when the anonymous IP bucket i
   await expect(nativeReleaseApp(privateKey,transport)).rejects.toMatchObject({status:403});
   const authenticatedTransport=promotionTransport(transport,vi.fn(),'workflow-read-fixture');
   expect((await nativeReleaseApp(privateKey,authenticatedTransport)).appBotId).toBe(301115370);
+  const env={STEWARD_CENTRAL_TOKEN:'workflow-read-fixture',STEWARD_APP_PRIVATE_KEY:privateKey};
+  expect((await officialCandidateApp(env,transport)).appBotId).toBe(301115370);
+  botReadLimited=true;
+  await expect(officialCandidateApp(env,transport)).rejects.toMatchObject({status:403,candidateOperation:'app_bot_identity'});
+  const diagnostic=await officialCandidateApp(env,transport).catch((error:unknown)=>candidateDiagnostic(error,'identify'));
+  expect(diagnostic).toBe('OFFICIAL_CANDIDATE_STOPPED stage=identify operation=app_bot_identity status=403 rate_limit_remaining=0 rate_limit_reset=1795488000 retry_after_s=61');
   await authenticatedTransport('https://example.invalid/users/splrad-steward%5Bbot%5D',{method:'GET'});
   await authenticatedTransport('https://api.github.com/users/human-account',{method:'GET'});
   expect(calls.filter(path=>path.endsWith('/access_tokens'))).toEqual([]);

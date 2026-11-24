@@ -26,7 +26,7 @@ test('each purpose generates once with fixed inputs and preserves only identity 
     assert.equal(calls[0].mode, 'preflight');
     assert.equal(calls[1].mode, purpose === 'quality' ? 'translate' : 'generate');
     const input = JSON.parse(calls[1].input);
-    if (purpose === 'release') { assert.ok(input.prompt.includes('中文发布初稿')); assert.equal(input.sources.length, 1); }
+    if (purpose === 'release') { assert.ok(input.prompt.includes('以中文为主体语言')); assert.equal(input.sources.length, 1); }
     else assert.equal(input.items.length, 1);
     assert.deepEqual(result.models, ['actual']);
     assert.equal(result.controllerSha, sha);
