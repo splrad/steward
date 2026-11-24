@@ -15,6 +15,7 @@ import {createSourceGuard,publishControllerSource} from './controller-source.mjs
 import {bootstrapControllerVersion,controllerTagPrefix,publishControllerVersion} from './controller-version.mjs';
 import {compareValidatorSources} from './validator-source.mjs';
 import {epoch,hasPendingValidators,journalRepository,reconcileValidators,validatorJournal} from './validator-revalidation.mjs';
+import {authenticatedBotIdentityTransport} from './steward-bot-identity.mjs';
 
 const repo='/repos/splrad/steward';
 const rulesetId=18883080;
@@ -40,22 +41,12 @@ function readRetryDelay(response) {
 }
 
 export function promotionTransport(transport,record,botReadToken) {
+  const authenticated = authenticatedBotIdentityTransport(transport,botReadToken);
   return async (url,init)=>{
     if(init?.method!=='GET')return transport(url,init);
     const signal=init.signal??AbortSignal.timeout(requestTimeoutMs);
     init={...init,signal};
-    if(botReadToken){
-      const target=new URL(url);
-      // nativeReleaseApp otherwise uses the anonymous IP bucket for the bot lookup.
-      if(target.origin==='https://api.github.com'&&/^\/users\/[a-z0-9-]+%5bbot%5d$/i.test(target.pathname)){
-        const headers=new Headers(init.headers);
-        if(!headers.has('authorization')){
-          headers.set('authorization',`Bearer ${botReadToken}`);
-          init={...init,headers,redirect:'error'};
-        }
-      }
-    }
-    const response=await transport(url,init);
+    const response=await authenticated(url,init);
     if(![502,503,504].includes(response.status)||signal.aborted)return response;
     const delayMs=readRetryDelay(response);
     if(!Number.isFinite(delayMs)||delayMs>maxReadRetryDelayMs)return response;
@@ -63,7 +54,7 @@ export function promotionTransport(transport,record,botReadToken) {
     if(delayMs)await wait(delayMs,undefined,{signal});
     signal.throwIfAborted();
     await record({kind:'read-retry',httpStatus:response.status,delayMs});
-    return transport(url,init);
+    return authenticated(url,init);
   };
 }
 

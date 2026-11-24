@@ -14,12 +14,15 @@ it('uses platform workflow provenance and readonly validation jobs',async()=>{
   for(const [id,job] of Object.entries(d.jobs) as [string,any][])for(const step of job.steps){
     if(step.with?.path==='policy'){expect(step.with.repository).toBe('${{ job.workflow_repository }}');expect(step.with.ref).toBe('${{ job.workflow_sha }}');}
     if(step.with?.path==='target'){expect(step.with.ref).toBe(id==='scope'
-      ? '${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}'
+      ? '${{ github.event.pull_request.head.sha || github.sha }}'
       : '${{ needs.scope.outputs.head }}');expect(step.with['fetch-depth']).toBe(0);}
     if(step.run)expect(step.run).not.toContain('${{');
   }
   expect(d.permissions).toEqual({contents:'read','pull-requests':'read'});
-  expect(d.on.merge_group).toEqual({types:['checks_requested']});
+  const triggers={pull_request:{types:['opened','synchronize','reopened']},push:{branches:['**']}};
+  expect(d.on).toEqual(triggers);
+  const product=YAML.parse(await readFile('.github/workflows/steward-source.yml','utf8'));
+  expect(product.on).toEqual(triggers);
   expect(d.jobs.summary.if).toBe('${{ always() && ('+d.jobs.scope.if+') }}');
 });
 it('requires product selections before building or claiming signing is inapplicable',async()=>{
