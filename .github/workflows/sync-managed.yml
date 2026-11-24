@@ -15,7 +15,7 @@ permissions:
 jobs:
   bootstrap:
     if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'workflow_dispatch' || (github.event_name == 'repository_dispatch' && github.event.action == 'steward-template-event' && github.event.sender.id == 353238212 && github.event.sender.login == 'splrad-governance[bot]' && github.event.sender.type == 'Bot' && github.event.client_payload.schemaVersion == 1)) && (vars.STEWARD_BOOTSTRAP_APPLY == 'true' || (github.event_name == 'workflow_dispatch' && inputs.bootstrap_only))
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     environment:
       name: steward-automation
@@ -54,7 +54,7 @@ jobs:
   templates:
     needs: bootstrap
     if: ${{ !cancelled() && github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'workflow_dispatch' || (github.event_name == 'repository_dispatch' && github.event.action == 'steward-template-event' && github.event.sender.id == 353238212 && github.event.sender.login == 'splrad-governance[bot]' && github.event.sender.type == 'Bot' && github.event.client_payload.schemaVersion == 1)) && vars.STEWARD_TEMPLATE_APPLY == 'true' && !inputs.bootstrap_only }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     environment:
       name: steward-automation
