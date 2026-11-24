@@ -10,7 +10,7 @@ import { PullRequestBody } from 'release-please/build/src/util/pull-request-body
 import { bodyDigest, computeOfficialCandidate, draftOfficialCandidate, officialCandidateRoundId, officialMergeKey,
   officialNotes, renderOfficialHomepage, validateOfficialMergeEvent, verifyOfficialMerge } from '../official-release-candidate.mjs';
 import { candidateEvent, officialCandidateRoute, prepareOfficialCandidate } from '../official-candidate-event.mjs';
-import { writeOfficialCandidate } from '../official-candidate-write.mjs';
+import { compatibleExistingCandidate, writeOfficialCandidate } from '../official-candidate-write.mjs';
 
 const sourceSha = 'a'.repeat(40), head = 'b'.repeat(40), controllerSha = 'c'.repeat(40), previousSha = 'd'.repeat(40);
 const product = { id: 17, name: 'splrad/fixture', defaultBranch: 'main' }, authorId = 301115370;
@@ -124,6 +124,22 @@ test('the official package generates the three native files and chooses the froz
   assert.equal(release.tag.toString(), 'v1.1.0');
   assert.equal(release.draft, true);
   assert.equal(release.forceTag, true);
+
+  const files = { 'CHANGELOG.md': '# Changelog\n', 'VERSION': '1.0.0\n', '.release-please-manifest.json': '{".":"1.0.0"}\n' };
+  const project = raw => ({
+    title: raw.title.toString(), head: raw.headRefName, base: 'main', body: raw.body.toString(), version: raw.version.toString(),
+    changelogPath: 'CHANGELOG.md', labels: raw.labels,
+    files: raw.updates.map(({ path, updater }) => ({ path, mode: '100644', content: updater.updateContent(files[path]) })),
+  });
+  const id = raw => officialCandidateRoundId(product, { baseline: { tag: 'v1.0.0', sha: previousSha }, candidate: project(raw) });
+  commits[0] = { ...commits[0], sha: controllerSha, message: 'feat: 新增另一项功能' };
+  const [changedContent] = await manifest.buildPullRequests();
+  assert.equal(changedContent.version.toString(), candidate.version.toString());
+  assert.notEqual(id(changedContent), id(candidate));
+  commits[0] = { ...commits[0], sha: head, message: 'fix: 修复启动' };
+  const [changedVersion] = await manifest.buildPullRequests();
+  assert.equal(changedVersion.version.toString(), '1.0.1');
+  assert.notEqual(id(changedVersion), id(candidate));
 });
 
 test('verified merge archives the merge-time edit after default head movement and subsequent PR edits', async () => {
@@ -165,11 +181,57 @@ const updateFiles = [
 ];
 const computed = {
   title: pr.title, head: pr.head.ref, base: product.defaultBranch, body: upstreamBody, version: '1.1.0',
-  files: updateFiles, labels: ['autorelease: pending'],
+  changelogPath: 'CHANGELOG.md', files: updateFiles, labels: ['autorelease: pending'],
 };
 const source = { sourceSha, baseline: { tag: 'v1.0.0', sha: previousSha }, candidate: computed, prior: null };
 const roundId = officialCandidateRoundId(product, source);
 const expectedBody = render(upstreamBody, orgNotes, [person], roundId);
+function candidateDated(date) {
+  const heading = versionHeader + ' (' + date + ')';
+  return { ...computed, body: upstreamBody.replace(versionHeader, heading),
+    files: updateFiles.map(file => file.path === computed.changelogPath ? {
+      ...file, content: '# Changelog\n\n' + heading + '\n\nSupport new behavior\n\n## 1.0.0 (2026-11-01)\n',
+    } : file) };
+}
+
+test('only the upstream date in the current release heading is excluded from round identity', () => {
+  const previous = candidateDated('2026-11-23'), nextDay = candidateDated('2026-11-24');
+  const id = candidate => officialCandidateRoundId(product, { ...source, candidate });
+  assert.notEqual(previous.body, nextDay.body);
+  assert.notEqual(previous.files[1].content, nextDay.files[1].content);
+  assert.equal(id(previous), id(nextDay));
+  for (const change of [
+    { body: nextDay.body.replace('支持新版', '维护窗口为 2026-11-24') },
+    { body: nextDay.body.replace('v1.0.0...v1.1.0)', 'v1.0.0...v1.1.0?date=2026-11-24)') },
+    { files: nextDay.files.map(file => ({ ...file, content: file.content.replace('2026-11-01', '2026-11-02') })) },
+    { files: nextDay.files.map(file => ({ ...file, content: file.content.replace('Support new behavior', 'Fix a second issue') })) },
+    { version: '1.2.0', title: 'chore(main): release 1.2.0' },
+  ]) assert.notEqual(id({ ...nextDay, ...change }), id(previous));
+});
+
+test('carries an existing signed PR when only its generated changelog date differs', async () => {
+  const previous = candidateDated('2026-11-23');
+  const today = candidateDated('2026-11-24');
+  const pull = { ...pr, body: expectedBody };
+  const get = async path => {
+    if (path === 'git/commits/' + head)
+      return { sha: head, message: pr.title, verification: { verified: true }, parents: [{ sha: sourceSha }] };
+    if (path === 'contents/release-please-config.json?ref=' + sourceSha) return blob('release-please-config.json', settings);
+    if (path === 'compare/' + sourceSha + '...' + head + '?per_page=1')
+      return { merge_base_commit: { sha: sourceSha }, total_commits: 1, files: updateFiles.map(file => ({ filename: file.path })) };
+    const file = previous.files.find(file => path === 'contents/' + file.path + '?ref=' + head);
+    if (file) return blob(file.path, file.content);
+    assert.fail(path);
+  };
+  const adopt = candidate => compatibleExistingCandidate({ get, pull, product, botId: authorId, candidate, configuration: settings });
+  assert.deepEqual(await adopt(today), {
+    draft: { body: expectedBody, templateDigest: null },
+    branch: { head, sourceSha },
+    pull: { number: 29, head, bodyDigest: officialNotes(expectedBody).bodyDigest },
+  });
+  const changed = { ...today, files: today.files.map(file => ({ ...file, content: file.content.replace('Support new behavior', 'Fix another issue') })) };
+  assert.equal(await adopt(changed), null);
+});
 
 test('materializes the official candidate once against the immutable source and derives identity from its raw content', async () => {
   let buildCount = 0, readCount = 0;
@@ -235,8 +297,11 @@ test('restores a saved calculation and draft before contacting Release Please or
 
 test('records each new source only after an exact round match and skips repeated computation for that source', async () => {
   const identity = { product, event: { kind: 'push' }, sourceSha: controllerSha };
+  const archived = { ...source, candidate: candidateDated('2026-11-23') };
+  const recalculated = candidateDated('2026-11-24');
+  const datedRound = officialCandidateRoundId(product, archived);
   const saved = {
-    roundId, source, draft: { body: expectedBody, templateDigest: bodyDigest(template) },
+    roundId: datedRound, source: archived, draft: null,
     branch: null, pull: null,
   };
   let boundSource, builds = 0;
@@ -251,21 +316,26 @@ test('records each new source only after an exact round match and skips repeated
   };
   const store = {
     find: async sha => sha === boundSource ? saved : null,
-    read: async id => { assert.equal(id, roundId); return saved; },
+    read: async id => { assert.equal(id, datedRound); return saved; },
     bind: async (id, sha) => {
-      assert.equal(id, roundId);
+      assert.equal(id, datedRound);
       assert.equal(sha, controllerSha);
       boundSource = sha;
     },
   };
   const prepare = () => prepareOfficialCandidate({ identity, get, store,
     prepareParticipation: async () => ({ status: 'APPLICABLE', sourceSha: controllerSha }),
-    buildCandidate: async () => { builds++; return computed; },
-    collectEvidence: () => assert.fail('recomputed the saved evidence'),
+    buildCandidate: async () => { builds++; return recalculated; },
+    collectEvidence: ({ candidate }) => { assert.deepEqual(candidate, archived.candidate); return {}; },
   });
-  assert.equal((await prepare()).mode, 'write');
+  const restoredSource = await prepare();
+  assert.equal(restoredSource.mode, 'draft');
+  assert.deepEqual(restoredSource.candidate, archived.candidate);
   assert.equal(boundSource, controllerSha);
-  assert.equal((await prepare()).mode, 'write');
+  saved.draft = { body: expectedBody, templateDigest: bodyDigest(template) };
+  const restoredDraft = await prepare();
+  assert.equal(restoredDraft.mode, 'write');
+  assert.deepEqual(restoredDraft.candidate.files, archived.candidate.files);
   saved.branch = { head, sourceSha };
   saved.pull = { number: pr.number, head, bodyDigest: officialNotes(expectedBody).bodyDigest };
   assert.equal((await prepare()).result, 'candidate_unchanged');

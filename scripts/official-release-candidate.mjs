@@ -59,9 +59,34 @@ export function renderOfficialHomepage({ upstreamBody, template, notes, sourceLi
   return result;
 }
 
+const generatedDateSuffix = / \(\d{4}-\d{2}-\d{2}\)$/;
+
+function comparableCandidateBody(candidate) {
+  const section = /^---\r?\n(?:\r?\n)*(?<heading>[^\r\n]+)/m.exec(candidate.body);
+  const heading = section?.groups?.heading;
+  const header = heading?.match(/^## (?:\[([^\]\r\n]+)\]\([^\r\n]+\)|([^ ()\r\n]+)) \(\d{4}-\d{2}-\d{2}\)$/);
+  if (!header || (header[1] ?? header[2]) !== candidate.version) return { body: candidate.body };
+  const stableHeading = heading.replace(generatedDateSuffix, '');
+  const start = section.index + section[0].length - heading.length;
+  return { heading: stableHeading, body: candidate.body.slice(0, start) + stableHeading + candidate.body.slice(start + heading.length) };
+}
+
+export function comparableCandidateFile(candidate, path, content, heading = comparableCandidateBody(candidate).heading) {
+  if (!heading || path !== candidate.changelogPath) return content;
+  let matched = false;
+  return content.replace(/^## [^\r\n]+/gm, line => {
+    if (matched || !generatedDateSuffix.test(line) || line.replace(generatedDateSuffix, '') !== heading) return line;
+    matched = true;
+    return heading;
+  });
+}
+
 export function officialCandidateRoundId(product, { baseline, candidate }) {
+  // Release Please stamps its current-version heading at calculation time.
+  const { body, heading } = comparableCandidateBody(candidate);
   return bodyDigest(JSON.stringify([product.id, candidate.base, baseline.tag, baseline.sha, candidate.title,
-    candidate.head, candidate.version, candidate.body, candidate.labels, candidate.files.map(file => [file.path, file.mode, file.content])]));
+    candidate.head, candidate.version, body, candidate.labels,
+    candidate.files.map(file => [file.path, file.mode, comparableCandidateFile(candidate, file.path, file.content, heading)])]));
 }
 
 export async function candidateBaseline(get, product, sourceSha, configuration, manifest) {
@@ -110,6 +135,7 @@ export async function computeOfficialCandidate({ product, sourceSha, configurati
   const head = raw.headRefName;
   const labels = [...raw.labels].sort();
   const { unit } = officialUnit(configuration, head, product.defaultBranch, version);
+  const changelogPath = unit['changelog-path'] ?? 'CHANGELOG.md';
   const parsed = PullRequestTitle.parse(title, unit['pull-request-title-pattern'], unit['component-no-space'], logger);
   requireCandidate(!raw.draft && labels.length === 1 && labels[0] === officialPending &&
     officialNotes(body).version === version && parsed?.getVersion()?.toString() === version &&
@@ -125,7 +151,7 @@ export async function computeOfficialCandidate({ product, sourceSha, configurati
   const versions = files.find(file => file.path === manifestPath);
   requireCandidate(versions && JSON.parse(versions.content)['.'] === version && files.length > 1, 'UPDATE_MANIFEST');
   requireCandidate(await defaultHead(get, product.defaultBranch) === sourceSha, 'SOURCE_CHANGED');
-  return { title, head, base: product.defaultBranch, body, version, files, labels };
+  return { title, head, base: product.defaultBranch, body, version, changelogPath, files, labels };
 }
 
 export function officialConfig(settings) {

@@ -1,5 +1,5 @@
 import { EvidenceReadError } from '../packages/runner/dist/index.js';
-import { defaultHead, fitsOfficialEvent, hasLabel, officialNotes, officialPending,
+import { comparableCandidateFile, defaultHead, fitsOfficialEvent, hasLabel, officialNotes, officialPending,
   officialRef, officialRoundMarker, pages, pullBinding, readOfficialConfig, readOfficialManifest, readSourceFile,
   requireCandidate, verifyOfficialPull } from './official-release-candidate.mjs';
 
@@ -28,13 +28,19 @@ async function readBranch(get, head) {
   return ref.object.sha;
 }
 
-async function verifyCandidateFiles(get, parent, head, candidate) {
+async function verifyCandidateFiles(get, parent, head, candidate, allowGeneratedDate = false) {
   const result = await get('compare/' + parent + '...' + head + '?per_page=1');
   const paths = candidate.files.map(file => file.path).sort();
   if (result.merge_base_commit?.sha !== parent || result.total_commits !== 1 ||
     JSON.stringify(result.files?.map(file => file.filename).sort()) !== JSON.stringify(paths)) return false;
-  const match = await Promise.all(candidate.files.map(async file =>
-    (await readSourceFile(get, file.path, head)).equals(Buffer.from(file.content))));
+  const match = await Promise.all(candidate.files.map(async file => {
+    const actual = await readSourceFile(get, file.path, head);
+    if (actual.equals(Buffer.from(file.content))) return true;
+    if (!allowGeneratedDate) return false;
+    const text = actual.toString('utf8');
+    return actual.equals(Buffer.from(text)) &&
+      comparableCandidateFile(candidate, file.path, text) === comparableCandidateFile(candidate, file.path, file.content);
+  }));
   return match.every(Boolean);
 }
 
@@ -42,9 +48,9 @@ export async function compatibleExistingCandidate({ get, pull, product, botId, c
   if (!pull || !hasLabel(pull, officialPending) || !fitsOfficialEvent(pull.body ?? '')) return null;
   const commit = await get('git/commits/' + pull.head.sha);
   const parent = commit.parents?.[0]?.sha;
-  if (commit.sha !== pull.head.sha || commit.parents?.length !== 1 || !sha(parent) ||
+  if (commit.sha !== pull.head.sha || commit.verification?.verified !== true || commit.parents?.length !== 1 || !sha(parent) ||
     commit.message.includes('Steward-Candidate-Round:') ||
-    !await verifyCandidateFiles(get, parent, pull.head.sha, candidate)) return null;
+    !await verifyCandidateFiles(get, parent, pull.head.sha, candidate, true)) return null;
   const previousConfig = await readOfficialConfig(get, parent);
   if (JSON.stringify(previousConfig) !== JSON.stringify(configuration)) return null;
   let notes;
