@@ -386,7 +386,7 @@ const exact = (value,keys) => {
   if(!value || typeof value!=='object' || Array.isArray(value) || Object.keys(value).sort().join(',')!==[...keys].sort().join(','))fail('closed input');
 };
 const writerRefs={release:'steward/release-state',maintenance:'steward/release-state',quality:'steward/governance-state',
-  bootstrap:'steward/governance-state',pages:'steward/governance-state',configuration:'steward/governance-state',health:'steward/automation-health'};
+  bootstrap:'steward/governance-state',pages:'steward/governance-state'};
 const busy=new Set();
 
 function validateWrite(request) {
@@ -1112,7 +1112,7 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
 
 export async function assertReleaseWriterProtection(repository,branch,io,{token,fetcher=fetch,readCentralMaintenanceRules}={}) {
   const build=/^steward\/build\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(branch)&&!branch.includes('..');
-  if(!build&&!['steward/release-state','steward/automation-health'].includes(branch))fail('writer protection target');
+  if(!build&&branch!=='steward/release-state')fail('writer protection target');
   const native=async path=>{const response=await io.request('GET',`/repos/${repository}${path?'/'+path:''}`);if(response.status!==200)fail('writer protection read unavailable');return JSON.parse(Buffer.from(response.bytes).toString('utf8'));};
   const rules=[];
   for(let page=1;;page++) {
