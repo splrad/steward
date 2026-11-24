@@ -12,6 +12,8 @@
 
 部署时先保存当前规则恢复点，再核对受信验证和标题入口在准确 PR/head 上的结果。先启用独立标题规则并读回其生效范围，再从基础规则移除标题检查。脚本生成请求正文，执行顺序由维护者控制。请求正文使用原生 `sha` 固定 required workflow 来源。具体字段参考 [GitHub 组织 Rulesets API](https://docs.github.com/en/rest/orgs/rules)。
 
+组织所需 Native Validation 对 `.github/workflows/pr-title.yml` 的改动、移除和重命名执行既有配置授权。Copier 递送 PR 由管理员或已授权的委托人审核实际 head，并通过现有配置审核入口确认。GitHub 状态规则按检查名和 App 匹配，配置授权由已固定来源的 Native Validation 执行。
+
 ## Actions 事件策略采用
 
 Actions 事件策略通过 GitHub 设置页或官方 REST 在采用阶段配置并读回。设置同步只运行 safe-settings 支持的设置；事件策略不由定时 settings-sync 读取或修复。

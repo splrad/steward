@@ -67,7 +67,9 @@ it('prewrite concurrency aborts before replacing newly added actor restrictions'
 it('title permission requires the exact executing path and other workflows exclude that event',async()=>{
   const {validateActionsRegistry}=await module();
   const title=registry();title.policies[0]!.conditions.workflow_path={include:['.github/workflows/pr-title.yml'],exclude:[]};
-  title.policies[0]!.desiredEvents=['pull_request_target'];expect(validateActionsRegistry(title)).toBe(title);
+  title.policies[0]!.desiredEvents=['pull_request'];expect(validateActionsRegistry(title)).toBe(title);
+  title.policies[0]!.desiredEvents=['pull_request_target'];expect(()=>validateActionsRegistry(title)).toThrow('TITLE_ONLY');
+  title.policies[0]!.desiredEvents=['pull_request'];
   for(const path of ['.github/workflows/*.yml','templates/repository/.github/workflows/pr-title.yml']){
     const bad=structuredClone(title);bad.policies[0]!.conditions.workflow_path.include=[path];expect(()=>validateActionsRegistry(bad)).toThrow('WORKFLOW_PATH');
   }

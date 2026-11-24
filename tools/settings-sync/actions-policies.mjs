@@ -61,7 +61,7 @@ export function validateActionsRegistry(registry){
     const title=equal(path,{include:['.github/workflows/pr-title.yml'],exclude:[]});
     const other=equal(path,{include:['~ALL'],exclude:['.github/workflows/pr-title.yml']});
     check(title||other,'WORKFLOW_PATH');
-    check(title?sameEvents(row.desiredEvents,['pull_request_target']):!row.desiredEvents.includes('pull_request_target'),'TITLE_ONLY');
+    check(title?sameEvents(row.desiredEvents,['pull_request']):!row.desiredEvents.includes('pull_request_target'),'TITLE_ONLY');
   }
   return registry;
 }
