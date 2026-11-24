@@ -323,23 +323,13 @@ export async function officialCandidateEvidence({ product, sourceSha, baseline, 
   const { unit: release, tag } = officialUnit(configuration, candidate.head, candidate.base, candidate.version);
   const path = release.path;
   const repository = 'https://github.com/' + product.name;
-  const [commits, delivery, tree, previous, diffs] = await Promise.all([
+  const [commits, delivery] = await Promise.all([
     rangeCommits(get, sourceSha, baseline.sha),
     readOfficialDelivery(get, sourceSha),
-    sourceTree(get, sourceSha),
-    baseline.tag ? optionalEvidence(() => get('releases/tags/' + encodeURIComponent(baseline.tag))) : null,
-    directory().then(workspace => officialCandidateDiff(workspace, sourceSha, baseline.sha)),
   ]);
   const { units, buildWorkflow } = parseDeliveryConfig(delivery, configuration);
   const unit = units.find(unit => unit.path === path);
   requireCandidate(unit, 'CONTENT_SOURCE');
-  const files = tree.filter(file => file.type === 'blob' && ['100644', '100755'].includes(file.mode));
-  const docPaths = files.map(file => file.path).filter(path =>
-    /^README\.(?:md|rst|adoc)$/i.test(path) ||
-    /^docs\/(?:product\/|.*(?:install|setup|download|upgrade|migrat|usage|getting-started)).*\.(?:md|mdx|rst|adoc)$/i.test(path));
-  const deliveryPaths = files.map(file => file.path).filter(path =>
-    path === buildWorkflow || /^(?:scripts|tools)\/(?:.*\/)?(?:Publish|Select)-ReleaseAssets\.[A-Za-z0-9]+$/i.test(path));
-  const paths = [...new Set([...docPaths, ...deliveryPaths, unit.notesPath])].filter(path => files.some(file => file.path === path));
   const associated = new Map();
   for (const commit of commits) {
     const refs = await getPages('commits/' + commit.sha + '/pulls');
@@ -350,13 +340,50 @@ export async function officialCandidateEvidence({ product, sourceSha, baseline, 
       }
     }
   }
-  const pulls = [...associated].map(([number, { pull, commits }]) => ({
-    kind: 'merged-pull-request', details: { number, url: pull.html_url, title: pull.title, body: pull.body, commits },
+  const isInternal = ({ pull }) => pull.labels?.some(label => label.name?.toLowerCase() === 'internal');
+  const eligible = [...associated.values()].filter(item => !isInternal(item));
+  const pulls = eligible.map(({ pull, commits }) => ({
+    kind: 'merged-pull-request', details: { number: pull.number, url: pull.html_url, title: pull.title, body: pull.body, commits },
   }));
   const actors = commits.map(commit => commit.author ? { id: commit.author.id, login: commit.author.login,
     type: commit.author.type, profileUrl: commit.author.html_url, avatarUrl: commit.author.avatar_url } : null);
   const { contributors } = selectReleaseContributors(actors, [], 'github-authors');
   const sourceLink = candidateSourceLink(product, baseline.sha, sourceSha);
+  const context = { tag, sourceLink, contributors, unit: { id: unit.id, path, version: candidate.version, tag } };
+  if (eligible.length < associated.size) {
+    // Range-wide notes, generated files and snapshots can repeat excluded PRs.
+    // Only the selection for writing changes. The original candidate and version history stay intact.
+    const excluded = new Set([...associated.values()].filter(isInternal).flatMap(item => item.commits));
+    for (const item of eligible) for (const sha of item.commits) excluded.delete(sha);
+    const selected = commits.filter(commit => !excluded.has(commit.sha));
+    const evidence = [...pulls];
+    if (selected.length) {
+      const workspace = await directory();
+      const exclude = [candidate.changelogPath ?? 'CHANGELOG.md', manifestPath];
+      for (const commit of selected) {
+        requireCandidate(Array.isArray(commit.parents) && commit.parents.every(p => sha(p.sha)), 'RANGE');
+        evidence.push({ kind: 'selected-commit', details: { sha: commit.sha, message: commit.commit.message } });
+        evidence.push(...await officialCandidateDiff(workspace, commit.sha, commit.parents[0]?.sha ?? null,
+          { exclude, merge: commit.parents.length > 1 }));
+      }
+      evidence.push({ kind: 'release-page', details: { url: repository + '/releases/tag/' + tag } });
+    } else {
+      evidence.push({ kind: 'maintenance-only', details: { summary: '本版仅包含项目内部维护。' } });
+    }
+    return { ...context, evidence };
+  }
+  const [tree, previous, diffs] = await Promise.all([
+    sourceTree(get, sourceSha),
+    baseline.tag ? optionalEvidence(() => get('releases/tags/' + encodeURIComponent(baseline.tag))) : null,
+    directory().then(workspace => officialCandidateDiff(workspace, sourceSha, baseline.sha)),
+  ]);
+  const files = tree.filter(file => file.type === 'blob' && ['100644', '100755'].includes(file.mode));
+  const docPaths = files.map(file => file.path).filter(path =>
+    /^README\.(?:md|rst|adoc)$/i.test(path) ||
+    /^docs\/(?:product\/|.*(?:install|setup|download|upgrade|migrat|usage|getting-started)).*\.(?:md|mdx|rst|adoc)$/i.test(path));
+  const deliveryPaths = files.map(file => file.path).filter(path =>
+    path === buildWorkflow || /^(?:scripts|tools)\/(?:.*\/)?(?:Publish|Select)-ReleaseAssets\.[A-Za-z0-9]+$/i.test(path));
+  const paths = [...new Set([...docPaths, ...deliveryPaths, unit.notesPath])].filter(path => files.some(file => file.path === path));
   const docs = await Promise.all(paths.map(async path => {
     const bytes = await readSourceFile(get, path, sourceSha);
     let text;
@@ -366,7 +393,7 @@ export async function officialCandidateEvidence({ product, sourceSha, baseline, 
     return splitContentText(text).map(chunk => ({ kind, details: { path, ...chunk } }));
   }));
   return {
-    tag, sourceLink, contributors, unit: { id: unit.id, path, version: candidate.version, tag },
+    ...context,
     evidence: [
       { kind: 'official-candidate', details: {
         sourceSha, baseline, body: candidate.body, version: candidate.version, title: candidate.title,
@@ -393,7 +420,9 @@ function candidateSourceLink(product, base, head) {
 }
 
 export async function draftOfficialCandidate({ roundId, candidate, context, product, sourceSha, template, call, creationRange, pullNumber }) {
-  const notes = await generateOfficialCandidateNotes({ unit: context.unit, evidence: context.evidence, template, call });
+  const maintenance = context.evidence.length === 1 && context.evidence[0].kind === 'maintenance-only';
+  const notes = maintenance ? { summary: context.evidence[0].details.summary }
+    : await generateOfficialCandidateNotes({ unit: context.unit, evidence: context.evidence, template, call });
   const body = renderOfficialHomepage({ upstreamBody: candidate.body, template, notes, sourceLink: context.sourceLink,
     contributors: context.contributors, roundId,
     filesUrl: positive(pullNumber) ? 'https://github.com/' + product.name + '/pull/' + pullNumber + '/files' : null,

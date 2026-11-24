@@ -28,14 +28,18 @@ export function contentWireInput(payload: ContentPayload) { return JSON.stringif
   outputSchema: contentOutputSchema(payload.conditional), constraints: 'Return only the schema object, without Markdown fences or extra keys. Omit optional paragraphs without product facts. For a relevant claim with uncertain verification, set qualification to UNVERIFIED and describe only the specific consequence for the reader; TEST_CONFIRMED is unavailable unless tested source IDs are explicitly supplied.', ...payload }); }
 
 /** Use the already fetched product history so GitHub's comparison and PR file limits cannot omit changes. */
-export async function officialCandidateDiff(directory: string, sourceSha: string, baselineSha: string | null) {
+export async function officialCandidateDiff(directory: string, sourceSha: string, baselineSha: string | null,
+  selected?: { exclude: string[]; merge: boolean }) {
   const gitSha = /^[a-f0-9]{40}$/;
   if (!gitSha.test(sourceSha) || (baselineSha !== null && !gitSha.test(baselineSha))) throw Error('CONTENT_SOURCE_IDENTITY');
   const home = await mkdtemp(join(tmpdir(), 'steward-candidate-diff-'));
   try {
     const baseline = baselineSha ?? '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
-    const git = spawn('git', ['--no-replace-objects', '-c', 'core.hooksPath=', 'diff', '--no-ext-diff',
-      '--no-textconv', '--no-color', '--no-renames', '--unified=2', baseline, sourceSha, '--'], {
+    const diff = selected?.merge ? ['show', '--format=', '--cc'] : ['diff'];
+    const revisions = selected?.merge ? [sourceSha] : [baseline, sourceSha];
+    const git = spawn('git', ['--no-replace-objects', '-c', 'core.hooksPath=', ...diff, '--no-ext-diff',
+      '--no-textconv', '--no-color', '--no-renames', selected ? '--unified=0' : '--unified=2', ...revisions, '--',
+      ...(selected?.exclude.map(path => ':(top,exclude,literal)' + path) ?? [])], {
       cwd: directory, env: { ...isolatedBuildEnvironment(process.env, home), GIT_NO_LAZY_FETCH: '1' },
       windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'],
     });
@@ -49,6 +53,8 @@ export async function officialCandidateDiff(directory: string, sourceSha: string
     let text: string;
     try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Buffer.concat(parts)); }
     catch { throw Error('CONTENT_SOURCE_ENCODING'); }
+    // Git can append the preceding unchanged line to a hunk header even with --unified=0.
+    if (selected) text = text.replace(/^(@{2,} [0-9,+ -]+ @{2,}) [^\n]*/gm, '$1');
     const details = { sourceSha, baselineSha };
     return splitContentText(text).map(chunk => ({ kind: 'source-range-diff', details: { ...details, ...chunk } }));
   } finally { await rm(home, { recursive: true, force: true }); }

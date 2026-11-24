@@ -5,9 +5,9 @@ import { tmpdir } from 'node:os';
 import { isolatedBuildEnvironment } from './build-environment.js';
 
 /** SDK is a separate fixed entrypoint; App and repository credentials never enter its environment. */
-export function copilotReleaseClient(controllerDirectory: string, token: string) {
+export function copilotReleaseClient(controllerDirectory: string, token: string, purpose: 'generate' | 'classify' = 'generate') {
   const script = resolve(controllerDirectory, 'tools/quality-language/release-notes.mjs');
-  const invoke = async (mode: 'preflight' | 'generate', input: string) => {
+  const invoke = async (mode: 'preflight' | 'generate' | 'classify', input: string) => {
     if (!token.trim() || /[\r\n\0]/.test(token)) throw new Error('WAIT_AUTH');
     const directory = await mkdtemp(join(tmpdir(), 'steward-content-client-'));
     try {
@@ -34,7 +34,7 @@ export function copilotReleaseClient(controllerDirectory: string, token: string)
       if (!['READY', 'WAIT_AUTH', 'WAIT_QUOTA'].includes(result.status)) throw new Error('RESPONSE_UNKNOWN'); return result.status;
     },
     async call(input: string): Promise<{ text: string; model: string; usage: object | null }> {
-      const result = await invoke('generate', input);
+      const result = await invoke(purpose, input);
       if (result.status === 'WAIT_AUTH' || result.status === 'WAIT_QUOTA') throw Object.assign(new Error(result.status), { retryAfterMs: result.retryAfterMs });
       if (result.status !== 'RETURNED' || typeof result.text !== 'string' || typeof result.model !== 'string') throw new Error('RESPONSE_UNKNOWN');
       return { text: result.text, model: result.model, usage: result.usage };

@@ -13,6 +13,8 @@ function fixture() {
     if(path==='/app')data={id:4243096,client_id:'Iv23liuSr0qd4WLJdZhH',slug:'splrad-steward'};
     else if(path==='/orgs/splrad/installation')data={id:145952003,app_id:4243096,account:{id:302208797},suspended_at:null};
     else if(path==='/users/splrad-steward[bot]')data={id:wrongBot?4243096:301115370,type:'Bot'};
+    else if(path==='/app/hook/deliveries') data=[{id:19,guid:'12345678-abcd-4000-8000-123456789abc',event:'pull_request',action:'opened',installation_id:145952003,repository_id:1}];
+    else if(path==='/app/hook/deliveries/19') data={guid:'12345678-abcd-4000-8000-123456789abc',event:'pull_request',action:'opened',installation_id:145952003,repository_id:1,request:{payload:{action:'opened',repository:{id:1}}}};
     else if(path==='/app/installations/145952003/access_tokens'&&method==='POST') {
       const body=JSON.parse(String(init?.body));
       // The reviewed GitHub API rejects the legacy field before minting a token.
@@ -29,6 +31,13 @@ function fixture() {
   }) as typeof fetch;
   return {fetcher,minted,revoked,setExtraScope:()=>extraScope=true,setWrongBot:()=>wrongBot=true};
 }
+it('recovers the original pull delivery by GUID, then restricts label access to one repository',async()=>{
+  const f=fixture(),app=await nativeReleaseApp(key,f.fetcher);
+  expect(await app.readPullDelivery('12345678-abcd-4000-8000-123456789abc')).toEqual({action:'opened',repository:{id:1}});
+  await app.forRepository(1,async()=>{},'release-label');
+  expect(f.minted).toEqual([{repository_ids:[1],permissions:{metadata:'read',contents:'read',pull_requests:'write'}}]);
+  expect(f.revoked).toHaveLength(1);
+});
 it('scopes Pages maintenance to one product, without Pages deployment or workflow write permission',async()=>{
   const f=fixture(),app=await nativeReleaseApp(key,f.fetcher);
   await expect(app.forPagesRepository(12,async()=>{throw Error('fixture Pages failure');})).rejects.toThrow('fixture Pages failure');

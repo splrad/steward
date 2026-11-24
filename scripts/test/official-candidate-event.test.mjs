@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseFragment } from 'parse5';
@@ -10,10 +10,11 @@ import YAML from 'yaml';
 import { candidateBaseUnchanged, EvidenceReadError, isolatedBuildEnvironment, officialCandidateDiff } from '../../packages/runner/dist/index.js';
 import { Manifest } from 'release-please';
 import { PullRequestBody } from 'release-please/build/src/util/pull-request-body.js';
-import { bodyDigest, computeOfficialCandidate, draftOfficialCandidate, officialCandidateRoundId, officialMergeKey,
+import { bodyDigest, computeOfficialCandidate, draftOfficialCandidate, officialCandidateEvidence, officialCandidateRoundId, officialMergeKey,
   officialNotes, renderOfficialHomepage, validateOfficialMergeEvent, verifyOfficialMerge } from '../official-release-candidate.mjs';
 import { candidateEvent, officialCandidateRoute, prepareOfficialCandidate } from '../official-candidate-event.mjs';
 import { compatibleExistingCandidate, writeOfficialCandidate } from '../official-candidate-write.mjs';
+import { classifyPull, impactTarget } from '../pr-release-impact.mjs';
 
 const sourceSha = 'a'.repeat(40), head = 'b'.repeat(40), controllerSha = 'c'.repeat(40), previousSha = 'd'.repeat(40);
 const product = { id: 17, name: 'splrad/fixture', defaultBranch: 'main' }, authorId = 301115370;
@@ -63,6 +64,98 @@ test('candidate diff reads the complete immutable range beyond GitHub file pagin
   assert.equal(text, git(['diff', '--no-ext-diff', '--no-textconv', '--no-color', '--no-renames', '--unified=2', baselineSha, sourceSha, '--']));
   assert.equal((text.match(/^\+真实变更$/gm) ?? []).length, records.length);
   assert.deepEqual((await officialCandidateDiff(directory, sourceSha, null)).map(chunk => chunk.details.text).join(''), text);
+});
+
+test('Internal labels filter every writing source and preserve mixed PRs and direct commits', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'steward-release-labels-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const git = (...args) => execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com', ...args],
+    { cwd: directory, encoding: 'utf8', env: isolatedBuildEnvironment(process.env, directory) }).trim();
+  git('init', '--quiet');
+  git('commit', '--allow-empty', '-qm', 'baseline');
+  const baseline = { tag: 'v1.0.0', sha: git('rev-parse', 'HEAD') };
+  const commits = [];
+  async function commit(path, contents, message) {
+    const parent = git('rev-parse', 'HEAD');
+    await writeFile(join(directory, path), contents);
+    git('add', path);
+    git('commit', '-qm', message);
+    const sha = git('rev-parse', 'HEAD');
+    commits.push({ sha, parents: [{ sha: parent }], commit: { message } });
+    return sha;
+  }
+  const internal = await commit('manual.md', 'internal-only-sentinel\n', 'internal-only-sentinel');
+  const visible = await commit('manual.md', 'internal-only-sentinel\nvisible-usage\n', 'mixed PR adds public usage');
+  const direct = await commit('direct.txt', 'direct-feature\n', 'direct feature');
+  const candidate = { base: 'main', head: pr.head.ref, version: '1.1.0', body: upstreamBody,
+    files: [{ path: 'CHANGELOG.md', content: 'range-wide-sentinel' }] };
+  const pull = (number, labels, title) => ({ number, labels: labels.map(name => ({ name })), title, body: title,
+    base: pr.base, merged_at: '2026-01-01T00:00:00Z' });
+  const labels = new Map([[internal, [pull(40, ['iNteRnal'], 'internal-only-sentinel')]],
+    [visible, [pull(41, ['auto/docs'], 'mixed change')]], [direct, []]]);
+  async function collect() {
+    return officialCandidateEvidence({ product, sourceSha: direct, baseline, candidate, directory: async () => directory,
+      getPages: async path => labels.get(path.split('/')[1]),
+      get: async path => {
+        if (path === 'contents/release-please-config.json?ref=' + direct) return blob('release-please-config.json', settings);
+        if (path === 'contents/.github/delivery.json?ref=' + direct) return blob('.github/delivery.json', { schemaVersion: 3 });
+        if (path.startsWith('compare/')) return { base_commit: baseline, merge_base_commit: baseline, status: 'ahead',
+          total_commits: commits.length, commits };
+        assert.fail('unexpected range-wide source: ' + path);
+      } });
+  }
+  const result = await collect();
+  const material = JSON.stringify(result.evidence);
+  assert.match(material, /mixed change/);
+  assert.match(material, /visible-usage/);
+  assert.match(material, /direct-feature/);
+  assert.doesNotMatch(material, /internal-only-sentinel|range-wide-sentinel/);
+  for (const sha of [visible, direct]) labels.set(sha, [pull(42, ['Internal'], 'internal-only-sentinel')]);
+  const context = await collect();
+  assert.deepEqual(context.evidence.map(item => item.kind), ['maintenance-only']);
+  const draft = await draftOfficialCandidate({ roundId: 'e'.repeat(64), candidate, context, product, sourceSha: direct,
+    template, call: () => assert.fail('purely internal release does not need model inference') });
+  assert.match(officialNotes(draft.body).body, /本版仅包含项目内部维护/);
+});
+
+test('App classifies the current PR, preserves manual changes and releases stale automatic labels on failure', async () => {
+  const repo = {id:17, full_name:product.name, owner:{id:302208797}, default_branch:'main'};
+  const current = {...pr, head:{...pr.head,ref:'change'}, base:{...pr.base,sha:sourceSha}, changed_files:1,labels:[]};
+  const target = impactTarget({action:'opened',repository:repo,pull_request:current});
+  assert.ok(target);
+  assert.equal(impactTarget({action:'opened',repository:repo,pull_request:pr}),null);
+  let events = [], writes = [];
+  const io = { pull:async()=>structuredClone(current), events:async()=>events, readme:async()=>'A deployment tool',
+    files:async()=>[{filename:'ci.yml',patch:'@@ -0,0 +1 @@\n+verify',additions:1,deletions:0}],
+    ensureLabel:async()=>writes.push('ensure'), add:async()=>writes.push('add'), remove:async()=>writes.push('remove') };
+  const internal = async input => {
+    assert.match(input,/A deployment tool/);
+    return {text:JSON.stringify({decision:'internal',reason:'Only the project tests use this job.'})};
+  };
+  assert.equal(await classifyPull(target,io,internal),'internal');
+  assert.deepEqual(writes,['ensure','add']);
+  writes=[];
+  events=[{id:1,event:'unlabeled',actor:{id:9},label:{name:'Internal'}}];
+  assert.equal(await classifyPull(target,io,()=>assert.fail()),'preserved');
+  events=[];
+  assert.equal(await classifyPull(target,io,async input=>{
+    const output=await internal(input);
+    events.push({id:2,event:'labeled',actor:{id:9},label:{name:'Internal'}});
+    current.labels.push({name:'Internal'});
+    return output;
+  }),'superseded');
+  assert.deepEqual(writes,[]);
+  events[0].actor.id=authorId;
+  await assert.rejects(classifyPull(target,io,async()=>{throw Error('provider unavailable')}),/IMPACT_CLASSIFICATION_UNAVAILABLE/);
+  assert.deepEqual(writes,['remove']);
+  writes=[];
+  assert.equal(await classifyPull(target,{...io,files:async()=>[]},()=>assert.fail()),'eligible');
+  assert.deepEqual(writes,['remove']);
+  writes=[];
+  assert.equal(await classifyPull(target,io,async input=>{
+    const output=await internal(input);current.head.sha=sourceSha;return output;
+  }),'superseded');
+  assert.deepEqual(writes,[]);
 });
 
 test('C2 compares the Git objects and modes for every candidate path across an ancestor range', async t => {
