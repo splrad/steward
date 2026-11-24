@@ -26,7 +26,7 @@ export async function ghReleaseFixture(sourceShaOverride?:string, notesBody?:str
   const release = { id: 20, author: { id: 42 }, tag_name: 'v1.2.3', target_commitish: sourceSha, draft: true, immutable: false, body: publicBody, prerelease:false,
     html_url: 'https://github.com/fixture/product/releases/tag/v1.2.3', upload_url: 'https://uploads.github.com/repos/fixture/product/releases/20/assets{?name,label}' };
   const releases = new Map<number, typeof release>([[20, release]]);
-  const state = { source: sourceSha, tag: true, annotated: false, loseUpload: false, losePublish: false,
+  const state = { source: sourceSha, tag: true, annotated: false, loseUpload: false,
     blockLabel: false, loseLabel: false, failUpload: false, incomplete: false, corruptDownload: false, disabled: false, private: false, disableAfterUpload: false, runStatus: 'completed', runConclusion: 'success',
     originalAttempt: 1, originalConclusion: 'success', changeBodyAfterUpload: false,
     invocation: 'https://github.com/fixture/product/actions/runs/10/attempts/2', certificateRepository: '1', buildTrigger: 'workflow_dispatch' };
@@ -70,7 +70,9 @@ export async function ghReleaseFixture(sourceShaOverride?:string, notesBody?:str
         put(name, await readFile(args[args.indexOf('--input') + 1]!), { label: url.searchParams.get('label')! });
         if (state.disableAfterUpload) state.disabled = true;
         if (state.changeBodyAfterUpload) release.body += '\nChanged externally';
-        if (state.loseUpload) throw new Error('lost upload response'); return '{}';
+        if (state.loseUpload) throw new Error('lost upload response');
+        const asset=remote.get(name)!;
+        return JSON.stringify({name,id:asset.id,state:asset.state,size:asset.bytes.length,digest:'sha256:'+digest(asset.bytes.toString())});
       }
       if (method === 'PATCH' && endpoint.includes('/releases/assets/')) {
         const asset = remote.get(body.name);
@@ -80,14 +82,7 @@ export async function ghReleaseFixture(sourceShaOverride?:string, notesBody?:str
         if (state.loseLabel) throw new Error('lost label response');
         return '{}';
       }
-      if (method === 'PATCH') {
-        // Match GitHub REST: omitting tag_name removes the draft's current tag association.
-        release.tag_name = body.tag_name ?? 'untagged-fixture';
-        expect(endpoint).toBe('repos/fixture/product/releases/20');
-        expect(body.body).toBeUndefined();
-        if (body.draft === false) { expect(Object.keys(body)).toEqual(['tag_name', 'draft']); release.draft = false; release.immutable = true; if (state.losePublish) throw new Error('lost publish response'); }
-        return '{}';
-      }
+      if (method === 'PATCH') throw new Error('release mutation is forbidden');
       if (method === 'DELETE') {
         if (endpoint.includes('/releases/assets/')) { const id = Number(endpoint.split('/').at(-1)); for (const [name, asset] of remote) if (asset.id === id) remote.delete(name); }
         else throw new Error('release deletion is forbidden');
