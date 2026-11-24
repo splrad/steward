@@ -4,8 +4,10 @@
 
 从同一候选的受保护 Git 历史取原归档、原缓存、已登记的恢复授权和对照版本。对照版本可以是转存前的空批次，也可以是已经记下第二次尝试与恢复收据的批次。用 runner 的 `decodeCandidateDocument` 解码相应文档，将原缓存按键传入 `cache`，对照版本的 `input`、`payloads`、`evidence` 传入 `work`。`loadDocument` 只从原归档的固定提交读取并解码指定路径。`facts`、`protections` 取自对照版本，`authorsDigest` 取自该次生成记录。
 
+下面的导入路径供放在仓库 `docs/` 目录中的 Node.js ES 模块使用。准备好上述快照后即可调用。
+
 ```js
-import { verifyContentRecoveryArchive } from './scripts/release-content-recovery.mjs';
+import { verifyContentRecoveryArchive } from '../scripts/release-content-recovery.mjs';
 
 const verified = await verifyContentRecoveryArchive(work, cache, grant, {
   loadDocument, facts, protections, authorsDigest
