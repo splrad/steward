@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import {appendFile, mkdtemp, readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {dirname, join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -53,9 +53,11 @@ async function build(sha) {
   execFileSync('git', ['worktree', 'add', '--quiet', '--detach', target, sha]);
   const cwd = join(target, 'workers', 'steward');
   // The build job has no production environment or write permission. Pass only tool paths to the build.
-  const env = {PATH: process.env.PATH, HOME: temp, CI: 'true', WRANGLER_SEND_METRICS: 'false'};
+  const bin = dirname(process.execPath);
+  const npm = join(bin, '../lib/node_modules/npm/bin/npm-cli.js');
+  const env = {PATH: bin + ':/usr/bin:/bin', HOME: temp, CI: 'true', WRANGLER_SEND_METRICS: 'false'};
   const options = {cwd, env, stdio: 'pipe', timeout: 180000};
-  execFileSync('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], options);
+  execFileSync(process.execPath, [npm, 'ci', '--ignore-scripts', '--no-audit', '--no-fund'], options);
   const file = join(temp, 'worker.multipart');
   execFileSync(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'deploy', '--dry-run', '--outfile', file], options);
   return builtDigest(await readFile(file));
