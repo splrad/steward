@@ -31,6 +31,15 @@ test('read-only organization preflight creates no session and does not consult p
   }
 });
 
+test('classification uses the isolated SDK with its own whole-PR decision contract', async () => {
+  const text='{"decision":"eligible","reason":"The workflow is a supported deliverable."}';
+  const f=fixture({text});
+  assert.equal((await releaseNotes('classify','{}','workflow-token',f.create)).text,text);
+  const {sessionOptions}=f.options();
+  assert.ok(sessionOptions.systemMessage.content.includes('整个 PR'));
+  assert.deepEqual(sessionOptions.tools.availableTools,[]);
+});
+
 test('expired tokens, organization policy and budget rejection do not retry or fall back', async () => {
   for (const status of [401,403,429]) {
     const f=fixture({failure:{status,response:{headers:new Headers({'retry-after':'120'})}}});

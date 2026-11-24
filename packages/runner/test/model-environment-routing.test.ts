@@ -4,6 +4,7 @@ import { parse } from 'yaml';
 
 it.each([
   ['quality-language-summary.yml', 'quality-summary', 'steward-release-notes'],
+  ['pr-release-impact.yml', 'classify', 'steward-release-notes'],
   ['ai-identity-acceptance.yml', 'quality', 'steward-release-notes'],
   ['ai-identity-acceptance.yml', 'release', 'steward-release'],
 ])('%s routes its native job token only into its model consumer step', async (file, key, environment) => {
@@ -18,14 +19,24 @@ it.each([
       expect(job.if).toContain(guard);
     }
     expect(workflow.jobs.release.needs).toBe('quality');
+  } else if (file === 'pr-release-impact.yml') {
+    expect(Object.keys(workflow.on)).toEqual(['workflow_dispatch']);
+    expect(workflow.concurrency).toEqual({group:'pr-release-impact-${{ inputs.group }}','cancel-in-progress':false});
+    for (const guard of ["github.actor_id == '301115370'", "github.repository_id == '1296724484'",
+      "github.ref == 'refs/heads/main'", 'github.workflow_sha == github.sha']) expect(job.if).toContain(guard);
   } else {
     expect(job.if).toContain("github.ref == format('refs/heads/{0}', github.event.repository.default_branch)");
   }
   expect(workflow.env).toBeUndefined();
-  expect(job.env).toBeUndefined();
+  if (file === 'pr-release-impact.yml') expect(job.env).toEqual({ MISE_ENABLE_TOOLS: 'node,npm' });
+  else expect(job.env).toBeUndefined();
   const consumers = job.steps.filter((step: {env?: Record<string, string>}) => step.env?.STEWARD_COPILOT_TOKEN);
   expect(consumers).toHaveLength(1);
   expect(consumers[0].env.STEWARD_COPILOT_TOKEN).toBe('${{ github.token }}');
+  if (file === 'pr-release-impact.yml') {
+    expect(consumers[0].run).toBe('node scripts/pr-release-impact.mjs');
+    expect(job.permissions).toEqual({ contents: 'read', 'copilot-requests': 'write' });
+  }
   if (file === 'ai-identity-acceptance.yml') {
     expect(consumers[0].run).toBe(`node tools/quality-language/identity-acceptance.mjs ${key}`);
     expect(JSON.stringify(job)).not.toMatch(/secrets\./);
@@ -48,5 +59,6 @@ it('only the production and explicitly gated acceptance jobs receive native Copi
     }
   }
   expect(consumers.sort()).toEqual(['ai-identity-acceptance.yml/quality', 'ai-identity-acceptance.yml/release',
-    'business-flow-acceptance.yml/acceptance', 'quality-language-summary.yml/quality-summary', 'release-candidate-event.yml/event']);
+    'business-flow-acceptance.yml/acceptance', 'pr-release-impact.yml/classify',
+    'quality-language-summary.yml/quality-summary', 'release-candidate-event.yml/event']);
 });
