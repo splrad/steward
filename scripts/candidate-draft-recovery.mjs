@@ -20,6 +20,22 @@ const prepare = 'Compute or restore the official candidate', generate = 'Draft t
 const writes = ['Record the draft and check body, version and source', 'Issue the product candidate token',
   'Create or refresh the candidate with validated inputs'];
 
+class RecoveryFailure extends Error {
+  constructor(stage, error) {
+    super(/^CANDIDATE_RECOVERY_[A-Z_]+$/.test(error?.message) ? error.message : 'CANDIDATE_RECOVERY_FAILED');
+    this.stage = stage;
+    if (Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599) this.status = error.status;
+  }
+}
+
+async function atStage(stage, operation) {
+  try {
+    return await operation();
+  } catch (error) {
+    throw error instanceof RecoveryFailure ? error : new RecoveryFailure(stage, error);
+  }
+}
+
 export function failedDraftRun(runs, key) {
   const matches = runs.filter(run => run.display_title === 'Candidate event ' + key &&
     run.repository?.id === central.id && run.head_repository?.id === central.id && run.workflow_id === workflowId &&
@@ -107,10 +123,10 @@ export async function recoverDraft({ run, reader, admit, reserve, dispatch, sett
   return 'DISPATCHED';
 }
 
-async function writeRecoveryRecord(app, root, admit, plan) {
+export async function writeRecoveryRecord(app, root, admit, plan, {fetchSnapshot = fetchState, checkProtection = assertReleaseWriterProtection} = {}) {
   return app.forRepository(central.id, async token => {
     const rules = app.readCentralMaintenanceRules;
-    const refresh = () => fetchState(root,central,token,'steward/release-state',{
+    const refresh = () => fetchSnapshot(root,central,token,'steward/release-state',{
       includeHistory:true,centralFirstUse:true,readCentralMaintenanceRules:rules });
     const state = await refresh();
     const records = new Map(state.snapshot.domainRecords.map(record => [record.path, record.value]));
@@ -120,9 +136,10 @@ async function writeRecoveryRecord(app, root, admit, plan) {
     const content = JSON.stringify(value) + '\n';
     const beforePush = async () => {
       if (admit) check(await admit(),'SOURCE_CHANGED');
-      await assertReleaseWriterProtection(central.full_name,'steward/release-state',state.io,{readCentralMaintenanceRules:rules});
+      await checkProtection(central.full_name,'steward/release-state',state.io,{readCentralMaintenanceRules:rules});
     };
-    const result = await writeReleaseRecords({ directory:await mkdtemp(join(root,'claim-')),remote:state.remote,
+    const directory = join(root, 'claim-' + bodyDigest(JSON.stringify([state.snapshot.head, path, content])));
+    const result = await writeReleaseRecords({ directory,remote:state.remote,
       repositoryId:central.id,defaultBranch:'main',targetRef:'steward/release-state',writer:'maintenance',
       expectedHead:state.snapshot.head,allowedPaths:[path],changes:[{path,content,sha256:bodyDigest(content),previousSha256:null}],
       identity:{name:app.appBotLogin,email:botId+'+'+app.appBotLogin+'@users.noreply.github.com'} },{token,beforePush});
@@ -133,33 +150,37 @@ async function writeRecoveryRecord(app, root, admit, plan) {
   },'maintenance');
 }
 
-async function loadProductRound({ app, root, repo, product, get, io, sourceSha }) {
+async function loadProductRound({ root, repo, product, get, io, sourceSha, stateToken }) {
   const participation = await releaseParticipation(repo, io, { requireWorkflowGitHubDelivery: true });
   if (participation.status !== 'APPLICABLE' || participation.sourceSha !== sourceSha) return;
   const configuration = await readOfficialConfig(get, sourceSha);
   if (officialCandidateRoute(configuration, 'true').route !== 'official') return;
   const manifest = await readOfficialManifest(get, sourceSha);
   const baseline = await candidateBaseline(get, product, sourceSha, configuration, manifest);
-  return app.forCandidateRepository(repo.id, async stateToken => {
-    const { directory } = await fetchState(root, repo, stateToken);
-    return findOfficialCandidateRound({ directory, repositoryId: repo.id, defaultBranch: repo.default_branch, sourceSha, baseline });
-  });
+  const { directory } = await fetchState(root, repo, stateToken);
+  return findOfficialCandidateRound({ directory, repositoryId: repo.id, defaultBranch: repo.default_branch, sourceSha, baseline });
 }
 
 export async function recoverProduct({ app, root, repo, reader, history, runs, promoted, coordinator, controller },
   { transport = nativeEvidenceTransport, loadRound = loadProductRound, writeRecord = writeRecoveryRecord, isPaused = releaseIsPaused } = {}) {
   const product = { id: repo.id, name: repo.full_name, defaultBranch: repo.default_branch };
-  return app.forCandidateReadRepository(repo.id, async token => {
-    const io = transport(token);
-    const target = new NativeEvidenceReader(io, repo.full_name);
+  const sourceSha = await atStage('product_head', () => app.forCandidateReadRepository(repo.id, token => {
+    const reader = new NativeEvidenceReader(transport(token), repo.full_name);
+    return defaultHead(path => reader.json(path), repo.default_branch);
+  }));
+  const key = recoveryKey(repo.id, sourceSha);
+  const run = failedDraftRun(runs, key);
+  if (!run || await atStage('product_pause', () => isPaused(app, repo.id))) return;
+  const round = await atStage('product_round', () => app.forCandidateRepository(repo.id, (stateToken, readToken) => {
+    const io = transport(readToken);
+    const reader = new NativeEvidenceReader(io, repo.full_name);
+    return loadRound({ root, repo, product, get:path => reader.json(path), io, sourceSha, stateToken });
+  }));
+  if (!round?.source || round.draft || round.branch || round.pull || round.source.sourceSha !== sourceSha ||
+      officialCandidateRoundId(product, round.source) !== round.roundId) return;
+  return atStage('product_recheck', () => app.forCandidateReadRepository(repo.id, async token => {
+    const target = new NativeEvidenceReader(transport(token), repo.full_name);
     const get = path => target.json(path);
-    const sourceSha = await defaultHead(get, repo.default_branch);
-    const key = recoveryKey(repo.id, sourceSha);
-    const run = failedDraftRun(runs, key);
-    if (!run || await isPaused(app, repo.id)) return;
-    const round = await loadRound({ app, root, repo, product, get, io, sourceSha });
-    if (!round?.source || round.draft || round.branch || round.pull || round.source.sourceSha !== sourceSha ||
-        officialCandidateRoundId(product, round.source) !== round.roundId) return;
 
     const admit = async () => {
       if (!await promoted() || await defaultHead(get, repo.default_branch) !== sourceSha ||
@@ -178,23 +199,23 @@ export async function recoverProduct({ app, root, repo, reader, history, runs, p
       failedRunId: run.id, failedAttempt: run.run_attempt, coordinatorRunId: coordinator.runId,
       coordinatorAttempt: coordinator.runAttempt, controllerSha: controller,
     };
-    const reserve = () => writeRecord(app, root, admit, records => nextClaim(records, reservation));
-    const settle = (claim, outcome, status) => writeRecord(app, root, null, records => {
+    const reserve = () => atStage('claim', () => writeRecord(app, root, admit, records => nextClaim(records, reservation)));
+    const settle = (claim, outcome, status) => atStage('claim_outcome', () => writeRecord(app, root, null, records => {
       const prefix = claimPath(claim), prior = records.get(prefix + '.json');
       check(prior && Object.keys(claim).every(key => prior[key] === claim[key]) &&
         !records.has(prefix + '-rejected.json') && !records.has(prefix + '-not-sent.json'), 'CLAIM_IDENTITY');
       return { path: prefix + '-' + outcome + '.json', value: outcome === 'not-sent' ? claim : { ...claim, responseStatus: status } };
-    });
-    const result = await app.forRepository(central.id, async credential => {
+    }));
+    const result = await atStage('failed_run', () => app.forRepository(central.id, async credential => {
       const path = '/repos/' + central.full_name + '/actions/workflows/' + workflowId + '/dispatches';
       const inputs = { event_json: JSON.stringify({ kind: 'push', repositoryId: repo.id, sourceSha }),
         request_key: key, source_sha: sourceSha, policy_sha: controller };
       const actions = transport(credential);
-      const dispatch = async () => (await actions.request('POST', path, undefined, { ref: 'main', inputs })).status;
+      const dispatch = () => atStage('dispatch', async () => (await actions.request('POST', path, undefined, { ref: 'main', inputs })).status);
       return recoverDraft({ run, reader, admit, reserve, dispatch, settle });
-    }, 'configuration-actions');
+    }, 'configuration-actions'));
     return { product: repo.full_name, failedRunId: run.id, roundId: round.roundId, result };
-  });
+  }));
 }
 
 export async function reconcileCandidateDrafts(env = process.env) {
@@ -225,7 +246,8 @@ export async function reconcileCandidateDrafts(env = process.env) {
         if (result) results.push(result);
       } catch (error) {
         const reason = /^CANDIDATE_RECOVERY_[A-Z_]+$/.test(error?.message) ? error.message : 'CANDIDATE_RECOVERY_FAILED';
-        results.push({ product: repo.full_name, result: 'FAILED', reason });
+        const details = error instanceof RecoveryFailure ? { stage:error.stage, status:error.status } : {};
+        results.push({ product: repo.full_name, result: 'FAILED', reason, ...details });
       }
     }
     return results;

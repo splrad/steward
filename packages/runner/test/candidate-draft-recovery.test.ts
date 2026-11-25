@@ -115,7 +115,13 @@ it.each(['accepted','moved','closed','paused','paused after claim','refused then
         base:{repo,ref:'main'},head:{repo,ref:source.candidate.head,sha:priorHead}};
     return {status:200,bytes:Buffer.from(JSON.stringify(data))};
   }});
-  const app={forCandidateReadRepository:async(id:number,fn:Function)=>{expect(id).toBe(17);return fn('read');},
+  let reading = false;
+  const app={forCandidateReadRepository:async(id:number,fn:Function)=>{
+    expect(id).toBe(17);expect(reading).toBe(false);reading=true;
+    try {return await fn('read');} finally {reading=false;}
+  },forCandidateRepository:async(id:number,fn:Function)=>{
+    expect(id).toBe(17);expect(reading).toBe(false);return fn('state','read');
+  },
     forRepository:async(id:number,fn:Function,purpose:string)=>{expect([id,purpose]).toEqual([central.id,'configuration-actions']);return fn('actions');}};
   const reader={json:async()=>original,pages:async()=>[job],response:async()=>({bytes:Buffer.from(diagnostic)})};
   const call=()=>recoverProduct({app,root:'fixture',repo,reader,history:async()=>[original],runs:[original],promoted:async()=>true,
@@ -142,7 +148,7 @@ it.each(['accepted','moved','closed','paused','paused after claim','refused then
       expect(await call()).toBeUndefined();
       paused=false;coordinatorId++;
     }
-    if(scenario==='lost response') await expect(call()).rejects.toThrow('response lost');
+    if(scenario==='lost response') await expect(call()).rejects.toMatchObject({message:'CANDIDATE_RECOVERY_FAILED',stage:'dispatch'});
     else expect((await call()).result).toBe('DISPATCHED');
     expect((await call()).result).toBe('ALREADY_RESERVED');
   }
