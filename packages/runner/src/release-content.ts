@@ -1,4 +1,4 @@
-import { contentOutputSchema, permittedContentPredecessor, verifyContentAttemptReceipts, retryableContentRejection, type ContentRecoveryReceipt } from '../../core/src/release-content.js';
+import { contentOutputSchema } from '../../core/src/release-content.js';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -7,11 +7,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { GitReleaseInputOptions } from './release-git-input.js';
 import { assertDeliveryPath } from '../../core/src/delivery-config.js';
-import { assertSelectedReleaseDownloads, assertVersionAcquisitionLinks, parseConditionalNotes } from '../../core/src/conditional-release-notes.js';
+import { parseConditionalNotes } from '../../core/src/conditional-release-notes.js';
 import { committedVersionNotes } from '../../core/src/release-template.js';
 import { isolatedBuildEnvironment } from './build-environment.js';
-import { RELEASE_WRITING_PROMPT, CONTENT_PROMPT, CONDITIONAL_CONTENT_PROMPT, validateContentResult, validateContentInput, renderUnitContent, buildConditionalDraft, splitContentText, releaseAffectedUnitIds, utf8Length,
-  type ContentInput, type ContentBatch, type ContentItem, type ContentParagraph, type ContentAttempt, type ContentStage } from '../../core/src/release-content.js';
+import { RELEASE_WRITING_PROMPT, CONTENT_PROMPT, CONDITIONAL_CONTENT_PROMPT, validateContentResult, buildConditionalDraft, splitContentText, releaseAffectedUnitIds, utf8Length,
+  type ContentInput, type ContentItem, type ContentStage } from '../../core/src/release-content.js';
 
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export interface ContentSource {
@@ -21,9 +21,6 @@ export interface ContentSource {
   documentationText?: true;
 }
 export interface ContentPayload { stage: ContentStage; unitIds: string[]; units: ContentInput['units']; sources: ContentSource[]; items: ContentItem[]; background: ContentItem[]; conditional?: true }
-export interface ContentWork { input: ContentInput; payloads: Record<string, ContentPayload>; results: Record<string, { items: ContentItem[] } | { paragraphs: ContentParagraph[] }>; evidence: { manifests: unknown[]; gaps: unknown[] } }
-export interface ContentCacheEntry { inputDigest: string; configDigest: string; attempts: ContentAttempt[]; result: { items: ContentItem[] } | { paragraphs: ContentParagraph[] } | null; split?: boolean; conditional?: true }
-export type ContentCache = Record<string, ContentCacheEntry>;
 export function contentWireInput(payload: ContentPayload) { return JSON.stringify({ prompt: payload.conditional ? CONDITIONAL_CONTENT_PROMPT : CONTENT_PROMPT,
   outputSchema: contentOutputSchema(payload.conditional), constraints: 'Return only the schema object, without Markdown fences or extra keys. Omit optional paragraphs without product facts. For a relevant claim with uncertain verification, set qualification to UNVERIFIED and describe only the specific consequence for the reader; TEST_CONFIRMED is unavailable unless tested source IDs are explicitly supplied.', ...payload }); }
 
@@ -288,142 +285,4 @@ export async function collectContentInput(options: { directory: string; candidat
     boundaries: options.units.map(u => ({ unitId: u.unit.id, kind: u.boundary.kind, sha: u.boundary.kind === 'full-tree' ? null : u.boundary.sha,
       reference: u.boundary.kind === 'full-tree' ? null : u.boundary.reference })), sourceManifestDigest: hash(manifests), configDigest: options.configDigest, batches: [] };
   return { input, sources, gaps: [], manifests };
-}
-/** One direct draft per unit; no fixed stages, recursive splitting, or per-source coverage obligation. */
-export async function planContentBatches(input: ContentInput, sources: ContentSource[], evidence: ContentWork['evidence'] = { manifests: [], gaps: [] },
-  conditional = false): Promise<ContentWork> {
-  const work: ContentWork = { input: { ...structuredClone(input), schemaVersion: 2, batches: [] }, payloads: {}, results: {}, evidence };
-  for (const unit of input.units) {
-    const payload: ContentPayload = { stage: 'DRAFT', unitIds: [unit.id], units: [unit], sources: sources.filter(s => s.unitId === unit.id), items: [], background: [],
-      ...(conditional ? { conditional: true } : {}) };
-    const inputDigest = hash(payload), id = hash([input.candidateId, input.configDigest, inputDigest]);
-    const batch: ContentBatch = { id, stage: 'DRAFT', unitIds: [unit.id], sourceIds: payload.sources.map(s => s.id), inputDigest,
-      status: 'PENDING', attempts: [], nextCheckAt: null, resultPath: null, errorCode: null };
-    work.input.batches.push(batch); work.payloads[id] = payload;
-  }
-  validateContentInput(work.input); return work;
-}
-export interface ContentRecovery extends ContentRecoveryReceipt { candidateId: string; batchId: string }
-export interface ContentRuntime {
-  recovery?: ContentRecovery;
-  repository?: string;
-  now(): string;
-  editing(): Promise<boolean>;
-  preflight(): Promise<'READY' | 'WAIT_AUTH' | 'WAIT_QUOTA'>;
-  call(input: string): Promise<{ text: string; model: string; usage: object | null }>;
-  save(work: ContentWork, cache: ContentCache): Promise<void>;
-}
-/** Persist a request before sending; unknown results need native maintenance, not an automatic replay loop. */
-export async function resumeContentBatches(work: ContentWork, cache: ContentCache, runtime: ContentRuntime) {
-  if (work.input.schemaVersion !== 2) throw new Error('CONTENT_LEGACY_READ_ONLY');
-  validateContentInput(work.input);
-  if (runtime.recovery && (work.input.batches.length !== 1 || work.input.units.length !== 1
-    || runtime.recovery.candidateId !== work.input.candidateId || runtime.recovery.batchId !== work.input.batches[0]!.id)) throw Error('CONTENT_RECOVERY_BINDING');
-  let calls = 0;
-  for (const batch of work.input.batches) {
-    if (batch.status === 'READY') continue;
-    if (await runtime.editing()) return { status: 'EDITING', calls };
-    const key = hash([batch.inputDigest, work.input.configDigest]);
-    const payload = work.payloads[batch.id]!;
-    const conditional = payload.conditional === true;
-    const entry = cache[key] ??= { inputDigest: batch.inputDigest, configDigest: work.input.configDigest, attempts: [], result: null,
-      ...(conditional ? { conditional: true } : {}) };
-    if ((entry.conditional === true) !== conditional) throw Error('CONTENT_CACHE_CONTRACT');
-    const validate = (text: string) => {
-      let result: { paragraphs: ContentParagraph[] };
-      try { result = validateContentResult('DRAFT', text, batch.sourceIds, [], undefined, conditional) as typeof result; }
-      catch (error) {
-        if (conditional && error instanceof Error && error.message === 'CONTENT_DOCUMENT_STRUCTURE')
-          throw conditionalOutputError('releaseNotesStructure');
-        throw error;
-      }
-      if (conditional && result.paragraphs.some(item => item.section === 'documentation'
-        && (item.qualification !== 'SOURCE_CONFIRMED' || !payload.sources.some(source => source.documentationText && item.sourceIds.includes(source.id)))))
-        throw conditionalOutputError('documentationEvidence');
-      if (conditional && runtime.repository) {
-        const draft = buildConditionalDraft(result.paragraphs);
-        const notes = parseConditionalNotes(draft);
-        const tag = payload.units[0]!.tag;
-        try {
-          assertVersionAcquisitionLinks(notes, runtime.repository, tag);
-          assertSelectedReleaseDownloads(draft, runtime.repository, tag);
-        }
-        catch { throw conditionalOutputError('acquisitionVersion'); }
-      }
-      return result;
-    };
-    await verifyContentAttemptReceipts(entry.attempts, conditional); await verifyContentAttemptReceipts(batch.attempts, conditional);
-    if (entry.result) {
-      work.results[batch.id] = validate(JSON.stringify(entry.result));
-      batch.status = 'READY'; batch.resultPath = `results/${batch.id}.json`; await runtime.save(work, cache); continue;
-    }
-    const blocked = (attempts: ContentAttempt[]) => attempts.some(a => !!a.recovery) || attempts.some((a,i) => i === attempts.length-1 ? !retryableContentRejection(a) : !permittedContentPredecessor(a,i,attempts));
-    let recovery: ContentRecoveryReceipt | undefined;
-    if (runtime.recovery && !blocked(entry.attempts) && !blocked(batch.attempts)) throw Error('CONTENT_RECOVERY_BINDING');
-    if (runtime.recovery && (blocked(entry.attempts) || blocked(batch.attempts))) {
-      const grant = runtime.recovery, prior = entry.attempts[0];
-      if (grant.candidateId !== work.input.candidateId || grant.batchId !== batch.id || entry.attempts.length !== 1
-        || JSON.stringify(entry.attempts) !== JSON.stringify(batch.attempts) || prior?.status !== 'REJECTED' || prior.errorCode !== 'CONTENT_OUTPUT_SCHEMA'
-        || grant.previousAttemptSha256 !== hash(prior) || grant.outputContractSha256 !== hash(contentOutputSchema(conditional))
-        || !/^[a-f0-9]{64}$/.test(grant.authorizationId)) throw Error('CONTENT_RECOVERY_BINDING');
-      recovery = { previousAttemptSha256: grant.previousAttemptSha256, authorizationId: grant.authorizationId, outputContractSha256: grant.outputContractSha256 };
-      if (grant.archiveContentDigest !== undefined || grant.archiveProtectionDigest !== undefined) {
-        if (typeof grant.archiveContentDigest!=='string' || typeof grant.archiveProtectionDigest!=='string'
-          || ![grant.archiveContentDigest,grant.archiveProtectionDigest].every(v=>/^[a-f0-9]{64}$/.test(v))) throw Error('CONTENT_RECOVERY_BINDING');
-        recovery.archiveContentDigest=grant.archiveContentDigest;recovery.archiveProtectionDigest=grant.archiveProtectionDigest;
-      }
-    }
-    if (!recovery && (blocked(entry.attempts) || blocked(batch.attempts))) {
-      batch.status = 'FAILED'; batch.errorCode = entry.attempts.at(-1)?.errorCode ?? 'RESPONSE_UNKNOWN';
-      await runtime.save(work, cache); return { status: 'FAILED', calls };
-    }
-    if (batch.nextCheckAt && Date.parse(batch.nextCheckAt) > Date.parse(runtime.now())) return { status: batch.status, calls };
-    const preflight = await runtime.preflight();
-    if (preflight !== 'READY') { batch.status = preflight; await runtime.save(work, cache); return { status: preflight, calls }; }
-    if (await runtime.editing()) return { status: 'EDITING', calls };
-    const attempt: ContentAttempt = { ordinal: Math.max(entry.attempts.length, batch.attempts.length) + 1, startedAt: runtime.now(), status: 'SENT', model: 'server-selected', usage: null, errorCode: null };
-    if (recovery) attempt.recovery = recovery;
-    batch.attempts = [...(entry.attempts.length >= batch.attempts.length ? entry.attempts : batch.attempts), attempt]; entry.attempts = batch.attempts; batch.nextCheckAt = null; batch.status = 'RUNNING'; await runtime.save(work, cache); calls++;
-    let returnedText: string | undefined;
-    try {
-      const response = await runtime.call(contentWireInput(payload));
-      returnedText = response.text;
-      attempt.status = 'RETURNED'; attempt.model = response.model; attempt.usage = response.usage;
-      const result = validate(response.text);
-      work.results[batch.id] = result; entry.result = result; batch.resultPath = `results/${batch.id}.json`; batch.status = 'READY'; batch.errorCode = null;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '';
-      const code = /^(?:CONTENT_[A-Z_]+|WAIT_AUTH|WAIT_QUOTA|RESPONSE_UNKNOWN)$/.test(message) ? message : 'RESPONSE_UNKNOWN';
-      const responseBytes = returnedText === undefined ? null : utf8Length(returnedText);
-      if (returnedText !== undefined && responseBytes !== null && responseBytes <= 12 * 1024) attempt.diagnostic = {
-        responseSha256: createHash('sha256').update(returnedText).digest('hex'), responseBytes, responseText: returnedText,
-        validationErrors: code === 'CONTENT_OUTPUT_SCHEMA' ? (error as {validationErrors?: {instancePath:string;schemaPath:string;keyword:string}[]}).validationErrors ?? [] : [],
-      };
-      attempt.status = code === 'RESPONSE_UNKNOWN' ? 'UNKNOWN' : 'REJECTED'; attempt.errorCode = code;
-      batch.status = code === 'WAIT_AUTH' || code === 'WAIT_QUOTA' ? code : 'FAILED'; batch.errorCode = code;
-      if (batch.status !== 'FAILED') {
-        const delay = (error as { retryAfterMs?: number }).retryAfterMs;
-        batch.nextCheckAt = new Date(Date.parse(runtime.now()) + (typeof delay === 'number' && Number.isFinite(delay) ? Math.max(60_000, delay) : 60_000)).toISOString();
-      }
-    }
-    await runtime.save(work, cache);
-    if (batch.status !== 'READY') return { status: batch.status, calls };
-  }
-  return { status: 'READY', calls };
-}
-function conditionalOutputError(keyword: string) {
-  return Object.assign(new Error('CONTENT_OUTPUT_SCHEMA'), {
-    validationErrors: [{ instancePath: '/paragraphs', schemaPath: '#/properties/paragraphs', keyword }],
-  });
-}
-export function assembleUnitNotes(work: ContentWork, notesPaths?: Record<string,string>) {
-  if (!work.input.batches.every(b => b.status === 'READY')) throw new Error('CONTENT_NOT_READY');
-  return work.input.units.map(unit => {
-    const batches = work.input.batches.filter(b => b.unitIds.includes(unit.id));
-    const paragraphs = batches.flatMap(b => (work.results[b.id] as { paragraphs: ContentParagraph[] }).paragraphs);
-    const render = batches.some(batch => work.payloads[batch.id]?.conditional) ? buildConditionalDraft : renderUnitContent;
-    const path=notesPaths ? notesPaths[unit.id] : `.release-notes/${unit.id}.md`;
-    if(!path)throw Error('CONTENT_NOTES_PATH');
-    return { path, mode: '100644' as const, content: render(paragraphs) };
-  });
 }

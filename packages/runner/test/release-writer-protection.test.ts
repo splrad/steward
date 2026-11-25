@@ -13,9 +13,14 @@ function fixture(change=(value:any,_path:string)=>value) {
   return {status:200,headers:new Headers(),bytes:Buffer.from(JSON.stringify(value))};
  }}};
 }
-it.each(['steward/release-state','steward/automation-health','steward/build/pr-1-source'])('accepts separate creation authority and integrity rules: %s',async branch=>{
+it.each(['steward/release-state','steward/build/pr-1-source'])('accepts separate creation authority and integrity rules: %s',async branch=>{
  const f=fixture();await assertReleaseWriterProtection(repository,branch,f.io);
  expect(f.paths[0]).toContain('?per_page=100&page=1');
+});
+it('rejects the retired health ref before consulting GitHub',async()=>{
+ const f=fixture();
+ await expect(assertReleaseWriterProtection(repository,'steward/automation-health',f.io)).rejects.toThrow('writer protection target');
+ expect(f.paths).toHaveLength(0);
 });
 it.each(['missing-integrity','wrong-id','inactive','tag-target','missing-membership','integrity-bypass','wrong-app','extra-app','pull-request-bypass','combined','fetch-and-merge','missing-update-parameter'])('rejects weakened state protection: %s',async fault=>{
  const f=fixture((value,path)=>{

@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { freezeReleaseGitInput } from '../src/release-git-input.js';
-import { collectContentInput, planContentBatches } from '../src/release-content.js';
+import { collectContentInput, officialCandidateDiff } from '../src/release-content.js';
 import { validateReleaseSource, validateReleaseSourceManifest, validateReleaseEvidence } from '../../core/src/release-bundle.js';
 import { frozenFixture } from '../../core/test/release-receipt-fixture.js';
 import { receiptDigest } from '../../core/src/release-note-receipt.js';
@@ -35,8 +35,6 @@ describe('完整 Git 发布输入', { timeout: 30_000 }, () => {
     expect(collected.sources.some(s=>s.path==='commits'||s.text.includes('feat: new feature'))).toBe(false);
     expect(collected.sources.find(s=>s.path==='README.md')!.text).toContain('Usage');
     expect(collected.manifests[0]!.commits).toHaveLength(1);
-    const work=await planContentBatches(collected.input,collected.sources,{manifests:collected.manifests,gaps:[]});
-    expect(work.input.batches).toHaveLength(1);expect(work.input.batches[0]!.stage).toBe('DRAFT');
   });
   it.each([
     ['web-sdk', 'packages/web-sdk', 'web-sdk-v1.2.0-beta.1', '1.2.0-beta.1'],
@@ -205,4 +203,16 @@ it.each(['.', 'packages/app'])('selects only the configured HISTORY.md for unit 
   expect(collected.sources.map(source=>source.path)).toEqual([prefix+'HISTORY.md']);
   expect(collected.sources[0]!.text).toContain('current repair');
   expect(collected.sources[0]!.text).not.toMatch(/old history|wrong file|nested file/);
+});
+
+it('passes the complete changed source range into the official candidate',async()=>{
+  const f=fixture();
+  const text='资料更新。'.repeat(3000);
+  f.commit('HISTORY.md',text);
+  const head=f.commit('Manual.md','新版操作说明');
+  const chunks=await officialCandidateDiff(f.workspace,head,f.base);
+  expect(chunks.every(chunk=>chunk.details.sourceSha===head && chunk.details.baselineSha===f.base)).toBe(true);
+  const diff=chunks.map(chunk=>chunk.details.text).join('');
+  expect(diff).toContain(text);
+  expect(diff).toContain('新版操作说明');
 });
