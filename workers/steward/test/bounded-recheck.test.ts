@@ -17,38 +17,27 @@ class SqliteStore implements Store {
  alarm(){return this.db.prepare('SELECT alarm FROM state').get()?.alarm??null;}
 }
 const t0=1800000000000,m=60000;
-function input(stage:Registration['identity']['stage']='candidate'):Registration{return {identity:{repositoryId:1187527897,cycleId:'candidate1',channel:stage==='candidate'?'candidate':'winget',version:'1.0.0',artifactDigest:'sha256:'+'a'.repeat(64),sourceSha:'b'.repeat(40),stage,epoch:'epoch1',upstreamPR:stage==='candidate'?null:{number:123,nodeId:'PR_node'}},t0,policySha:'c'.repeat(40),deploymentSha:'d'.repeat(40)};}
+function input(stage:Registration['identity']['stage']='winget-index'):Registration{return {identity:{repositoryId:1187527897,cycleId:'candidate1',channel:stage==='candidate'?'candidate':'winget',version:'1.0.0',artifactDigest:'sha256:'+'a'.repeat(64),sourceSha:'b'.repeat(40),stage,epoch:'epoch1',upstreamPR:stage==='candidate'?null:{number:123,nodeId:'PR_node'}},t0,policySha:'c'.repeat(40),deploymentSha:'d'.repeat(40)};}
 function fixture(out:Outcome={kind:'pending'}){let now=t0;const store=new SqliteStore();const effects:Effects={observe:vi.fn(async()=>out),confirm:vi.fn(async()=>out)};return {store,effects,engine:()=>new BoundedRecheck(store,effects,()=>now,'e'.repeat(40)),time:(n:number)=>{now=n;}};}
+const indexWindow = POLICIES['winget-index'].duration;
 describe('bounded recheck faults with actual SQLite transactions',()=>{
  it('idle never schedules or calls effects',async()=>{const f=fixture();await f.engine().wake();expect(f.store.alarm()).toBeNull();expect(f.effects.observe).not.toHaveBeenCalled();});
- it('durable registration recovers lost immediate wake across reconstruction',async()=>{const f=fixture();await f.engine().register(input());expect(f.store.alarm()).toBe(t0);await f.engine().wake();expect(f.effects.observe).toHaveBeenCalledTimes(1);expect((await f.store.read())?.consumed).toBe(0);expect(f.store.alarm()).toBe(t0+2*m);});
- it('duplicates cannot reset budget, T0 or epoch',async()=>{const f=fixture();await f.engine().register(input());await f.engine().wake();f.time(t0+2*m);await f.engine().wake();await f.engine().register(input());expect((await f.store.read())?.consumed).toBe(1);await expect(f.engine().register({...input(),t0:t0+1})).rejects.toThrow('REGISTRATION_CONFLICT');});
+ it('durable registration recovers lost immediate wake across reconstruction',async()=>{const f=fixture();await f.engine().register(input());expect(f.store.alarm()).toBe(t0);await f.engine().wake();expect(f.effects.observe).toHaveBeenCalledTimes(1);expect((await f.store.read())?.consumed).toBe(0);expect(f.store.alarm()).toBe(t0+5*m);});
+ it('duplicates cannot reset budget, T0 or epoch',async()=>{const f=fixture();await f.engine().register(input());await f.engine().wake();f.time(t0+5*m);await f.engine().wake();await f.engine().register(input());expect((await f.store.read())?.consumed).toBe(1);await expect(f.engine().register({...input(),t0:t0+1})).rejects.toThrow('REGISTRATION_CONFLICT');});
  it('concurrent wakes reserve one intent and recovery alarm before IO',async()=>{const f=fixture();let resolve!:(o:Outcome)=>void;f.effects.observe=vi.fn(()=>new Promise(r=>resolve=r));await f.engine().register(input());const pending=f.engine().wake();await Promise.resolve();await f.engine().wake();expect(f.effects.observe).toHaveBeenCalledTimes(1);expect(f.store.alarm()).toBe(t0+m);resolve({kind:'pending'});await pending;});
- it('keeps pending candidate confirmations read-only through the final retry',async()=>{
-   const f=fixture({kind:'unknown'});
-   vi.mocked(f.effects.confirm).mockResolvedValue({kind:'pending'});
-   await f.engine().register(input());
-   await f.engine().wake();
-   for(const minutes of [1,5,15,30]){f.time(t0+minutes*m);await f.engine().wake();}
-   expect(f.effects.observe).toHaveBeenCalledTimes(1);
-   expect(f.effects.confirm).toHaveBeenCalledTimes(3);
-   expect((await f.store.read())?.reason).toBe('UNKNOWN_DELIVERY');
-   expect(f.store.alarm()).toBeNull();
- });
  it('unknown dispatch never repeats POST and has exactly 3 read-only confirmations',async()=>{const f=fixture({kind:'unknown'});await f.engine().register(input());await f.engine().wake();for(const n of [1,5,15]){f.time(t0+n*m);await f.engine().wake();}expect(f.effects.observe).toHaveBeenCalledTimes(1);expect(f.effects.confirm).toHaveBeenCalledTimes(3);expect((await f.store.read())?.reason).toBe('UNKNOWN_DELIVERY');expect(f.store.alarm()).toBeNull();});
  it('crash during last confirmation leaves durable terminal state, not orphan pending',async()=>{const f=fixture({kind:'unknown'});await f.engine().register(input());await f.engine().wake();for(const n of [1,5]){f.time(t0+n*m);await f.engine().wake();}f.effects.confirm=vi.fn(()=>new Promise(()=>{}));f.time(t0+15*m);void f.engine().wake();await Promise.resolve();expect((await f.store.read())?.status).toBe('NEEDS_ATTENTION');expect(f.store.alarm()).toBeNull();});
- it('pause/resume retains unknown intent and original deadline',async()=>{const f=fixture({kind:'unknown'});await f.engine().register(input());await f.engine().wake();await f.engine().control('pause',1);expect(f.store.alarm()).toBeNull();f.time(t0+10*m);await f.engine().control('resume',2);await f.engine().wake();expect(f.effects.observe).toHaveBeenCalledTimes(1);expect(f.effects.confirm).toHaveBeenCalledTimes(1);expect((await f.store.read())?.deadline).toBe(t0+120*m);});
+ it('pause/resume retains unknown intent and original deadline',async()=>{const f=fixture({kind:'unknown'});await f.engine().register(input());await f.engine().wake();await f.engine().control('pause',1);expect(f.store.alarm()).toBeNull();f.time(t0+10*m);await f.engine().control('resume',2);await f.engine().wake();expect(f.effects.observe).toHaveBeenCalledTimes(1);expect(f.effects.confirm).toHaveBeenCalledTimes(1);expect((await f.store.read())?.deadline).toBe(t0+indexWindow*m);});
  it('cancel fences in-flight success and late alarm',async()=>{const f=fixture();let resolve!:(o:Outcome)=>void;f.effects.observe=vi.fn(()=>new Promise(r=>resolve=r));await f.engine().register(input());const pending=f.engine().wake();await Promise.resolve();await f.engine().control('cancel',1);resolve({kind:'done',evidence:'late'});await pending;f.time(t0+2*m);await f.engine().wake();expect((await f.store.read())?.status).toBe('CANCELLED');expect(f.effects.observe).toHaveBeenCalledTimes(1);});
  it('downtime skips overdue slots instead of catch-up burst',async()=>{const f=fixture();await f.engine().register(input());await f.engine().wake();f.time(t0+50*m);await f.engine().wake();expect((await f.store.read())?.consumed).toBe(1);expect(f.store.alarm()).toBe(t0+60*m);});
- it('candidate exact deadline final slot runs once; delayed deadline does not',async()=>{const f=fixture();await f.engine().register(input());await f.engine().wake();for(const n of [2,5,15,30,60,120]){f.time(t0+n*m);await f.engine().wake();}expect(f.effects.observe).toHaveBeenCalledTimes(7);expect((await f.store.read())?.consumed).toBe(6);expect(f.store.alarm()).toBeNull();const g=fixture();await g.engine().register(input());g.time(t0+120*m+1);await g.engine().wake();expect(g.effects.observe).not.toHaveBeenCalled();});
- it('Retry-After beyond deadline terminates without new window',async()=>{const f=fixture({kind:'pending',retryAfter:t0+121*m});await f.engine().register(input());await f.engine().wake();expect((await f.store.read())?.status).toBe('NEEDS_ATTENTION');expect(f.store.alarm()).toBeNull();});
+ it('Retry-After beyond deadline terminates without new window',async()=>{const f=fixture({kind:'pending',retryAfter:t0+(indexWindow+1)*m});await f.engine().register(input());await f.engine().wake();expect((await f.store.read())?.status).toBe('NEEDS_ATTENTION');expect(f.store.alarm()).toBeNull();});
  it.each(['winget-pr','winget-index'] as const)('%s exact budget then deadline-only marker',async stage=>{const f=fixture();await f.engine().register(input(stage));await f.engine().wake();for(const n of POLICIES[stage].offsets){f.time(t0+n*m);await f.engine().wake();}expect(f.effects.observe).toHaveBeenCalledTimes(POLICIES[stage].offsets.length+1);expect(f.store.alarm()).toBe(t0+POLICIES[stage].duration*m);f.time(t0+POLICIES[stage].duration*m);await f.engine().wake();expect(f.effects.observe).toHaveBeenCalledTimes(POLICIES[stage].offsets.length+1);expect((await f.store.read())?.status).toBe('NEEDS_ATTENTION');});
- it('expired imported object receives no fresh window',async()=>{const f=fixture();f.time(t0+3*60*m);await f.engine().register(input());expect(f.store.alarm()).toBeNull();expect((await f.store.read())?.status).toBe('NEEDS_ATTENTION');});
+ it('expired imported object receives no fresh window',async()=>{const f=fixture();f.time(t0+(indexWindow+1)*m);await f.engine().register(input());expect(f.store.alarm()).toBeNull();expect((await f.store.read())?.status).toBe('NEEDS_ATTENTION');});
  it('final confirmation can verify success without reopening on duplicate alarm',async()=>{const f=fixture({kind:'unknown'});await f.engine().register(input());await f.engine().wake();for(const n of [1,5]){f.time(t0+n*m);await f.engine().wake();}f.effects.confirm=vi.fn(async()=>({kind:'done',evidence:'verified-artifact'}));f.time(t0+15*m);await f.engine().wake();await f.engine().wake();expect((await f.store.read())?.status).toBe('DONE');expect(f.effects.observe).toHaveBeenCalledTimes(1);});
  it('rejects invalid repository IDs, executor fields, future timestamps',async()=>{const f=fixture();await expect(f.engine().register({...input(),identity:{...input().identity,repositoryId:0}})).rejects.toThrow('FIXED_TARGET');await expect(f.engine().register({...input(),url:'https://evil'} as any)).rejects.toThrow('CLOSED_SCHEMA');await expect(f.engine().register({...input(),t0:t0+1})).rejects.toThrow('ORIGINAL_T0');});
  it('merged PR atomically replaces its alarm with one index stage at native merge time',async()=>{const f=fixture({kind:'index',mergedAt:t0+5*m,evidence:'native-pr'});await f.engine().register(input('winget-pr'));f.time(t0+6*m);await f.engine().wake();let r=(await f.store.read())!;expect(r.identity.stage).toBe('winget-index');expect(r.t0).toBe(t0+5*m);expect(r.deadline).toBe(t0+5*m+48*60*m);expect(r.consumed).toBe(0);expect(r.intent).toBeNull();f.effects.observe=vi.fn(async()=>({kind:'pending'}));await f.engine().wake();r=(await f.store.read())!;expect(r.nextAt).toBe(t0+10*m);expect(f.effects.observe).toHaveBeenCalledTimes(1);});
- it('editing pause and expired resume cannot reset the original window',async()=>{const f=fixture({kind:'pause',reason:'EDITING_PAUSED'});await f.engine().register(input());await f.engine().wake();expect((await f.store.read())?.status).toBe('PAUSED');f.time(t0+121*m);await f.engine().control('resume',2);expect((await f.store.read())?.status).toBe('NEEDS_ATTENTION');expect((await f.store.read())?.t0).toBe(t0);expect(f.store.alarm()).toBeNull();});
- it.each([['candidate',false],['candidate',true],['winget-index',false],['winget-index',true]] as const)('resumes %s after explicit rate limiting (POST attempted: %s)',async(stage,attempted)=>{
+ it('editing pause and expired resume cannot reset the original window',async()=>{const f=fixture({kind:'pause',reason:'EDITING_PAUSED'});await f.engine().register(input());await f.engine().wake();expect((await f.store.read())?.status).toBe('PAUSED');f.time(t0+(indexWindow+1)*m);await f.engine().control('resume',2);expect((await f.store.read())?.status).toBe('NEEDS_ATTENTION');expect((await f.store.read())?.t0).toBe(t0);expect(f.store.alarm()).toBeNull();});
+ it.each([['winget-index',false],['winget-index',true]] as const)('resumes %s after explicit rate limiting (POST attempted: %s)',async(stage,attempted)=>{
   const f=fixture({kind:'unknown'});
   vi.mocked(f.effects.observe).mockRejectedValueOnce(new GitHubRetryError(429,'120',attempted));
   await f.engine().register(input(stage));await f.engine().wake();
@@ -70,21 +59,20 @@ describe('bounded recheck faults with actual SQLite transactions',()=>{
  it('third confirmation merge clears conservative unknown marker and wakes index',async()=>{const f=fixture({kind:'unknown'});await f.engine().register(input('winget-pr'));await f.engine().wake();for(const n of [1,5]){f.time(t0+n*m);await f.engine().wake();}f.effects.confirm=vi.fn(async()=>({kind:'index',mergedAt:t0+10*m,evidence:'third-get'}));f.time(t0+15*m);await f.engine().wake();const r=(await f.store.read())!;expect(r.status).toBe('PENDING');expect(r.notificationPending).toBe(false);expect(r.identity.stage).toBe('winget-index');expect(r.nextAt).toBe(t0+15*m);f.effects.observe=vi.fn(async()=>({kind:'pending'}));await f.engine().wake();expect(f.effects.observe).toHaveBeenCalledTimes(1);});
 
  it('late PR confirmation cannot overwrite a newer atomic index stage',async()=>{const f=fixture({kind:'unknown'});await f.engine().register(input('winget-pr'));await f.engine().wake();let resolve!:(o:Outcome)=>void;f.effects.confirm=vi.fn(()=>new Promise(r=>resolve=r));f.time(t0+m);const late=f.engine().wake();await Promise.resolve();f.effects.confirm=vi.fn(async()=>({kind:'index',mergedAt:t0+2*m,evidence:'newer-native-merge'}));f.time(t0+5*m);await f.engine().wake();const index=await f.store.read();resolve({kind:'pending'});await late;expect(await f.store.read()).toEqual(index);expect(index?.identity.stage).toBe('winget-index');});
- it('disk SQLite close/reopen retains unknown intent and alarm without dispatch replay',async()=>{const root=mkdtempSync(join(tmpdir(),'bounded-storage-')),path=join(root,'state.sqlite');let storage=new SqliteDurableStorage(path);const effects:Effects={observe:vi.fn(async()=>({kind:'unknown'})),confirm:vi.fn(async()=>({kind:'pending'}))};try{const first=new BoundedRecheck(new DurableRecheckStore(storage as any),effects,()=>t0);await first.register(input());await first.wake();storage.db.close();storage=new SqliteDurableStorage(path);expect(await storage.get('__alarm')).toBe(t0+m);const second=new BoundedRecheck(new DurableRecheckStore(storage as any),effects,()=>t0+m);await second.wake();expect(effects.observe).toHaveBeenCalledTimes(1);expect(effects.confirm).toHaveBeenCalledTimes(1);}finally{storage.db.close();rmSync(path);rmdirSync(root);}});
+ it('disk SQLite close/reopen retains unknown intent and alarm without dispatch replay',async()=>{const root=mkdtempSync(join(tmpdir(),'bounded-storage-')),path=join(root,'state.sqlite');let storage=new SqliteDurableStorage(path);const effects:Effects={observe:vi.fn(async()=>({kind:'unknown'})),confirm:vi.fn(async()=>({kind:'pending'}))};try{const first=new BoundedRecheck(new DurableRecheckStore(storage as any),effects,()=>t0,'e'.repeat(40));await first.register(input());await first.wake();storage.db.close();storage=new SqliteDurableStorage(path);expect(await storage.get('__alarm')).toBe(t0+m);const second=new BoundedRecheck(new DurableRecheckStore(storage as any),effects,()=>t0+m);await second.wake();expect(effects.observe).toHaveBeenCalledTimes(1);expect(effects.confirm).toHaveBeenCalledTimes(1);}finally{storage.db.close();rmSync(path);rmdirSync(root);}});
 
 });
 
 it('pause/resume preserves persisted Retry-After across reconstruction and does not spend a confirmation early',async()=>{const f=fixture({kind:'unknown'});await f.engine().register(input());await f.engine().wake();f.effects.confirm=vi.fn(async()=>{throw Error('RETRY_AFTER:3600');});f.time(t0+m);await f.engine().wake();const original=await f.store.read();f.time(t0+2*m);await f.engine().control('pause',1);await f.engine().control('resume',2);await f.engine().wake();expect(f.store.alarm()).toBe(t0+61*m);expect(f.effects.confirm).toHaveBeenCalledTimes(1);expect((await f.store.read())?.intent?.confirmations).toBe(1);expect((await f.store.read())?.deadline).toBe(original?.deadline);f.effects.confirm=vi.fn(async()=>({kind:'done',evidence:'verified'}));f.time(t0+61*m);await f.engine().wake();expect((await f.store.read())?.status).toBe('DONE');expect(f.effects.observe).toHaveBeenCalledTimes(1);});
-it.each(['register','alarm','resume'])('never opens an initial claim at exact deadline via %s',async action=>{const f=fixture();if(action==='register')f.time(t0+120*m);await f.engine().register(input());if(action==='resume')await f.engine().control('pause',1);f.time(t0+120*m);if(action==='resume')await f.engine().control('resume',2);await f.engine().wake();expect(f.effects.observe).not.toHaveBeenCalled();expect((await f.store.read())?.status).toBe('NEEDS_ATTENTION');expect(f.store.alarm()).toBeNull();});
+it.each(['register','alarm','resume'])('never opens an initial claim at exact deadline via %s',async action=>{const f=fixture();if(action==='register')f.time(t0+indexWindow*m);await f.engine().register(input());if(action==='resume')await f.engine().control('pause',1);f.time(t0+indexWindow*m);if(action==='resume')await f.engine().control('resume',2);await f.engine().wake();expect(f.effects.observe).not.toHaveBeenCalled();expect((await f.store.read())?.status).toBe('NEEDS_ATTENTION');expect(f.store.alarm()).toBeNull();});
 it('pending upstream rate-limit floor survives pause and resume',async()=>{const f=fixture({kind:'pending',retryAfter:t0+61*m});await f.engine().register(input('winget-pr'));await f.engine().wake();await f.engine().control('pause',1);f.time(t0+2*m);await f.engine().control('resume',2);await f.engine().wake();expect(f.effects.observe).toHaveBeenCalledTimes(1);expect(f.store.alarm()).toBe(t0+180*m);});
-it.each(['GENERATED_FILES_MISMATCH','MANUAL_UNMANAGED_CHANGES'])('ends safely on %s instead of treating mismatched bytes as completion',async reason=>{const f=fixture();f.effects.observe=vi.fn(async()=>{throw Error(reason);});await f.engine().register(input());await f.engine().wake();expect((await f.store.read())?.reason).toBe(reason);expect((await f.store.read())?.status).toBe('NEEDS_ATTENTION');expect(f.store.alarm()).toBeNull();});
 
 it('retains a late Retry-After received while the same intent is paused without rearming it',async()=>{const f=fixture();let reject!:(e:Error)=>void;f.effects.observe=vi.fn(()=>new Promise((_resolve,r)=>{reject=r;}));await f.engine().register(input());const inFlight=f.engine().wake();await Promise.resolve();await f.engine().control('pause',1);reject(Error('RETRY_AFTER:3600'));await inFlight;expect(f.store.alarm()).toBeNull();await f.engine().control('resume',2);expect(f.store.alarm()).toBe(t0+60*m);await f.engine().wake();expect(f.effects.confirm).not.toHaveBeenCalled();});
 
-it('late rate limit beyond deadline remains terminal when resuming the same paused intent',async()=>{const f=fixture();let reject!:(e:Error)=>void;f.effects.observe=vi.fn(()=>new Promise((_resolve,r)=>{reject=r;}));await f.engine().register(input());const inFlight=f.engine().wake();await Promise.resolve();await f.engine().control('pause',1);reject(Error('RETRY_AFTER:10800'));await inFlight;f.time(t0+m);await f.engine().control('resume',2);expect((await f.store.read())?.reason).toBe('WINDOW_EXHAUSTED');expect((await f.store.read())?.intent).not.toBeNull();expect(f.store.alarm()).toBeNull();await f.engine().wake();expect(f.effects.confirm).not.toHaveBeenCalled();});
-it('defensively terminates persisted excessive retry floor instead of rearming deadline repeatedly',async()=>{const f=fixture({kind:'unknown'});await f.engine().register(input());await f.engine().wake();await f.store.transaction(r=>{r!.retryAfter=t0+180*m;r!.intent!.retryAfter=t0+180*m;r!.nextAt=t0+120*m;return {record:r,result:null};});f.time(t0+120*m);await f.engine().wake();await f.engine().wake();expect((await f.store.read())?.status).toBe('NEEDS_ATTENTION');expect(f.store.alarm()).toBeNull();expect(f.effects.confirm).not.toHaveBeenCalled();});
-it('claimed confirmation can finish at exact deadline when its floor equals that deadline',async()=>{const f=fixture({kind:'unknown',retryAfter:t0+120*m});await f.engine().register(input());await f.engine().wake();await f.engine().control('pause',1);f.time(t0+m);await f.engine().control('resume',2);f.effects.confirm=vi.fn(async()=>({kind:'done',evidence:'exact'}));f.time(t0+120*m);await f.engine().wake();expect((await f.store.read())?.status).toBe('DONE');});
-it('late successful verification retains evidence but cannot mark an expired object DONE',async()=>{const f=fixture();let resolve!:(o:Outcome)=>void;f.effects.observe=vi.fn(()=>new Promise(r=>{resolve=r;}));await f.engine().register(input());const inFlight=f.engine().wake();await Promise.resolve();f.time(t0+120*m+1);resolve({kind:'done',evidence:'late-proof'});await inFlight;const r=await f.store.read();expect(r?.status).toBe('NEEDS_ATTENTION');expect(r?.evidence).toBe('late-proof');expect(f.store.alarm()).toBeNull();});
+it('late rate limit beyond deadline remains terminal when resuming the same paused intent',async()=>{const f=fixture();let reject!:(e:Error)=>void;f.effects.observe=vi.fn(()=>new Promise((_resolve,r)=>{reject=r;}));await f.engine().register(input());const inFlight=f.engine().wake();await Promise.resolve();await f.engine().control('pause',1);reject(Error('RETRY_AFTER:200000'));await inFlight;f.time(t0+m);await f.engine().control('resume',2);expect((await f.store.read())?.reason).toBe('WINDOW_EXHAUSTED');expect((await f.store.read())?.intent).not.toBeNull();expect(f.store.alarm()).toBeNull();await f.engine().wake();expect(f.effects.confirm).not.toHaveBeenCalled();});
+it('defensively terminates persisted excessive retry floor instead of rearming deadline repeatedly',async()=>{const f=fixture({kind:'unknown'});await f.engine().register(input());await f.engine().wake();await f.store.transaction(r=>{r!.retryAfter=t0+(indexWindow+60)*m;r!.intent!.retryAfter=t0+(indexWindow+60)*m;r!.nextAt=t0+indexWindow*m;return {record:r,result:null};});f.time(t0+indexWindow*m);await f.engine().wake();await f.engine().wake();expect((await f.store.read())?.status).toBe('NEEDS_ATTENTION');expect(f.store.alarm()).toBeNull();expect(f.effects.confirm).not.toHaveBeenCalled();});
+it('claimed confirmation can finish at exact deadline when its floor equals that deadline',async()=>{const f=fixture({kind:'unknown',retryAfter:t0+indexWindow*m});await f.engine().register(input());await f.engine().wake();await f.engine().control('pause',1);f.time(t0+m);await f.engine().control('resume',2);f.effects.confirm=vi.fn(async()=>({kind:'done',evidence:'exact'}));f.time(t0+indexWindow*m);await f.engine().wake();expect((await f.store.read())?.status).toBe('DONE');});
+it('late successful verification retains evidence but cannot mark an expired object DONE',async()=>{const f=fixture();let resolve!:(o:Outcome)=>void;f.effects.observe=vi.fn(()=>new Promise(r=>{resolve=r;}));await f.engine().register(input());const inFlight=f.engine().wake();await Promise.resolve();f.time(t0+indexWindow*m+1);resolve({kind:'done',evidence:'late-proof'});await inFlight;const r=await f.store.read();expect(r?.status).toBe('NEEDS_ATTENTION');expect(r?.evidence).toBe('late-proof');expect(f.store.alarm()).toBeNull();});
 
 it('confirmation editing pause retains the original unknown POST and remaining confirmations on resume',async()=>{const f=fixture({kind:'unknown'});await f.engine().register(input());await f.engine().wake();const key=(await f.store.read())!.intent!.key;f.effects.confirm=vi.fn(async()=>({kind:'pause',reason:'EDITING_PAUSED'}));f.time(t0+m);await f.engine().wake();expect((await f.store.read())?.status).toBe('PAUSED');expect((await f.store.read())?.intent?.key).toBe(key);expect((await f.store.read())?.intent?.confirmations).toBe(1);await f.engine().control('resume',2);f.effects.confirm=vi.fn(async()=>({kind:'done',evidence:'original-run'}));await f.engine().wake();expect(f.effects.observe).toHaveBeenCalledTimes(1);expect(f.effects.confirm).toHaveBeenCalledTimes(1);expect((await f.store.read())?.status).toBe('DONE');});
 it('keeps the historical candidate record readable while retired writes and alarms leave it untouched',async()=>{
@@ -92,11 +80,14 @@ it('keeps the historical candidate record readable while retired writes and alar
  const effects:Effects={observe:vi.fn(async()=>({kind:'unknown'})),confirm:vi.fn(async()=>({kind:'unknown'}))};
  const engine=new BoundedRecheck(store,effects,()=>t0);
  const coordinator=new BoundedRecheckCoordinator({storage} as any,{BOUNDED_RECHECK_ENABLED:'true'} as any);
- await engine.register(input());
+ const historical:RecordState={...input('candidate'),schemaVersion:1,status:'PENDING',deadline:t0+120*m,
+   nextAt:t0+m,nextSlot:0,consumed:0,initialClaimed:true,generation:1,intent:null,reason:'REGISTERED',evidence:'original',notificationPending:false};
+ await store.transaction(()=>({record:historical,result:null}));
+ await expect(engine.register(input('candidate'))).rejects.toThrow('CANDIDATE_OBSERVATION_RETIRED');
  await engine.wake();
- const before=await store.read();
+ const before=await store.read();expect(before).toEqual(historical);
  const storedAlarm=await storage.get('__alarm');
- const request=(path:string)=>new Request('https://bounded.internal/'+path,{method:'POST',body:JSON.stringify({identity:input().identity})});
+ const request=(path:string)=>new Request('https://bounded.internal/'+path,{method:'POST',body:JSON.stringify({identity:historical.identity})});
  for(const path of ['register','receipt','pause','resume','cancel'])expect((await coordinator.fetch(request(path))).status).toBe(404);
  await coordinator.alarm();
  const status=await coordinator.fetch(request('status'));
@@ -104,61 +95,6 @@ it('keeps the historical candidate record readable while retired writes and alar
  expect(status.headers.get('cache-control')).toBe('no-store');
  expect(await status.json()).toEqual(before);
  expect(await storage.get('__alarm')).toBe(storedAlarm);
- expect(effects.observe).toHaveBeenCalledTimes(1);
+ expect(effects.observe).not.toHaveBeenCalled();
  expect(effects.confirm).not.toHaveBeenCalled();
-});
-
-it.each(['duplicate','cancel','incomplete'])('reconciles an exact late receipt across %s',async scenario=>{
- const f=fixture({kind:'unknown',runId:42});
- await f.engine().register(input());
- await f.engine().wake();
- for(const offset of [1,5,15]){f.time(t0+offset*m);await f.engine().wake();}
- const before=(await f.store.read())!;
- expect(before).toMatchObject({generation:2,status:'NEEDS_ATTENTION',intent:{generation:1,runId:42,confirmations:3}});
- f.time(before.deadline+1000);
- const locator={identity:before.identity,requestKey:before.intent!.key,runId:42,attempt:1,policySha:before.policySha};
- for(const bad of [{policySha:'e'.repeat(40)},{runId:43},{attempt:2},{requestKey:'wrong'},{identity:{...before.identity,epoch:'other'}}]){
-   await expect(f.engine().receipt({...locator,...bad})).rejects.toThrow('RECEIPT_INTENT');
- }
- let release!:(outcome:Outcome)=>void,started!:()=>void;
- const entered=new Promise<void>(resolve=>{started=resolve;});
- vi.mocked(f.effects.confirm).mockImplementationOnce(()=>new Promise(resolve=>{release=resolve;started();}));
- const first=f.engine().receipt(locator);
- await entered;
- if(scenario==='cancel')await f.engine().control('cancel',before.generation);
- if(scenario==='duplicate'){
-   vi.mocked(f.effects.confirm).mockResolvedValueOnce({kind:'done',evidence:'first accepted'});
-   await f.engine().receipt(locator);
- }
- release(scenario==='incomplete'?{kind:'unknown'}:{kind:'done',evidence:'late'});
- await first;
- if(scenario==='duplicate'){
-   await f.engine().receipt(locator);
-   expect(await f.store.read()).toEqual({...before,generation:3,status:'DONE',reason:'VERIFIED_DONE',notificationPending:false,evidence:'first accepted'});
- }else if(scenario==='incomplete')expect(await f.store.read()).toEqual(before);
- else expect(await f.store.read()).toMatchObject({status:'CANCELLED',evidence:null});
- expect(f.effects.observe).toHaveBeenCalledTimes(1);
- expect(f.store.alarm()).toBeNull();
-});
-
-it('retains provider backoff on terminal receipts across reconstruction without an alarm',async()=>{
- const f=fixture({kind:'unknown',runId:42});
- await f.engine().register(input());
- await f.engine().wake();
- for(const offset of [1,5,15]){f.time(t0+offset*m);await f.engine().wake();}
- const before=(await f.store.read())!,now=before.deadline+m;
- f.time(now);
- const locator={identity:before.identity,requestKey:before.intent!.key,runId:42,attempt:1,policySha:before.policySha};
- vi.mocked(f.effects.confirm).mockRejectedValueOnce(new GitHubRetryError(429,'120',false));
- await f.engine().receipt(locator);
- const floor=now+2*m;
- expect(await f.store.read()).toEqual({...before,retryAfter:floor,intent:{...before.intent,retryAfter:floor}});
- await f.engine().receipt(locator);
- expect(f.effects.confirm).toHaveBeenCalledTimes(4);
- f.time(floor);
- vi.mocked(f.effects.confirm).mockResolvedValueOnce({kind:'done',evidence:'original'});
- await f.engine().receipt(locator);
- expect((await f.store.read())?.status).toBe('DONE');
- expect(f.effects.observe).toHaveBeenCalledTimes(1);
- expect(f.store.alarm()).toBeNull();
 });
