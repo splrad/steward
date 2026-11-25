@@ -4,7 +4,7 @@ import {mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync} from 'node:
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import YAML from 'yaml';
-import {adaptBuild, renderBuild} from './configuration-build.mjs';
+import {adaptBuild, renderBuild} from './test/fixtures/legacy-build-workflow.mjs';
 import {git} from './validation-input.mjs';
 import {verifyLayerScapeControllerPins} from './controller-pin-policy.mjs';
 

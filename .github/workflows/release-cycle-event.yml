@@ -22,7 +22,7 @@ concurrency:
 jobs:
   release-coordinator:
     if: github.actor_id == '301115370' && github.repository_id == '1296724484' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.policy_sha == github.sha && github.workflow_sha == github.sha
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     environment:
       name: steward-release

@@ -36,7 +36,7 @@ it('reports the unprefixed title check from the actual shared workflow result',a
   });
 });
 
-it('lets Renovate update both title runner sources and leaves the generated caller to Copier',async()=>{
+it('lets Renovate update the shared runner sources and leaves generated workflows to Copier',async()=>{
   const config=JSON.parse(await readFile('.github/renovate.json','utf8'));
   expect(config.enabledManagers).toContain('github-actions');
   // The provider is a standard workflow. The Jinja source needs an explicit match.
@@ -45,11 +45,12 @@ it('lets Renovate update both title runner sources and leaves the generated call
     rule.enabled && rule.matchManagers?.includes('github-actions') && rule.matchDepTypes?.includes('github-runner'));
   const ignored=(file:string)=>config.ignorePaths.some((pattern:string)=>
     file.includes(pattern) || minimatch(file,pattern,{dot:true}));
-  for (const file of [titleProvider,titleTemplate]) {
+  for (const file of [titleProvider,titleTemplate,'templates/repository/.github/workflows/pr-labeler.yml']) {
     expect(ignored(file)).toBe(false);
     expect(runnerRule?.matchFileNames.some((pattern:string)=>minimatch(file,pattern,{dot:true}))).toBe(true);
   }
   expect(ignored('.github/workflows/pr-title.yml')).toBe(true);
+  expect(ignored('.github/workflows/pr-labeler.yml')).toBe(true);
 });
 
 it('uses the pull request event metadata for labels without checking out or executing its files',async()=>{

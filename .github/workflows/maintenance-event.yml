@@ -26,7 +26,7 @@ jobs:
       group: steward-release-coordinator
       queue: max
       cancel-in-progress: false
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     environment:
       name: steward-release
