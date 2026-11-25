@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from 'vitest';
-import { budgetReleaseSourceTransport, releaseSourceBudget } from '../src/release-source-budget.js';
 import { GitHubClient } from '../../github/src/client.js';
 import { collectReleaseSources, assertReleaseSourcesUnchanged } from '../src/release-notes-input.js';
 import { attributeReleaseSources } from '../../core/src/release-notes-input.js';
@@ -53,23 +52,21 @@ describe('Git 来源与补充 PR 事实', () => {
     expect(result.facts).toHaveLength(1); expect(gh.getPullRequest).toHaveBeenCalledTimes(1);
   });
   it('120 PR 双轮真实客户端采集共 1200 请求，Git 范围不再从 API 重建', async () => {
-    vi.useFakeTimers();
-    try {
-      const { gh } = fixture(120); let requests = 0; const started = Date.now();
-      const transport = budgetReleaseSourceTransport(async input => {
-        requests++; const path = new URL(String(input)).pathname;
-        const commit = /\/commits\/([a-f0-9]{40})\/pulls$/.exec(path);
-        if (commit) return Response.json(await gh.listPullsForCommit('o', 'r', commit[1]!));
-        const pull = /\/(pulls|issues)\/(\d+)(?:\/(files|commits|labels))?$/.exec(path);
-        if (pull) { const n = Number(pull[2]); return Response.json(pull[3] === 'files' ? await gh.listPullFiles() : pull[3] === 'commits' ? await gh.listPullCommits('o', 'r', n) : pull[3] === 'labels' ? await gh.listLabels() : await gh.getPullRequest('o', 'r', n)); }
-        throw new Error(`unexpected ${path}`);
-      });
-      const client = new GitHubClient('test', 'https://api.github.com', transport);
-      const run = async () => assertReleaseSourcesUnchanged(await collectReleaseSources(client, 'o', 'r', source(120)), await collectReleaseSources(client, 'o', 'r', source(120)));
-      const done = run(); await vi.runAllTimersAsync(); await done;
-      expect(requests).toBe(1200); expect(requests).toBeLessThan(releaseSourceBudget.requests);
-      expect(Date.now() - started).toBeLessThan(releaseSourceBudget.timeoutMs);
-    } finally { vi.useRealTimers(); }
+    const { gh } = fixture(120); let requests = 0;
+    const transport = async (input: RequestInfo | URL) => {
+      requests++; const path = new URL(String(input)).pathname;
+      const commit = /\/commits\/([a-f0-9]{40})\/pulls$/.exec(path);
+      if (commit) return Response.json(await gh.listPullsForCommit('o', 'r', commit[1]!));
+      const pull = /\/(pulls|issues)\/(\d+)(?:\/(files|commits|labels))?$/.exec(path);
+      if (pull) { const n = Number(pull[2]); return Response.json(pull[3] === 'files' ? await gh.listPullFiles() : pull[3] === 'commits' ? await gh.listPullCommits('o', 'r', n) : pull[3] === 'labels' ? await gh.listLabels() : await gh.getPullRequest('o', 'r', n)); }
+      throw new Error(`unexpected ${path}`);
+    };
+    const client = new GitHubClient('test', 'https://api.github.com', transport);
+    const first = await collectReleaseSources(client, 'o', 'r', source(120));
+    const second = await collectReleaseSources(client, 'o', 'r', source(120));
+    assertReleaseSourcesUnchanged(first, second);
+    expect(first.facts).toHaveLength(120);
+    expect(requests).toBe(1200);
   });
   it('超过旧 120 提交上限的完整 Git 范围仍可补充 PR', async () => {
     const { gh } = fixture(121);

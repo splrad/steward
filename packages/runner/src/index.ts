@@ -14,13 +14,13 @@ export { pipelineIdentity, pipelineNotes, pipelineRecoverCycleFinal, mergedBuild
 export { inspectProductArtifacts, sealProductArtifacts, validateProductManifest } from './release-artifacts.js';
 export { renderFrozenReleaseNotes } from '../../core/src/release-template.js';
 export { decodeCompletionArchive } from '../../core/src/release-history.js';
-export { collectContentInput, planContentBatches, resumeContentBatches, assembleUnitNotes, contentWireInput, generateOfficialCandidateNotes, officialCandidateDiff } from './release-content.js';
+export { collectContentInput, contentWireInput, generateOfficialCandidateNotes, officialCandidateDiff } from './release-content.js';
 export { copilotReleaseClient } from './copilot-release-client.js';
 export { copilotQualityClient } from './copilot-quality-client.js';
 export { collectQualitySources, qualityPages, translateQualitySources, publishQualityCheck, serviceQualityPullRequest } from './quality-language-summary.js';
 export { decodeQualityCache, reconcileQualitySources, renderQualitySummary } from '../../core/src/quality-language-summary.js';
 export { decodeCandidateArchive, decodeCandidateDocument } from '../../core/src/release-candidate-record.js';
-export { splitContentText, releaseAffectedUnitIds } from '../../core/src/release-content.js';
+export { splitContentText, releaseAffectedUnitIds, contentOutputSchema, verifyContentAttemptReceipts } from '../../core/src/release-content.js';
 export { candidateBaseUnchanged } from './release-git-input.js';
 export { inspectCycleHistory, verifyFrozenReceipts, completionFile } from './release-history.js';
 export { inspectPublications, invokePublication } from './release-publication.js';
