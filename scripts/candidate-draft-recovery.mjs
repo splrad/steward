@@ -114,12 +114,19 @@ export async function recoverDraft({ run, reader, admit, reserve, dispatch, sett
     await settle(claim, 'not-sent');
     return 'SUPERSEDED';
   }
-  const status = await dispatch();
+  const status = await atStage('dispatch', async () => {
+    const response = await dispatch();
+    if (response !== 200 && response !== 204 && !definiteRejections.has(response)) {
+      const error = new Error('CANDIDATE_RECOVERY_DISPATCH_UNCONFIRMED');
+      error.status = response;
+      throw error;
+    }
+    return response;
+  });
   if (definiteRejections.has(status)) {
     await settle(claim, 'rejected', status);
     return 'DISPATCH_REJECTED';
   }
-  check(status === 204 || status === 200, 'DISPATCH_UNCONFIRMED');
   return 'DISPATCHED';
 }
 
@@ -211,7 +218,7 @@ export async function recoverProduct({ app, root, repo, reader, history, runs, p
       const inputs = { event_json: JSON.stringify({ kind: 'push', repositoryId: repo.id, sourceSha }),
         request_key: key, source_sha: sourceSha, policy_sha: controller };
       const actions = transport(credential);
-      const dispatch = () => atStage('dispatch', async () => (await actions.request('POST', path, undefined, { ref: 'main', inputs })).status);
+      const dispatch = async () => (await actions.request('POST', path, undefined, { ref: 'main', inputs })).status;
       return recoverDraft({ run, reader, admit, reserve, dispatch, settle });
     }, 'configuration-actions'));
     return { product: repo.full_name, failedRunId: run.id, roundId: round.roundId, result };
