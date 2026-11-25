@@ -338,6 +338,16 @@ export function decodeStateFile(targetRef: string, path: string, bytes: Uint8Arr
     return record;
   }
   if(owner==='settings') return decodeSettingsReport(decodeBuildJson(bytes),repositoryId,path);
+  if (owner === 'maintenance' && path.startsWith('maintenance/candidate-draft-')) {
+    const v = decodeBuildJson(bytes) as {schemaVersion:number; productId:number; sourceSha:string; roundId:string;
+      failedRunId:number; failedAttempt:number; coordinatorRunId:number; coordinatorAttempt:number; controllerSha:string};
+    exact(v,['schemaVersion','productId','sourceSha','roundId','failedRunId','failedAttempt','coordinatorRunId','coordinatorAttempt','controllerSha']);
+    if (repositoryId !== 1296724484 || v.schemaVersion !== 1 || !integer(v.productId) || !sha(v.sourceSha) || !digest(v.roundId) ||
+      !integer(v.failedRunId) || !integer(v.failedAttempt) || !integer(v.coordinatorRunId) || !integer(v.coordinatorAttempt) ||
+      !sha(v.controllerSha) || path !== `maintenance/candidate-draft-${v.productId}-${v.sourceSha}.json`)
+      return fail('candidate draft recovery identity');
+    return v;
+  }
   if(owner==='maintenance') return decodeMaintenanceRecord(bytes,repositoryId,path);
   if(owner==='pages') return decodePagesMaintenance(bytes,repositoryId,path);
   if(owner==='configuration') return decodeRepositoryPolicyProjection(bytes,repositoryId);

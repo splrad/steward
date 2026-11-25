@@ -46,7 +46,11 @@ it('excludes proven unconfigured governance repositories while retaining missing
     if(path===`/repos/${repository.full_name}`)value=repository;
     else if(path.includes('git/ref/heads/main'))value={ref:'refs/heads/main',object:{type:'commit',sha}};
     else if(path.includes('matching-refs/heads/steward/release-state'))value=productState||centralMaintenance?[{ref:'refs/heads/steward/release-state',object:{type:'commit',sha:head}}]:[];
-    else if(path.includes(`git/trees/${head}`))value={truncated:false,tree:[...(centralMaintenance?[{path:'maintenance',type:'tree',mode:'040000',sha}]:[]),{path:centralMaintenance?'maintenance/12.json':'state.json',type:'blob',mode:'100644',sha}]};
+    else if(path.includes(`git/trees/${head}`))value={truncated:false,tree:centralMaintenance?[
+      {path:'maintenance',type:'tree',mode:'040000',sha},
+      {path:'maintenance/12.json',type:'blob',mode:'100644',sha},
+      {path:`maintenance/candidate-draft-17-${sha}.json`,type:'blob',mode:'100644',sha},
+    ]:[{path:'state.json',type:'blob',mode:'100644',sha}]};
     else if(path.includes('git/trees/'))value={truncated,tree:partial?[{path:'release-please-config.json',type:'blob',mode:'100644',sha}]:[]};
     else if(path.includes('matching-refs/heads/release-please--branches--main'))value=candidateBranch?[{ref:candidateBranch,object:{type:'commit',sha}}]:[];
     else if(path.includes('matching-refs'))value=[];
