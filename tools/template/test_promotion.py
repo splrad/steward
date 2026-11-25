@@ -1,3 +1,4 @@
+import os
 import re
 import subprocess
 import tempfile
@@ -71,6 +72,36 @@ class PromotionTests(unittest.TestCase):
                           'github.event.sender.id == 353238212',"github.event.sender.login == 'splrad-governance[bot]'"):
             self.assertIn(condition,gate)
         self.assertEqual(workflow['jobs']['publish']['needs'],'range')
+
+    def test_controller_release_range_uses_the_previous_number_and_requires_a_strict_ancestor(self):
+        path = Path(__file__).resolve().parents[2] / '.github/workflows/template-release.yml'
+        workflow = yaml.load(path.read_text(encoding='utf-8'), Loader=yaml.BaseLoader)
+        steps = workflow['jobs']['range']['steps']
+        script = next(step['run'] for step in steps if step.get('id') == 'range')
+        bash = Path(self.git('var', 'GIT_SHELL_PATH')).with_name('bash.exe') if os.name == 'nt' else 'bash'
+
+        (self.root / 'controller.txt').write_text('next\n')
+        current = self.commit()
+        self.git('tag', 'controller-v33', self.old)
+        self.git('tag', 'controller-v34', current)
+        output = self.root / 'step-output'
+        cases = [
+            ('controller-v34', current, 'previous=controller-v33\n'),
+            ('controller-v35', current, ''),   # Same commit as v34.
+            ('controller-v35', self.old, ''),  # v34 is not an ancestor.
+            ('controller-v37', current, ''),   # v36 is missing.
+            ('controller-v034', current, ''),
+            ('controller-v34-rc1', current, ''),
+        ]
+        for tag, target, expected in cases:
+            with self.subTest(tag=tag, target=target):
+                output.write_bytes(b'')
+                env = {**os.environ, 'TAG_PREFIX': 'controller-v', 'GITHUB_REF_NAME': tag,
+                       'GITHUB_SHA': target, 'GITHUB_OUTPUT': output.name}
+                result = subprocess.run([bash, '-c', script], cwd=self.root, env=env,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, bool(expected), result.stderr)
+                self.assertEqual(output.read_text(), expected)
 
     def test_title_supplier_changes_reach_existing_and_new_copier_consumers(self):
         source_tree=Path(__file__).resolve().parents[2]
