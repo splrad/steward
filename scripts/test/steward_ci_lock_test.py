@@ -1,5 +1,7 @@
 """Regression coverage for the PR lock contract and split fork checkouts."""
 import copy
+import hashlib
+import io
 import os
 from contextlib import chdir
 import runpy
@@ -63,6 +65,36 @@ class LockContractTest(unittest.TestCase):
         self.assertEqual(len(list(check(tomllib.loads(base.decode()), tomllib.loads(marked.decode())))), 1)
         with self.assertRaisesRegex(ValueError, "field set"):
             list(check(tomllib.loads(base.decode()), tomllib.loads(unexpected.decode())))
+
+    def test_new_attestations_require_a_github_release_and_cannot_be_removed(self):
+        rules = candidate["rules"]
+        asset = {"url": "https://github.com/oras-project/oras/releases/download/v1/oras.zip"}
+        attested = {**asset, "checksum_source": "mise-versions", "provenance": "github-attestations"}
+        self.assertEqual(rules.supplier_metadata(asset, attested), attested)
+        self.assertEqual(rules.supplier_metadata(attested, asset), attested)
+        self.assertEqual(rules.supplier_metadata(asset, {**asset, "provenance": "unknown"}), asset)
+        other = {"url": "https://example.org/oras.zip"}
+        self.assertEqual(rules.supplier_metadata(other, attested), other)
+
+    def test_attested_bytes_must_match_digest_and_verify_for_the_supplier(self):
+        data = b"release archive"
+        asset = {"url": "https://github.com/oras-project/oras/releases/download/v1/oras.zip",
+                 "checksum": "sha256:" + hashlib.sha256(data).hexdigest(), "provenance": "github-attestations"}
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp, "archive")
+            with patch("urllib.request.urlopen", side_effect=lambda *a, **kw: io.BytesIO(data)), patch("subprocess.run") as gh:
+                verify = candidate["verify_archive"]
+                self.assertEqual(verify(asset, archive), asset["checksum"])
+                self.assertEqual(archive.read_bytes(), data)
+                gh.assert_called_once_with(["gh", "attestation", "verify", str(archive), "--repo", "oras-project/oras",
+                                            "--hostname", "github.com"], check=True, timeout=120)
+                gh.side_effect = subprocess.CalledProcessError(1, "gh")
+                with self.assertRaises(subprocess.CalledProcessError):
+                    verify(asset, archive)
+                gh.reset_mock()
+                with self.assertRaisesRegex(ValueError, "digest differs"):
+                    verify({**asset, "checksum": "sha256:" + "0" * 64}, archive)
+                gh.assert_not_called()
 
     def test_root_title_lock_updates_both_generated_entries(self):
         old_pin = b"a" * 40, b"v1.2.3"

@@ -1,7 +1,5 @@
 import {expect,it} from 'vitest';
-import {NativeEvidenceReader} from '../src/native-release-evidence.js';
-// @ts-expect-error JavaScript transport helper.
-import {adoptionTransport} from '../../../scripts/release-state-initialize.mjs';
+import {NativeEvidenceReader,nativeEvidenceTransport} from '../src/native-release-evidence.js';
 const repo='splrad/LayerScape',id=1187527897;
 const query='state=closed&sort=created&direction=asc&per_page=100';
 const path='/repos/'+repo+'/pulls';
@@ -15,14 +13,14 @@ function fixture(next=canonical,identity={id,full_name:repo},duplicate=false) {
   const second=url.searchParams.get('page')==='2';
   return Response.json(second?[{id:duplicate?1:101}]:Array.from({length:100},(_,i)=>({id:i+1})),{headers:second?{}:{link:`<${next}>; rel="next"`}});
  };
- const io=adoptionTransport({repository:{full_name:repo}},{token:'write-fixture',readToken:'read-fixture',fetcher});
+ const io=nativeEvidenceTransport('read-fixture',fetcher);
  return {reader:new NativeEvidenceReader(io,repo),calls};
 }
-it('follows actual GitHub numeric repository aliases past 100 PRs while preserving read credential routing',async()=>{
+it('follows actual GitHub numeric repository aliases past 100 PRs using the reader credential',async()=>{
  const f=fixture();const result=await f.reader.pages('pulls?state=closed&sort=created&direction=asc','');
  expect(result).toHaveLength(101);expect(result.at(-1)).toEqual({id:101});
  expect(f.calls.map(x=>x.path)).toEqual([`${path}?${query}`,'/repos/'+repo,`${path}?${query}&page=2`]);
- expect(f.calls.map(x=>x.authorization)).toEqual(['Bearer read-fixture','Bearer write-fixture','Bearer read-fixture']);
+ expect(f.calls.map(x=>x.authorization)).toEqual(['Bearer read-fixture','Bearer read-fixture','Bearer read-fixture']);
 });
 it('keeps ordinary same-path pagination without adding a metadata lookup',async()=>{
  const f=fixture(`https://api.github.com${path}?${query}&page=2`);expect(await f.reader.pages('pulls?state=closed&sort=created&direction=asc','')).toHaveLength(101);expect(f.calls).toHaveLength(2);

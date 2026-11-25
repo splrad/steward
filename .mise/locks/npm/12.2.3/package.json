@@ -2,6 +2,6 @@
   "name": "mise-npm-install",
   "private": true,
   "dependencies": {
-    "npm": "12.2.1"
+    "npm": "12.2.3"
   }
 }
