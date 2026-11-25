@@ -340,11 +340,15 @@ export function decodeStateFile(targetRef: string, path: string, bytes: Uint8Arr
   if(owner==='settings') return decodeSettingsReport(decodeBuildJson(bytes),repositoryId,path);
   if (owner === 'maintenance' && path.startsWith('maintenance/candidate-draft-')) {
     const v = decodeBuildJson(bytes) as {schemaVersion:number; productId:number; sourceSha:string; roundId:string;
-      failedRunId:number; failedAttempt:number; coordinatorRunId:number; coordinatorAttempt:number; controllerSha:string};
-    exact(v,['schemaVersion','productId','sourceSha','roundId','failedRunId','failedAttempt','coordinatorRunId','coordinatorAttempt','controllerSha']);
+      failedRunId:number; failedAttempt:number; coordinatorRunId:number; coordinatorAttempt:number; controllerSha:string;
+      dispatchAttempt:number; responseStatus?:number};
+    const rejection = path.endsWith('-rejected.json');
+    exact(v,['schemaVersion','productId','sourceSha','roundId','failedRunId','failedAttempt','coordinatorRunId','coordinatorAttempt',
+      'controllerSha','dispatchAttempt',...(rejection?['responseStatus']:[])]);
     if (repositoryId !== 1296724484 || v.schemaVersion !== 1 || !integer(v.productId) || !sha(v.sourceSha) || !digest(v.roundId) ||
       !integer(v.failedRunId) || !integer(v.failedAttempt) || !integer(v.coordinatorRunId) || !integer(v.coordinatorAttempt) ||
-      !sha(v.controllerSha) || path !== `maintenance/candidate-draft-${v.productId}-${v.sourceSha}.json`)
+      !sha(v.controllerSha) || !integer(v.dispatchAttempt) || rejection && ![400,401,403,404,409,410,422,429].includes(v.responseStatus!) ||
+      path !== `maintenance/candidate-draft-${v.productId}-${v.sourceSha}-${v.dispatchAttempt}${rejection?'-rejected':''}.json`)
       return fail('candidate draft recovery identity');
     return v;
   }

@@ -9,7 +9,7 @@ import { fetchState, releaseParticipation } from './release-coordinator.mjs';
 import { officialCandidateApp, officialCandidateRoute } from './official-candidate-event.mjs';
 import { bodyDigest, candidateBaseline, defaultHead, officialCandidateRoundId, officialPending, pullBinding, hasLabel,
   readOfficialConfig, readOfficialManifest } from './official-release-candidate.mjs';
-import { assertReleaseUnpaused, releaseIsPaused } from './release-pause-policy.mjs';
+import { releaseIsPaused } from './release-pause-policy.mjs';
 
 const central = { id: 1296724484, full_name: 'splrad/steward', default_branch: 'main' };
 const workflowFile = 'release-candidate-event.yml', workflowId = 421504821, botId = 301115370;
@@ -47,7 +47,28 @@ export function unknownDraftResponse(log) {
   return matches.length === 1 && /^\S+ RESPONSE_UNKNOWN stage=generate(?: sdk_stage=(?:start|auth|models|session|send|response|usage|cleanup|process))?(?: status=(?:408|429|5\d\d))?$/.test(matches[0]);
 }
 
-export async function recoverDraft({ run, reader, admit, reserve, dispatch }) {
+const definiteRejections = new Set([400,401,403,404,409,410,422,429]);
+const claimPath = claim => 'maintenance/candidate-draft-' + claim.productId + '-' + claim.sourceSha + '-' + claim.dispatchAttempt;
+
+export function nextClaim(records, value) {
+  for (let dispatchAttempt = 1; ; dispatchAttempt++) {
+    const claim = { ...value, dispatchAttempt };
+    const prefix = claimPath(claim);
+    const previous = records.get(prefix + '.json');
+    const rejection = records.get(prefix + '-rejected.json');
+    if (!previous) {
+      check(!rejection, 'ORPHAN_REJECTION');
+      return { path: prefix + '.json', value: claim };
+    }
+    check(previous.roundId === value.roundId && previous.failedRunId === value.failedRunId &&
+      previous.failedAttempt === value.failedAttempt, 'CLAIM_ORIGIN');
+    if (!rejection || previous.coordinatorRunId === value.coordinatorRunId && previous.coordinatorAttempt === value.coordinatorAttempt) return null;
+    const { responseStatus, ...refused } = rejection;
+    check(definiteRejections.has(responseStatus) && Object.keys(previous).every(key => refused[key] === previous[key]), 'REJECTION_IDENTITY');
+  }
+}
+
+export async function recoverDraft({ run, reader, admit, reserve, dispatch, reject }) {
   const current = await reader.json('actions/runs/' + run.id);
   if (!failedDraftRun([current],run.display_title.slice('Candidate event '.length)) ||
       current.id !== run.id || current.head_sha !== run.head_sha || current.run_attempt !== run.run_attempt) return 'SUPERSEDED';
@@ -63,21 +84,29 @@ export async function recoverDraft({ run, reader, admit, reserve, dispatch }) {
   }
   if (!unknownDraftResponse(log.bytes.toString('utf8'))) return 'INELIGIBLE';
   if (!await admit()) return 'SUPERSEDED';
-  if (!await reserve()) return 'ALREADY_RESERVED';
+  const claim = await reserve();
+  if (!claim) return 'ALREADY_RESERVED';
   // The persisted reservation is never reissued, including when a POST response is lost.
   if (!await admit()) return 'SUPERSEDED';
-  await dispatch();
+  const status = await dispatch();
+  if (definiteRejections.has(status)) {
+    await reject(claim, status);
+    return 'DISPATCH_REJECTED';
+  }
+  check(status === 204 || status === 200, 'DISPATCH_UNCONFIRMED');
   return 'DISPATCHED';
 }
 
-async function reserveRecovery(app, root, value, admit) {
+async function writeRecoveryRecord(app, root, admit, plan) {
   return app.forRepository(central.id, async token => {
     const rules = app.readCentralMaintenanceRules;
     const refresh = () => fetchState(root,central,token,'steward/release-state',{
       includeHistory:true,centralFirstUse:true,readCentralMaintenanceRules:rules });
-    const path = 'maintenance/candidate-draft-' + value.productId + '-' + value.sourceSha + '.json';
     const state = await refresh();
-    if (state.snapshot.domainRecords.some(record => record.path === path)) return false;
+    const records = new Map(state.snapshot.domainRecords.map(record => [record.path, record.value]));
+    const proposal = plan(records);
+    if (!proposal) return null;
+    const { path, value } = proposal;
     const content = JSON.stringify(value) + '\n';
     const beforePush = async () => {
       check(await admit(),'SOURCE_CHANGED');
@@ -89,38 +118,42 @@ async function reserveRecovery(app, root, value, admit) {
       identity:{name:app.appBotLogin,email:botId+'+'+app.appBotLogin+'@users.noreply.github.com'} },{token,beforePush});
     check(result.status === 'APPLIED','CLAIM');
     check((await refresh()).snapshot.domainRecords.some(record => record.path === path && record.content === content),'CLAIM_READBACK');
-    return true;
+    return value;
   },'maintenance');
 }
 
-async function recoverProduct({ app, root, repo, reader, history, runs, promoted, coordinator, controller }) {
+async function loadProductRound({ app, root, repo, product, get, io, sourceSha }) {
+  const participation = await releaseParticipation(repo, io, { requireWorkflowGitHubDelivery: true });
+  if (participation.status !== 'APPLICABLE' || participation.sourceSha !== sourceSha) return;
+  const configuration = await readOfficialConfig(get, sourceSha);
+  if (officialCandidateRoute(configuration, 'true').route !== 'official') return;
+  const manifest = await readOfficialManifest(get, sourceSha);
+  const baseline = await candidateBaseline(get, product, sourceSha, configuration, manifest);
+  return app.forCandidateRepository(repo.id, async stateToken => {
+    const { directory } = await fetchState(root, repo, stateToken);
+    return findOfficialCandidateRound({ directory, repositoryId: repo.id, defaultBranch: repo.default_branch, sourceSha, baseline });
+  });
+}
+
+export async function recoverProduct({ app, root, repo, reader, history, runs, promoted, coordinator, controller },
+  { transport = nativeEvidenceTransport, loadRound = loadProductRound, writeRecord = writeRecoveryRecord, isPaused = releaseIsPaused } = {}) {
   const product = { id: repo.id, name: repo.full_name, defaultBranch: repo.default_branch };
   return app.forCandidateReadRepository(repo.id, async token => {
-    const io = nativeEvidenceTransport(token);
+    const io = transport(token);
     const target = new NativeEvidenceReader(io, repo.full_name);
     const get = path => target.json(path);
     const sourceSha = await defaultHead(get, repo.default_branch);
     const key = recoveryKey(repo.id, sourceSha);
     const run = failedDraftRun(runs, key);
-    if (!run || await releaseIsPaused(app, repo.id)) return;
-    const participation = await releaseParticipation(repo, io, { requireWorkflowGitHubDelivery: true });
-    if (participation.status !== 'APPLICABLE' || participation.sourceSha !== sourceSha) return;
-    const configuration = await readOfficialConfig(get, sourceSha);
-    if (officialCandidateRoute(configuration, 'true').route !== 'official') return;
-    const manifest = await readOfficialManifest(get, sourceSha);
-    const baseline = await candidateBaseline(get, product, sourceSha, configuration, manifest);
-    // The protected reader uses the same product-scoped credential as candidate preparation.
-    const round = await app.forCandidateRepository(repo.id, async stateToken => {
-      const { directory } = await fetchState(root, repo, stateToken);
-      return findOfficialCandidateRound({ directory, repositoryId: repo.id, defaultBranch: repo.default_branch, sourceSha, baseline });
-    });
+    if (!run || await isPaused(app, repo.id)) return;
+    const round = await loadRound({ app, root, repo, product, get, io, sourceSha });
     if (!round?.source || round.draft || round.branch || round.pull || round.source.sourceSha !== sourceSha ||
         officialCandidateRoundId(product, round.source) !== round.roundId) return;
 
     const admit = async () => {
       if (!await promoted() || await defaultHead(get, repo.default_branch) !== sourceSha ||
           await defaultHead(get, 'steward/release-state') !== round.head || failedDraftRun(await history(), key)?.id !== run.id) return false;
-      await assertReleaseUnpaused(app, repo.id);
+      if (await isPaused(app, repo.id)) return false;
       if (round.source.prior) {
         const { number, head } = round.source.prior;
         const pull = await get('pulls/' + number);
@@ -138,10 +171,16 @@ async function recoverProduct({ app, root, repo, reader, history, runs, promoted
       const path = '/repos/' + central.full_name + '/actions/workflows/' + workflowId + '/dispatches';
       const inputs = { event_json: JSON.stringify({ kind: 'push', repositoryId: repo.id, sourceSha }),
         request_key: key, source_sha: sourceSha, policy_sha: controller };
-      const response = await nativeEvidenceTransport(credential).request('POST', path, undefined, { ref: 'main', inputs });
-      check(response.status === 204 || response.status === 200, 'DISPATCH_UNCONFIRMED');
+      const response = await transport(credential).request('POST', path, undefined, { ref: 'main', inputs });
+      return response.status;
     }, 'configuration-actions');
-    const result = await recoverDraft({ run, reader, admit, reserve: () => reserveRecovery(app, root, reservation, admit), dispatch });
+    const reserve = () => writeRecord(app, root, admit, records => nextClaim(records, reservation));
+    const reject = (claim, status) => writeRecord(app, root, admit, records => {
+      const prefix = claimPath(claim), prior = records.get(prefix + '.json');
+      check(prior && Object.keys(claim).every(key => prior[key] === claim[key]) && !records.has(prefix + '-rejected.json'), 'CLAIM_IDENTITY');
+      return { path: prefix + '-rejected.json', value: { ...claim, responseStatus: status } };
+    });
+    const result = await recoverDraft({ run, reader, admit, reserve, dispatch, reject });
     return { product: repo.full_name, failedRunId: run.id, roundId: round.roundId, result };
   });
 }
@@ -184,7 +223,7 @@ export async function reconcileCandidateDrafts(env = process.env) {
 if (process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href)
   reconcileCandidateDrafts().then(results=>{
     console.log(JSON.stringify(results));
-    if (results.some(entry => entry.result === 'FAILED')) process.exitCode = 1;
+    if (results.some(entry => ['FAILED','DISPATCH_REJECTED'].includes(entry.result))) process.exitCode = 1;
   }).catch(error=>{
     console.error(/^CANDIDATE_RECOVERY_[A-Z_]+$/.test(error?.message)?error.message:'CANDIDATE_RECOVERY_FAILED');process.exitCode=1;
   });

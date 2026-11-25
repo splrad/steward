@@ -51,9 +51,9 @@ it('creates central maintenance-only state, preserves requests after cache loss 
     expect(await store.load(12)).toEqual(claimed);
     await git('switch','main');await store.save(claimed,claimed);
     expect((await refresh()).snapshot.currentPaths).toContain('maintenance/12.json');
-    const recoveryPath = 'maintenance/candidate-draft-17-' + source + '.json';
+    const recoveryPath = 'maintenance/candidate-draft-17-' + source + '-1.json';
     const recovery = {schemaVersion:1,productId:17,sourceSha:source,roundId:digest('candidate'),failedRunId:20,
-      failedAttempt:1,coordinatorRunId:21,coordinatorAttempt:1,controllerSha:source};
+      failedAttempt:1,coordinatorRunId:21,coordinatorAttempt:1,controllerSha:source,dispatchAttempt:1};
     const claimBytes = JSON.stringify(recovery) + '\n';
     const saved = await writeReleaseRecords(request('claim-draft',[file(recoveryPath,claimBytes)],(await refresh()).snapshot.head));
     expect(saved.status).toBe('APPLIED');
