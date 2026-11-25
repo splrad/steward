@@ -62,6 +62,9 @@ it('creates central maintenance-only state, preserves requests after cache loss 
     expect(await store.load(12)).toEqual(claimed);
     const changed = file(recoveryPath,JSON.stringify({...recovery,coordinatorRunId:22})+'\n',digest(claimBytes));
     await expect(writeReleaseRecords(request('replace-draft-claim',[changed],reloaded.head))).rejects.toThrow('immutable');
+    const notSent = recoveryPath.replace('.json','-not-sent.json');
+    expect((await writeReleaseRecords(request('no-post',[file(notSent,claimBytes)],reloaded.head))).status).toBe('APPLIED');
+    expect((await refresh()).snapshot.domainRecords).toContainEqual(expect.objectContaining({path:notSent,value:recovery}));
     expect((await git('show','-s','--format=%B','steward/release-state')).match(/^Signed-off-by:/gm)).toHaveLength(1);
     await git('switch','steward/release-state');await mkdir(join(remote,'generated'));await writeFile(join(remote,'generated','foreign.md'),'Foreign product history\n');
     await git('add','generated/foreign.md');await git('commit','--signoff','-m','Fixture foreign historical owner');

@@ -39,7 +39,7 @@ it('persists one claim before dispatch and preserves it across an ambiguous POST
   const reserve=vi.fn(async()=>{if(reserved)return false;reserved=true;return true;});
   const dispatch=vi.fn(async()=>{throw Error('lost response');});
   const reader={json:async()=>run,pages:async()=>[job],response:async()=>({bytes:Buffer.from(diagnostic)})};
-  const options={run,reader,reserve,dispatch,admit:async()=>true};
+  const options={run,reader,reserve,dispatch,admit:async()=>true,settle:vi.fn()};
   const missingLogs={...reader,response:async()=>{throw Object.assign(new Error('expired'),{status:410});}};
   await expect(recoverDraft({...options,reader:missingLogs})).resolves.toBe('LOG_UNAVAILABLE');
   await expect(recoverDraft({...options,admit:async()=>false})).resolves.toBe('SUPERSEDED');
@@ -49,6 +49,7 @@ it('persists one claim before dispatch and preserves it across an ambiguous POST
   expect(dispatch).toHaveBeenCalledTimes(1);
   const moved=vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
   await expect(recoverDraft({...options,admit:moved,reserve:async()=>true})).resolves.toBe('SUPERSEDED');
+  expect(options.settle).toHaveBeenCalledWith(true,'not-sent');
   expect(dispatch).toHaveBeenCalledTimes(1);
 });
 
@@ -69,10 +70,10 @@ it('permits another coordinator after a recorded refusal and preserves an ambigu
   const rejection=first.path.replace('.json','-rejected.json');
   const reader={json:async()=>run,pages:async()=>[job],response:async()=>({bytes:Buffer.from(diagnostic)})};
   const options={run,reader,admit:async()=>true,reserve:async()=>{records.set(first.path,first.value);return first.value;},
-    reject:vi.fn(async(claim:object,status:number)=>{records.set(rejection,{...claim,responseStatus:status});})};
+    settle:vi.fn(async(claim:object,outcome:string,status:number)=>{expect(outcome).toBe('rejected');records.set(rejection,{...claim,responseStatus:status});})};
   await expect(recoverDraft({...options,dispatch:async()=>503})).rejects.toThrow('DISPATCH_UNCONFIRMED');
   expect(nextClaim(records,another)).toBeNull();
-  expect(options.reject).not.toHaveBeenCalled();
+  expect(options.settle).not.toHaveBeenCalled();
   await expect(recoverDraft({...options,dispatch:async()=>403})).resolves.toBe('DISPATCH_REJECTED');
   expect(nextClaim(records,value)).toBeNull();
   const next=nextClaim(records,another);
@@ -84,7 +85,7 @@ it('permits another coordinator after a recorded refusal and preserves an ambigu
   expect(()=>nextClaim(records,another)).toThrow('REJECTION_IDENTITY');
 });
 
-it.each(['accepted','moved','closed','paused','lost response'] as const)('reconciles a product through the App and both repositories: %s',async scenario=>{
+it.each(['accepted','moved','closed','paused','paused after claim','refused then paused','lost response'] as const)('reconciles a product through the App and both repositories: %s',async scenario=>{
   const repo={id:17,full_name:'splrad/test-project',default_branch:'main'};
   const event={kind:'push',repositoryId:repo.id,sourceSha:sha};
   const requestKey=bodyDigest(JSON.stringify([repo.id,'push',sha]));
@@ -97,9 +98,11 @@ it.each(['accepted','moved','closed','paused','lost response'] as const)('reconc
   const post=vi.fn(async(body:object)=>{
     expect(body).toEqual({ref:'main',inputs:{request_key:requestKey,source_sha:sha,policy_sha:controller,event_json:JSON.stringify(event)}});
     if(scenario==='lost response') throw new Error('response lost');
+    if(scenario==='refused then paused' && coordinatorId===102) {paused=true;return {status:403};}
     return {status:204};
   });
   let defaultReads=0;
+  let paused=scenario==='paused', coordinatorId=102;
   const transport=(token:string)=>({request:async(method:string,path:string,_limit:number,body:object)=>{
     if(method==='POST'){
       expect(token).toBe('actions'); expect(path).toBe('/repos/splrad/steward/actions/workflows/421504821/dispatches');
@@ -116,17 +119,32 @@ it.each(['accepted','moved','closed','paused','lost response'] as const)('reconc
     forRepository:async(id:number,fn:Function,purpose:string)=>{expect([id,purpose]).toEqual([central.id,'configuration-actions']);return fn('actions');}};
   const reader={json:async()=>original,pages:async()=>[job],response:async()=>({bytes:Buffer.from(diagnostic)})};
   const call=()=>recoverProduct({app,root:'fixture',repo,reader,history:async()=>[original],runs:[original],promoted:async()=>true,
-    coordinator:{runId:102,runAttempt:1},controller},{transport,isPaused:async()=>scenario==='paused',loadRound:async()=>round,
-    writeRecord:async(_app:unknown,_root:string,admit:Function,plan:Function)=>{
-      expect(await admit()).toBe(true);const proposal=plan(records);if(!proposal)return null;
-      records.set(proposal.path,proposal.value);return proposal.value;
+    coordinator:{runId:coordinatorId,runAttempt:1},controller},{transport,isPaused:async()=>paused,loadRound:async()=>round,
+    writeRecord:async(_app:unknown,_root:string,admit:Function|null,plan:Function)=>{
+      if(admit) expect(await admit()).toBe(true);
+      const proposal=plan(records);if(!proposal)return null;
+      records.set(proposal.path,proposal.value);
+      if (scenario==='paused after claim' && coordinatorId===102 && admit) paused=true;
+      return proposal.value;
     }});
   if(scenario==='paused') expect(await call()).toBeUndefined();
   else if(scenario==='moved' || scenario==='closed') expect((await call()).result).toBe('SUPERSEDED');
   else {
+    if (scenario==='paused after claim') {
+      expect((await call()).result).toBe('SUPERSEDED');
+      expect(post).not.toHaveBeenCalled();
+      expect([...records.keys()]).toContain(`maintenance/candidate-draft-17-${sha}-1-not-sent.json`);
+      paused=false;coordinatorId++;
+    }
+    if (scenario==='refused then paused') {
+      expect((await call()).result).toBe('DISPATCH_REJECTED');
+      expect([...records.keys()]).toContain(`maintenance/candidate-draft-17-${sha}-1-rejected.json`);
+      expect(await call()).toBeUndefined();
+      paused=false;coordinatorId++;
+    }
     if(scenario==='lost response') await expect(call()).rejects.toThrow('response lost');
     else expect((await call()).result).toBe('DISPATCHED');
     expect((await call()).result).toBe('ALREADY_RESERVED');
   }
-  expect(post).toHaveBeenCalledTimes(scenario==='accepted'||scenario==='lost response'?1:0);
+  expect(post).toHaveBeenCalledTimes(scenario==='refused then paused'?2:['accepted','lost response','paused after claim'].includes(scenario)?1:0);
 });

@@ -53,7 +53,7 @@ export async function releaseParticipation(repository,io,{includeUnits=false,req
     // Only the fixed central maintenance-only tree is not a product state.
     obligation=repository.id!==1296724484||repository.full_name!=='splrad/steward'
       ||state.tree.some(x=>!(x.path==='maintenance'&&x.type==='tree'&&x.mode==='040000')
-        &&!(x.type==='blob'&&x.mode==='100644'&&/^maintenance\/(?:[1-9][0-9]*|candidate-draft-[1-9][0-9]*-[a-f0-9]{40}-[1-9][0-9]*(?:-rejected)?)\.json$/.test(x.path)));
+        &&!(x.type==='blob'&&x.mode==='100644'&&/^maintenance\/(?:[1-9][0-9]*|candidate-draft-[1-9][0-9]*-[a-f0-9]{40}-[1-9][0-9]*(?:-rejected|-not-sent)?)\.json$/.test(x.path)));
   }
   let status='APPLICABLE',absenceFacts=null,units;
   const candidateBranch='release-please--branches--'+repository.default_branch;

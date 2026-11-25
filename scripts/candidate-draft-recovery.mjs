@@ -56,19 +56,21 @@ export function nextClaim(records, value) {
     const prefix = claimPath(claim);
     const previous = records.get(prefix + '.json');
     const rejection = records.get(prefix + '-rejected.json');
+    const notSent = records.get(prefix + '-not-sent.json');
     if (!previous) {
-      check(!rejection, 'ORPHAN_REJECTION');
+      check(!rejection && !notSent, 'ORPHAN_OUTCOME');
       return { path: prefix + '.json', value: claim };
     }
     check(previous.roundId === value.roundId && previous.failedRunId === value.failedRunId &&
       previous.failedAttempt === value.failedAttempt, 'CLAIM_ORIGIN');
-    if (!rejection || previous.coordinatorRunId === value.coordinatorRunId && previous.coordinatorAttempt === value.coordinatorAttempt) return null;
-    const { responseStatus, ...refused } = rejection;
-    check(definiteRejections.has(responseStatus) && Object.keys(previous).every(key => refused[key] === previous[key]), 'REJECTION_IDENTITY');
+    if ((!rejection && !notSent) || previous.coordinatorRunId === value.coordinatorRunId && previous.coordinatorAttempt === value.coordinatorAttempt) return null;
+    const outcome = rejection ?? notSent;
+    check(!(rejection && notSent) && (!rejection || definiteRejections.has(rejection.responseStatus)) &&
+      Object.keys(previous).every(key => outcome[key] === previous[key]), 'REJECTION_IDENTITY');
   }
 }
 
-export async function recoverDraft({ run, reader, admit, reserve, dispatch, reject }) {
+export async function recoverDraft({ run, reader, admit, reserve, dispatch, settle }) {
   const current = await reader.json('actions/runs/' + run.id);
   if (!failedDraftRun([current],run.display_title.slice('Candidate event '.length)) ||
       current.id !== run.id || current.head_sha !== run.head_sha || current.run_attempt !== run.run_attempt) return 'SUPERSEDED';
@@ -86,11 +88,19 @@ export async function recoverDraft({ run, reader, admit, reserve, dispatch, reje
   if (!await admit()) return 'SUPERSEDED';
   const claim = await reserve();
   if (!claim) return 'ALREADY_RESERVED';
-  // The persisted reservation is never reissued, including when a POST response is lost.
-  if (!await admit()) return 'SUPERSEDED';
+  let eligible;
+  try { eligible = await admit(); }
+  catch (error) {
+    await settle(claim, 'not-sent');
+    throw error;
+  }
+  if (!eligible) {
+    await settle(claim, 'not-sent');
+    return 'SUPERSEDED';
+  }
   const status = await dispatch();
   if (definiteRejections.has(status)) {
-    await reject(claim, status);
+    await settle(claim, 'rejected', status);
     return 'DISPATCH_REJECTED';
   }
   check(status === 204 || status === 200, 'DISPATCH_UNCONFIRMED');
@@ -109,16 +119,17 @@ async function writeRecoveryRecord(app, root, admit, plan) {
     const { path, value } = proposal;
     const content = JSON.stringify(value) + '\n';
     const beforePush = async () => {
-      check(await admit(),'SOURCE_CHANGED');
+      if (admit) check(await admit(),'SOURCE_CHANGED');
       await assertReleaseWriterProtection(central.full_name,'steward/release-state',state.io,{readCentralMaintenanceRules:rules});
     };
     const result = await writeReleaseRecords({ directory:await mkdtemp(join(root,'claim-')),remote:state.remote,
       repositoryId:central.id,defaultBranch:'main',targetRef:'steward/release-state',writer:'maintenance',
       expectedHead:state.snapshot.head,allowedPaths:[path],changes:[{path,content,sha256:bodyDigest(content),previousSha256:null}],
       identity:{name:app.appBotLogin,email:botId+'+'+app.appBotLogin+'@users.noreply.github.com'} },{token,beforePush});
-    check(result.status === 'APPLIED','CLAIM');
+    check(result.status === 'APPLIED' || result.status === 'UNCHANGED','CLAIM');
     check((await refresh()).snapshot.domainRecords.some(record => record.path === path && record.content === content),'CLAIM_READBACK');
-    return value;
+    // Only the writer that acquired the reservation may send the request.
+    return result.status === 'APPLIED' ? value : null;
   },'maintenance');
 }
 
@@ -167,20 +178,21 @@ export async function recoverProduct({ app, root, repo, reader, history, runs, p
       failedRunId: run.id, failedAttempt: run.run_attempt, coordinatorRunId: coordinator.runId,
       coordinatorAttempt: coordinator.runAttempt, controllerSha: controller,
     };
-    const dispatch = () => app.forRepository(central.id, async credential => {
+    const reserve = () => writeRecord(app, root, admit, records => nextClaim(records, reservation));
+    const settle = (claim, outcome, status) => writeRecord(app, root, null, records => {
+      const prefix = claimPath(claim), prior = records.get(prefix + '.json');
+      check(prior && Object.keys(claim).every(key => prior[key] === claim[key]) &&
+        !records.has(prefix + '-rejected.json') && !records.has(prefix + '-not-sent.json'), 'CLAIM_IDENTITY');
+      return { path: prefix + '-' + outcome + '.json', value: outcome === 'not-sent' ? claim : { ...claim, responseStatus: status } };
+    });
+    const result = await app.forRepository(central.id, async credential => {
       const path = '/repos/' + central.full_name + '/actions/workflows/' + workflowId + '/dispatches';
       const inputs = { event_json: JSON.stringify({ kind: 'push', repositoryId: repo.id, sourceSha }),
         request_key: key, source_sha: sourceSha, policy_sha: controller };
-      const response = await transport(credential).request('POST', path, undefined, { ref: 'main', inputs });
-      return response.status;
+      const actions = transport(credential);
+      const dispatch = async () => (await actions.request('POST', path, undefined, { ref: 'main', inputs })).status;
+      return recoverDraft({ run, reader, admit, reserve, dispatch, settle });
     }, 'configuration-actions');
-    const reserve = () => writeRecord(app, root, admit, records => nextClaim(records, reservation));
-    const reject = (claim, status) => writeRecord(app, root, admit, records => {
-      const prefix = claimPath(claim), prior = records.get(prefix + '.json');
-      check(prior && Object.keys(claim).every(key => prior[key] === claim[key]) && !records.has(prefix + '-rejected.json'), 'CLAIM_IDENTITY');
-      return { path: prefix + '-rejected.json', value: { ...claim, responseStatus: status } };
-    });
-    const result = await recoverDraft({ run, reader, admit, reserve, dispatch, reject });
     return { product: repo.full_name, failedRunId: run.id, roundId: round.roundId, result };
   });
 }
