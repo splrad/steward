@@ -23,7 +23,7 @@ concurrency:
 jobs:
   quality-summary:
     if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.actor_id == '301115370' && github.sha == inputs.policy_sha && github.workflow_sha == github.sha && vars.STEWARD_QUALITY_LANGUAGE_ENABLED == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     permissions:
       contents: read
