@@ -16,15 +16,19 @@ export function copilotReleaseClient(controllerDirectory: string, token: string,
       child.stderr.resume(); child.stdin.on('error', () => {});
       const bytes: Buffer[] = []; let size = 0;
       child.stdout.on('data', (part: Buffer) => { size += part.length; if (size > 32 * 1024) child.kill(); else bytes.push(part); });
-      const code = await new Promise<number | null>((done, reject) => { child.once('error', () => reject(new Error('RESPONSE_UNKNOWN'))); child.once('close', done); child.stdin.end(input); });
+      const processFailure = () => Object.assign(new Error('RESPONSE_UNKNOWN'), { sdkStage: 'process' });
+      const code = await new Promise<number | null>((done, reject) => { child.once('error', () => reject(processFailure())); child.once('close', done); child.stdin.end(input); });
       if (size > 32 * 1024) throw new Error('CONTENT_OUTPUT_LIMIT');
-      let result; try { result = JSON.parse(Buffer.concat(bytes).toString('utf8')); } catch { throw new Error('RESPONSE_UNKNOWN'); }
+      let result; try { result = JSON.parse(Buffer.concat(bytes).toString('utf8')); } catch { throw processFailure(); }
+      if (!result || typeof result !== 'object') throw processFailure();
+      const diagnostic = { sdkStage: result.diagnostic?.sdkStage, sdkErrorType: result.diagnostic?.sdkErrorType,
+        status: result.diagnostic?.status };
       if (code !== 0 || result.status === 'FAILED') {
         const errorCode = /^(CONTENT_[A-Z_]+|RESPONSE_UNKNOWN)$/.test(result.errorCode) ? result.errorCode : 'RESPONSE_UNKNOWN';
-        const httpStatus = result.httpStatus;
-        throw Object.assign(new Error(errorCode), errorCode === 'CONTENT_CONTEXT_LIMIT' &&
-          Number.isInteger(httpStatus) && httpStatus >= 400 && httpStatus <= 599 ? { status: httpStatus } : {});
+        throw Object.assign(new Error(errorCode), diagnostic);
       }
+      if (mode !== 'preflight' && (result.status === 'WAIT_AUTH' || result.status === 'WAIT_QUOTA'))
+        throw Object.assign(new Error(result.status), diagnostic, { retryAfterMs: result.retryAfterMs });
       return result;
     } finally { await rm(directory, { recursive: true, force: true }); }
   };
@@ -35,7 +39,6 @@ export function copilotReleaseClient(controllerDirectory: string, token: string,
     },
     async call(input: string): Promise<{ text: string; model: string; usage: object | null }> {
       const result = await invoke(purpose, input);
-      if (result.status === 'WAIT_AUTH' || result.status === 'WAIT_QUOTA') throw Object.assign(new Error(result.status), { retryAfterMs: result.retryAfterMs });
       if (result.status !== 'RETURNED' || typeof result.text !== 'string' || typeof result.model !== 'string') throw new Error('RESPONSE_UNKNOWN');
       return { text: result.text, model: result.model, usage: result.usage };
     },

@@ -1,4 +1,5 @@
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copilotDiagnosticFields } from './copilot-diagnostic.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import apiVersion from '../config/github-api.json' with { type: 'json' };
@@ -350,6 +351,11 @@ export function candidateDiagnostic(error, stage) {
       'BOUNDED_MODE', 'BOUNDED_RUN_SOURCE', 'BOUNDED_ENTRY_DISABLED'].includes(message);
   const fields = [allowed ? message : 'OFFICIAL_CANDIDATE_STOPPED', 'stage=' + (candidateStages.includes(stage) ? stage : 'unknown')];
   if (candidateOperations.includes(error?.candidateOperation)) fields.push('operation=' + error.candidateOperation);
+  if (stage === 'generate') {
+    const { sdkStage, sdkErrorType } = copilotDiagnosticFields(error ?? {});
+    if (sdkStage) fields.push('sdk_stage=' + sdkStage);
+    if (sdkErrorType) fields.push('sdk_error=' + sdkErrorType);
+  }
   if (Number.isSafeInteger(error?.status) && error.status >= 400 && error.status <= 599) fields.push('status=' + error.status);
   if ([403, 429].includes(error?.status)) {
     const headers = error.response?.headers;
