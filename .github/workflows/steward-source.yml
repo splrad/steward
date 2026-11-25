@@ -10,7 +10,7 @@ permissions:
 jobs:
   plan:
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch)
-    runs-on: ubuntu-24.04
+    runs-on: &linux-runner ubuntu-26.04
     timeout-minutes: 10
     outputs:
       profile: ${{ steps.select.outputs.profile }}
@@ -32,6 +32,7 @@ jobs:
       - id: select
         shell: bash
         env:
+          LINUX_RUNNER: *linux-runner
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
@@ -40,8 +41,8 @@ jobs:
             profile=$(python policy/scripts/steward-ci-profile.py "$BASE" "$HEAD")
           fi
           case "$profile" in
-            full|governance|title|docs|policy) runners='["ubuntu-24.04"]' ;;
-            tool) runners='["ubuntu-24.04","windows-2025"]' ;;
+            full|governance|title|docs|policy) runners=$(jq -cn --arg linux "$LINUX_RUNNER" '[$linux]') ;;
+            tool) runners=$(jq -cn --arg linux "$LINUX_RUNNER" '[$linux,"windows-latest"]') ;;
             *) exit 1 ;;
           esac
           echo "profile=$profile" >> "$GITHUB_OUTPUT"
@@ -88,7 +89,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-24.04, windows-2025]
+        runner: [*linux-runner, windows-latest]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 50
     steps:
@@ -245,7 +246,7 @@ jobs:
   result:
     needs: [plan, candidate, test]
     if: always() && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch))
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 2
     steps:
       - name: Require successful execution of the selected suite

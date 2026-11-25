@@ -146,7 +146,7 @@
   ],
   "ignorePaths": [
     "[.]github/workflows/pr-title.yml",
-    ".github/workflows/pr-labeler.yml",
+    "[.]github/workflows/pr-labeler.yml",
     ".github/labeler.yml"
   ],
   "prBodyTemplate": "{{{replace \"^([^A-Za-z]*)This PR contains the following updates:\" \"$1### 依赖更新\" table}}}{{{warnings}}}{{{notes}}}{{{replace \"^([^#]*)### Release Notes\" \"$1### 上游发布说明\" changelogs}}}{{{controls}}}{{{footer}}}",
