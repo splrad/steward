@@ -1,8 +1,10 @@
-name: Steward Template Release
+name: Steward Governance Release
 on:
   push:
-    tags: ['v[0-9]*']
+    tags: ['v[0-9]*', 'controller-v[0-9]*']
 permissions: {}
+env:
+  TAG_PREFIX: ${{ startsWith(github.ref_name, 'controller-v') && 'controller-v' || 'v' }}
 jobs:
   range:
     if: >-
@@ -23,6 +25,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+        if: env.TAG_PREFIX == 'v'
         env:
           MISE_SAFE: '1'
           MISE_NODE_COMPILE: 'false'
@@ -35,8 +38,16 @@ jobs:
       - id: range
         run: |
           set -euo pipefail
-          previous=$(uv run --project tools/template --frozen --no-dev python tools/template/promotion.py \
-            --central . --commit "$GITHUB_SHA" --previous-of "$GITHUB_REF_NAME")
+          if [[ "$TAG_PREFIX" == controller-v ]]; then
+            [[ "$GITHUB_REF_NAME" =~ ^controller-v([1-9][0-9]*)$ ]]
+            previous="controller-v$((BASH_REMATCH[1] - 1))"
+            base=$(git rev-parse --verify "refs/tags/$previous^{commit}")
+            test "$base" != "$GITHUB_SHA"
+            git merge-base --is-ancestor "$base" "$GITHUB_SHA"
+          else
+            previous=$(uv run --project tools/template --frozen --no-dev python tools/template/promotion.py \
+              --central . --commit "$GITHUB_SHA" --previous-of "$GITHUB_REF_NAME")
+          fi
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
   publish:
     needs: range
@@ -58,18 +69,18 @@ jobs:
           set -euo pipefail
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq '.object.sha')" = "$GITHUB_SHA"
           published=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
-            jq -rs --arg tag "$GITHUB_REF_NAME" --arg commit "$GITHUB_SHA" '
-              add | if any(.[]; .draft and (.tag_name == $tag or (.target_commitish == $commit and (.tag_name | startswith("v")))))
-                then error("A draft conflicts with the promoted template release")
+            jq -rs --arg tag "$GITHUB_REF_NAME" --arg commit "$GITHUB_SHA" --arg prefix "$TAG_PREFIX" '
+              add | if any(.[]; .draft and (.tag_name == $tag or (.target_commitish == $commit and (.tag_name | startswith($prefix)))))
+                then error("A draft conflicts with the promoted release")
                 else any(.[]; .tag_name == $tag) end')
           echo "published=$published" >> "$GITHUB_OUTPUT"
-      - name: Publish template release notes
+      - name: Publish release notes
         if: steps.inspect.outputs.published == 'false'
         uses: release-drafter/release-drafter@d1a19e60e81a7e650d00a7de9277f87e439117ea # v7.11.0
         with:
-          config-name: template-release.yml@${{ github.sha }}
+          config-name: ${{ env.TAG_PREFIX == 'v' && 'template-release.yml' || 'controller-release.yml' }}@${{ github.sha }}
           tag: ${{ github.ref_name }}
-          name: Steward 仓库模板 ${{ github.ref_name }}
+          name: Steward ${{ env.TAG_PREFIX == 'v' && '仓库模板' || '治理控制器' }} ${{ github.ref_name }}
           from: ${{ needs.range.outputs.previous }}
           commitish: ${{ github.sha }}
           footer: '[完整变更](https://github.com/splrad/steward/compare/${{ needs.range.outputs.previous }}...${{ github.ref_name }})'
