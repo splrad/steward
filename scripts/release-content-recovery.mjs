@@ -1,27 +1,68 @@
 import { createHash } from 'node:crypto';
-import { contentOutputSchema, verifyContentAttemptReceipts } from '../packages/runner/dist/index.js';
+import { contentOutputSchema, decodeCandidateDocument, verifyContentAttemptReceipts } from '../packages/runner/dist/index.js';
 import { effectiveValidator, requiredWorkflowBinding, validatorRuleset } from './required-workflow-binding.mjs';
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const same = (a,b) => JSON.stringify(a) === JSON.stringify(b);
 const check = value => { if (!value) throw Error('CONTENT_RECOVERY_ARCHIVE'); };
 const sha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 
+const transferDigest = (generatedDigest, controllerSha) => hash(['content-archive-transfer/v1', generatedDigest, controllerSha]);
+
 /** Keep the original digest address usable when a retained validator makes both generations identical. */
 export async function selectContentArchive(candidate, generatedDigest, {loadDocument, controllerSha, grant}) {
-  const transferDigest=controller=>hash(['content-archive-transfer/v1',generatedDigest,controller]);
-  const transfer=()=>({digest:transferDigest(controllerSha),transferBaseDigest:generatedDigest});
+  const transfer=()=>({digest:transferDigest(generatedDigest,controllerSha),transferBaseDigest:generatedDigest});
   if(grant?.archiveContentDigest===generatedDigest)return transfer();
   const prior=candidate.contentGenerationDigest;
   if(prior!==generatedDigest) {
     const saved=await loadDocument(`content/${candidate.id}/${prior}/manifest.json`);
-    if(saved?.input?.candidateId===candidate.id&&sha(saved.input.controllerSha)&&prior===transferDigest(saved.input.controllerSha)
+    if(saved?.input?.candidateId===candidate.id&&sha(saved.input.controllerSha)&&prior===transferDigest(generatedDigest,saved.input.controllerSha)
       &&saved.input.batches.some(batch=>batch.attempts.some(attempt=>attempt.recovery?.archiveContentDigest===generatedDigest)))return transfer();
   }
   return {digest:generatedDigest,transferBaseDigest:null};
 }
 
+// The native writer stored the first send, the provider outcome and any later blocked wake separately.
+async function verifyRecordedBatch(batch, input, currentDigest, grant, conditional, loadResultChunks) {
+  const attempt = batch.attempts[1];
+  if (attempt.status === 'RETURNED') {
+    const directory = currentDigest === grant.archiveContentDigest ? transferDigest(currentDigest, input.controllerSha) : currentDigest;
+    const path = `content/${input.candidateId}/${directory}/results/${batch.id}.json`;
+    check(attempt.errorCode === null && !attempt.diagnostic && batch.status === 'READY' && batch.errorCode === null
+      && batch.nextCheckAt === null && batch.resultPath === path && typeof loadResultChunks === 'function');
+    const chunks = await loadResultChunks(path);
+    const first = chunks?.[0];
+    check(Array.isArray(chunks) && first?.documentKind === 'content-result' && first.candidateId === input.candidateId
+      && first.repositoryId === input.repositoryId);
+    const result = await decodeCandidateDocument(chunks);
+    check(result.stage === batch.stage && same(result.sourceIds, batch.sourceIds) && (result.conditional === true) === conditional);
+    return;
+  }
+
+  check(batch.resultPath === null);
+  if (attempt.status === 'SENT') {
+    check(attempt.errorCode === null && !attempt.diagnostic && batch.nextCheckAt === null
+      && ((batch.status === 'RUNNING' && batch.errorCode === null) || (batch.status === 'FAILED' && batch.errorCode === 'RESPONSE_UNKNOWN')));
+    return;
+  }
+  check(batch.errorCode === attempt.errorCode);
+  if (attempt.status === 'UNKNOWN') {
+    check(batch.status === 'FAILED' && batch.errorCode === 'RESPONSE_UNKNOWN' && batch.nextCheckAt === null);
+    return;
+  }
+  check(attempt.status === 'REJECTED');
+  if (attempt.errorCode === 'WAIT_AUTH' || attempt.errorCode === 'WAIT_QUOTA') {
+    // A later wake could mark the consumed grant FAILED while retaining the original retry time.
+    const next = Date.parse(batch.nextCheckAt);
+    check((batch.status === attempt.errorCode || batch.status === 'FAILED') && Number.isFinite(next)
+      && new Date(next).toISOString() === batch.nextCheckAt && next >= Date.parse(attempt.startedAt) + 60_000);
+    return;
+  }
+  check(typeof attempt.errorCode === 'string' && /^CONTENT_[A-Z_]+$/.test(attempt.errorCode)
+    && batch.status === 'FAILED' && batch.nextCheckAt === null);
+}
+
 // Compare protected snapshots and the original cache without scheduling or restoring a request.
-export async function verifyContentRecoveryArchive(work, cache, grant, { loadDocument, facts, protections, authorsDigest }) {
+export async function verifyContentRecoveryArchive(work, cache, grant, { loadDocument, loadResultChunks, facts, protections, authorsDigest }) {
   check(grant && [grant.candidateId,grant.batchId,grant.previousAttemptSha256,grant.authorizationId,grant.outputContractSha256,grant.archiveContentDigest,grant.archiveProtectionDigest].every(v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v)));
   const root=`content/${grant.candidateId}/${grant.archiveContentDigest}/`;
   const archived=await loadDocument(root+'manifest.json');
@@ -75,6 +116,8 @@ export async function verifyContentRecoveryArchive(work, cache, grant, { loadDoc
     check(recorded && Object.keys(receipt).length===Object.keys(recorded).length
       && Object.entries(receipt).every(([field,value])=>recorded[field]===value));
     await verifyContentAttemptReceipts(batch.attempts,conditional);
+    const currentDigest = hash([hash(facts), work.input.configDigest, authorsDigest]);
+    await verifyRecordedBatch(batch, work.input, currentDigest, grant, conditional, loadResultChunks);
   }
   return {candidateId:grant.candidateId,batchId:old.id,previousAttemptSha256:grant.previousAttemptSha256};
 }

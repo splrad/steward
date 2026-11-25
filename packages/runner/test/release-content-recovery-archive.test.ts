@@ -106,3 +106,120 @@ it.each(['missing-archive','missing-pair','path','facts','protection','pin','wor
   }
   const before=JSON.stringify(f);await expect(verifyContentRecoveryArchive(f.work,f.cache,f.grant,f.io)).rejects.toThrow('CONTENT_RECOVERY_ARCHIVE');expect(JSON.stringify(f)).toBe(before);
 });
+
+const waitUntil = '2026-11-08T00:01:00.000Z';
+
+function recorded(attemptStatus: string, attemptCode: string | null, batchStatus: string, batchCode: string | null, nextCheckAt: string | null) {
+  const f = fixture();
+  const batch = f.work.input.batches[0]!;
+  const {candidateId, batchId, ...recovery} = f.grant;
+  Object.assign(batch, {status: batchStatus, errorCode: batchCode, nextCheckAt,
+    attempts: [structuredClone(f.attempt), {...f.attempt, ordinal: 2, status: attemptStatus, errorCode: attemptCode, recovery}]});
+  return f;
+}
+
+const validStates = [
+  ['SENT', null, 'RUNNING', null, null],
+  ['SENT', null, 'FAILED', 'RESPONSE_UNKNOWN', null],
+  ['UNKNOWN', 'RESPONSE_UNKNOWN', 'FAILED', 'RESPONSE_UNKNOWN', null],
+  ['REJECTED', 'CONTENT_OUTPUT_SCHEMA', 'FAILED', 'CONTENT_OUTPUT_SCHEMA', null],
+  ['REJECTED', 'WAIT_AUTH', 'WAIT_AUTH', 'WAIT_AUTH', waitUntil],
+  ['REJECTED', 'WAIT_QUOTA', 'WAIT_QUOTA', 'WAIT_QUOTA', waitUntil],
+  ['REJECTED', 'WAIT_AUTH', 'FAILED', 'WAIT_AUTH', waitUntil],
+  ['REJECTED', 'WAIT_QUOTA', 'FAILED', 'WAIT_QUOTA', waitUntil],
+] as const;
+
+it.each(validStates)('reads recorded %s %s as %s, %s, %s', async (...state) => {
+  const f = recorded(...state);
+  const before = JSON.stringify(f);
+  await expect(verifyContentRecoveryArchive(f.work, f.cache, f.grant, f.io)).resolves.toMatchObject({batchId: f.grant.batchId});
+  expect(JSON.stringify(f)).toBe(before);
+});
+
+const invalidStates = [
+  ['SENT', null, 'PENDING', null, null],
+  ['SENT', null, 'FAILED', null, null],
+  ['SENT', 'CONTENT_OUTPUT_SCHEMA', 'RUNNING', null, null],
+  ['SENT', null, 'RUNNING', null, waitUntil],
+  ['UNKNOWN', 'RESPONSE_UNKNOWN', 'READY', null, null],
+  ['UNKNOWN', 'WAIT_AUTH', 'FAILED', 'WAIT_AUTH', null],
+  ['REJECTED', 'CONTENT_OUTPUT_SCHEMA', 'PENDING', null, null],
+  ['REJECTED', 'CONTENT_OUTPUT_SCHEMA', 'FAILED', null, null],
+  ['REJECTED', 'RESPONSE_UNKNOWN', 'FAILED', 'RESPONSE_UNKNOWN', null],
+  ['REJECTED', 'CONTENT_OUTPUT_SCHEMA', 'FAILED', 'CONTENT_OUTPUT_SCHEMA', waitUntil],
+  ['REJECTED', 'WAIT_QUOTA', 'WAIT_AUTH', 'WAIT_QUOTA', waitUntil],
+  ['REJECTED', 'WAIT_AUTH', 'FAILED', 'WAIT_AUTH', null],
+  ['REJECTED', 'WAIT_AUTH', 'WAIT_AUTH', 'WAIT_AUTH', 'unparseable'],
+  ['REJECTED', 'WAIT_AUTH', 'WAIT_AUTH', 'WAIT_AUTH', '2026-11-08T00:00:59.999Z'],
+] as const;
+
+it.each(invalidStates)('refuses recorded %s %s with %s, %s, %s', async (...state) => {
+  const f = recorded(...state);
+  await expect(verifyContentRecoveryArchive(f.work, f.cache, f.grant, f.io)).rejects.toThrow('CONTENT_RECOVERY_ARCHIVE');
+});
+
+it('refuses a result path on an unsuccessful batch', async () => {
+  const f = recorded('REJECTED', 'CONTENT_OUTPUT_SCHEMA', 'FAILED', 'CONTENT_OUTPUT_SCHEMA', null);
+  Object.assign(f.work.input.batches[0]!, {resultPath: 'results/other.json'});
+  await expect(verifyContentRecoveryArchive(f.work, f.cache, f.grant, f.io)).rejects.toThrow('CONTENT_RECOVERY_ARCHIVE');
+});
+
+function returned(sameGeneration = false) {
+  const f = recorded('RETURNED', null, 'READY', null, null);
+  if (sameGeneration) {
+    const original = f.docs[f.protectionPath] as {facts: typeof f.io.facts; protections: typeof f.io.protections};
+    f.io.facts = original.facts;
+    f.io.protections = original.protections;
+  }
+  const batch = f.work.input.batches[0]!;
+  const generated = hash([hash(f.io.facts), f.work.input.configDigest, f.io.authorsDigest]);
+  const directory = sameGeneration ? hash(['content-archive-transfer/v1', generated, f.work.input.controllerSha]) : generated;
+  const path = `content/${f.grant.candidateId}/${directory}/results/${batch.id}.json`;
+  Object.assign(batch, {resultPath: path});
+  const document = {stage: 'DRAFT', sourceIds: batch.sourceIds, result: {paragraphs: [{sourceIds: batch.sourceIds,
+    section: 'summary', textZh: '离线验证说明。', qualification: 'UNVERIFIED'}]}};
+  const chunks = [{schemaVersion: 1, repositoryId: f.work.input.repositoryId, candidateId: f.grant.candidateId, documentKind: 'content-result',
+    documentDigest: hash(document), index: 0, count: 1, content: JSON.stringify(document)}];
+  const reads: string[] = [];
+  const io = {...f.io, loadResultChunks: async (requested: string) => {reads.push(requested); return requested === path ? chunks : []; }};
+  return {...f, io, batch, document, chunks, reads, path};
+}
+
+it.each([false, true])('reads the archived result from its derived directory (same digest: %s)', async sameGeneration => {
+  const f = returned(sameGeneration);
+  const before = JSON.stringify([f.work, f.cache, f.chunks]);
+  await expect(verifyContentRecoveryArchive(f.work, f.cache, f.grant, f.io)).resolves.toMatchObject({batchId: f.batch.id});
+  expect(f.reads).toEqual([f.path]);
+  expect(JSON.stringify([f.work, f.cache, f.chunks])).toBe(before);
+});
+
+it.each(['batch-status', 'attempt-error', 'batch-error', 'next-check', 'missing-path', 'relative-path', 'other-generation', 'other-batch',
+  'missing-chunks', 'candidate', 'repository', 'kind', 'digest', 'sources', 'result-schema', 'conditional'])('refuses inconsistent returned result: %s', async kind => {
+  const f = returned();
+  const last = f.batch.attempts[1]!;
+  const chunk = f.chunks[0]!;
+  if (kind === 'batch-status') f.batch.status = 'FAILED';
+  if (kind === 'attempt-error') Object.assign(last, {errorCode: 'CONTENT_OUTPUT_SCHEMA'});
+  if (kind === 'batch-error') Object.assign(f.batch, {errorCode: 'RESPONSE_UNKNOWN'});
+  if (kind === 'next-check') Object.assign(f.batch, {nextCheckAt: waitUntil});
+  if (kind === 'missing-path') f.batch.resultPath = null;
+  if (kind === 'relative-path') Object.assign(f.batch, {resultPath: `results/${f.batch.id}.json`});
+  if (kind === 'other-generation') Object.assign(f.batch, {resultPath: f.root + `results/${f.batch.id}.json`});
+  if (kind === 'other-batch') Object.assign(f.batch, {resultPath: f.path.replace(f.batch.id + '.json', hash('other') + '.json')});
+  if (kind === 'missing-chunks') f.chunks.length = 0;
+  if (kind === 'candidate') chunk.candidateId = hash('other');
+  if (kind === 'repository') chunk.repositoryId++;
+  if (kind === 'kind') chunk.documentKind = 'content';
+  if (kind === 'digest') chunk.documentDigest = hash('other');
+  if (kind === 'sources' || kind === 'result-schema' || kind === 'conditional') {
+    if (kind === 'sources') {
+      f.document.sourceIds = [hash('other')];
+      f.document.result.paragraphs[0]!.sourceIds = f.document.sourceIds;
+    }
+    if (kind === 'result-schema') f.document.result.paragraphs[0]!.qualification = 'unknown';
+    if (kind === 'conditional') Object.assign(f.document, {conditional: true});
+    chunk.content = JSON.stringify(f.document);
+    chunk.documentDigest = hash(f.document);
+  }
+  await expect(verifyContentRecoveryArchive(f.work, f.cache, f.grant, f.io)).rejects.toThrow();
+});

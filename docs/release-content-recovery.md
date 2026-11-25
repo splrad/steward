@@ -4,17 +4,17 @@
 
 从同一候选的受保护 Git 历史取原归档、原缓存、已登记的恢复授权和对照版本。对照版本可以是转存前的空批次，也可以是已经记下第二次尝试与恢复收据的批次。用 runner 的 `decodeCandidateDocument` 解码相应文档，将原缓存按键传入 `cache`，对照版本的 `input`、`payloads`、`evidence` 传入 `work`。`loadDocument` 只从原归档的固定提交读取并解码指定路径。`facts`、`protections` 取自对照版本，`authorsDigest` 取自该次生成记录。
 
-下面的导入路径供放在仓库 `docs/` 目录中的 Node.js ES 模块使用。准备好上述快照后即可调用。
+下面的导入路径供放在仓库 `docs/` 目录中的 Node.js ES 模块使用。已成功返回的第二次尝试还需提供 `loadResultChunks(path)`，从对照版本的固定提交读取该路径的完整 `content-result` 分片。其他状态无需读取结果。
 
 ```js
 import { verifyContentRecoveryArchive } from '../scripts/release-content-recovery.mjs';
 
 const verified = await verifyContentRecoveryArchive(work, cache, grant, {
-  loadDocument, facts, protections, authorsDigest
+  loadDocument, loadResultChunks, facts, protections, authorsDigest
 });
 ```
 
-返回值给出候选、批次和原失败尝试的摘要。来源、payload、验证器、保护、原缓存或收据不符时核对失败。这个入口只读取传入的快照。它核对原尝试的来源；第二次尝试的最终业务结果仍以对应结果归档为准。
+返回值给出候选、批次和原失败尝试的摘要。来源、payload、验证器、保护、原缓存或收据不符时核对失败。这个入口只读取传入的快照。第二次尝试须与批次状态、错误码、检查时间及结果路径相符。对成功记录，还核对对照归档中结果的摘要、输出合同、候选、批次来源和条件模式。
 
 ## 历史写入协议
 
