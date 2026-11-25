@@ -316,7 +316,7 @@ export async function main(stage, env = process.env) {
       requireCandidate(round.source && officialCandidateRoundId(product, round.source) === roundId, 'ROUND_IDENTITY');
       if (round.pull) return finish(identity, await completedCandidate(get, product, roundId, round.pull));
       const draft = round.draft ?? await stateRead('draft');
-      verifyCandidateDraft(candidate, draft, roundId);
+      verifyCandidateDraft(candidate, draft, roundId, product, await readOfficialConfig(get, sourceSha));
       if (!round.draft) await store.save(roundId, 'draft', draft);
       await admit();
       const currentSourceSha = await defaultHead(get, product.defaultBranch);

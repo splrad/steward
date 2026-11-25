@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { appendFile, readFile, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { EvidenceReadError, NativeEvidenceReader, nativeEvidenceTransport, nativeGhCommand } from '../packages/runner/dist/index.js';
-import { officialRef, officialRootSettings, verifyOfficialPull } from './official-release-candidate.mjs';
+import { legacyVersionHeading, nativeDraftBody, officialNotes, officialReleaseTitle, officialRef, officialRootSettings, verifyOfficialPull } from './official-release-candidate.mjs';
 
 const pending = 'autorelease: pending';
 const tagged = 'autorelease: tagged';
@@ -19,16 +19,7 @@ const releaseIsPrerelease = (config, version) =>
 
 /** Use the same body parser as the single-root official release strategy. */
 export async function approvedOfficialBody(pullBody) {
-  return (await parseOfficialSection(pullBody)).body;
-}
-
-async function parseOfficialSection(pullBody) {
-  const { PullRequestBody } = await import('release-please/build/src/util/pull-request-body.js');
-  const parsed = PullRequestBody.parse(pullBody, logger);
-  const [section] = parsed?.releaseData ?? [];
-  requireFact(parsed?.useComponents === false && parsed.releaseData.length === 1 && !section.component && section.version
-    && section.notes.trim(), 'BODY_FORMAT');
-  return {body:section.notes,version:section.version.toString()};
+  return officialNotes(pullBody).body;
 }
 
 async function pendingOfficialPulls(approval, token, facts) {
@@ -47,7 +38,7 @@ export async function inspectPendingOfficialPulls(pendingPulls,approval,facts) {
   const [pull]=pulls;
   if(pull.number!==approval.prNumber || pull.sha!==approval.sourceSha || pull.title!==facts.title
     || !officialRef(pull.headBranchName,approval.defaultBranch)) throw new Error(`OFFICIAL_RELEASE_BRANCH_SCOPE prs=${pull.number}`);
-  const parsed=await parseOfficialSection(pull.body);
+  const parsed=officialNotes(pull.body);
   requireFact(parsed.version===approval.version && parsed.body===facts.body, 'BRANCH_SCOPE');
   return [{path:'.',pullRequest:{number:pull.number},sha:pull.sha,notes:parsed.body,draft:true,forceTag:true,
     tag:{toString:()=>facts.tag,version:{toString:()=>parsed.version}},prerelease:facts.prerelease}];
@@ -109,7 +100,7 @@ async function approvalFacts(approval, reader, parseBody, compare) {
     && liveManifest.value?.['.'] === approval.version && Object.keys(liveManifest.value).length === 1, 'ROOT_CONFIG');
   const root=officialRootSettings(config);
   requireFact(!root['include-component-in-tag'], 'ROOT_TAG_CONFIG');
-  const candidate=verifyOfficialPull(pull,{id:repositoryId,defaultBranch},prNumber,appBotId,config,liveManifest.value);
+  const candidate=verifyOfficialPull(pull,{id:repositoryId,name:repository,defaultBranch},prNumber,appBotId,config,liveManifest.value);
   requireFact(candidate.version===approval.version && candidate.body===body
     && (approval.tag===undefined||candidate.tag===approval.tag), 'RELEASE_VERSION');
   const prerelease = releaseIsPrerelease(config, approval.version);
@@ -160,13 +151,20 @@ async function releaseInventory(approval, facts, reader) {
   const tag = await tagCommit(approval, reader);
   requireFact(Boolean(tag) === refs.some(ref=>ref.ref===tagRef), 'TAG_INVENTORY');
   let release = null;
+  let needsPresentation = false;
   if (matches.length) {
     release = await reader.json(`releases/${matches[0].id}`);
+    const legacy = legacyVersionHeading.test(facts.body);
+    // Old approved notes include their native version heading. New approvals hash only the public text.
+    needsPresentation = !legacy && release.body === nativeDraftBody(approval.version, facts.body) &&
+      [approval.version, 'v' + approval.version].includes(release.name);
+    requireFact(needsPresentation || release.body === facts.body &&
+      (legacy || release.name === officialReleaseTitle(approval.repository, approval.tag)), 'DRAFT_IDENTITY');
     requireFact(tag && release.id === matches[0].id && release.tag_name === approval.tag && release.author?.id === approval.appBotId
-      && release.target_commitish === approval.sourceSha && release.body === facts.body && release.prerelease === facts.prerelease
+      && release.target_commitish === approval.sourceSha && release.prerelease === facts.prerelease
       && release.draft === true && release.immutable === false, 'DRAFT_IDENTITY');
   }
-  return { releaseId:release?.id??null,existingTag:tag,
+  return { releaseId:release?.id??null,existingTag:tag,needsPresentation,
     othersDigest:hash(JSON.stringify([unrelated.map(([id,tag])=>[id,tag]),otherTags])),
     legacyOthersDigest:hash(JSON.stringify([unrelated,otherTags])) };
 }
@@ -226,7 +224,7 @@ export async function readOfficialBody(approval, token) {
     && pull.head?.repo?.id===approval.repositoryId && pull.user?.id===approval.appBotId && pull.user?.type==='Bot'
     && officialRef(pull.head.ref,approval.defaultBranch) && typeof pull.body==='string'
     && hash(pull.body)===approval.pullBodyDigest, 'PULL_BODY_DRIFT');
-  const parsed=await parseOfficialSection(pull.body);
+  const parsed=officialNotes(pull.body);
   requireFact(parsed.version===approval.version && source.value?.['.']===approval.version && hash(parsed.body)===approval.bodyDigest, 'BODY_DIGEST');
   return parsed.body;
 }
@@ -276,8 +274,8 @@ export async function prepareOfficialAction(approval, token, stateHead, scopeDig
   return facts;
 }
 
-export async function reconcileOfficialLifecycle(read, removePending, addTagged) {
-  let facts = await read();
+export async function reconcileOfficialLifecycle(read, removePending, addTagged, initial) {
+  let facts = initial ?? await read();
   if (facts.pending) {
     try { await removePending(); } catch { /* Confirm the original PR before continuing. */ }
     facts = await read();
@@ -291,14 +289,16 @@ export async function reconcileOfficialLifecycle(read, removePending, addTagged)
   return facts;
 }
 
-export async function finishOfficialAction(approval, token, previous, output) {
+export async function finishOfficialAction(approval, token, previous, output, dependencies = {}) {
   requireFact(previous, 'PREFLIGHT_REQUIRED');
-  const reader = await scopedReader(approval, token);
+  const reader = dependencies.reader ?? await scopedReader(approval, token);
+  const command = dependencies.command ?? nativeGhCommand;
+  const compare = dependencies.compare ?? compareSource(approval, token);
   const read = async () => {
     // Creation can observe a moved target branch. Recovery of an existing draft
     // uses its original merged config and object identity.
     const live=previous.releaseId===null
-      ?await approvalFacts(approval,reader,approvedOfficialBody,compareSource(approval,token)):null;
+      ?await approvalFacts(approval,reader,approvedOfficialBody,compare):null;
     if(live) requireFact(live.configDigest===previous.configDigest&&live.manifestDigest===previous.manifestDigest,'AFTER_ACTION_DRIFT');
     const observed=await releaseInventory(approval,previous,reader);
     requireFact(observed.releaseId!==null && (previous.releaseId===null||observed.releaseId===previous.releaseId)
@@ -311,10 +311,24 @@ export async function finishOfficialAction(approval, token, previous, output) {
     return {...observed,body:previous.body,prerelease:previous.prerelease,
       pending:pull.labels.some(label=>label.name===pending),tagged:pull.labels.some(label=>label.name===tagged)};
   };
+  const draft = await read();
+  if (draft.needsPresentation) {
+    const name = officialReleaseTitle(approval.repository, approval.tag);
+    try {
+      await command(['api', '--method', 'PATCH', `repos/${approval.repository}/releases/${draft.releaseId}`,
+        '-f', 'name=' + name, '-f', 'body=' + previous.body], token);
+    } catch { /* Confirm the stored draft even if the response was lost. */ }
+  }
+  const readPresented = async () => {
+    const checked = await read();
+    requireFact(!checked.needsPresentation && checked.releaseId === draft.releaseId, 'DRAFT_IDENTITY');
+    return checked;
+  };
   const path = `repos/${approval.repository}/issues/${approval.prNumber}/labels`;
-  const facts=await reconcileOfficialLifecycle(read,
-    ()=>nativeGhCommand(['api','--method','DELETE',`${path}/${encodeURIComponent(pending)}`], token),
-    ()=>nativeGhCommand(['api','--method','POST',path,'-f',`labels[]=${tagged}`], token));
+  const presented = draft.needsPresentation ? await readPresented() : draft;
+  const facts=await reconcileOfficialLifecycle(readPresented,
+    ()=>command(['api','--method','DELETE',`${path}/${encodeURIComponent(pending)}`], token),
+    ()=>command(['api','--method','POST',path,'-f',`labels[]=${tagged}`], token), presented);
   return { body: facts.body, prerelease: facts.prerelease, releaseId: facts.releaseId };
 }
 

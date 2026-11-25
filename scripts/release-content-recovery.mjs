@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { contentOutputSchema, decodeCandidateDocument, verifyContentAttemptReceipts } from '../packages/runner/dist/index.js';
+import { archivedOutputContract, decodeCandidateDocument, verifyContentAttemptReceipts } from '../packages/runner/dist/index.js';
 import { effectiveValidator, requiredWorkflowBinding, validatorRuleset } from './required-workflow-binding.mjs';
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const same = (a,b) => JSON.stringify(a) === JSON.stringify(b);
@@ -22,7 +22,7 @@ export async function selectContentArchive(candidate, generatedDigest, {loadDocu
 }
 
 // The native writer stored the first send, the provider outcome and any later blocked wake separately.
-async function verifyRecordedBatch(batch, input, currentDigest, grant, conditional, loadResultChunks) {
+async function verifyRecordedBatch(batch, input, currentDigest, grant, contract, loadResultChunks) {
   const attempt = batch.attempts[1];
   if (attempt.status === 'RETURNED') {
     const directory = currentDigest === grant.archiveContentDigest ? transferDigest(currentDigest, input.controllerSha) : currentDigest;
@@ -33,8 +33,8 @@ async function verifyRecordedBatch(batch, input, currentDigest, grant, condition
     const first = chunks?.[0];
     check(Array.isArray(chunks) && first?.documentKind === 'content-result' && first.candidateId === input.candidateId
       && first.repositoryId === input.repositoryId);
-    const result = await decodeCandidateDocument(chunks);
-    check(result.stage === batch.stage && same(result.sourceIds, batch.sourceIds) && (result.conditional === true) === conditional);
+    const result = await decodeCandidateDocument(chunks, contract === 'conditional' ? true : 'reviewed');
+    check(result.stage === batch.stage && same(result.sourceIds, batch.sourceIds) && (result.conditional === true) === (contract !== 'standard'));
     return;
   }
 
@@ -105,7 +105,8 @@ export async function verifyContentRecoveryArchive(work, cache, grant, { loadDoc
   check(entry && entry.result===null && entry.inputDigest===batch.inputDigest && entry.configDigest===work.input.configDigest && same(entry.attempts,old.attempts));
   const conditional=payload.conditional===true;
   check((archived.conditional===true)===conditional && (entry.conditional===true)===conditional);
-  check(grant.outputContractSha256===hash(contentOutputSchema(conditional)));
+  const contract = await archivedOutputContract(grant.outputContractSha256, conditional);
+  check(contract !== undefined);
   await verifyContentAttemptReceipts(old.attempts,conditional);
   if(batch.attempts.length===0){
     check(batch.status==='PENDING' && batch.resultPath===null && batch.errorCode===null && batch.nextCheckAt===null);
@@ -117,7 +118,7 @@ export async function verifyContentRecoveryArchive(work, cache, grant, { loadDoc
       && Object.entries(receipt).every(([field,value])=>recorded[field]===value));
     await verifyContentAttemptReceipts(batch.attempts,conditional);
     const currentDigest = hash([hash(facts), work.input.configDigest, authorsDigest]);
-    await verifyRecordedBatch(batch, work.input, currentDigest, grant, conditional, loadResultChunks);
+    await verifyRecordedBatch(batch, work.input, currentDigest, grant, contract, loadResultChunks);
   }
   return {candidateId:grant.candidateId,batchId:old.id,previousAttemptSha256:grant.previousAttemptSha256};
 }

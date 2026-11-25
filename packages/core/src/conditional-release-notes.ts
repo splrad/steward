@@ -19,10 +19,11 @@ export const conditionalHeadings = {
   highlights: '本版重点',
   ...changeHeadings,
   compatibility: '兼容性与迁移',
-  acquisition: '获取与使用',
   knownLimitations: '已知问题与限制',
 } as const;
 export type ConditionalSection = keyof typeof conditionalHeadings;
+export const reviewedHeadings = { ...conditionalHeadings, acquisition: '获取与使用' } as const;
+type ReviewedSection = keyof typeof reviewedHeadings;
 type Item = { title: string; description: string; example?: { language: string; content: string } };
 type Items = { items: Item[] };
 type ConditionalNotes = {
@@ -37,8 +38,8 @@ type ConditionalNotes = {
 
 const parser = unified().use(remarkParse);
 function fail(reason: string): never { throw new Error(`RELEASE_TEMPLATE: ${reason}`); }
-const sectionByHeading = new Map<string, ConditionalSection>(
-  Object.entries(conditionalHeadings).map(([key, value]) => [value, key as ConditionalSection]),
+const sectionByHeading = new Map<string, ReviewedSection>(
+  Object.entries(reviewedHeadings).map(([key, value]) => [value, key as ReviewedSection]),
 );
 export const isConditionalTemplate = (template: string): boolean => template.includes('{{#requiredActions}}');
 const adoptedConditionalDigests = [
@@ -46,6 +47,7 @@ const adoptedConditionalDigests = [
   '120dc4498c5a8ab55e14caf222f0fce2dd09b366f072798c6d12a2db3945776a', // avatars and numeric IDs
   '5c4b14554ed6ad7729b8c13c7e8daedff23dba36bb83fa0e22319a70aa493763', // linked usernames and numeric IDs
   'e7d54160c3c6811e223ad17b8d2d3284cd9b9e11ddf2d87dae3b8e846b839bb0', // linked usernames
+  '32f8161dd870792f49e6fb935c10566716f1ac24ef6813f28446a3f9bc3e8ae4', // project title and version-specific changes
 ];
 const showsReleaseContributorIds = (template: string): boolean => template.includes('{{id}}');
 
@@ -71,10 +73,9 @@ const legacyOrganizationTemplates = new Set([
 export const isPreviouslyAdoptedReleaseTemplate = async (template: string): Promise<boolean> =>
   legacyOrganizationTemplates.has(await sha256Hex(template));
 
-export function isConditionalItem(markdown: string, section: ConditionalSection): boolean {
+export function isConditionalItem(markdown: string, allowExample = false): boolean {
   const nodes = parser.parse(markdown).children;
-  return nodes[0]?.type === 'paragraph'
-    && (nodes.length === 1 || section === 'acquisition' && nodes.length === 2 && nodes[1]?.type === 'code');
+  return nodes[0]?.type === 'paragraph' && (nodes.length === 1 || allowExample && nodes.length === 2 && nodes[1]?.type === 'code');
 }
 
 function httpsLink(value: string): void {
@@ -84,20 +85,20 @@ function httpsLink(value: string): void {
 }
 
 /** One reviewed item is a Markdown paragraph headed by bold text, with an optional fenced usage example. */
-export function parseConditionalNotes(markdown: string): ConditionalNotes {
-  const sections: Partial<Record<ConditionalSection, Item[]>> = {};
+export function parseConditionalNotes(markdown: string, allowAcquisition = false): ConditionalNotes {
+  const sections: Partial<Record<ReviewedSection, Item[]>> = {};
   let summary: string | undefined;
-  let current: ConditionalSection | undefined;
+  let current: ReviewedSection | undefined;
   let last: Item | undefined;
   let count = 0;
-  const inspected = new Set<ConditionalSection>();
+  const inspected = new Set<ReviewedSection>();
   const slice = (node: ReturnType<typeof parser.parse>['children'][number]) =>
     markdown.slice(node.position?.start.offset, node.position?.end.offset);
   for (const node of parser.parse(markdown).children) {
     if (node.type === 'heading' && node.depth === 2 && node.children.length === 1 && node.children[0]?.type === 'text') {
       if (current && !count) fail('empty heading');
       current = sectionByHeading.get(node.children[0].value);
-      if (!current || inspected.has(current)) fail('unknown or duplicate heading');
+      if (!current || current === 'acquisition' && !allowAcquisition || inspected.has(current)) fail('unknown or duplicate heading');
       inspected.add(current);
       last = undefined;
       count = 0;
@@ -307,12 +308,15 @@ export function renderConditionalNotes(template: string, notes: ConditionalNotes
   inspect(Mustache.parse(template));
   const required = [
     'summary.summary', 'requiredActions.items.affectedUsers', 'requiredActions.items.instruction',
-    ...['highlights', ...categories.map(key => 'changes.' + key), 'compatibility', 'acquisition', 'knownLimitations']
+    ...['highlights', ...categories.map(key => 'changes.' + key), 'compatibility', 'knownLimitations']
       .flatMap(key => [key + '.items.title', key + '.items.description']),
-    'acquisition.items.example.language', 'acquisition.items.example.content',
     ...['profileUrl', 'avatarUrl', 'alt'].map(key => 'hasContributors.contributors.' + key),
     'sourceLink.label', 'sourceLink.url',
   ];
+  if (used.has('acquisition')) {
+    required.push('acquisition.items.title', 'acquisition.items.description',
+      'acquisition.items.example.language', 'acquisition.items.example.content');
+  }
   if (showsReleaseContributorIds(template)) required.push('hasContributors.contributors.id', 'hasContributors.contributors.login');
   if (required.some(key => !used.has(key))) fail('conditional template omits a required field');
   httpsLink(sourceLink.url);

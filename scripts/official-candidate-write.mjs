@@ -1,9 +1,10 @@
 import { EvidenceReadError } from '../packages/runner/dist/index.js';
 import { comparableCandidateFile, defaultHead, fitsOfficialEvent, hasLabel, officialNotes, officialPending,
   officialRef, officialRoundMarker, pages, pullBinding, readOfficialConfig, readOfficialManifest, readSourceFile,
-  requireCandidate, verifyOfficialPull } from './official-release-candidate.mjs';
+  requireCandidate, verifyNotesUnit, verifyOfficialPull } from './official-release-candidate.mjs';
 
 const sha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
+const hasRoundMarker = (pull, roundId) => typeof pull?.body === 'string' && pull.body.includes(officialRoundMarker(roundId));
 const branchPath = head => 'git/ref/heads/' + encodeURIComponent(head);
 const commitMarker = roundId => 'Steward-Candidate-Round: ' + roundId;
 
@@ -73,9 +74,10 @@ export async function compatibleExistingCandidate({ get, pull, product, botId, c
     pull: { number: pull.number, head: pull.head.sha, bodyDigest: notes.bodyDigest } };
 }
 
-export function verifyCandidateDraft(candidate, draft, roundId) {
+export function verifyCandidateDraft(candidate, draft, roundId, product, configuration) {
   requireCandidate(typeof draft?.body === 'string' && fitsOfficialEvent(draft.body), 'C1_BODY_LIMIT');
   const parsed = officialNotes(draft.body);
+  verifyNotesUnit(parsed, product, configuration, candidate.head);
   requireCandidate(parsed.version === candidate.version, 'C1_VERSION');
   requireCandidate(draft.body.endsWith(officialRoundMarker(roundId)), 'C1_ROUND');
   return parsed;
@@ -115,6 +117,8 @@ async function settleBranch({ get, request, admit, sourceSha, product, botId, ro
   }
   const open = await openOfficialPull(get, product, botId);
   requireCandidate(prior ? open?.number === prior.number && open.head.sha === prior.head : !open, 'PRIOR_PULL_DRIFT');
+  // A delivered PR must already point to this round's signed commit, recovered above.
+  requireCandidate(!hasRoundMarker(open, roundId), 'PRIOR_PULL_DRIFT');
   const base = await get('git/commits/' + sourceSha);
   requireCandidate(base.sha === sourceSha && sha(base.tree?.sha), 'C2_SOURCE_TREE');
   const tree = await request('POST', 'git/trees', { base_tree: base.tree.sha,
@@ -128,7 +132,10 @@ async function settleBranch({ get, request, admit, sourceSha, product, botId, ro
   await admit();
   requireCandidate(await readBranch(get, candidate.head) === currentHead, 'PRIOR_BRANCH_DRIFT');
   requireCandidate(await defaultHead(get, product.defaultBranch) === sourceSha, 'C2_SOURCE_CHANGED');
-  if (prior) await readOpenCandidatePull(get, product, botId, prior.number, prior.head);
+  if (prior) {
+    const beforeWrite = await readOpenCandidatePull(get, product, botId, prior.number, prior.head);
+    requireCandidate(!hasRoundMarker(beforeWrite, roundId), 'PRIOR_PULL_DRIFT');
+  }
   let mutationError;
   try {
     if (currentHead) await request('PATCH', 'git/refs/heads/' + encodeURIComponent(candidate.head), { sha: commit.sha, force: true });
@@ -142,12 +149,11 @@ async function settleBranch({ get, request, admit, sourceSha, product, botId, ro
 
 async function settlePull({ get, request, admit, sourceSha, product, botId, roundId, round, branch, configuration, sameCandidateBase }) {
   const { candidate, prior } = round.source;
-  const appliedRound = pull => typeof pull?.body === 'string' && pull.body.includes(officialRoundMarker(roundId));
   let pull = await openOfficialPull(get, product, botId);
   if (pull) pull = await readOpenCandidatePull(get, product, botId, pull.number, branch.head);
-  requireCandidate(pull ? pull.head.sha === branch.head && (prior ? pull.number === prior.number : appliedRound(pull)) : !prior,
+  requireCandidate(pull ? pull.head.sha === branch.head && (prior ? pull.number === prior.number : hasRoundMarker(pull, roundId)) : !prior,
     'PRIOR_PULL_DRIFT');
-  if (branch.sourceSha !== sourceSha && (!appliedRound(pull) || !hasLabel(pull, officialPending))) {
+  if (branch.sourceSha !== sourceSha && (!hasRoundMarker(pull, roundId) || !hasLabel(pull, officialPending))) {
     const commit = await get('git/commits/' + branch.head);
     const parent = await verifiedCandidateParent(get, candidate, branch.head, roundId, commit);
     requireCandidate(parent === branch.sourceSha &&
@@ -158,11 +164,11 @@ async function settlePull({ get, request, admit, sourceSha, product, botId, roun
     requireCandidate(await readBranch(get, candidate.head) === branch.head &&
       await defaultHead(get, product.defaultBranch) === sourceSha, 'C2_SOURCE_CHANGED');
   };
-  if (!appliedRound(pull)) {
+  if (!hasRoundMarker(pull, roundId)) {
     await confirmSource();
     if (prior) pull = await readOpenCandidatePull(get, product, botId, prior.number, branch.head);
   }
-  if (!appliedRound(pull)) {
+  if (!hasRoundMarker(pull, roundId)) {
     let mutationError;
     const fields = { title: candidate.title, body: round.draft.body };
     try {
@@ -170,11 +176,15 @@ async function settlePull({ get, request, admit, sourceSha, product, botId, roun
       else await request('POST', 'pulls', { ...fields, head: candidate.head, base: candidate.base, draft: false });
     } catch (error) { mutationError = error; }
     pull = await openOfficialPull(get, product, botId);
-    if (!appliedRound(pull) && mutationError?.status && mutationError.status < 500) throw mutationError;
-    requireCandidate(appliedRound(pull) && pull.head.sha === branch.head && (!prior || prior.number === pull.number), 'PULL_WRITE_UNKNOWN');
+    if (!hasRoundMarker(pull, roundId) && mutationError?.status && mutationError.status < 500) throw mutationError;
+    requireCandidate(hasRoundMarker(pull, roundId) && pull.head.sha === branch.head && (!prior || prior.number === pull.number), 'PULL_WRITE_UNKNOWN');
   }
+  const manifest = await readOfficialManifest(get, branch.head);
   if (!hasLabel(pull, officialPending)) {
     await confirmSource();
+    pull = await readOpenCandidatePull(get, product, botId, pull.number, branch.head);
+    requireCandidate(hasRoundMarker(pull, roundId), 'PRIOR_PULL_DRIFT');
+    verifyOfficialPull(pull, product, pull.number, botId, configuration, manifest);
     let mutationError;
     try { await request('POST', 'issues/' + pull.number + '/labels', { labels: candidate.labels }); }
     catch (error) { mutationError = error; }
@@ -182,7 +192,7 @@ async function settlePull({ get, request, admit, sourceSha, product, botId, roun
     if (!hasLabel(pull, officialPending) && mutationError?.status && mutationError.status < 500) throw mutationError;
     requireCandidate(hasLabel(pull, officialPending), 'LABEL_WRITE_UNKNOWN');
   }
-  const actual = verifyOfficialPull(pull, product, pull.number, botId, configuration, await readOfficialManifest(get, branch.head));
+  const actual = verifyOfficialPull(pull, product, pull.number, botId, configuration, manifest);
   return { number: pull.number, head: branch.head, bodyDigest: actual.bodyDigest };
 }
 
@@ -206,7 +216,7 @@ export async function writeOfficialCandidate(options) {
     await observeOfficialCandidatePull({ get, product, botId: options.botId, record: round.pull });
     return round.pull;
   }
-  verifyCandidateDraft(round.source.candidate, round.draft, roundId);
+  verifyCandidateDraft(round.source.candidate, round.draft, roundId, product, options.configuration);
   await admit();
   requireCandidate(await defaultHead(get, product.defaultBranch) === sourceSha, 'C2_SOURCE_CHANGED');
   const branch = await settleBranch(options);

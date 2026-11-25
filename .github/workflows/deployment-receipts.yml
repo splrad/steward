@@ -10,7 +10,7 @@ jobs:
   governance:
     name: 已晋级控制器
     if: github.repository_id == '1296724484' && (github.ref == 'refs/heads/main' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/controller-v')))
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -40,7 +40,7 @@ jobs:
   discover:
     name: 读取生产版本及已有模块凭证
     if: github.repository_id == '1296724484' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -75,7 +75,7 @@ jobs:
     name: 隔离重建待核实的 Worker 模块
     needs: discover
     if: needs.discover.outputs.sources != '[]'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
       contents: read
@@ -105,7 +105,7 @@ jobs:
     name: 生产 Worker
     needs: [discover, build]
     if: "!cancelled() && needs.discover.result == 'success'"
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
