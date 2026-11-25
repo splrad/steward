@@ -51,12 +51,12 @@ jobs:
           path: state
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78
         env:
           MISE_SAFE: '1'
           MISE_NODE_COMPILE: 'false'
         with:
-          version: 2026.10.18
+          version: 2026.11.14
           working_directory: controller
           install_args: --locked
           cache: false
@@ -105,7 +105,7 @@ jobs:
   build:
     name: build/${{ matrix.target }}/${{ matrix.unit }}
     needs: admit
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -134,12 +134,12 @@ jobs:
           path: state
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78
         env:
           MISE_SAFE: '1'
           MISE_NODE_COMPILE: 'false'
         with:
-          version: 2026.10.18
+          version: 2026.11.14
           working_directory: controller
           install_args: --locked
           cache: false
@@ -206,7 +206,7 @@ jobs:
           node controller/packages/runner/dist/index.js release-pipeline result --record record.json --unit "$env:UNIT" --controller-dir controller --state-dir state --job-name "$env:JOB_NAME" --objects "$json" --output result.json
   sign:
     needs: [admit, build]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     outputs:
       result: ${{ steps.signing.outputs.result }}
@@ -261,12 +261,12 @@ jobs:
           path: state
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78
         env:
           MISE_SAFE: '1'
           MISE_NODE_COMPILE: 'false'
         with:
-          version: 2026.10.18
+          version: 2026.11.14
           working_directory: controller
           install_args: --locked
           cache: false

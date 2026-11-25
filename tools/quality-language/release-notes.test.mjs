@@ -31,11 +31,20 @@ test('read-only organization preflight creates no session and does not consult p
   }
 });
 
+test('classification uses the isolated SDK with its own whole-PR decision contract', async () => {
+  const text='{"decision":"eligible","reason":"The workflow is a supported deliverable."}';
+  const f=fixture({text});
+  assert.equal((await releaseNotes('classify','{}','workflow-token',f.create)).text,text);
+  const {sessionOptions}=f.options();
+  assert.ok(sessionOptions.systemMessage.content.includes('整个 PR'));
+  assert.deepEqual(sessionOptions.tools.availableTools,[]);
+});
+
 test('expired tokens, organization policy and budget rejection do not retry or fall back', async () => {
   for (const status of [401,403,429]) {
     const f=fixture({failure:{status,response:{headers:new Headers({'retry-after':'120'})}}});
     assert.deepEqual(await releaseNotes('generate','{}','workflow-token',f.create),{
-      status:status===429?'WAIT_QUOTA':'WAIT_AUTH',retryAfterMs:120000,
+      status:status===429?'WAIT_QUOTA':'WAIT_AUTH',retryAfterMs:120000,diagnostic:{sdkStage:'send',status},
     });
     assert.deepEqual(f.events,['start','session','send','abort','disconnect','stop']);
     assert.deepEqual(f.options().clientOptions.github, { token: 'workflow-token', useLoggedInUser: false });
@@ -68,7 +77,7 @@ test('the request-correlated SDK context error yields only a bounded diagnosis w
   const f = fixture({ failure: native });
   await assert.rejects(releaseNotes('generate', '{}', 'fixture-token', f.create), error => {
     assert.equal(error.message, 'CONTENT_CONTEXT_LIMIT');
-    assert.deepEqual({ ...error }, { status: 400 });
+    assert.deepEqual({ ...error }, { sdkStage: 'send', sdkErrorType: 'context_limit', status: 400 });
     return true;
   });
   assert.equal(f.events.filter(event => event === 'send').length, 1);
@@ -100,6 +109,28 @@ test('generation signals before a status-bearing failure never become retryable 
       const f = fixture({ generationEvent, failure: { status }, emitUsage: false });
       await assert.rejects(releaseNotes('generate', '{}', 'fixture-token', f.create), /^Error: RESPONSE_UNKNOWN$/);
       assert.deepEqual(f.events, ['start', 'session', 'send', 'abort', 'disconnect', 'stop']);
+    }
+  }
+});
+
+test('request-correlated session errors retain only documented diagnostics', async () => {
+  for (const [errorType, statusCode, wait] of [
+    ['quota', 403, 'WAIT_QUOTA'], ['rate_limit', 429, 'WAIT_QUOTA'],
+    ['authentication', 401, 'WAIT_AUTH'], ['authorization', 403, 'WAIT_AUTH'],
+    ['policy', 403, null], ['query', 400, null], ['untrusted provider text', 500, null],
+  ]) {
+    const failure = { data: { errorType, statusCode, message: 'private input', providerCallId: 'private trace' } };
+    for (const generationEvent of [null, 'assistant.message_start']) {
+      const f = fixture({ failure, generationEvent });
+      const result = releaseNotes('generate', '{}', 'workflow-token', f.create);
+      const diagnostic = { sdkStage: 'send', ...(errorType === 'untrusted provider text' ? {} : { sdkErrorType: errorType }), status: statusCode };
+      if (wait && !generationEvent) assert.deepEqual(await result, { status: wait, retryAfterMs: 0, diagnostic });
+      else await assert.rejects(result, error => {
+        assert.equal(error.message, 'RESPONSE_UNKNOWN');
+        assert.deepEqual({ ...error }, diagnostic);
+        return true;
+      });
+      assert.equal(f.events.filter(event => event === 'send').length, 1);
     }
   }
 });

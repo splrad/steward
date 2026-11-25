@@ -1,0 +1,140 @@
+name: Steward 晋级与生产状态
+on:
+  push:
+    tags: ['controller-v*']
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+permissions: {}
+jobs:
+  governance:
+    name: 已晋级控制器
+    if: github.repository_id == '1296724484' && (github.ref == 'refs/heads/main' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/controller-v')))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      deployments: write
+    concurrency:
+      group: steward-governance-receipts
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+        env:
+          MISE_SAFE: '1'
+          MISE_NODE_COMPILE: 'false'
+        with:
+          version: 2026.11.14
+          install_args: --locked node
+          cache: false
+          env: false
+          persist_github_token: false
+      - name: 读取受保护控制器和版本标签
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/deployment-receipts.mjs governance-promotion
+  discover:
+    name: 读取生产版本及已有模块凭证
+    if: github.repository_id == '1296724484' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      deployments: read
+    environment:
+      name: steward-production-observer
+      deployment: false
+    outputs:
+      sources: ${{ steps.sources.outputs.sources }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+        env:
+          MISE_SAFE: '1'
+          MISE_NODE_COMPILE: 'false'
+        with:
+          version: 2026.11.14
+          install_args: --locked node
+          cache: false
+          env: false
+          persist_github_token: false
+      - id: sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_READ_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_READ_TOKEN }}
+        run: node scripts/deployment-receipts.mjs production-sources
+  build:
+    name: 隔离重建待核实的 Worker 模块
+    needs: discover
+    if: needs.discover.outputs.sources != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      digests: ${{ steps.build.outputs.digests }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+        env:
+          MISE_SAFE: '1'
+          MISE_NODE_COMPILE: 'false'
+        with:
+          version: 2026.11.14
+          install_args: --locked node
+          cache: false
+          env: false
+          persist_github_token: false
+      - id: build
+        env:
+          BUILD_SOURCES: ${{ needs.discover.outputs.sources }}
+        run: node scripts/worker-module-proof.mjs
+  production:
+    name: 生产 Worker
+    needs: [discover, build]
+    if: "!cancelled() && needs.discover.result == 'success'"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      deployments: write
+    environment:
+      name: steward-production-observer
+      deployment: false
+    concurrency:
+      group: steward-production-receipts
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+        env:
+          MISE_SAFE: '1'
+          MISE_NODE_COMPILE: 'false'
+        with:
+          version: 2026.11.14
+          install_args: --locked node
+          cache: false
+          env: false
+          persist_github_token: false
+      - name: 核对生产流量、健康状态和模块凭证
+        env:
+          BUILD_DIGESTS: ${{ needs.build.outputs.digests }}
+          GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_READ_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_READ_TOKEN }}
+        run: node scripts/deployment-receipts.mjs production

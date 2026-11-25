@@ -4,7 +4,7 @@ import {resolve} from 'node:path';
 const module=()=>import(pathToFileURL(resolve('tools/settings-sync/actions-policies.mjs')).href);
 const registration=()=>({id:7,name:'Reviewed events',source_type:'Organization',source:'splrad',enforcement:'active',
   conditions:{repository_id:{repository_ids:[12]},workflow_path:{include:['~ALL'],exclude:[
-    '.github/workflows/pr-title.yml','.github/workflows/sync-managed.yml',
+    '.github/workflows/pr-title.yml','.github/workflows/sync-managed.yml','.github/workflows/repository-configuration.yml',
     '.github/workflows/pr-labeler.yml']}},
   acceptedEvents:['push'],desiredEvents:['push','pull_request','workflow_dispatch','workflow_run','schedule','release','workflow_call']});
 const registry=()=>({schemaVersion:1,organization:{login:'splrad',id:302208797},repositories:[{full_name:'splrad/fixture',id:12}],policies:[registration()]});
@@ -79,9 +79,6 @@ it('title permission requires the exact executing path and the pull request even
 it('generic permissions preserve the registered event set and exclude all dedicated workflow paths',async()=>{
   const {validateActionsRegistry}=await module();
   const valid=registry();expect(validateActionsRegistry(valid)).toBe(valid);
-  const obsolete=registry();
-  obsolete.policies[0]!.conditions.workflow_path.exclude.push('.github/workflows/repository-configuration.yml');
-  expect(()=>validateActionsRegistry(obsolete)).toThrow('WORKFLOW_PATH');
   for(const path of valid.policies[0]!.conditions.workflow_path.exclude){
     const bad=registry(),scope=bad.policies[0]!.conditions.workflow_path;
     scope.exclude=scope.exclude.filter(excluded=>excluded!==path);

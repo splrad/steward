@@ -44,19 +44,12 @@ Actions 事件策略通过 GitHub 设置页或官方 REST 在采用阶段配置�
 
 `STEWARD_TEMPLATE_APPLY` 只启用文件 App 当前 selected 安装范围内的递送。空仓首提交另由 `STEWARD_BOOTSTRAP_APPLY` 控制，默认不启用；其治理 App 为 all 安装，因此启用该开关涉及当前和未来安装空仓，必须另有明确范围授权。本批已有非空仓接入不需要开启它。`bootstrap_only` 仍只能使用既有私有精确验收对象控制。
 
-### 旧配置工作流的 Actions 策略收尾
+### 旧配置工作流的历史登记
 
-维护窗口须单独批准。`config/governance/actions-policies.json` 当前为 `policies: []`。合入本辅助模块只改变将来显式登记 11334 时允许的形状；空注册表通过校验不能证明线上策略已切换。
+2026-11-25 核对四仓 31 个分支时，四个默认分支均已移除 `.github/workflows/repository-configuration.yml`。GitHub 仍将三个旧 workflow ID 标记为 `active`。Steward 的 `424786417`、组织社区仓的 `424413230`、私有设置仓的 `424413483` 分别有 2、5、6 次历史运行，均已结束。[Steward 运行记录](https://github.com/splrad/steward/actions/runs/44704150035) · [组织社区仓运行记录](https://github.com/splrad/.github/actions/runs/44735319717)
 
-**切换前。** 从组织 Actions policies API 保存 11334、16429、16430 的完整原生定义和各仓继承明细，记录当前启用状态、仓库 ID、路径条件及事件。11334 当前覆盖 LayerScape、steward、.github，允许 `pull_request`、`push`、`schedule`、`workflow_dispatch`、`workflow_run`、`release`、`workflow_call`。16429 对 LayerScape 的旧路径还允许 `pull_request_review` 和 `issues`，16430 对其余两仓的旧路径允许相同的七类通用事件。
+LayerScape 的登记 `424667651` 已是 `deleted`。仍保留旧文件的分支为 `steward/release-candidate`（`e19c350e`）。验收 PR #233 已关闭，其原分支已删除，原提交仍可回读同一份文件。该文件声明了 `pull_request_review` 和 `issues`。线上通用 Actions 策略 11334 继续排除这条路径，专用策略 16429、16430 仍启用。[保留分支上的工作流](https://github.com/splrad/LayerScape/blob/e19c350ecd706b8d75de60d715b6bd34e9abd363/.github/workflows/repository-configuration.yml) · [验收 PR #233](https://github.com/splrad/LayerScape/pull/233)
 
-检查所有保留分支和标签、开放 PR、在途运行及四仓默认分支。上次核查时，LayerScape 的 `steward/release-candidate`（`e19c350e`）和验收 PR #233 的 `validation/python-delivery-20261121`（`8540f858`）仍有 `.github/workflows/repository-configuration.yml`，同一 blob `3512eda6` 声明 `pull_request_review` 与 `issues`。#233 的 Python 验收另走 push 工作流。记录这两个头的当前 SHA、旧事件有无消费者，以及验收工作流状态。如果仍需这两类事件，或引用发生变化且影响未查清，保留原策略并暂停切换。此次维护不处置这两个分支。 [验收 #233](https://github.com/splrad/LayerScape/pull/233) · [旧工作流](https://github.com/splrad/LayerScape/blob/8540f8587bd32cf86415d1a64f9ee23c8b27f692/.github/workflows/repository-configuration.yml)
+**切换。** 获准停用某个历史登记后，按仓库和 workflow ID 保存其路径、原状态及运行记录。重新核对分支、可调度的固定引用、开放 PR、调用方和在途运行，确认该登记可退出。逐个停用并按原 ID 读回 `disabled_manually`，保留历史 Run。若平台拒绝操作，记录返回结果并保留该项原状。
 
-**切换与读回。**
-
-1. 用保存的 11334 构造临时登记，使用[旧版校验模块](https://github.com/splrad/steward/blob/1d43b0b6c8004f635f28f961e675773c4f170219/tools/settings-sync/actions-policies.mjs)的 `validateActionsRegistry` 核对四项路径排除。复制该登记，只从排除项中移去旧配置路径，再用本 PR 的校验模块核对三项形状。两个临时登记都使用原仓库和事件，保留正式空注册表。
-2. 在首次策略写入前复核快照和两类事件的退出决定。只修改 11334 的这一个排除项。扩展通用覆盖的这一步就可能限制旧路径的 `pull_request_review`、`issues`。逐仓读回七类通用事件和余下三项排除（`pr-title.yml`、`sync-managed.yml`、`pr-labeler.yml`），对照标题、贴标、模板同步和原生验证各自的有效事件及运行。如有偏差，立即回退。
-3. 逐一停用 16429、16430，每次读回原生定义和目标仓继承。确认旧路径已有通用保护，其他仓、其他路径及事件符合快照。专用策略按其独立的原生定义验收。
-4. 分别复核并处理历史 workflow 登记：steward `424786417`、.github `424413230`、steward-settings `424413483`。各自须具备原状态记录、无活跃消费者且运行均已终止，再逐项停用和读回。LayerScape `424667651` 已是 deleted。保留历史 Run；若 GitHub 拒绝停用无源码的登记，记录原生响应、引用和未完成项。
-
-**回退。** 按操作记录只恢复已改项。先以快照恢复 16429、16430 原来的启用状态、精确仓库和事件，逐仓确认专用保护已就位。随后恢复 11334 的旧路径排除并用上述固定旧版校验器复核四项形状。重新从各仓读取有效覆盖，核对 LayerScape 旧路径的九类事件、另两仓七类事件以及其余路径原有权限。若曾停用历史 workflow，按原 ID 恢复对应登记并读回；遇到平台拒绝时保留原生响应，单列未恢复项。以策略定义、继承、工作流状态和相关运行的读回结果结案。
+**回退。** 仅对本次从 `active` 停用的 ID 恢复启用，按同一仓库和 ID 读回原路径与 `active` 状态，并确认历史 Run 仍可访问。遇到源码已移除导致无法恢复的情况，记录原生响应及未恢复的 ID，交由维护者单独处置。

@@ -100,7 +100,7 @@ test('controlled zero-call stop persists pending input and resumes once without 
 
 test('manual acceptance rejects the retired release consumer and private target',()=>{
   const check=p=>{const raw=JSON.stringify(p);return validatePlan(raw,digest(raw),env);};
-  assert.throws(()=>check({...plan,kind:'release'}),/ACCEPTANCE_MODE/);
+  for (const kind of ['release','release-initialize']) assert.throws(()=>check({...plan,kind}),/ACCEPTANCE_MODE/);
   assert.throws(()=>check({...plan,releaseRecovery:{}}),/RELEASE_RECOVERY_RETIRED/);
   const retired={id:1448797077,full_name:'splrad/steward-e10-lifecycle-20261107',private:true,default_branch:'main'};
   assert.throws(()=>check({...plan,repository:retired}),/RETIRED_REPOSITORY/);

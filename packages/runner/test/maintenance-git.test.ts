@@ -12,6 +12,7 @@ import {isolatedBuildEnvironment} from '../src/build-environment.js';
 it('creates central maintenance-only state, preserves requests after cache loss and refuses budget reset or foreign ownership',async()=>{
   const {writeReleaseRecords,readReleaseRecords}=await import(pathToFileURL(resolve('scripts/release-record.mjs')).href);
   const {maintenanceGitStore}=await import(pathToFileURL(resolve('scripts/maintenance.mjs')).href);
+  const {writeRecoveryRecord,nextClaim}=await import(pathToFileURL(resolve('scripts/candidate-draft-recovery.mjs')).href);
   const root=await mkdtemp(join(tmpdir(),'maintenance-git-'));registerOfflineFixtureRoot(root);
   try {
     const remote=join(root,'remote'),profile=join(root,'profile');await mkdir(remote);await mkdir(profile);
@@ -51,6 +52,27 @@ it('creates central maintenance-only state, preserves requests after cache loss 
     expect(await store.load(12)).toEqual(claimed);
     await git('switch','main');await store.save(claimed,claimed);
     expect((await refresh()).snapshot.currentPaths).toContain('maintenance/12.json');
+    const recoveryPath = 'maintenance/candidate-draft-17-' + source + '-1.json';
+    const recovery = {schemaVersion:1,productId:17,sourceSha:source,roundId:digest('candidate'),failedRunId:20,
+      failedAttempt:1,coordinatorRunId:21,coordinatorAttempt:1,controllerSha:source,dispatchAttempt:1};
+    const claimBytes = JSON.stringify(recovery) + '\n';
+    const app={appBotLogin:'fixture',forRepository:async(repoId:number,fn:Function,purpose:string)=>{
+      expect([repoId,purpose]).toEqual([id,'maintenance']);return fn(undefined);
+    }};
+    let protectionReads=0;
+    const dependencies={fetchSnapshot:refresh,checkProtection:async()=>{protectionReads++;}};
+    const reserve=()=>writeRecoveryRecord(app,root,async()=>true,(records:Map<string,unknown>)=>nextClaim(records,recovery),dependencies);
+    expect(await reserve()).toEqual(recovery);
+    expect(await reserve()).toBeNull();
+    expect(protectionReads).toBe(1);
+    const reloaded = (await refresh()).snapshot;
+    expect(reloaded.domainRecords).toEqual(expect.arrayContaining([expect.objectContaining({path:recoveryPath,content:claimBytes,value:recovery})]));
+    expect(await store.load(12)).toEqual(claimed);
+    const changed = file(recoveryPath,JSON.stringify({...recovery,coordinatorRunId:22})+'\n',digest(claimBytes));
+    await expect(writeReleaseRecords(request('replace-draft-claim',[changed],reloaded.head))).rejects.toThrow('immutable');
+    const notSent = recoveryPath.replace('.json','-not-sent.json');
+    expect((await writeReleaseRecords(request('no-post',[file(notSent,claimBytes)],reloaded.head))).status).toBe('APPLIED');
+    expect((await refresh()).snapshot.domainRecords).toContainEqual(expect.objectContaining({path:notSent,value:recovery}));
     expect((await git('show','-s','--format=%B','steward/release-state')).match(/^Signed-off-by:/gm)).toHaveLength(1);
     await git('switch','steward/release-state');await mkdir(join(remote,'generated'));await writeFile(join(remote,'generated','foreign.md'),'Foreign product history\n');
     await git('add','generated/foreign.md');await git('commit','--signoff','-m','Fixture foreign historical owner');

@@ -1,0 +1,102 @@
+name: Steward Governance Release
+on:
+  push:
+    tags: ['v[0-9]*', 'controller-v[0-9]*']
+permissions: {}
+env:
+  TAG_PREFIX: ${{ startsWith(github.ref_name, 'controller-v') && 'controller-v' || 'v' }}
+jobs:
+  range:
+    if: >-
+      github.repository_id == '1296724484' &&
+      github.event.created && !github.event.deleted &&
+      github.event.ref == github.ref && github.event.after == github.sha &&
+      github.event.sender.id == 353238212 && github.event.sender.login == 'splrad-governance[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      previous: ${{ steps.range.outputs.previous }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+        if: env.TAG_PREFIX == 'v'
+        env:
+          MISE_SAFE: '1'
+          MISE_NODE_COMPILE: 'false'
+        with:
+          version: 2026.11.14
+          install_args: --locked aqua:astral-sh/uv python
+          cache: false
+          env: false
+          persist_github_token: false
+      - id: range
+        run: |
+          set -euo pipefail
+          if [[ "$TAG_PREFIX" == controller-v ]]; then
+            [[ "$GITHUB_REF_NAME" =~ ^controller-v([1-9][0-9]*)$ ]]
+            previous="controller-v$((BASH_REMATCH[1] - 1))"
+            base=$(git rev-parse --verify "refs/tags/$previous^{commit}")
+            test "$base" != "$GITHUB_SHA"
+            git merge-base --is-ancestor "$base" "$GITHUB_SHA"
+          else
+            previous=$(uv run --project tools/template --frozen --no-dev python tools/template/promotion.py \
+              --central . --commit "$GITHUB_SHA" --previous-of "$GITHUB_REF_NAME")
+          fi
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+  publish:
+    needs: range
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
+    concurrency:
+      group: steward-template-releases
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - name: Check the tag and existing release
+        id: inspect
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq '.object.sha')" = "$GITHUB_SHA"
+          published=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
+            jq -rs --arg tag "$GITHUB_REF_NAME" --arg commit "$GITHUB_SHA" --arg prefix "$TAG_PREFIX" '
+              add | if any(.[]; .draft and (.tag_name == $tag or (.target_commitish == $commit and (.tag_name | startswith($prefix)))))
+                then error("A draft conflicts with the promoted release")
+                else any(.[]; .tag_name == $tag) end')
+          echo "published=$published" >> "$GITHUB_OUTPUT"
+      - name: Publish release notes
+        if: steps.inspect.outputs.published == 'false'
+        uses: release-drafter/release-drafter@d1a19e60e81a7e650d00a7de9277f87e439117ea # v7.11.0
+        with:
+          config-name: ${{ env.TAG_PREFIX == 'v' && 'template-release.yml' || 'controller-release.yml' }}@${{ github.sha }}
+          tag: ${{ github.ref_name }}
+          name: Steward ${{ env.TAG_PREFIX == 'v' && '仓库模板' || '治理控制器' }} ${{ github.ref_name }}
+          from: ${{ needs.range.outputs.previous }}
+          commitish: ${{ github.sha }}
+          footer: '[完整变更](https://github.com/splrad/steward/compare/${{ needs.range.outputs.previous }}...${{ github.ref_name }})'
+          latest: legacy
+          publish: true
+      - name: Verify the published release and its tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_QUERY: >-
+            query($tag: String!, $ref: String!) { repository(owner: "splrad", name: "steward") {
+              ref(qualifiedName: $ref) { target { oid } }
+              release(tagName: $tag) { tagName isDraft tagCommit { oid } }
+            } }
+        run: |
+          set -euo pipefail
+          gh api graphql -f tag="$GITHUB_REF_NAME" -f ref="$GITHUB_REF" -f query="$RELEASE_QUERY" |
+            jq -e --arg tag "$GITHUB_REF_NAME" --arg sha "$GITHUB_SHA" '
+              .data.repository | .ref.target.oid == $sha and .release.tagName == $tag
+              and .release.isDraft == false and .release.tagCommit.oid == $sha'
