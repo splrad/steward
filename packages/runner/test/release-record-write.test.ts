@@ -179,14 +179,18 @@ it.each(['unknown-version','unreadable-extension'])('refuses existing %s instead
   await expect(writeReleaseRecords(f.request('write',[file('generated/new.md','New\n')],head))).rejects.toThrow();expect(await f.head()).toBe(head);
   const independent=await fixture();expect((await writeReleaseRecords(independent.request('other',[file('state.json',repository)]))).status).toBe('APPLIED');
 });
-it('writes and reads closed health and bootstrap facts while rejecting private identifiers in public health',async()=>{
+it('reads historical health, denies retired writers and accepts bootstrap facts',async()=>{
   const f=await fixture(),observedAt='2026-10-27T00:00:00Z';
   const health={schemaVersion:1,workflowId:1,runId:50,runAttempt:1,controllerSha:C,observedAt,scanCompletedAt:null,errorCodes:['SCAN_FAILED'],counts:{scanned:2,completed:1,waiting:0,failed:1,unknown:0}};
   const bootstrap={schemaVersion:1,repositoryId:1,defaultBranch:'main',workflowId:2,runId:60,runAttempt:1,controllerSha:C,firstCommitSha:S,phase:'RESTORED',affectedRules:[]};
-  const h=await writeReleaseRecords(f.request('health',[file('health.json',health)],null,'health'));
+  await expect(writeReleaseRecords(f.request('health',[file('health.json',health)],null,'health'))).rejects.toThrow('write target');
+  const configuration={...f.request('config',[file('repository-policy.json',{})]),writer:'configuration',targetRef:'steward/governance-state'};
+  await expect(writeReleaseRecords(configuration)).rejects.toThrow('write target');
+  expect(await f.head('steward/automation-health')).toBeNull();
+  expect(await f.head('steward/governance-state')).toBeNull();
+  expect(decodeStateFile('steward/automation-health','health.json',Buffer.from(JSON.stringify(health)),1)).toEqual(health);
   const b=await writeReleaseRecords(f.request('bootstrap',[file('bootstrap/60-1.json',bootstrap)],null,'bootstrap'));
-  expect([h.status,b.status]).toEqual(['APPLIED','APPLIED']);
-  expect((await readReleaseRecords({directory:join(f.root,'health'),targetRef:'steward/automation-health',repositoryId:1})).domainRecords).toHaveLength(1);
+  expect(b.status).toBe('APPLIED');
   expect(()=>decodeStateFile('steward/automation-health','health.json',Buffer.from(JSON.stringify({...health,privateRepository:'private-canary'})),1)).toThrow();
   expect(()=>decodeStateFile('steward/governance-state','bootstrap/60-1.json',Buffer.from(JSON.stringify({...bootstrap,repositoryId:2})),1)).toThrow();
 });

@@ -12,6 +12,8 @@ SPLRAD Steward 是 [`splrad`](https://github.com/splrad) 组织的共享仓库�
 
 ## 快速开始
 
+管理仓的 [Deployments](https://github.com/splrad/steward/deployments) 显示两个环境。进入 `governance-promotion` 可查看已晋级的控制器标签和提交，进入 `production` 可查看生产 Worker 的版本、流量比例和模块核实状态。[巡检运行](https://github.com/splrad/steward/actions/workflows/deployment-receipts.yml) 的摘要列出当次观测结果。
+
 本地工具由 `mise.toml` 声明、`mise.lock` 及 `.mise/locks/` 锁定。先安装 mise，再按锁恢复工具。
 
 ```powershell
