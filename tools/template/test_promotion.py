@@ -64,7 +64,7 @@ class PromotionTests(unittest.TestCase):
     def test_release_uses_the_permitted_tag_push_event(self):
         path=Path(__file__).resolve().parents[2]/'.github/workflows/template-release.yml'
         workflow=yaml.load(path.read_text(encoding='utf-8'),Loader=yaml.BaseLoader)
-        self.assertEqual(workflow['on'],{'push':{'tags':['v[0-9]*']}})
+        self.assertEqual(workflow['on'],{'push':{'tags':['v[0-9]*','controller-v[0-9]*']}})
         gate=workflow['jobs']['range']['if']
         for condition in ("github.repository_id == '1296724484'",'github.event.created','!github.event.deleted',
                           'github.event.ref == github.ref','github.event.after == github.sha',
