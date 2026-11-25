@@ -5,13 +5,15 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { unified } from 'unified';
+import remarkParse from 'remark-parse';
 import { parseFragment } from 'parse5';
 import YAML from 'yaml';
 import { candidateBaseUnchanged, copilotReleaseClient, EvidenceReadError, isolatedBuildEnvironment, officialCandidateDiff } from '../../packages/runner/dist/index.js';
 import { Manifest } from 'release-please';
 import { PullRequestBody } from 'release-please/build/src/util/pull-request-body.js';
 import { bodyDigest, computeOfficialCandidate, draftOfficialCandidate, officialCandidateEvidence, officialCandidateRoundId, officialMergeKey,
-  officialNotes, officialRoundMarker, renderOfficialHomepage, validateOfficialMergeEvent, verifyOfficialMerge } from '../official-release-candidate.mjs';
+  nativeDraftBody, officialNotes, officialRoundMarker, renderOfficialHomepage, validateOfficialMergeEvent, verifyOfficialMerge } from '../official-release-candidate.mjs';
 import { candidateDiagnostic, candidateEvent, officialCandidateRoute, prepareOfficialCandidate } from '../official-candidate-event.mjs';
 import { compatibleExistingCandidate, writeOfficialCandidate } from '../official-candidate-write.mjs';
 import { classifyPull, impactTarget } from '../pr-release-impact.mjs';
@@ -374,7 +376,7 @@ test('requires the official switch and the native product declaration to select 
 });
 
 function render(upstream = upstreamBody, notes = orgNotes, contributors = [person], roundId = 'a'.repeat(64)) {
-  return renderOfficialHomepage({ upstreamBody: upstream, template, notes, contributors,
+  return renderOfficialHomepage({ upstreamBody: upstream, repository: product.name, tag: 'v1.1.0', template, notes, contributors,
     sourceLink: { label: '查看本版变更', url: 'https://github.com/splrad/fixture/compare/' + previousSha + '...' + sourceSha },
     filesUrl: 'https://github.com/splrad/fixture/pull/29/files', roundId });
 }
@@ -384,10 +386,11 @@ test('native single-root extraction preserves every byte of rich notes and exclu
     const section = officialNotes(expected);
     assert.equal(section.version, '1.1.0');
     assert.match(section.body, /版本记录/);
-    assert.match(section.body, /^## 1\.1\.0\n/);
+    assert.doesNotMatch(section.body, /^## (?:fixture|1\.1\.0)/);
+    assert.equal(section.releaseTitle, 'fixture v1.1.0');
     assert.equal(section.body.match(/\/compare\//g)?.length, 1);
     assert.doesNotMatch(section.body, /候选文件差异|技术变更记录|产品文件差异/);
-    assert.equal(PullRequestBody.parse(expected.replace(/\n/g, '\r\n'), {error() {}, warn() {}}).releaseData[0].notes, section.body);
+    assert.equal(PullRequestBody.parse(expected.replace(/\n/g, '\r\n'), {error() {}, warn() {}}).releaseData[0].notes, nativeDraftBody(section.version, section.body));
   }
   const section = officialNotes(render()).body;
   const avatar = parseFragment(section).childNodes.find(node => node.nodeName === 'a');
@@ -401,8 +404,11 @@ test('native single-root extraction preserves every byte of rich notes and exclu
   assert.doesNotMatch(section, / · .42./);
   const page = render();
   const notice = '请审阅下方版本说明。确认后合并，本次合并将启动该版本的正式构建。';
-  assert.ok(page.startsWith('> **审阅提示**\n>\n> ' + notice + '\n>\n> 如需修改，请编辑本 PR 首页描述中的「发行说明」区段。\n\n发行说明'));
-  assert.match(page, /发行说明\n---\n\n## 1\.1\.0/);
+  assert.ok(page.startsWith('> **审阅提示**\n>\n> ' + notice + '\n>\n> 如需修改，请编辑下方版本标题后的发行说明。\n\n## fixture v1.1.0'));
+  assert.match(page, /## fixture v1\.1\.0\n\n<!-- release-please\n---\n## 1\.1\.0\n-->/);
+  const headings = unified().use(remarkParse).parse(page).children.filter(node => node.type === 'heading');
+  assert.equal(headings[0].children[0].value, 'fixture v1.1.0');
+  assert.ok(!headings.some(node => node.children[0].value === '1.1.0'));
   const info = page.slice(page.lastIndexOf('\n---\n') + '\n---\n\n'.length);
   assert.deepEqual(info.split('\n'), [
     '> <details>', '> <summary><strong>PR 信息（仅供审阅）</strong></summary>', '>',
@@ -446,7 +452,7 @@ test('the official package generates the three native files and chooses the froz
   pending = [{number:pr.number, sha:sourceSha, title:pr.title, headBranchName:pr.head.ref,
     baseBranchName:'main', labels:candidate.labels, body:rendered}];
   const [release] = await manifest.buildReleases();
-  assert.equal(release.notes, officialNotes(rendered).body);
+  assert.equal(release.notes, nativeDraftBody('1.1.0', officialNotes(rendered).body));
   assert.equal(release.sha, sourceSha);
   assert.equal(release.tag.toString(), 'v1.1.0');
   assert.equal(release.draft, true);
@@ -774,7 +780,7 @@ test('renders only evidence-bound Copilot sections and validates the official se
   assert.match(section.body, /> \[!IMPORTANT\][\s\S]+升级前备份设置/);
   assert.match(section.body, /版本记录/);
   assert.doesNotMatch(section.body, /获取与使用|本次更新|候选文件差异/);
-  assert.equal(PullRequestBody.parse(draft.body).releaseData[0].notes, section.body);
+  assert.equal(PullRequestBody.parse(draft.body).releaseData[0].notes, nativeDraftBody(section.version, section.body));
 });
 
 test('C1 permits the versioned Release page and stops unverified asset links anywhere in the draft', async () => {
@@ -790,9 +796,9 @@ test('C1 permits the versioned Release page and stops unverified asset links any
     }] }) }),
   });
   const releasePage = context.evidence[0].details.releasePage;
-  assert.match((await draft('acquisition', releasePage)).body, /releases\/tag\/v1\.1\.0/);
+  assert.match((await draft('delivery', releasePage)).body, /releases\/tag\/v1\.1\.0/);
   const asset = 'https://github.com/splrad/fixture/releases/download/v1.1.0/Unverified.exe';
-  await assert.rejects(draft('acquisition', asset), /C1_ACQUISITION_LINKS/);
+  await assert.rejects(draft('acquisition', releasePage), /CONTENT_OUTPUT_SCHEMA/);
   await assert.rejects(draft('delivery', asset), /C1_ACQUISITION_LINKS/);
   await assert.rejects(draft('delivery', 'https://github.com/splrad/fixture/releases/latest/download/Unverified.exe'), /C1_ACQUISITION_LINKS/);
 });

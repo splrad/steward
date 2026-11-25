@@ -297,7 +297,8 @@ it.each(['legacy','conditional','reviewed-conditional'])('prepares a native Node
   source['CHANGELOG.md']='## [1.0.0](https://github.com/example/product/compare/v0.9.0...v1.0.0)\n\n### Features\n\nCLI.\n';
   source[notesPath]=['概述','更新内容','兼容性','升级与迁移','安装说明','已知问题','恢复'].map(label=>'## '+label+'\n\n已审文稿。').join('\n\n');
   if(conditional) {
-    source[notesPath]='## 获取与使用\n\n**安装命令**。从[本版附件](<https://github.com/example/product/releases/download/v1.0.0/fixture-cli.tgz>)获取 CLI。\n\n```sh\nnpm install -g ./fixture-cli.tgz\n```\n';
+    source[notesPath]=retainedConditional ? '## 获取与使用\n\n**安装命令**。从[本版附件](<https://github.com/example/product/releases/download/v1.0.0/fixture-cli.tgz>)获取 CLI。\n\n```sh\nnpm install -g ./fixture-cli.tgz\n```\n'
+      : '## 📦 交付方式变化\n\n**CLI 安装包**。使用[本版附件](<https://github.com/example/product/releases/download/v1.0.0/fixture-cli.tgz>)更新 CLI。\n';
   }
   function adoptedWorkflow(files:string[]) {
     return JSON.stringify({'run-name':'为 GitHub 打包 ${{ inputs.operation_key }}',on:{workflow_dispatch:{
@@ -474,13 +475,13 @@ it.each(['legacy','conditional','reviewed-conditional'])('prepares a native Node
   }
   if(conditional) {
     const body=target.publicBody;
-    expect(body).toContain('~~~sh\nnpm install -g ./fixture-cli.tgz\n~~~');
+    expect(body).toContain(retainedConditional ? '~~~sh\nnpm install -g ./fixture-cli.tgz\n~~~' : '📦 交付方式变化');
     expect(body).toContain('alt="verified-contributor" width="48"');
     expect(body.includes('<summary>查看贡献者名单</summary>')).toBe(!retainedConditional);
     expect(body).toContain('## 版本记录');
     const before=source[notesPath]!;
     source[notesPath]=before.replace('/fixture-cli.tgz>)','/internal.tgz>)');
-    await expect(prepare('unselected-notes-link',initial)).rejects.toThrow('acquisition link is outside the release version');
+    await expect(prepare('unselected-notes-link',initial)).rejects.toThrow(retainedConditional ? 'acquisition link is outside the release version' : 'outside GitHub delivery');
     source[notesPath]=before;
   }
   const notes=source[notesPath]!;
@@ -545,8 +546,8 @@ it.each(['legacy','conditional','reviewed-conditional'])('prepares a native Node
   }
   source[workflow]=adoptedWorkflow(['dist/README']);
   if(conditional) {
-    await expect(prepare('stale-package-link-in-readme-only-release',['README'])).rejects.toThrow('acquisition link is outside the release version');
-    source[notesPath]='## 获取与使用\n\n**阅读说明**。下载[本版说明](<https://github.com/example/product/releases/download/v1.0.0/README>)。\n';
+    await expect(prepare('stale-package-link-in-readme-only-release',['README'])).rejects.toThrow(retainedConditional ? 'acquisition link is outside the release version' : 'outside GitHub delivery');
+    source[notesPath]='## 📦 交付方式变化\n\n**阅读说明**。下载[本版说明](<https://github.com/example/product/releases/download/v1.0.0/README>)。\n';
   }
   await expect(prepare('native-single-extensionless-file',['README'])).resolves.toMatchObject([{manifest:{artifacts:[{path:'README'}]}}]);
   source[notesPath]=notes;
@@ -582,7 +583,7 @@ it.each(['legacy','conditional','reviewed-conditional'])('prepares a native Node
     return JSON.stringify(built);
   };
   const targets=[{name:'linux-x64',runner:'ubuntu-24.04'},{name:'win-x64',runner:'windows-2025'}];
-  if(conditional) source[notesPath]='## 获取与使用\n\n**按平台安装**。从[本版附件](<https://github.com/example/product/releases/tag/v1.0.0>)选取对应平台的软件包。\n';
+  if(conditional) source[notesPath]='## 📦 交付方式变化\n\n**按平台安装**。从[本版附件](<https://github.com/example/product/releases/tag/v1.0.0>)选取对应平台的软件包。\n';
   source[workflow]=aggregate(targets);
   const platformFiles=targets.map(({name})=>'fixture-cli-'+name+'.tgz');
   const two=await prepare('aggregate-two',platformFiles);

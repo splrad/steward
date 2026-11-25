@@ -116,7 +116,7 @@ export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[]): 
   } else if (first.documentKind === 'content-result') {
     exact(value, ['stage', 'sourceIds', 'result', ...(value.conditional === true ? ['conditional'] : [])]);
     if (!['DRAFT', 'CONTEXT', 'DIFF', 'COMPOSE'].includes(value.stage) || !Array.isArray(value.sourceIds)) throw new Error('CONTENT_RESULT_INVALID');
-    validateContentResult(value.stage, JSON.stringify(value.result), value.sourceIds, [], undefined, value.conditional === true);
+    validateContentResult(value.stage, JSON.stringify(value.result), value.sourceIds, [], undefined, value.conditional === true ? 'reviewed' : false);
   } else if (first.documentKind === 'merged-candidate') {
     const hasLegacyTemplate = value && Object.hasOwn(value, 'legacyNotesTemplate');
     exact(value, ['schemaVersion', 'cycleId', 'sourceSha', 'stateCommit', 'candidate', 'session', 'pull', 'documents',

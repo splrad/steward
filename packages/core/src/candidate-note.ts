@@ -43,7 +43,7 @@ export interface CandidateNoteFormat { template: string; repository: string; sou
 export function renderCandidateNote(path:string,markdown:string,contributors:Parameters<typeof renderReleaseContributors>[0], format?: CandidateNoteFormat):string {
   if (format && isConditionalTemplate(format.template)) {
     const url = `https://github.com/${format.repository}/tree/${format.sourceSha}`;
-    const notes = parseConditionalNotes(markdown);
+    const notes = parseConditionalNotes(markdown, format.template.includes('{{#acquisition}}'));
     if (format.tag) assertVersionAcquisitionLinks(notes, format.repository, format.tag);
     const body = renderConditionalNotes(format.template, notes, { label: '查看候选源码', url }, contributors);
     if (format.tag) assertSelectedReleaseDownloads(body, format.repository, format.tag);

@@ -22,6 +22,12 @@ export function requireCandidate(value, code) {
 export const hasLabel = (pull, name) => Array.isArray(pull.labels) && pull.labels.some(label => label.name === name);
 export const officialRef = (ref, base) => ref === 'release-please--branches--' + base;
 
+// Release Please requires a numeric first heading inside its native separators.
+const nativeComment = '<!-- release-please';
+export const nativeDraftBody = (version, body) => '## ' + version + '\n-->\n\n' + body;
+export const legacyVersionHeading = /^#{2,} \[?\d+\.\d+\.\d+/;
+export const officialReleaseTitle = (repository, tag) => repository.split('/')[1] + ' ' + tag;
+
 export function officialNotes(body) {
   requireCandidate(typeof body === 'string', 'BODY');
   const lines = normalized(body).trim().split('\n');
@@ -37,23 +43,35 @@ export function officialNotes(body) {
   const data = parsed?.releaseData;
   requireCandidate(parsed?.useComponents === false && data?.length === 1 &&
     data[0].version && data[0].notes === content && content.includes('\n'), 'BODY_PARSE');
-  return { version: data[0].version.toString(), body: content, bodyDigest: bodyDigest(content) };
+  const version = data[0].version.toString();
+  let notes = content;
+  let releaseTitle;
+  if (lines[first - 1] === nativeComment) {
+    const prefix = nativeDraftBody(version, '');
+    requireCandidate(content.startsWith(prefix) && /^## [A-Za-z0-9_.-]+ \S+$/.test(lines[first - 3] ?? ''), 'BODY_PARSE');
+    releaseTitle = lines[first - 3].slice(3);
+    notes = content.slice(prefix.length);
+    requireCandidate(notes.trim() && !legacyVersionHeading.test(notes), 'BODY_PARSE');
+  } else {
+    requireCandidate(!content.startsWith(nativeDraftBody(version, '')), 'BODY_PARSE');
+  }
+  return { version, body: notes, bodyDigest: bodyDigest(notes), ...(releaseTitle && { releaseTitle }) };
 }
 
 export const officialRoundMarker = roundId => '<!-- steward-candidate-round:' + roundId + ' -->';
 
-export function renderOfficialHomepage({ upstreamBody, template, notes, sourceLink, contributors, roundId, filesUrl, creationLink }) {
+export function renderOfficialHomepage({ upstreamBody, repository, tag, template, notes, sourceLink, contributors, roundId, filesUrl, creationLink }) {
   const upstream = officialNotes(upstreamBody);
   const lines = normalized(upstreamBody).trim().split('\n');
   const first = lines.indexOf('---'), last = lines.lastIndexOf('---');
   const header = lines.slice(0, first).join('\n').trim();
   const footer = lines.slice(last + 1).join('\n').trim();
-  const versionHeading = '## ' + upstream.version;
+  const releaseTitle = officialReleaseTitle(repository, tag);
   const notesBody = renderConditionalNotes(template, notes, sourceLink, contributors).trimEnd();
-  const expected = versionHeading + '\n\n' + notesBody;
+  const nativeBody = nativeDraftBody(upstream.version, notesBody);
   const buildNotice = '请审阅下方版本说明。确认后合并，本次合并将启动该版本的正式构建。';
   const review = ['> **审阅提示**', '> ' + buildNotice,
-    '> 如需修改，请编辑本 PR 首页描述中的「发行说明」区段。'].join('\n>\n');
+    '> 如需修改，请编辑下方版本标题后的发行说明。'].join('\n>\n');
   const record = creationLink ?? sourceLink;
   const recordContext = creationLink ? '创建 PR 时的变更记录' : '本轮候选变更记录';
   const recordLink = recordContext + ' · [' + record.label + '](<' + record.url + '>)';
@@ -61,11 +79,11 @@ export function renderOfficialHomepage({ upstreamBody, template, notes, sourceLi
   const info = ['<details>\n<summary><strong>PR 信息（仅供审阅）</strong></summary>',
     header !== buildNotice ? header : '', footer, files, recordLink, '</details>']
     .filter(Boolean).join('\n\n').split('\n').map(line => line ? '> ' + line : '>').join('\n');
-  // The first native separator underlines the PR-only title in GitHub Markdown.
-  const result = [review, '发行说明\n---', expected, '---', info, officialRoundMarker(roundId)].join('\n\n');
+  // The HTML comment hides only the native version header in the PR preview.
+  const result = [review, '## ' + releaseTitle, nativeComment + '\n---\n' + nativeBody, '---', info, officialRoundMarker(roundId)].join('\n\n');
   requireCandidate(fitsOfficialEvent(result), 'BODY_LIMIT');
   const readback = officialNotes(result);
-  requireCandidate(readback.body === expected && readback.version === upstream.version, 'RENDER_PARSE');
+  requireCandidate(readback.body === notesBody && readback.releaseTitle === releaseTitle && readback.version === upstream.version, 'RENDER_PARSE');
   return result;
 }
 
@@ -209,6 +227,7 @@ export function verifyOfficialPull(pull, product, number, botId, settings, manif
   pullBinding(pull, product, number, botId);
   const notes = officialNotes(body);
   const { unit, tag } = officialUnit(settings, pull.head.ref, product.defaultBranch, notes.version);
+  if (notes.releaseTitle !== undefined) requireCandidate(notes.releaseTitle === officialReleaseTitle(product.name, tag), 'VERSION');
   const title = PullRequestTitle.parse(pull.title, unit['pull-request-title-pattern'], unit['component-no-space'], logger);
   requireCandidate(title?.getVersion()?.toString() === notes.version && manifest[unit.path] === notes.version &&
     (!title.getTargetBranch() || title.getTargetBranch() === product.defaultBranch), 'VERSION');
@@ -341,7 +360,6 @@ export async function officialCandidateEvidence({ product, sourceSha, baseline, 
   const configuration = await readOfficialConfig(get, sourceSha);
   const { unit: release, tag } = officialUnit(configuration, candidate.head, candidate.base, candidate.version);
   const path = release.path;
-  const repository = 'https://github.com/' + product.name;
   const [commits, delivery] = await Promise.all([
     rangeCommits(get, sourceSha, baseline.sha),
     readOfficialDelivery(get, sourceSha),
@@ -404,7 +422,6 @@ export async function officialCandidateEvidence({ product, sourceSha, baseline, 
         evidence.push(...await officialCandidateDiff(workspace, commit.sha, commit.parents[0]?.sha ?? null,
           { exclude, mixedMerge: mixedMerges.has(commit.sha), excludedCommits: excluded }));
       }
-      evidence.push({ kind: 'release-page', details: { url: repository + '/releases/tag/' + tag } });
     } else {
       evidence.push({ kind: 'maintenance-only', details: { summary: '本版仅包含项目内部维护。' } });
     }
@@ -445,7 +462,7 @@ export async function officialCandidateEvidence({ product, sourceSha, baseline, 
       }),
       ...pulls, ...diffs, ...docs.flat(),
       ...(previous ? [{ kind: 'previous-release', details: { tag: previous.tag_name, draft: previous.draft, body: previous.body } }] : []),
-      { kind: 'delivery', details: { expectedReleasePage: repository + '/releases/tag/' + tag, declaration: delivery } },
+      { kind: 'delivery', details: { declaration: delivery } },
     ],
   };
 }
@@ -461,7 +478,7 @@ export async function draftOfficialCandidate({ roundId, candidate, context, prod
   const maintenance = context.evidence.length === 1 && context.evidence[0].kind === 'maintenance-only';
   const notes = maintenance ? { summary: context.evidence[0].details.summary }
     : await generateOfficialCandidateNotes({ unit: context.unit, evidence: context.evidence, template, call });
-  const body = renderOfficialHomepage({ upstreamBody: candidate.body, template, notes, sourceLink: context.sourceLink,
+  const body = renderOfficialHomepage({ upstreamBody: candidate.body, repository: product.name, tag: context.tag, template, notes, sourceLink: context.sourceLink,
     contributors: context.contributors, roundId,
     filesUrl: positive(pullNumber) ? 'https://github.com/' + product.name + '/pull/' + pullNumber + '/files' : null,
     creationLink: creationRange && candidateSourceLink(product, creationRange.base, creationRange.head) });

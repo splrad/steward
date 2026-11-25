@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import YAML from 'yaml';
 import {Manifest} from 'release-please';
 import { EvidenceReadError } from '../../packages/runner/dist/index.js';
-import { approvedOfficialBody, inspectOfficialRelease, inspectPendingOfficialPulls, readBoundOfficialDraft, reconcileOfficialLifecycle } from '../official-release.mjs';
+import { finishOfficialAction, approvedOfficialBody, inspectOfficialRelease, inspectPendingOfficialPulls, readBoundOfficialDraft, reconcileOfficialLifecycle } from '../official-release.mjs';
 
 const digest = value => createHash('sha256').update(value).digest('hex');
 const source = 'a'.repeat(40), head = 'b'.repeat(40), newer = 'c'.repeat(40), annotation = 'd'.repeat(40);
@@ -89,6 +89,38 @@ test('C4 derives the exact official candidate from the default branch and pendin
     [18,approval.tag,approval.version,body,source,true,true]);
   pulls=[merged,{...merged,number:23}];
   await assert.rejects(run(),/BRANCH_SCOPE prs=18,23/);
+});
+
+test('formats only the verified native draft, preserves reviewed Markdown and resumes a completed edit',async()=>{
+  const f=fixture();
+  const notes='> [!IMPORTANT]\n>\n> 修改脚本。\n\n## 版本记录\n\n[本版](<https://example.com/v1>)';
+  const title='Example v1.2.3';
+  const native='## 1.2.3\n-->\n\n'+notes;
+  const page='## '+title+'\n\n<!-- release-please\n---\n'+native+'\n\n---\n\n审阅信息';
+  f.facts.pull.body=page;
+  f.matching.notes=notes;
+  const selected={...approval,bodyDigest:digest(notes),pullBodyDigest:digest(page)};
+  const compare=async()=>({status:'ahead',merge_base_commit:{sha:source}});
+  const previous=await inspectOfficialRelease(selected,{reader:f.reader,compare,scan:async()=>[f.matching]});
+  f.after();
+  Object.assign(f.draft,{name:'v1.2.3',body:native});
+  let writes=0;
+  const command=async args=>{
+    assert.deepEqual(args,['api','--method','PATCH','repos/splrad/Example/releases/2','-f','name='+title,'-f','body='+notes]);
+    Object.assign(f.draft,{name:title,body:notes});
+    writes++;
+    throw Error('response lost');
+  };
+  const finish=()=>finishOfficialAction(selected,'fixture',previous,{}, {reader:f.reader,compare,command});
+  f.draft.body+=' drift';
+  await assert.rejects(finish(),/DRAFT_IDENTITY/);
+  f.draft.body=native;
+  assert.deepEqual(await finish(),{releaseId:2,body:notes,prerelease:false});
+  assert.deepEqual(await finish(),{releaseId:2,body:notes,prerelease:false});
+  assert.equal(writes,1);
+  assert.deepEqual(await readBoundOfficialDraft({...selected,releaseId:2},f.reader),{releaseId:2,body:notes,prerelease:false});
+  f.draft.name='wrong';
+  await assert.rejects(finish(),/DRAFT_IDENTITY/);
 });
 
 test('only one exact official object can be created; no output is needed to recover its real ID',async()=>{
