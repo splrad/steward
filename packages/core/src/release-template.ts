@@ -46,7 +46,7 @@ export function parseLegacyNotes(markdown: string, template = ''): Record<NotesF
 }
 
 export function parseSupplementalNotes(markdown: string, template = '') {
-  return isConditionalTemplate(template) ? parseConditionalNotes(markdown) : parseLegacyNotes(markdown, template);
+  return isConditionalTemplate(template) ? parseConditionalNotes(markdown, template.includes('{{#acquisition}}')) : parseLegacyNotes(markdown, template);
 }
 
 export interface ReleaseTemplateData extends Record<NotesField, string> {
@@ -246,7 +246,7 @@ export function renderFrozenReleaseNotes(template: string, data: FrozenReleaseNo
   if (data.commitUrl !== `https://github.com/${data.repository}/commit/${data.sourceSha}`) fail('commit URL');
   if (conditional) {
     validateSourceLink(data);
-    const notes = parseConditionalNotes(data.notes);
+    const notes = parseConditionalNotes(data.notes, template.includes('{{#acquisition}}'));
     const selected = data.selectedDownloads ?? new Set(data.assets.map(asset => asset.name));
     assertVersionAcquisitionLinks(notes, data.repository, data.tag, data.sourceSha, [...selected]);
     const body = renderConditionalNotes(template, notes, { label: data.sourceLinkLabel, url: data.sourceUrl }, contributors);

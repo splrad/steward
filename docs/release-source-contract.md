@@ -10,13 +10,13 @@ Steward 收到指向默认分支的 PR 打开、更新、重开或就绪事件�
 
 起草新稿时，Steward 从合入 PR 读取标签。范围内有 `Internal` 时，只向 Copilot 提供其余 PR 和直接提交的材料。若全部提交均来自内部 PR，组织模板使用一句维护说明。Release Please 按完整历史计算版本、变更文件和比较链接。贡献者折叠区按[发行说明的署名规则](release-notes.md)列出整个版本的贡献者。已交付候选继续按其保存的稿件恢复。
 
-[官方候选入口](../scripts/official-candidate-event.mjs)验证受审的产品来源，由固定版本的 Release Please Action 创建和刷新候选。Steward 核对 Action 回执并排版首页，保留人工稿和正式版本区段。候选合并后，中央验证原 PR、已审 head H、准确合并提交 S 与冻结正文，登记原生发行周期。构建及标签绑定 S，中央执行来源另存 controller SHA。
+[官方候选入口](../scripts/official-candidate-event.mjs)验证受审的产品来源，使用固定版本的 Release Please npm 包计算候选。Steward 按组织模板排版候选首页，保留已审正文。候选合并后，中央验证原 PR、已审 head H、准确合并提交 S 与冻结正文，登记原生发行周期。构建及标签绑定 S，中央执行来源另存 controller SHA。
 
 公开产品按 S 中经审查的工作流交件。中央保存在受保护 Git 状态中的回执包含实际 Run/attempt、artifact ID 和摘要，并从这一制品冻结、发布和恢复原文件。构建身份不取得中央发布权限。历史完整冻结包继续按原有 producer 映射和证明核验。参见[产品工作流合同](product-build.md)和[发布管线](../packages/runner/src/release-pipeline.ts)。
 
 单位 notes 由本周期锁定的模板解析。新模板使用[正式发布正文](release-notes.md)的条件栏目和确认过的贡献者。文件封存比较从准确源码和模板重新渲染的完整正文与实际待封存字节，发行版本由 manifest 和原生 tag 绑定。使用旧模板的周期继续读取原格式，历史冻结与恢复使用原文件字节。
 
-GitHub Release的外层展示标题与正文标题、单位notes标题分别处理：当前创建请求使用 `name: m.tag`，即 `Release.name` 为tag；中文正文生成不表示外层展示标题已中文化。
+新候选的预览标题和 GitHub Release 的 `name` 均使用仓库名、一个空格和本版标签。正式正文从本版实质内容开始。已审定的旧候选沿用原格式。
 
 ## 当前来源输入
 

@@ -50,7 +50,7 @@ function candidateIdentity(identity: any) {
     if (hasNotesPath) assertDeliveryPath(unit.notesPath);
   }
 }
-export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[]): Promise<any> {
+export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[], conditionalResult: true | 'reviewed' = 'reviewed'): Promise<any> {
   if (!chunks.length) throw new Error('CANDIDATE_ARCHIVE_MISSING');
   const first = chunks[0]!, ordered = [...chunks].sort((a, b) => a.index - b.index);
   if (first.count !== chunks.length || ordered.some((c, i) => c.index !== i || c.count !== first.count || c.documentDigest !== first.documentDigest
@@ -116,7 +116,7 @@ export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[]): 
   } else if (first.documentKind === 'content-result') {
     exact(value, ['stage', 'sourceIds', 'result', ...(value.conditional === true ? ['conditional'] : [])]);
     if (!['DRAFT', 'CONTEXT', 'DIFF', 'COMPOSE'].includes(value.stage) || !Array.isArray(value.sourceIds)) throw new Error('CONTENT_RESULT_INVALID');
-    validateContentResult(value.stage, JSON.stringify(value.result), value.sourceIds, [], undefined, value.conditional === true);
+    validateContentResult(value.stage, JSON.stringify(value.result), value.sourceIds, [], undefined, value.conditional === true ? conditionalResult : false);
   } else if (first.documentKind === 'merged-candidate') {
     const hasLegacyTemplate = value && Object.hasOwn(value, 'legacyNotesTemplate');
     exact(value, ['schemaVersion', 'cycleId', 'sourceSha', 'stateCommit', 'candidate', 'session', 'pull', 'documents',
