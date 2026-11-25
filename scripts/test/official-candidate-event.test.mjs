@@ -2,22 +2,43 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseFragment } from 'parse5';
 import YAML from 'yaml';
-import { candidateBaseUnchanged, EvidenceReadError, isolatedBuildEnvironment, officialCandidateDiff } from '../../packages/runner/dist/index.js';
+import { candidateBaseUnchanged, copilotReleaseClient, EvidenceReadError, isolatedBuildEnvironment, officialCandidateDiff } from '../../packages/runner/dist/index.js';
 import { Manifest } from 'release-please';
 import { PullRequestBody } from 'release-please/build/src/util/pull-request-body.js';
 import { bodyDigest, computeOfficialCandidate, draftOfficialCandidate, officialCandidateEvidence, officialCandidateRoundId, officialMergeKey,
   officialNotes, officialRoundMarker, renderOfficialHomepage, validateOfficialMergeEvent, verifyOfficialMerge } from '../official-release-candidate.mjs';
-import { candidateEvent, officialCandidateRoute, prepareOfficialCandidate } from '../official-candidate-event.mjs';
+import { candidateDiagnostic, candidateEvent, officialCandidateRoute, prepareOfficialCandidate } from '../official-candidate-event.mjs';
 import { compatibleExistingCandidate, writeOfficialCandidate } from '../official-candidate-write.mjs';
 import { classifyPull, impactTarget } from '../pr-release-impact.mjs';
 
 const sourceSha = 'a'.repeat(40), head = 'b'.repeat(40), controllerSha = 'c'.repeat(40), previousSha = 'd'.repeat(40);
 const product = { id: 17, name: 'splrad/fixture', defaultBranch: 'main' }, authorId = 301115370;
+
+test('the candidate log retains the isolated SDK failure and excludes untrusted provider fields', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'candidate-sdk-log-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dir = join(root, 'tools', 'quality-language');
+  await mkdir(dir, { recursive: true });
+  const script = join(dir, 'release-notes.mjs');
+  const client = copilotReleaseClient(root, 'fixture');
+  const failure = { status: 'FAILED', errorCode: 'RESPONSE_UNKNOWN', diagnostic: {
+    sdkStage: 'send', sdkErrorType: 'policy', status: 403, message: 'private provider text' } };
+  await writeFile(script, 'console.log(' + JSON.stringify(JSON.stringify(failure)) + ')');
+  await assert.rejects(client.call('{}'), error =>
+    candidateDiagnostic(error, 'generate') === 'RESPONSE_UNKNOWN stage=generate sdk_stage=send sdk_error=policy status=403');
+  assert.equal(candidateDiagnostic({ ...failure.diagnostic, message: 'RESPONSE_UNKNOWN',
+    sdkStage: 'private input', sdkErrorType: 'private details' }, 'generate'), 'RESPONSE_UNKNOWN stage=generate status=403');
+  for (const invalid of ['process.exit(1)', 'console.log("[]")', 'console.log(\'{"status":"RETURNED"}\')']) {
+    await writeFile(script, invalid);
+    await assert.rejects(client.call('{}'), error =>
+      candidateDiagnostic(error, 'generate') === 'RESPONSE_UNKNOWN stage=generate sdk_stage=process');
+  }
+});
 const versionHeader = '## [1.1.0](https://github.com/splrad/fixture/compare/v1.0.0...v1.1.0)';
 const upstreamBody = '请审阅本版。\n---\n\n' + versionHeader + '\n\n### 新增功能\n\n* 支持新版\n\n---\n产品文件差异。';
 const template = await readFile(new URL('../../templates/repository/.github/release-template.md.mustache', import.meta.url), 'utf8');
