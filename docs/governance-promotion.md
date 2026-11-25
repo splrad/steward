@@ -22,6 +22,6 @@ GitHub 在 PR 有合并冲突时不会启动 `pull_request` 工作流。补验�
 
 模板晋级比较 `copier.yml`、`templates/repository` 和公共安全政策。模板包含 PR 标题调用方时，也比较对应的复用工作流。实际变化从最新已采用 PEP 440 稳定版本生成严格递增标签，标签固定到同一个已验证提交。SDK 单独变化不产生模板版本。标签创建前后核对全部标签快照和目标指向；同名异对象、外部标签漂移和未知响应不执行覆盖。下一次原生 Copier 递送从已发布标签继续。
 
-治理 App 创建模板标签时，独立的[模板发行工作流](../.github/workflows/template-release.yml)接收该标签的 `push` 事件，核对创建标记、发送者、完整引用和提交。Release Drafter 按[模板输入路径](../.github/template-release.yml)选取两版之间已合并的 PR，在本仓自动公开 **Steward 仓库模板** 发行版。发行失败可重跑该标签的原运行，比较范围固定在创建标签的提交历史中。已公开的同一版本会跳过。
+治理 App 创建模板或控制器标签时，[发行工作流](../.github/workflows/template-release.yml)接收该标签的 `push` 事件，核对创建标记、发送者、完整引用和提交。Release Drafter 按[模板输入路径](../.github/template-release.yml)为 **Steward 仓库模板** 选取两版之间已合并的 PR。**Steward 治理控制器** 的[发行说明](../.github/controller-release.yml)包含从上一编号的控制器标签到本次标签之间已合并的 PR。工作流在本仓自动公开对应的发行版。发行失败可重跑该标签的原运行，已公开的同一版本会跳过。
 
 原生 Run 的证据产物含来源、规则前后状态和模板计划，不含令牌。故障恢复使用原 Run 重跑；旧 main 的运行只记录过期结果。每日补扫会重新查询当前 main 的原生验证结果。历史 SQL 保留在 [runtime](../packages/runtime/history/README.md)，不参与新入口的授权。
