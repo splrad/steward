@@ -803,6 +803,54 @@ test('C1 permits the versioned Release page and stops unverified asset links any
   await assert.rejects(draft('delivery', 'https://github.com/splrad/fixture/releases/latest/download/Unverified.exe'), /C1_ACQUISITION_LINKS/);
 });
 
+test('checks the configured display title before writing a new or restored draft', async () => {
+  const failWrite = () => assert.fail('unexpected candidate write');
+  const badBody = expectedBody.replace('## fixture v1.1.0', '## other v1.1.0');
+  assert.notEqual(badBody, expectedBody);
+  for (const branch of [null, {head, sourceSha}]) {
+    const round = {source, draft:{body:badBody}, branch, pull:null};
+    const write = () => writeOfficialCandidate({roundId, round, product, sourceSha, configuration:settings,
+      get:failWrite, request:failWrite, save:failWrite, admit:failWrite});
+    await assert.rejects(write, /OFFICIAL_CANDIDATE_VERSION/);
+    await assert.rejects(write, /OFFICIAL_CANDIDATE_VERSION/);
+  }
+
+  const noV = {...settings, 'include-v-in-tag':false};
+  const legacy = upstreamBody + '\n\n' + officialRoundMarker(roundId);
+  for (const body of [expectedBody.replace('## fixture v1.1.0', '## fixture 1.1.0'), legacy]) {
+    const round = {source, draft:{body}, branch:null, pull:null};
+    const admit = () => { throw Error('preflight passed'); };
+    await assert.rejects(writeOfficialCandidate({roundId, round, product, sourceSha, configuration:noV,
+      get:failWrite, request:failWrite, save:failWrite, admit}), /preflight passed/);
+  }
+});
+
+test('a changed title on an existing current-round PR blocks labels and can be corrected on retry', async () => {
+  const round = {source, draft:{body:expectedBody}, branch:{head, sourceSha}, pull:null};
+  const pull = {...pr, labels:[], body:expectedBody.replace('## fixture v1.1.0', '## other v1.1.0')};
+  const writes = [];
+  const get = async path => {
+    if (path === 'git/ref/heads/main') return {ref:'refs/heads/main', object:{type:'commit', sha:sourceSha}};
+    if (path === 'git/ref/heads/' + computed.head) return {ref:'refs/heads/' + computed.head, object:{type:'commit', sha:head}};
+    if (path.startsWith('pulls?')) return [pull];
+    if (path === 'pulls/29') return pull;
+    if (path.startsWith('contents/.release-please-manifest.json?ref=')) return blob('.release-please-manifest.json', {'.':computed.version});
+    assert.fail(path);
+  };
+  const write = () => writeOfficialCandidate({roundId, round, product, botId:authorId, sourceSha, configuration:settings, get,
+    admit:async()=>{}, save:async phase=>writes.push(phase), request:async(method,path,fields)=>{
+      assert.equal(method, 'POST');
+      assert.equal(path, 'issues/29/labels');
+      writes.push(path);
+      pull.labels = fields.labels.map(name=>({name}));
+    }});
+  await assert.rejects(write, /OFFICIAL_CANDIDATE_VERSION/);
+  assert.deepEqual(writes, []);
+  pull.body = expectedBody.replace('支持范围', '人工审定范围');
+  assert.equal((await write()).bodyDigest, officialNotes(pull.body).bodyDigest);
+  assert.deepEqual(writes, ['issues/29/labels','pull']);
+});
+
 test('refresh replaces the older draft and preserves edits made after the current round was delivered', async () => {
   const previousPull = { ...pr, body: '旧轮有人工修改。' };
   const revisedBody = expectedBody.replace('支持范围', '本轮人工修订');

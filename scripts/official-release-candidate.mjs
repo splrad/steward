@@ -223,11 +223,16 @@ export function pullBinding(pull, product, number, botId) {
     sha(pull.head.sha) && typeof pull.title === 'string', 'PR_IDENTITY');
 }
 
+export function verifyNotesUnit(notes, product, settings, ref) {
+  const binding = officialUnit(settings, ref, product.defaultBranch, notes.version);
+  if (notes.releaseTitle !== undefined) requireCandidate(notes.releaseTitle === officialReleaseTitle(product.name, binding.tag), 'VERSION');
+  return binding;
+}
+
 export function verifyOfficialPull(pull, product, number, botId, settings, manifest, body = pull.body) {
   pullBinding(pull, product, number, botId);
   const notes = officialNotes(body);
-  const { unit, tag } = officialUnit(settings, pull.head.ref, product.defaultBranch, notes.version);
-  if (notes.releaseTitle !== undefined) requireCandidate(notes.releaseTitle === officialReleaseTitle(product.name, tag), 'VERSION');
+  const { unit, tag } = verifyNotesUnit(notes, product, settings, pull.head.ref);
   const title = PullRequestTitle.parse(pull.title, unit['pull-request-title-pattern'], unit['component-no-space'], logger);
   requireCandidate(title?.getVersion()?.toString() === notes.version && manifest[unit.path] === notes.version &&
     (!title.getTargetBranch() || title.getTargetBranch() === product.defaultBranch), 'VERSION');
