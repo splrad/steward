@@ -1,0 +1,52 @@
+name: SPLRAD PR release impact
+on:
+  workflow_dispatch:
+    inputs:
+      delivery:
+        required: true
+        type: string
+      group:
+        required: true
+        type: string
+permissions: {}
+concurrency:
+  group: pr-release-impact-${{ inputs.group }}
+  cancel-in-progress: false
+jobs:
+  classify:
+    env:
+      MISE_ENABLE_TOOLS: node,npm
+    if: github.actor_id == '301115370' && github.repository_id == '1296724484' && github.ref == 'refs/heads/main' && github.workflow_sha == github.sha
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      copilot-requests: write
+    environment:
+      name: steward-release-notes
+      deployment: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+        env:
+          MISE_SAFE: '1'
+          MISE_NODE_COMPILE: 'false'
+        with:
+          version: 2026.11.14
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - name: Install the trusted controller and Copilot runtime
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm ci --prefix tools/quality-language --ignore-scripts --no-audit --no-fund
+          npm run verify:runtime --prefix tools/quality-language
+      - name: Classify the current pull request
+        env:
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          STEWARD_COPILOT_TOKEN: ${{ github.token }}
+        run: node scripts/pr-release-impact.mjs

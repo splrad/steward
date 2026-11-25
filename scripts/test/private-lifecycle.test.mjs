@@ -64,7 +64,17 @@ test('release workflows must match trusted templates and controller ancestry',as
 });
 test('all admitted mise versions are collected; malformed versions fail',async()=>{
  const files=await sample();const docs=new Map(lifecycleWorkflows.map(p=>[p,YAML.parse(files.get(p).toString())]));
- assert(lifecycleMiseVersions(docs).includes('2026.10.18'));
+ const versions=lifecycleMiseVersions(docs);
+ const source=YAML.parse(await readFile(new URL('../../.github/workflows/steward-source.yml',import.meta.url),'utf8'));
+ const install=source.jobs.test.steps.find(step=>step.uses?.startsWith('jdx/mise-action@'));
+ const expected=install.with.version;
+ for(const [path,workflow] of docs) {
+   assert.deepEqual(lifecycleMiseVersions(new Map([[path,workflow]])),[expected],path);
+ }
+ assert.deepEqual(versions,[expected]);
+ const extraVersion = '2099.1.1';
+ docs.set('extra',{jobs:{build:{steps:[{uses:'jdx/mise-action@'+SHA,with:{version:extraVersion}}]}}});
+ assert.deepEqual(lifecycleMiseVersions(docs), [...new Set([...versions,extraVersion])].sort());
  docs.set('bad',{jobs:{a:{steps:[{uses:'jdx/mise-action@'+SHA,with:{version:'latest'}}]}}});assert.throws(()=>lifecycleMiseVersions(docs),/MISE_VERSION/);
 });
 test('actual sample compiles, tests emitted application, checks types and verifies repeatable output',async()=>{

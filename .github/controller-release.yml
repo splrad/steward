@@ -1,0 +1,8 @@
+_extends: template-release.yml
+tag-prefix: controller-v
+template: |+
+  ## 控制器变更
+
+  $CHANGES
+
+categories: []

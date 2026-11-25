@@ -1,19 +1,48 @@
-// @ts-nocheck
-import {it,expect} from 'vitest';
-import {createHash} from 'node:crypto';
-import {restoreContentRecovery} from '../../../scripts/release-content-recovery.mjs';
-import {acceptanceErrorCode,validatePlan,digest} from '../../../scripts/business-flow-acceptance.mjs';
-import {planContentBatches,resumeContentBatches} from '../src/release-content.js';
-import {CONTENT_OUTPUT_SCHEMA,validateContentInput,verifyContentAttemptReceipts} from '../../core/src/release-content.js';
-const hash=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
-async function fixture(){
+import { createHash } from 'node:crypto';
+import { expect, it } from 'vitest';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const {selectContentArchive,verifyContentRecoveryArchive}=await import(pathToFileURL(resolve('scripts/release-content-recovery.mjs')).href);
+const {acceptanceErrorCode}=await import(pathToFileURL(resolve('scripts/business-flow-acceptance.mjs')).href);
+import { CONTENT_OUTPUT_SCHEMA, verifyContentAttemptReceipts } from '../../core/src/release-content.js';
+
+it('bounds public failure diagnostics to machine codes',()=>{
+  expect(acceptanceErrorCode(Error('ACCEPTANCE_SOURCE_CHANGED'))).toBe('ACCEPTANCE_SOURCE_CHANGED');
+  expect(acceptanceErrorCode(Error('CONTENT_RECOVERY_BINDING'))).toBe('BUSINESS_ACCEPTANCE_STOPPED');
+  expect(acceptanceErrorCode(Error('secret text'))).toBe('BUSINESS_ACCEPTANCE_STOPPED');
+  expect(acceptanceErrorCode(Error('ACCEPTANCE_SOURCE_CHANGED\nprivate'))).toBe('BUSINESS_ACCEPTANCE_STOPPED');
+});
+
+it('reads the original address for a previously transferred receipt',async()=>{
+  const digest=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const generated=digest('archive'),controller='a'.repeat(40),candidate='historical';
+  const transferred=digest(['content-archive-transfer/v1',generated,controller]);
+  const saved={input:{candidateId:candidate,controllerSha:controller,batches:[{attempts:[{recovery:{archiveContentDigest:generated}}]}]}};
+  const read=async(path:string)=>{expect(path).toBe(`content/${candidate}/${transferred}/manifest.json`);return saved;};
+  const result=await selectContentArchive({id:candidate,contentGenerationDigest:transferred},generated,{loadDocument:read,controllerSha:controller});
+  expect(result).toEqual({digest:transferred,transferBaseDigest:generated});
+});
+
+it('rejects an archived recovery receipt with an incomplete locator',async()=>{
+  const sha='a'.repeat(64);
+  const attempt={ordinal:1,startedAt:'2026-11-08T00:00:00Z',status:'REJECTED' as const,model:'fixture',usage:null,errorCode:'CONTENT_OUTPUT_SCHEMA'};
+  const recovery={previousAttemptSha256:sha,authorizationId:sha,outputContractSha256:sha,archiveContentDigest:sha};
+  await expect(verifyContentAttemptReceipts([attempt,{...attempt,ordinal:2,recovery}])).rejects.toThrow('CONTENT_ATTEMPT_SCHEMA');
+});
+
+const hash=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
+function fixture(){
   const identity={repositoryId:1,defaultBranch:'main',targetSha:'a'.repeat(40),controllerSha:'b'.repeat(40)};
   const unit={id:'app',path:'.',version:'1.0.0',tag:'v1.0.0'},boundary={kind:'full-tree'};
   const evidence={manifests:[{unit,identity,boundary,commits:[{sha:identity.targetSha}]}],gaps:[]};
   const input={schemaVersion:2,repositoryId:1,candidateId:hash('candidate'),baseSha:identity.targetSha,controllerSha:identity.controllerSha,
     units:[unit],boundaries:[{unitId:'app',kind:'full-tree',sha:null,reference:null}],sourceManifestDigest:hash(evidence.manifests),configDigest:hash('config'),batches:[]};
   const source={id:hash('source'),unitId:'app',path:'README.md',previousPath:null,status:'CURATED',oid:identity.targetSha,mode:'100644',byteLength:6,encoding:'utf8',sha256:hash('示例'),start:0,end:6,text:'示例',stage:'CONTEXT'};
-  const old=await planContentBatches(input,[source],evidence),batch=old.input.batches[0];
+  const payload={stage:'DRAFT',unitIds:[unit.id],units:[unit],sources:[source],items:[],background:[]};
+  const inputDigest=hash(payload),id=hash([input.candidateId,input.configDigest,inputDigest]);
+  const batch={id,stage:'DRAFT',unitIds:[unit.id],sourceIds:[source.id],inputDigest,status:'PENDING',attempts:[],nextCheckAt:null,resultPath:null,errorCode:null};
+  const pending={input:{...input,batches:[batch]},payloads:{[id]:payload},evidence};
+  const work=structuredClone(pending),old=pending;
   const attempt={ordinal:1,startedAt:'2026-11-08T00:00:00Z',status:'REJECTED',model:'fixture',usage:null,errorCode:'CONTENT_OUTPUT_SCHEMA'};
   Object.assign(batch,{status:'FAILED',errorCode:'CONTENT_OUTPUT_SCHEMA',attempts:[attempt]});
   const protections={branch:[{type:'deletion'},{type:'workflows',ruleset_id:18883080,ruleset_source:'splrad',ruleset_source_type:'Organization',
@@ -22,27 +51,33 @@ async function fixture(){
   const facts={baseSha:identity.targetSha,config:'fixed',protectionsEvidencePath:protectionPath},authorsDigest=hash('authors');
   const archiveContentDigest=hash([hash(facts),input.configDigest,authorsDigest]),root=`content/${input.candidateId}/${archiveContentDigest}/`;
   const manifest={input:old.input,payloadPaths:{[batch.id]:root+`batches/${batch.id}.json`},evidencePath:root+'source-manifest.json'};
-  const docs={[root+'manifest.json']:manifest,[manifest.payloadPaths[batch.id]]:old.payloads[batch.id],[manifest.evidencePath]:evidence,[protectionPath]:{facts,protections}};
-  const nextEvidence=structuredClone(evidence);nextEvidence.manifests[0].identity.controllerSha='c'.repeat(40);
-  const work=await planContentBatches({...input,controllerSha:'c'.repeat(40),sourceManifestDigest:hash(nextEvidence.manifests)},[source],nextEvidence);
-  const currentProtections=structuredClone(protections);currentProtections.branch[1].parameters.workflows[0].sha='e'.repeat(40);
+  const docs={[root+'manifest.json']:manifest,[manifest.payloadPaths[batch.id]!]:old.payloads[batch.id],[manifest.evidencePath]:evidence,[protectionPath]:{facts,protections}};
+  const nextEvidence=structuredClone(evidence);nextEvidence.manifests[0]!.identity.controllerSha='c'.repeat(40);
+  work.input.controllerSha='c'.repeat(40);
+  work.input.sourceManifestDigest=hash(nextEvidence.manifests);
+  work.evidence=nextEvidence;
+  const currentProtections=structuredClone(protections);currentProtections.branch[1]!.parameters!.workflows[0]!.sha='e'.repeat(40);
   const currentFacts={...facts,protectionsEvidencePath:`generated/protections-${hash([currentProtections.branch,currentProtections.tags])}.json`};
   const key=hash([batch.inputDigest,input.configDigest]),cache={[key]:{inputDigest:batch.inputDigest,configDigest:input.configDigest,attempts:[structuredClone(attempt)],result:null}};
   const grant={candidateId:input.candidateId,batchId:batch.id,previousAttemptSha256:hash(attempt),authorizationId:hash('approval'),outputContractSha256:hash(CONTENT_OUTPUT_SCHEMA),archiveContentDigest,archiveProtectionDigest};
-  const io={loadDocument:async path=>docs[path]??null,facts:currentFacts,protections:currentProtections,authorsDigest};
+  const io={loadDocument:async (path:string)=>docs[path]??null,facts:currentFacts,protections:currentProtections,authorsDigest};
   return {work,cache,grant,io,docs,manifest,old,attempt,key,root,protectionPath};
 }
-it('rebinds only a verified archived failure after a controller pin change and persists its provenance before one request',async()=>{
-  const f=await fixture(),original=JSON.stringify(f.manifest);await restoreContentRecovery(f.work,f.cache,f.grant,f.io);
-  let sent=0,persisted;
-  const result=await resumeContentBatches(f.work,f.cache,{recovery:f.grant,now:()=>new Date().toISOString(),editing:async()=>false,preflight:async()=>'READY',
-    save:async work=>{validateContentInput(work.input);persisted=structuredClone(work);},call:async()=>{sent++;expect(persisted.input.batches[0].attempts.map(a=>a.ordinal)).toEqual([1,2]);
-      expect(persisted.input.batches[0].attempts[1].recovery).toMatchObject({archiveContentDigest:f.grant.archiveContentDigest,archiveProtectionDigest:f.grant.archiveProtectionDigest});
-      return {text:JSON.stringify({paragraphs:[{sourceIds:f.work.input.batches[0].sourceIds,section:'summary',textZh:'离线验证说明。',qualification:'UNVERIFIED'}]}),model:'offline',usage:null};}});
-  expect(result).toEqual({status:'READY',calls:1});expect(sent).toBe(1);expect(JSON.stringify(f.manifest)).toBe(original);expect(f.work.input.batches[0].attempts[0]).toEqual(f.attempt);
+it.each(['pending snapshot','recorded transfer'])('verifies %s using only reads',async kind=>{
+  const f=fixture();
+  if(kind==='recorded transfer'){
+    const {candidateId,batchId,...receipt}=f.grant;
+    Object.assign(f.work.input.batches[0]!,{status:'FAILED',errorCode:'CONTENT_OUTPUT_SCHEMA',
+      attempts:[structuredClone(f.attempt),{...f.attempt,ordinal:2,recovery:receipt}]});
+  }
+  const before=JSON.stringify(f);
+  await expect(verifyContentRecoveryArchive(f.work,f.cache,f.grant,f.io)).resolves.toEqual({
+    candidateId:f.grant.candidateId,batchId:f.grant.batchId,previousAttemptSha256:hash(f.attempt)});
+  expect(JSON.stringify(f)).toBe(before);
 });
-it.each(['missing-archive','missing-pair','path','facts','protection','pin','workflow-ref','duplicate-workflow','source','identity','config','payload','history','old-result','old-nextCheck','unknown','other-rejection','second-failure','cache','grant'])('rejects archive transfer without mutation: %s',async kind=>{
-  const f=await fixture();
+it.each(['missing-archive','missing-pair','path','facts','protection','pin','workflow-ref','duplicate-workflow','source','identity','config','payload','history','old-result','old-nextCheck','unknown','other-rejection','second-failure','cache','grant','contract','unsafe-locator','receipt-authorization'])('refuses mismatched historical evidence: %s',async kind=>{
+  // Fault injection deliberately creates invalid documents and receipts.
+  const f:any=fixture();
   if(kind==='missing-archive')delete f.docs[f.root+'manifest.json'];
   if(kind==='missing-pair')delete f.grant.archiveProtectionDigest;
   if(kind==='path')f.manifest.evidencePath='other.json';
@@ -63,24 +98,128 @@ it.each(['missing-archive','missing-pair','path','facts','protection','pin','wor
   if(kind==='second-failure')f.manifest.input.batches[0].attempts.push({...f.attempt,ordinal:2});
   if(kind==='cache')f.cache[f.key].attempts[0].model='different';
   if(kind==='grant')f.grant.previousAttemptSha256=hash('wrong');
-  const before=JSON.stringify(f.work);await expect(restoreContentRecovery(f.work,f.cache,f.grant,f.io)).rejects.toThrow('CONTENT_RECOVERY_ARCHIVE');expect(JSON.stringify(f.work)).toBe(before);
+  if(kind==='contract')f.grant.outputContractSha256=hash('different schema');
+  if(kind==='unsafe-locator')f.grant.candidateId='../other';
+  if(kind==='receipt-authorization'){
+    const {candidateId,batchId,...receipt}=f.grant;
+    Object.assign(f.work.input.batches[0]!,{status:'FAILED',attempts:[f.attempt,{...f.attempt,ordinal:2,recovery:{...receipt,authorizationId:hash('different')}}]});
+  }
+  const before=JSON.stringify(f);await expect(verifyContentRecoveryArchive(f.work,f.cache,f.grant,f.io)).rejects.toThrow('CONTENT_RECOVERY_ARCHIVE');expect(JSON.stringify(f)).toBe(before);
 });
-it('bounds public failure diagnostics to machine codes',()=>{
-  expect(acceptanceErrorCode(Error('ACCEPTANCE_SOURCE_CHANGED'))).toBe('ACCEPTANCE_SOURCE_CHANGED');
-  expect(acceptanceErrorCode(Error('CONTENT_RECOVERY_BINDING'))).toBe('BUSINESS_ACCEPTANCE_STOPPED');
-  expect(acceptanceErrorCode(Error('secret text'))).toBe('BUSINESS_ACCEPTANCE_STOPPED');
-  expect(acceptanceErrorCode(Error('ACCEPTANCE_SOURCE_CHANGED\nprivate'))).toBe('BUSINESS_ACCEPTANCE_STOPPED');
+
+const waitUntil = '2026-11-08T00:01:00.000Z';
+
+function recorded(attemptStatus: string, attemptCode: string | null, batchStatus: string, batchCode: string | null, nextCheckAt: string | null) {
+  const f = fixture();
+  const batch = f.work.input.batches[0]!;
+  const {candidateId, batchId, ...recovery} = f.grant;
+  Object.assign(batch, {status: batchStatus, errorCode: batchCode, nextCheckAt,
+    attempts: [structuredClone(f.attempt), {...f.attempt, ordinal: 2, status: attemptStatus, errorCode: attemptCode, recovery}]});
+  return f;
+}
+
+const validStates = [
+  ['SENT', null, 'RUNNING', null, null],
+  ['SENT', null, 'FAILED', 'RESPONSE_UNKNOWN', null],
+  ['UNKNOWN', 'RESPONSE_UNKNOWN', 'FAILED', 'RESPONSE_UNKNOWN', null],
+  ['REJECTED', 'CONTENT_OUTPUT_SCHEMA', 'FAILED', 'CONTENT_OUTPUT_SCHEMA', null],
+  ['REJECTED', 'WAIT_AUTH', 'WAIT_AUTH', 'WAIT_AUTH', waitUntil],
+  ['REJECTED', 'WAIT_QUOTA', 'WAIT_QUOTA', 'WAIT_QUOTA', waitUntil],
+  ['REJECTED', 'WAIT_AUTH', 'FAILED', 'WAIT_AUTH', waitUntil],
+  ['REJECTED', 'WAIT_QUOTA', 'FAILED', 'WAIT_QUOTA', waitUntil],
+] as const;
+
+it.each(validStates)('reads recorded %s %s as %s, %s, %s', async (...state) => {
+  const f = recorded(...state);
+  const before = JSON.stringify(f);
+  await expect(verifyContentRecoveryArchive(f.work, f.cache, f.grant, f.io)).resolves.toMatchObject({batchId: f.grant.batchId});
+  expect(JSON.stringify(f)).toBe(before);
 });
-it('rejects archived recovery grants at business acceptance',async()=>{
-  const {grant}=await fixture(),controllerSha='c'.repeat(40),plan={schemaVersion:1,kind:'release',controllerSha,maxRequests:1,repository:{id:1448797077,full_name:'splrad/steward-e10-lifecycle-20261107',private:true,default_branch:'main'},baseSha:'a'.repeat(40),stateSha:'d'.repeat(40),releaseRecovery:grant};
-  const env={GITHUB_REPOSITORY:'splrad/steward',GITHUB_REPOSITORY_ID:'1296724484',GITHUB_REF:'refs/heads/main',GITHUB_EVENT_NAME:'workflow_dispatch',GITHUB_RUN_ATTEMPT:'1',GITHUB_WORKFLOW_REF:'splrad/steward/.github/workflows/business-flow-acceptance.yml@refs/heads/main',GITHUB_SHA:controllerSha,WORKFLOW_SHA:controllerSha};
-  const check=value=>{const raw=JSON.stringify(value);return validatePlan(raw,digest(raw),env);};
-  expect(()=>check(plan)).toThrow('ACCEPTANCE_MODE');
-  const quality={...plan,kind:'quality',pr:1,head:'e'.repeat(40),sources:[{id:1}],sourceSetDigest:hash('sources'),governanceAppId:5639432,configVersion:'fixture'};
-  expect(()=>check(quality)).toThrow('ACCEPTANCE_RELEASE_RECOVERY_RETIRED');
+
+const invalidStates = [
+  ['SENT', null, 'PENDING', null, null],
+  ['SENT', null, 'FAILED', null, null],
+  ['SENT', 'CONTENT_OUTPUT_SCHEMA', 'RUNNING', null, null],
+  ['SENT', null, 'RUNNING', null, waitUntil],
+  ['UNKNOWN', 'RESPONSE_UNKNOWN', 'READY', null, null],
+  ['UNKNOWN', 'WAIT_AUTH', 'FAILED', 'WAIT_AUTH', null],
+  ['REJECTED', 'CONTENT_OUTPUT_SCHEMA', 'PENDING', null, null],
+  ['REJECTED', 'CONTENT_OUTPUT_SCHEMA', 'FAILED', null, null],
+  ['REJECTED', 'RESPONSE_UNKNOWN', 'FAILED', 'RESPONSE_UNKNOWN', null],
+  ['REJECTED', 'CONTENT_OUTPUT_SCHEMA', 'FAILED', 'CONTENT_OUTPUT_SCHEMA', waitUntil],
+  ['REJECTED', 'WAIT_QUOTA', 'WAIT_AUTH', 'WAIT_QUOTA', waitUntil],
+  ['REJECTED', 'WAIT_AUTH', 'FAILED', 'WAIT_AUTH', null],
+  ['REJECTED', 'WAIT_AUTH', 'WAIT_AUTH', 'WAIT_AUTH', 'unparseable'],
+  ['REJECTED', 'WAIT_AUTH', 'WAIT_AUTH', 'WAIT_AUTH', '2026-11-08T00:00:59.999Z'],
+] as const;
+
+it.each(invalidStates)('refuses recorded %s %s with %s, %s, %s', async (...state) => {
+  const f = recorded(...state);
+  await expect(verifyContentRecoveryArchive(f.work, f.cache, f.grant, f.io)).rejects.toThrow('CONTENT_RECOVERY_ARCHIVE');
 });
-it('rejects an archived recovery receipt with only one locator',async()=>{
-  const {attempt,grant}=await fixture();
-  const recovery={previousAttemptSha256:grant.previousAttemptSha256,authorizationId:grant.authorizationId,outputContractSha256:grant.outputContractSha256,archiveContentDigest:grant.archiveContentDigest};
-  await expect(verifyContentAttemptReceipts([attempt,{...attempt,ordinal:2,recovery}])).rejects.toThrow('CONTENT_ATTEMPT_SCHEMA');
+
+it('refuses a result path on an unsuccessful batch', async () => {
+  const f = recorded('REJECTED', 'CONTENT_OUTPUT_SCHEMA', 'FAILED', 'CONTENT_OUTPUT_SCHEMA', null);
+  Object.assign(f.work.input.batches[0]!, {resultPath: 'results/other.json'});
+  await expect(verifyContentRecoveryArchive(f.work, f.cache, f.grant, f.io)).rejects.toThrow('CONTENT_RECOVERY_ARCHIVE');
+});
+
+function returned(sameGeneration = false) {
+  const f = recorded('RETURNED', null, 'READY', null, null);
+  if (sameGeneration) {
+    const original = f.docs[f.protectionPath] as {facts: typeof f.io.facts; protections: typeof f.io.protections};
+    f.io.facts = original.facts;
+    f.io.protections = original.protections;
+  }
+  const batch = f.work.input.batches[0]!;
+  const generated = hash([hash(f.io.facts), f.work.input.configDigest, f.io.authorsDigest]);
+  const directory = sameGeneration ? hash(['content-archive-transfer/v1', generated, f.work.input.controllerSha]) : generated;
+  const path = `content/${f.grant.candidateId}/${directory}/results/${batch.id}.json`;
+  Object.assign(batch, {resultPath: path});
+  const document = {stage: 'DRAFT', sourceIds: batch.sourceIds, result: {paragraphs: [{sourceIds: batch.sourceIds,
+    section: 'summary', textZh: '离线验证说明。', qualification: 'UNVERIFIED'}]}};
+  const chunks = [{schemaVersion: 1, repositoryId: f.work.input.repositoryId, candidateId: f.grant.candidateId, documentKind: 'content-result',
+    documentDigest: hash(document), index: 0, count: 1, content: JSON.stringify(document)}];
+  const reads: string[] = [];
+  const io = {...f.io, loadResultChunks: async (requested: string) => {reads.push(requested); return requested === path ? chunks : []; }};
+  return {...f, io, batch, document, chunks, reads, path};
+}
+
+it.each([false, true])('reads the archived result from its derived directory (same digest: %s)', async sameGeneration => {
+  const f = returned(sameGeneration);
+  const before = JSON.stringify([f.work, f.cache, f.chunks]);
+  await expect(verifyContentRecoveryArchive(f.work, f.cache, f.grant, f.io)).resolves.toMatchObject({batchId: f.batch.id});
+  expect(f.reads).toEqual([f.path]);
+  expect(JSON.stringify([f.work, f.cache, f.chunks])).toBe(before);
+});
+
+it.each(['batch-status', 'attempt-error', 'batch-error', 'next-check', 'missing-path', 'relative-path', 'other-generation', 'other-batch',
+  'missing-chunks', 'candidate', 'repository', 'kind', 'digest', 'sources', 'result-schema', 'conditional'])('refuses inconsistent returned result: %s', async kind => {
+  const f = returned();
+  const last = f.batch.attempts[1]!;
+  const chunk = f.chunks[0]!;
+  if (kind === 'batch-status') f.batch.status = 'FAILED';
+  if (kind === 'attempt-error') Object.assign(last, {errorCode: 'CONTENT_OUTPUT_SCHEMA'});
+  if (kind === 'batch-error') Object.assign(f.batch, {errorCode: 'RESPONSE_UNKNOWN'});
+  if (kind === 'next-check') Object.assign(f.batch, {nextCheckAt: waitUntil});
+  if (kind === 'missing-path') f.batch.resultPath = null;
+  if (kind === 'relative-path') Object.assign(f.batch, {resultPath: `results/${f.batch.id}.json`});
+  if (kind === 'other-generation') Object.assign(f.batch, {resultPath: f.root + `results/${f.batch.id}.json`});
+  if (kind === 'other-batch') Object.assign(f.batch, {resultPath: f.path.replace(f.batch.id + '.json', hash('other') + '.json')});
+  if (kind === 'missing-chunks') f.chunks.length = 0;
+  if (kind === 'candidate') chunk.candidateId = hash('other');
+  if (kind === 'repository') chunk.repositoryId++;
+  if (kind === 'kind') chunk.documentKind = 'content';
+  if (kind === 'digest') chunk.documentDigest = hash('other');
+  if (kind === 'sources' || kind === 'result-schema' || kind === 'conditional') {
+    if (kind === 'sources') {
+      f.document.sourceIds = [hash('other')];
+      f.document.result.paragraphs[0]!.sourceIds = f.document.sourceIds;
+    }
+    if (kind === 'result-schema') f.document.result.paragraphs[0]!.qualification = 'unknown';
+    if (kind === 'conditional') Object.assign(f.document, {conditional: true});
+    chunk.content = JSON.stringify(f.document);
+    chunk.documentDigest = hash(f.document);
+  }
+  await expect(verifyContentRecoveryArchive(f.work, f.cache, f.grant, f.io)).rejects.toThrow();
 });

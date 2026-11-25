@@ -39,6 +39,31 @@ def read_url(url):
         return response.read()
 
 
+def github_asset(url):
+    parsed = urllib.parse.urlsplit(url)
+    require(parsed.scheme == "https" and parsed.netloc == "api.github.com" and not parsed.query
+            and not parsed.fragment and re.fullmatch(r"/repos/[\w.-]+/[\w.-]+/releases/assets/[1-9]\d*", parsed.path),
+            "Unexpected GitHub asset API URL")
+    if os.environ.get("GH_TOKEN"):
+        return json.loads(subprocess.check_output(["gh", "api", "--hostname", "github.com", parsed.path], timeout=120))
+    return json.loads(read_url(url))
+
+
+def verify_archive(asset, archive):
+    with urllib.request.urlopen(asset["url"], timeout=120) as response, archive.open("wb") as output:
+        shutil.copyfileobj(response, output)
+    with archive.open("rb") as stream:
+        digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
+    require(asset["checksum"] == digest, "Candidate platform digest differs")
+    if asset.get("provenance") == "github-attestations":
+        # The caller has already matched this release URL to the trusted supplier layout.
+        repository = rules.release_repository(asset["url"])
+        require(repository, "A GitHub attestation requires a trusted release repository")
+        subprocess.run(["gh", "attestation", "verify", str(archive), "--repo", repository,
+                        "--hostname", "github.com"], check=True, timeout=120)
+    return digest
+
+
 @contextmanager
 def tool_directory():
     directory = tempfile.TemporaryDirectory()
@@ -80,7 +105,7 @@ def checked_records(original, candidate):
                     continue
                 if field in rules.PLATFORMS or (field == "aube" and key == "npm"):
                     if field in rules.PLATFORMS:
-                        value = rules.with_checksum_source(value, item[field])
+                        value = rules.supplier_metadata(value, item[field])
                     allowed = {"url", "url_api", "checksum"} if field in rules.PLATFORMS else {"path", "digest"}
                     require(item[field].keys() == value.keys(), f"Unexpected {key} {field} field set")
                     require(all(item[field][k] == v for k, v in value.items() if k not in allowed),
@@ -156,30 +181,24 @@ def verify_other_locks(base, head):
             if "url_api" in previous[platform]:
                 api = previous[platform]["url_api"].rsplit("/", 1)[0]
                 require(re.fullmatch(re.escape(api) + r"/[1-9]\d*", asset["url_api"]), "Unexpected asset API")
-                require(json.loads(read_url(asset["url_api"]))["browser_download_url"] == url, "Asset ID differs")
+                require(github_asset(asset["url_api"])["browser_download_url"] == url, "Asset ID differs")
         else:
             require(key == "node" and url == previous[platform]["url"].replace(previous["version"], version),
                     "Unexpected Node asset")
-        with urllib.request.urlopen(url, timeout=120) as response:
-            digest = "sha256:" + hashlib.file_digest(response, "sha256").hexdigest()
-        require(asset["checksum"] == digest, "Candidate platform digest differs")
+        with tool_directory() as directory:
+            digest = verify_archive(asset, directory / "archive")
         print(f"Verified {key} {version} {platform} {digest}")
 
 
 def tool(key, item, root):
     windows = os.name == "nt"
     asset = item[rules.PLATFORMS[int(windows)]]
-    with urllib.request.urlopen(asset["url_api"], timeout=60) as response:
-        upstream = json.load(response)
+    upstream = github_asset(asset["url_api"])
     require(upstream["browser_download_url"] == asset["url"], "Supplier asset ID and URL differ")
     if upstream.get("digest"):
         require(upstream["digest"] == asset["checksum"], "Supplier asset digest differs")
     archive = root / "archive"
-    with urllib.request.urlopen(asset["url"], timeout=120) as response, archive.open("wb") as out:
-        shutil.copyfileobj(response, out)
-    with archive.open("rb") as stream:
-        digest = hashlib.file_digest(stream, "sha256").hexdigest()
-    require("sha256:" + digest == asset["checksum"], "Downloaded bytes differ from candidate lock")
+    verify_archive(asset, archive)
     command, option = rules.COMMANDS[key]
     binary = root / (command + (".exe" if windows else ""))
     if windows:

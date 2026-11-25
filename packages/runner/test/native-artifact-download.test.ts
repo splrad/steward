@@ -86,3 +86,14 @@ it('reuses the collect destination after a failed signed download and keeps cred
     await expect(downloadNativeArtifact(input,'fixture')).rejects.toMatchObject({code:'EEXIST'});
   } finally {vi.unstubAllGlobals();}
 });
+
+it('rejects expired metadata before following a download URL', async () => {
+  const bytes = zip(), digest = 'sha256:' + createHash('sha256').update(bytes).digest('hex');
+  const metadata = vi.fn(async () => Response.json({id: 9, expired: true, size_in_bytes: bytes.length, digest}));
+  vi.stubGlobal('fetch', metadata);
+  try {
+    await expect(downloadNativeArtifact({fullName:'fixture/product',artifactId:9,digest,names:[],directory:'unused',
+      policyDirectory:'.',home:'unused'},'fixture')).rejects.toThrow('ARTIFACT_DOWNLOAD_IDENTITY');
+    expect(metadata).toHaveBeenCalledTimes(1);
+  } finally { vi.unstubAllGlobals(); }
+});
