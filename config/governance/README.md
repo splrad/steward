@@ -43,3 +43,13 @@ Actions 事件策略通过 GitHub 设置页或官方 REST 在采用阶段配置�
 私有设置入口可在成功处理已验证的仓库事件后，以现有治理 App 的中央单仓 contents/metadata token 发送上述固定通知；它不传递原始事件元数据，标签事件不触发模板通知。对应 `STEWARD_TEMPLATE_EVENTS` 和中央 `STEWARD_TEMPLATE_APPLY` 均须按采用决定启用。设置同步自身的事件功能保持原样。
 
 `STEWARD_TEMPLATE_APPLY` 只启用文件 App 当前 selected 安装范围内的递送。空仓首提交另由 `STEWARD_BOOTSTRAP_APPLY` 控制，默认不启用；其治理 App 为 all 安装，因此启用该开关涉及当前和未来安装空仓，必须另有明确范围授权。本批已有非空仓接入不需要开启它。`bootstrap_only` 仍只能使用既有私有精确验收对象控制。
+
+### 旧配置工作流的历史登记
+
+2026-11-25 核对四仓 31 个分支时，四个默认分支均已移除 `.github/workflows/repository-configuration.yml`。GitHub 仍将三个旧 workflow ID 标记为 `active`。Steward 的 `424786417`、组织社区仓的 `424413230`、私有设置仓的 `424413483` 分别有 2、5、6 次历史运行，均已结束。[Steward 运行记录](https://github.com/splrad/steward/actions/runs/44704150035) · [组织社区仓运行记录](https://github.com/splrad/.github/actions/runs/44735319717)
+
+LayerScape 的登记 `424667651` 已是 `deleted`。仍保留旧文件的分支为 `steward/release-candidate`（`e19c350e`）。验收 PR #233 已关闭，其原分支已删除，原提交仍可回读同一份文件。该文件声明了 `pull_request_review` 和 `issues`。线上通用 Actions 策略 11334 继续排除这条路径，专用策略 16429、16430 仍启用。[保留分支上的工作流](https://github.com/splrad/LayerScape/blob/e19c350ecd706b8d75de60d715b6bd34e9abd363/.github/workflows/repository-configuration.yml) · [验收 PR #233](https://github.com/splrad/LayerScape/pull/233)
+
+**切换。** 获准停用某个历史登记后，按仓库和 workflow ID 保存其路径、原状态及运行记录。重新核对分支、可调度的固定引用、开放 PR、调用方和在途运行，确认该登记可退出。逐个停用并按原 ID 读回 `disabled_manually`，保留历史 Run。若平台拒绝操作，记录返回结果并保留该项原状。
+
+**回退。** 仅对本次从 `active` 停用的 ID 恢复启用，按同一仓库和 ID 读回原路径与 `active` 状态，并确认历史 Run 仍可访问。遇到源码已移除导致无法恢复的情况，记录原生响应及未恢复的 ID，交由维护者单独处置。
