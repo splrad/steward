@@ -57,3 +57,46 @@ jobs:
           STEWARD_CENTRAL_TOKEN: ${{ github.token }}
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
         run: node scripts/maintenance-event.mjs
+  candidate-draft:
+    if: >-
+      github.repository == 'splrad/steward' && github.repository_id == '1296724484' &&
+      github.ref == 'refs/heads/main' && github.workflow_sha == github.sha &&
+      github.event.workflow_run.repository.id == 1296724484 && github.event.workflow_run.head_repository.id == 1296724484 &&
+      github.event.workflow_run.workflow_id == 408662199 && github.event.workflow_run.path == '.github/workflows/governance-promotion.yml' &&
+      github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_sha == github.sha &&
+      github.event.workflow_run.conclusion == 'success' && vars.STEWARD_OFFICIAL_CANDIDATES_ENABLED == 'true'
+    concurrency:
+      group: steward-release-coordinator
+      queue: max
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: steward-release
+      deployment: false
+    env:
+      MISE_ENABLE_TOOLS: node,npm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+        env:
+          MISE_SAFE: '1'
+          MISE_NODE_COMPILE: 'false'
+        with:
+          version: 2026.11.14
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - name: Install locked controller dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Resume interrupted candidate drafts
+        env:
+          STEWARD_CONTROLLER_SHA: ${{ github.workflow_sha }}
+          STEWARD_CENTRAL_TOKEN: ${{ github.token }}
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          STEWARD_OFFICIAL_CANDIDATES_ENABLED: ${{ vars.STEWARD_OFFICIAL_CANDIDATES_ENABLED }}
+        run: node scripts/candidate-draft-recovery.mjs

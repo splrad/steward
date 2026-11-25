@@ -51,6 +51,20 @@ it('creates central maintenance-only state, preserves requests after cache loss 
     expect(await store.load(12)).toEqual(claimed);
     await git('switch','main');await store.save(claimed,claimed);
     expect((await refresh()).snapshot.currentPaths).toContain('maintenance/12.json');
+    const recoveryPath = 'maintenance/candidate-draft-17-' + source + '-1.json';
+    const recovery = {schemaVersion:1,productId:17,sourceSha:source,roundId:digest('candidate'),failedRunId:20,
+      failedAttempt:1,coordinatorRunId:21,coordinatorAttempt:1,controllerSha:source,dispatchAttempt:1};
+    const claimBytes = JSON.stringify(recovery) + '\n';
+    const saved = await writeReleaseRecords(request('claim-draft',[file(recoveryPath,claimBytes)],(await refresh()).snapshot.head));
+    expect(saved.status).toBe('APPLIED');
+    const reloaded = (await refresh()).snapshot;
+    expect(reloaded.domainRecords).toEqual(expect.arrayContaining([expect.objectContaining({path:recoveryPath,content:claimBytes,value:recovery})]));
+    expect(await store.load(12)).toEqual(claimed);
+    const changed = file(recoveryPath,JSON.stringify({...recovery,coordinatorRunId:22})+'\n',digest(claimBytes));
+    await expect(writeReleaseRecords(request('replace-draft-claim',[changed],reloaded.head))).rejects.toThrow('immutable');
+    const notSent = recoveryPath.replace('.json','-not-sent.json');
+    expect((await writeReleaseRecords(request('no-post',[file(notSent,claimBytes)],reloaded.head))).status).toBe('APPLIED');
+    expect((await refresh()).snapshot.domainRecords).toContainEqual(expect.objectContaining({path:notSent,value:recovery}));
     expect((await git('show','-s','--format=%B','steward/release-state')).match(/^Signed-off-by:/gm)).toHaveLength(1);
     await git('switch','steward/release-state');await mkdir(join(remote,'generated'));await writeFile(join(remote,'generated','foreign.md'),'Foreign product history\n');
     await git('add','generated/foreign.md');await git('commit','--signoff','-m','Fixture foreign historical owner');

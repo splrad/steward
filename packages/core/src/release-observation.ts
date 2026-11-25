@@ -338,6 +338,21 @@ export function decodeStateFile(targetRef: string, path: string, bytes: Uint8Arr
     return record;
   }
   if(owner==='settings') return decodeSettingsReport(decodeBuildJson(bytes),repositoryId,path);
+  if (owner === 'maintenance' && path.startsWith('maintenance/candidate-draft-')) {
+    const v = decodeBuildJson(bytes) as {schemaVersion:number; productId:number; sourceSha:string; roundId:string;
+      failedRunId:number; failedAttempt:number; coordinatorRunId:number; coordinatorAttempt:number; controllerSha:string;
+      dispatchAttempt:number; responseStatus?:number};
+    const rejection = path.endsWith('-rejected.json');
+    const suffix = rejection ? '-rejected' : path.endsWith('-not-sent.json') ? '-not-sent' : '';
+    exact(v,['schemaVersion','productId','sourceSha','roundId','failedRunId','failedAttempt','coordinatorRunId','coordinatorAttempt',
+      'controllerSha','dispatchAttempt',...(rejection?['responseStatus']:[])]);
+    if (repositoryId !== 1296724484 || v.schemaVersion !== 1 || !integer(v.productId) || !sha(v.sourceSha) || !digest(v.roundId) ||
+      !integer(v.failedRunId) || !integer(v.failedAttempt) || !integer(v.coordinatorRunId) || !integer(v.coordinatorAttempt) ||
+      !sha(v.controllerSha) || !integer(v.dispatchAttempt) || rejection && ![400,401,403,404,409,410,422,429].includes(v.responseStatus!) ||
+      path !== `maintenance/candidate-draft-${v.productId}-${v.sourceSha}-${v.dispatchAttempt}${suffix}.json`)
+      return fail('candidate draft recovery identity');
+    return v;
+  }
   if(owner==='maintenance') return decodeMaintenanceRecord(bytes,repositoryId,path);
   if(owner==='pages') return decodePagesMaintenance(bytes,repositoryId,path);
   if(owner==='configuration') return decodeRepositoryPolicyProjection(bytes,repositoryId);

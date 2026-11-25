@@ -156,7 +156,9 @@ export async function readReleaseRecords({ directory, targetRef, repositoryId, i
           if(mode!=='100644'||type!=='blob')throw new Error('RELEASE_RECORD: unsafe maintenance path');
           const bytes=await readBlob(oid),value=decodeStateFile(targetRef,path,bytes,repositoryId);
           const previous=domainRecords.get(path);
-          if(previous)assertMaintenanceProgress(value,previous.value);
+          if(previous && path.startsWith('maintenance/candidate-draft-')) {
+            if(previous.blobSha!==oid)fail('candidate draft recovery is immutable');
+          } else if(previous)assertMaintenanceProgress(value,previous.value);
           else domainRecords.set(path,{commit,path,blobSha:oid,value,content:bytes.toString('utf8')});
           history.push({commit,path,blobSha:oid,status:'DECODED'});continue;
         }
@@ -675,7 +677,9 @@ export async function writeReleaseRecords(input,{token,beforePush}={}) {
           }
           for(const file of request.changes.filter(file=>file.path.startsWith('maintenance/'))) {
             const previous=history.domainRecords.find(record=>record.path===file.path);
-            if(previous)(file.path.startsWith('maintenance/pages/')?assertPagesProgress:assertMaintenanceProgress)(previous.value,decodeStateFile(request.targetRef,file.path,Buffer.from(file.content),request.repositoryId));
+            if(previous && file.path.startsWith('maintenance/candidate-draft-')) {
+              if(previous.content!==file.content)fail('candidate draft recovery is immutable');
+            } else if(previous)(file.path.startsWith('maintenance/pages/')?assertPagesProgress:assertMaintenanceProgress)(previous.value,decodeStateFile(request.targetRef,file.path,Buffer.from(file.content),request.repositoryId));
           }
         }
       }
