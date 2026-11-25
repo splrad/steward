@@ -47,7 +47,7 @@ const adoptedConditionalDigests = [
   '120dc4498c5a8ab55e14caf222f0fce2dd09b366f072798c6d12a2db3945776a', // avatars and numeric IDs
   '5c4b14554ed6ad7729b8c13c7e8daedff23dba36bb83fa0e22319a70aa493763', // linked usernames and numeric IDs
   'e7d54160c3c6811e223ad17b8d2d3284cd9b9e11ddf2d87dae3b8e846b839bb0', // linked usernames
-  '3d165e96c046f349596a57099fab0a463cdcc8ae9c8f6d695220882ca1bd5ffa', // project title and version-specific changes
+  '32f8161dd870792f49e6fb935c10566716f1ac24ef6813f28446a3f9bc3e8ae4', // project title and version-specific changes
 ];
 const showsReleaseContributorIds = (template: string): boolean => template.includes('{{id}}');
 

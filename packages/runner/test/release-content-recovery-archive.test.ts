@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 const {selectContentArchive,verifyContentRecoveryArchive}=await import(pathToFileURL(resolve('scripts/release-content-recovery.mjs')).href);
 const {acceptanceErrorCode}=await import(pathToFileURL(resolve('scripts/business-flow-acceptance.mjs')).href);
-import { CONTENT_OUTPUT_SCHEMA, verifyContentAttemptReceipts } from '../../core/src/release-content.js';
+import { CONTENT_OUTPUT_SCHEMA, contentOutputSchema, verifyContentAttemptReceipts } from '../../core/src/release-content.js';
 
 it('bounds public failure diagnostics to machine codes',()=>{
   expect(acceptanceErrorCode(Error('ACCEPTANCE_SOURCE_CHANGED'))).toBe('ACCEPTANCE_SOURCE_CHANGED');
@@ -31,14 +31,15 @@ it('rejects an archived recovery receipt with an incomplete locator',async()=>{
 });
 
 const hash=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
-function fixture(){
+function fixture(conditionalDigest?: string){
+  const format = conditionalDigest ? {conditional:true} : {};
   const identity={repositoryId:1,defaultBranch:'main',targetSha:'a'.repeat(40),controllerSha:'b'.repeat(40)};
   const unit={id:'app',path:'.',version:'1.0.0',tag:'v1.0.0'},boundary={kind:'full-tree'};
   const evidence={manifests:[{unit,identity,boundary,commits:[{sha:identity.targetSha}]}],gaps:[]};
   const input={schemaVersion:2,repositoryId:1,candidateId:hash('candidate'),baseSha:identity.targetSha,controllerSha:identity.controllerSha,
     units:[unit],boundaries:[{unitId:'app',kind:'full-tree',sha:null,reference:null}],sourceManifestDigest:hash(evidence.manifests),configDigest:hash('config'),batches:[]};
   const source={id:hash('source'),unitId:'app',path:'README.md',previousPath:null,status:'CURATED',oid:identity.targetSha,mode:'100644',byteLength:6,encoding:'utf8',sha256:hash('示例'),start:0,end:6,text:'示例',stage:'CONTEXT'};
-  const payload={stage:'DRAFT',unitIds:[unit.id],units:[unit],sources:[source],items:[],background:[]};
+  const payload={...format,stage:'DRAFT',unitIds:[unit.id],units:[unit],sources:[source],items:[],background:[]};
   const inputDigest=hash(payload),id=hash([input.candidateId,input.configDigest,inputDigest]);
   const batch={id,stage:'DRAFT',unitIds:[unit.id],sourceIds:[source.id],inputDigest,status:'PENDING',attempts:[],nextCheckAt:null,resultPath:null,errorCode:null};
   const pending={input:{...input,batches:[batch]},payloads:{[id]:payload},evidence};
@@ -50,7 +51,7 @@ function fixture(){
   const archiveProtectionDigest=hash([protections.branch,protections.tags]),protectionPath=`generated/protections-${archiveProtectionDigest}.json`;
   const facts={baseSha:identity.targetSha,config:'fixed',protectionsEvidencePath:protectionPath},authorsDigest=hash('authors');
   const archiveContentDigest=hash([hash(facts),input.configDigest,authorsDigest]),root=`content/${input.candidateId}/${archiveContentDigest}/`;
-  const manifest={input:old.input,payloadPaths:{[batch.id]:root+`batches/${batch.id}.json`},evidencePath:root+'source-manifest.json'};
+  const manifest={...format,input:old.input,payloadPaths:{[batch.id]:root+`batches/${batch.id}.json`},evidencePath:root+'source-manifest.json'};
   const docs={[root+'manifest.json']:manifest,[manifest.payloadPaths[batch.id]!]:old.payloads[batch.id],[manifest.evidencePath]:evidence,[protectionPath]:{facts,protections}};
   const nextEvidence=structuredClone(evidence);nextEvidence.manifests[0]!.identity.controllerSha='c'.repeat(40);
   work.input.controllerSha='c'.repeat(40);
@@ -58,8 +59,8 @@ function fixture(){
   work.evidence=nextEvidence;
   const currentProtections=structuredClone(protections);currentProtections.branch[1]!.parameters!.workflows[0]!.sha='e'.repeat(40);
   const currentFacts={...facts,protectionsEvidencePath:`generated/protections-${hash([currentProtections.branch,currentProtections.tags])}.json`};
-  const key=hash([batch.inputDigest,input.configDigest]),cache={[key]:{inputDigest:batch.inputDigest,configDigest:input.configDigest,attempts:[structuredClone(attempt)],result:null}};
-  const grant={candidateId:input.candidateId,batchId:batch.id,previousAttemptSha256:hash(attempt),authorizationId:hash('approval'),outputContractSha256:hash(CONTENT_OUTPUT_SCHEMA),archiveContentDigest,archiveProtectionDigest};
+  const key=hash([batch.inputDigest,input.configDigest]),cache={[key]:{...format,inputDigest:batch.inputDigest,configDigest:input.configDigest,attempts:[structuredClone(attempt)],result:null}};
+  const grant={candidateId:input.candidateId,batchId:batch.id,previousAttemptSha256:hash(attempt),authorizationId:hash('approval'),outputContractSha256:conditionalDigest ?? hash(CONTENT_OUTPUT_SCHEMA),archiveContentDigest,archiveProtectionDigest};
   const io={loadDocument:async (path:string)=>docs[path]??null,facts:currentFacts,protections:currentProtections,authorsDigest};
   return {work,cache,grant,io,docs,manifest,old,attempt,key,root,protectionPath};
 }
@@ -109,8 +110,8 @@ it.each(['missing-archive','missing-pair','path','facts','protection','pin','wor
 
 const waitUntil = '2026-11-08T00:01:00.000Z';
 
-function recorded(attemptStatus: string, attemptCode: string | null, batchStatus: string, batchCode: string | null, nextCheckAt: string | null) {
-  const f = fixture();
+function recorded(attemptStatus: string, attemptCode: string | null, batchStatus: string, batchCode: string | null, nextCheckAt: string | null, conditionalDigest?: string) {
+  const f = fixture(conditionalDigest);
   const batch = f.work.input.batches[0]!;
   const {candidateId, batchId, ...recovery} = f.grant;
   Object.assign(batch, {status: batchStatus, errorCode: batchCode, nextCheckAt,
@@ -164,8 +165,8 @@ it('refuses a result path on an unsuccessful batch', async () => {
   await expect(verifyContentRecoveryArchive(f.work, f.cache, f.grant, f.io)).rejects.toThrow('CONTENT_RECOVERY_ARCHIVE');
 });
 
-function returned(sameGeneration = false) {
-  const f = recorded('RETURNED', null, 'READY', null, null);
+function returned(sameGeneration = false, conditionalDigest?: string) {
+  const f = recorded('RETURNED', null, 'READY', null, null, conditionalDigest);
   if (sameGeneration) {
     const original = f.docs[f.protectionPath] as {facts: typeof f.io.facts; protections: typeof f.io.protections};
     f.io.facts = original.facts;
@@ -176,7 +177,7 @@ function returned(sameGeneration = false) {
   const directory = sameGeneration ? hash(['content-archive-transfer/v1', generated, f.work.input.controllerSha]) : generated;
   const path = `content/${f.grant.candidateId}/${directory}/results/${batch.id}.json`;
   Object.assign(batch, {resultPath: path});
-  const document = {stage: 'DRAFT', sourceIds: batch.sourceIds, result: {paragraphs: [{sourceIds: batch.sourceIds,
+  const document = {...(conditionalDigest ? {conditional:true} : {}),stage: 'DRAFT', sourceIds: batch.sourceIds, result: {paragraphs: [{sourceIds: batch.sourceIds,
     section: 'summary', textZh: '离线验证说明。', qualification: 'UNVERIFIED'}]}};
   const chunks = [{schemaVersion: 1, repositoryId: f.work.input.repositoryId, candidateId: f.grant.candidateId, documentKind: 'content-result',
     documentDigest: hash(document), index: 0, count: 1, content: JSON.stringify(document)}];
@@ -184,6 +185,22 @@ function returned(sameGeneration = false) {
   const io = {...f.io, loadResultChunks: async (requested: string) => {reads.push(requested); return requested === path ? chunks : []; }};
   return {...f, io, batch, document, chunks, reads, path};
 }
+
+it('binds returned content to the archived conditional contract', async () => {
+  const historical = '73d81fa29397a2b09c536e388ee8a6f793f1d0fa8957cfcab73523f1748d2cf7';
+  for (const digest of [historical, hash(contentOutputSchema(true))]) {
+    const f = returned(false, digest);
+    const check = () => verifyContentRecoveryArchive(f.work, f.cache, f.grant, f.io);
+    await expect(check()).resolves.toMatchObject({batchId:f.batch.id});
+    Object.assign(f.document.result.paragraphs[0]!, {section:'acquisition', textZh:'**安装**。使用本版安装包。'});
+    Object.assign(f.chunks[0]!, {content:JSON.stringify(f.document), documentDigest:hash(f.document)});
+    if (digest === historical) await expect(check()).resolves.toMatchObject({batchId:f.batch.id});
+    else await expect(check()).rejects.toThrow('CONTENT_OUTPUT_SCHEMA');
+  }
+  const ordinary = fixture();
+  ordinary.grant.outputContractSha256 = historical;
+  await expect(verifyContentRecoveryArchive(ordinary.work, ordinary.cache, ordinary.grant, ordinary.io)).rejects.toThrow('CONTENT_RECOVERY_ARCHIVE');
+});
 
 it.each([false, true])('reads the archived result from its derived directory (same digest: %s)', async sameGeneration => {
   const f = returned(sameGeneration);

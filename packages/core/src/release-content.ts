@@ -49,14 +49,18 @@ export async function verifyContentAttemptReceipts(attempts: ContentAttempt[], c
     if (attempt.recovery && (index !== 1 || attempts.length !== 2 || attempt.ordinal !== 2 || attempts[0]?.ordinal !== 1
       || attempts[0]?.status !== 'REJECTED' || attempts[0]?.errorCode !== 'CONTENT_OUTPUT_SCHEMA'
       || attempt.recovery.previousAttemptSha256 !== await sha256Hex(JSON.stringify(attempts[0]))
-      || !await validOutputContract(attempt.recovery.outputContractSha256, conditional))) throw Error('CONTENT_RECOVERY_HISTORY');
+      || await archivedOutputContract(attempt.recovery.outputContractSha256, conditional) === undefined)) throw Error('CONTENT_RECOVERY_HISTORY');
     if (attempt.diagnostic && (utf8Length(attempt.diagnostic.responseText) !== attempt.diagnostic.responseBytes
       || await sha256Hex(attempt.diagnostic.responseText) !== attempt.diagnostic.responseSha256)) throw Error('CONTENT_DIAGNOSTIC_DIGEST');
   }
 }
-async function validOutputContract(digest: string, conditional?: boolean) {
-  if (conditional !== true && digest === await sha256Hex(JSON.stringify(CONTENT_OUTPUT_SCHEMA))) return true;
-  return conditional !== false && digest === await sha256Hex(JSON.stringify(conditionalOutputSchema));
+// Exact digest emitted before the acquisition section was retired. The serialized enum order is significant.
+const historicalConditionalDigest = '73d81fa29397a2b09c536e388ee8a6f793f1d0fa8957cfcab73523f1748d2cf7';
+export async function archivedOutputContract(digest: string, conditional?: boolean) {
+  if (conditional !== true && digest === await sha256Hex(JSON.stringify(CONTENT_OUTPUT_SCHEMA))) return 'standard';
+  if (conditional === false) return;
+  if (digest === historicalConditionalDigest) return 'reviewed';
+  if (digest === await sha256Hex(JSON.stringify(conditionalOutputSchema))) return 'conditional';
 }
 export interface ContentBatch {
   id: string; stage: ContentStage; unitIds: string[]; sourceIds: string[]; inputDigest: string;
