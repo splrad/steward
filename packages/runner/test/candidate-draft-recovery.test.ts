@@ -44,7 +44,7 @@ it('persists one claim before dispatch and preserves it across an ambiguous POST
   await expect(recoverDraft({...options,reader:missingLogs})).resolves.toBe('LOG_UNAVAILABLE');
   await expect(recoverDraft({...options,admit:async()=>false})).resolves.toBe('SUPERSEDED');
   expect(reserve).not.toHaveBeenCalled();
-  await expect(recoverDraft(options)).rejects.toThrow('lost response');
+  await expect(recoverDraft(options)).rejects.toMatchObject({message:'CANDIDATE_RECOVERY_FAILED',stage:'dispatch'});
   await expect(recoverDraft(options)).resolves.toBe('ALREADY_RESERVED');
   expect(dispatch).toHaveBeenCalledTimes(1);
   const moved=vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
@@ -71,7 +71,9 @@ it('permits another coordinator after a recorded refusal and preserves an ambigu
   const reader={json:async()=>run,pages:async()=>[job],response:async()=>({bytes:Buffer.from(diagnostic)})};
   const options={run,reader,admit:async()=>true,reserve:async()=>{records.set(first.path,first.value);return first.value;},
     settle:vi.fn(async(claim:object,outcome:string,status:number)=>{expect(outcome).toBe('rejected');records.set(rejection,{...claim,responseStatus:status});})};
-  await expect(recoverDraft({...options,dispatch:async()=>503})).rejects.toThrow('DISPATCH_UNCONFIRMED');
+  await expect(recoverDraft({...options,dispatch:async()=>503})).rejects.toMatchObject({
+    message:'CANDIDATE_RECOVERY_DISPATCH_UNCONFIRMED',stage:'dispatch',status:503,
+  });
   expect(nextClaim(records,another)).toBeNull();
   expect(options.settle).not.toHaveBeenCalled();
   await expect(recoverDraft({...options,dispatch:async()=>403})).resolves.toBe('DISPATCH_REJECTED');
@@ -115,7 +117,13 @@ it.each(['accepted','moved','closed','paused','paused after claim','refused then
         base:{repo,ref:'main'},head:{repo,ref:source.candidate.head,sha:priorHead}};
     return {status:200,bytes:Buffer.from(JSON.stringify(data))};
   }});
-  const app={forCandidateReadRepository:async(id:number,fn:Function)=>{expect(id).toBe(17);return fn('read');},
+  let reading = false;
+  const app={forCandidateReadRepository:async(id:number,fn:Function)=>{
+    expect(id).toBe(17);expect(reading).toBe(false);reading=true;
+    try {return await fn('read');} finally {reading=false;}
+  },forCandidateRepository:async(id:number,fn:Function)=>{
+    expect(id).toBe(17);expect(reading).toBe(false);return fn('state','read');
+  },
     forRepository:async(id:number,fn:Function,purpose:string)=>{expect([id,purpose]).toEqual([central.id,'configuration-actions']);return fn('actions');}};
   const reader={json:async()=>original,pages:async()=>[job],response:async()=>({bytes:Buffer.from(diagnostic)})};
   const call=()=>recoverProduct({app,root:'fixture',repo,reader,history:async()=>[original],runs:[original],promoted:async()=>true,
@@ -142,7 +150,7 @@ it.each(['accepted','moved','closed','paused','paused after claim','refused then
       expect(await call()).toBeUndefined();
       paused=false;coordinatorId++;
     }
-    if(scenario==='lost response') await expect(call()).rejects.toThrow('response lost');
+    if(scenario==='lost response') await expect(call()).rejects.toMatchObject({message:'CANDIDATE_RECOVERY_FAILED',stage:'dispatch'});
     else expect((await call()).result).toBe('DISPATCHED');
     expect((await call()).result).toBe('ALREADY_RESERVED');
   }

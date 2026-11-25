@@ -12,6 +12,7 @@ import {isolatedBuildEnvironment} from '../src/build-environment.js';
 it('creates central maintenance-only state, preserves requests after cache loss and refuses budget reset or foreign ownership',async()=>{
   const {writeReleaseRecords,readReleaseRecords}=await import(pathToFileURL(resolve('scripts/release-record.mjs')).href);
   const {maintenanceGitStore}=await import(pathToFileURL(resolve('scripts/maintenance.mjs')).href);
+  const {writeRecoveryRecord,nextClaim}=await import(pathToFileURL(resolve('scripts/candidate-draft-recovery.mjs')).href);
   const root=await mkdtemp(join(tmpdir(),'maintenance-git-'));registerOfflineFixtureRoot(root);
   try {
     const remote=join(root,'remote'),profile=join(root,'profile');await mkdir(remote);await mkdir(profile);
@@ -55,8 +56,15 @@ it('creates central maintenance-only state, preserves requests after cache loss 
     const recovery = {schemaVersion:1,productId:17,sourceSha:source,roundId:digest('candidate'),failedRunId:20,
       failedAttempt:1,coordinatorRunId:21,coordinatorAttempt:1,controllerSha:source,dispatchAttempt:1};
     const claimBytes = JSON.stringify(recovery) + '\n';
-    const saved = await writeReleaseRecords(request('claim-draft',[file(recoveryPath,claimBytes)],(await refresh()).snapshot.head));
-    expect(saved.status).toBe('APPLIED');
+    const app={appBotLogin:'fixture',forRepository:async(repoId:number,fn:Function,purpose:string)=>{
+      expect([repoId,purpose]).toEqual([id,'maintenance']);return fn(undefined);
+    }};
+    let protectionReads=0;
+    const dependencies={fetchSnapshot:refresh,checkProtection:async()=>{protectionReads++;}};
+    const reserve=()=>writeRecoveryRecord(app,root,async()=>true,(records:Map<string,unknown>)=>nextClaim(records,recovery),dependencies);
+    expect(await reserve()).toEqual(recovery);
+    expect(await reserve()).toBeNull();
+    expect(protectionReads).toBe(1);
     const reloaded = (await refresh()).snapshot;
     expect(reloaded.domainRecords).toEqual(expect.arrayContaining([expect.objectContaining({path:recoveryPath,content:claimBytes,value:recovery})]));
     expect(await store.load(12)).toEqual(claimed);
