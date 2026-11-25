@@ -3,8 +3,9 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+import yaml
 from copier import run_copy, run_update
-from promotion import TITLE_CALLER, TITLE_SOURCE, template_tag_plan
+from promotion import TITLE_CALLER, TITLE_SOURCE, previous_template_tag, template_tag_plan
 
 
 class PromotionTests(unittest.TestCase):
@@ -43,6 +44,33 @@ class PromotionTests(unittest.TestCase):
         self.assertEqual(plan['tag'],'v1.2.4');self.assertEqual(plan['commit'],current)
         self.git('tag',plan['tag'],current)
         self.assertEqual(template_tag_plan(self.root,current)['status'],'UNCHANGED')
+
+    def test_release_recovers_its_original_range_after_another_promotion(self):
+        template=self.root/'templates/repository/README.md'
+        template.write_text('second\n')
+        target=self.commit()
+        self.git('tag','v1.2.4',target)
+        self.git('tag','controller-v24',target)
+        template.write_text('third\n')
+        self.git('tag','v1.2.5',self.commit())
+        self.assertEqual(previous_template_tag(self.root,target,'v1.2.4'),'v1.2.3')
+        for tag in ['v1.2.3','v1.2.5','controller-v24']:
+            with self.subTest(tag=tag),self.assertRaisesRegex(Exception,'TEMPLATE_RELEASE_RANGE'):
+                previous_template_tag(self.root,target,tag)
+        self.git('tag','v9.9.9',target)
+        with self.assertRaisesRegex(Exception,'TEMPLATE_RELEASE_RANGE'):
+            previous_template_tag(self.root,target,'v9.9.9')
+
+    def test_release_uses_the_permitted_tag_push_event(self):
+        path=Path(__file__).resolve().parents[2]/'.github/workflows/template-release.yml'
+        workflow=yaml.load(path.read_text(encoding='utf-8'),Loader=yaml.BaseLoader)
+        self.assertEqual(workflow['on'],{'push':{'tags':['v[0-9]*']}})
+        gate=workflow['jobs']['range']['if']
+        for condition in ("github.repository_id == '1296724484'",'github.event.created','!github.event.deleted',
+                          'github.event.ref == github.ref','github.event.after == github.sha',
+                          'github.event.sender.id == 353238212',"github.event.sender.login == 'splrad-governance[bot]'"):
+            self.assertIn(condition,gate)
+        self.assertEqual(workflow['jobs']['publish']['needs'],'range')
 
     def test_title_supplier_changes_reach_existing_and_new_copier_consumers(self):
         source_tree=Path(__file__).resolve().parents[2]

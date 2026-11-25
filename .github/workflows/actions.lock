@@ -61,6 +61,10 @@ workflows:
     '.github/workflows/sync-managed.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78'
+    '.github/workflows/template-release.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
+        - 'jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78'
+        - 'release-drafter/release-drafter@d1a19e60e81a7e650d00a7de9277f87e439117ea'
 dependencies:
     'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1':
         ref: 'v7.0.1'
@@ -112,3 +116,8 @@ dependencies:
         commit: 'sha1-924e7c586e33d7d4bae9c14e26c5d22e2beb6e78'
         owner_id: 216188
         repo_id: 738284564
+    'release-drafter/release-drafter@d1a19e60e81a7e650d00a7de9277f87e439117ea':
+        ref: 'v7.11.0'
+        commit: 'sha1-d1a19e60e81a7e650d00a7de9277f87e439117ea'
+        owner_id: 58292376
+        repo_id: 139022359

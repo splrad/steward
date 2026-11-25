@@ -10,7 +10,7 @@ from copier_bridge import environment, git, require
 TITLE_CALLER = 'templates/repository/.github/workflows/pr-title.yml.jinja'
 TITLE_SOURCE = '.github/workflows/pr-title-reusable.yml'
 
-def template_tag_plan(central, commit):
+def template_tag_plan(central, commit, *, released_tag=None):
     central=Path(central).resolve()
     require(re.fullmatch(r'[a-f0-9]{40}',commit),'PROMOTION_COMMIT')
     with tempfile.TemporaryDirectory(prefix='template-promotion-') as profile:
@@ -19,7 +19,12 @@ def template_tag_plan(central, commit):
                   if not line.startswith('refs/tags/controller-v'))
         require(git(central,['rev-parse',commit+'^{commit}'],env).decode().strip()==commit,'PROMOTION_COMMIT')
         reachable=set(git(central,['tag','--merged',commit],env).decode().splitlines())
-        for tag in git(central,['tag','--list'],env).decode().splitlines():
+        candidates=git(central,['tag','--list'],env).decode().splitlines()
+        if released_tag is not None:
+            require(tags.get('refs/tags/'+released_tag)==commit,'TEMPLATE_RELEASE_RANGE')
+            # Replay promotion just before this tag was created, even if newer tags now exist.
+            candidates=reachable-{released_tag}
+        for tag in candidates:
             try: version=Version(tag)
             except InvalidVersion: continue
             if version.is_prerelease or version.is_devrelease:continue
@@ -75,7 +80,17 @@ def template_tag_plan(central, commit):
             plan['independentSecurityAdoption']=True
         return plan
 
+def previous_template_tag(central, commit, tag):
+    plan=template_tag_plan(central,commit,released_tag=tag)
+    require(plan['status']=='CREATE' and plan['tag']==tag,'TEMPLATE_RELEASE_RANGE')
+    return plan['previous']['tag']
+
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('--central',required=True);parser.add_argument('--commit',required=True);parser.add_argument('--output',required=True)
+    parser=argparse.ArgumentParser();parser.add_argument('--central',required=True);parser.add_argument('--commit',required=True)
+    mode=parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--output');mode.add_argument('--previous-of')
     args=parser.parse_args()
-    with open(args.output,'x',encoding='utf-8') as stream:json.dump(template_tag_plan(args.central,args.commit),stream,indent=2)
+    if args.previous_of is not None:
+        print(previous_template_tag(args.central,args.commit,args.previous_of))
+    else:
+        with open(args.output,'x',encoding='utf-8') as stream:json.dump(template_tag_plan(args.central,args.commit),stream,indent=2)
