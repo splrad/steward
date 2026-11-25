@@ -33,9 +33,11 @@ test('the candidate log retains the isolated SDK failure and excludes untrusted 
     candidateDiagnostic(error, 'generate') === 'RESPONSE_UNKNOWN stage=generate sdk_stage=send sdk_error=policy status=403');
   assert.equal(candidateDiagnostic({ ...failure.diagnostic, message: 'RESPONSE_UNKNOWN',
     sdkStage: 'private input', sdkErrorType: 'private details' }, 'generate'), 'RESPONSE_UNKNOWN stage=generate status=403');
-  await writeFile(script, 'process.exit(1)');
-  await assert.rejects(client.call('{}'), error =>
-    candidateDiagnostic(error, 'generate') === 'RESPONSE_UNKNOWN stage=generate sdk_stage=process');
+  for (const invalid of ['process.exit(1)', 'console.log("[]")', 'console.log(\'{"status":"RETURNED"}\')']) {
+    await writeFile(script, invalid);
+    await assert.rejects(client.call('{}'), error =>
+      candidateDiagnostic(error, 'generate') === 'RESPONSE_UNKNOWN stage=generate sdk_stage=process');
+  }
 });
 const versionHeader = '## [1.1.0](https://github.com/splrad/fixture/compare/v1.0.0...v1.1.0)';
 const upstreamBody = '请审阅本版。\n---\n\n' + versionHeader + '\n\n### 新增功能\n\n* 支持新版\n\n---\n产品文件差异。';
