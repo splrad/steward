@@ -86,7 +86,7 @@ it.each([false,true])('adopts zero-business source rejection before reselecting 
   expect(sent.inputs.targets_json).toBe(request.inputs.targets_json);
 },120_000);
 it('connects native inspection to a real fast-forward Git archive and keeps the original cycle unchanged',async()=>{
-  const f=await gitFixture();const result=await inspectReleaseEvidence(f.input,{io:f.native.io});
+  const f=await gitFixture();const result=await inspectReleaseEvidence(f.input,{io:f.native.io,now:()=>NOW});
   expect(result.status).toBe('OBSERVED');expect(result.archiveHead).not.toBe(f.initial.head);
   const readback=await readReleaseRecords({directory:f.remote,targetRef:'steward/release-state',repositoryId:1});
   expect(readback.head).toBe(result.archiveHead);expect(readback.domainRecords).toHaveLength(2);expect(readback.cycles[0].value).toEqual(f.native.context.cycle);
@@ -249,11 +249,11 @@ it('only sends a rerun after actual archived Git bytes can be read from the remo
     }
     return transport(method,path,limit);
   };
-  const result=await inspectReleaseEvidence(f.input,{io:f.native.io});expect(result.status).toBe('ACCEPTED');expect(proved).toBe(true);
+  const result=await inspectReleaseEvidence(f.input,{io:f.native.io,now:()=>NOW});expect(result.status).toBe('ACCEPTED');expect(proved).toBe(true);
   expect(f.native.calls.filter(call=>call.startsWith('POST'))).toHaveLength(1);
 });
 it('recovers an original archive removed from the current tree through complete Git ancestors',async()=>{
-  const f=await gitFixture();await inspectReleaseEvidence(f.input,{io:f.native.io});
+  const f=await gitFixture();await inspectReleaseEvidence(f.input,{io:f.native.io,now:()=>NOW});
   const read=await readReleaseRecords({directory:f.remote,targetRef:'steward/release-state',repositoryId:1});
   await f.git('fetch','--no-tags','--no-recurse-submodules',f.remote,'refs/heads/steward/release-state');await f.git('checkout','--detach','FETCH_HEAD');
   const path=read.domainRecords[0].path;await f.git('rm','--',path);await f.git('commit','--signoff','-m','Offline archive cache loss');await f.git('push','--porcelain',f.remote,'HEAD:refs/heads/steward/release-state');
@@ -263,7 +263,7 @@ it('recovers an original archive removed from the current tree through complete 
 });
 it('rejects stale native state before writing an archive or attempting a rerun',async()=>{
   const f=await gitFixture();f.native.overrides.set('GET /repos/example/product/git/ref/heads/steward/release-state',f.native.response({object:{sha:'d'.repeat(40)}}));
-  await expect(inspectReleaseEvidence(f.input,{io:f.native.io})).rejects.toThrow('state snapshot must match native ref');
+  await expect(inspectReleaseEvidence(f.input,{io:f.native.io,now:()=>NOW})).rejects.toThrow('state snapshot must match native ref');
   expect(f.native.calls.filter(call=>call.startsWith('POST'))).toHaveLength(0);
 });
 it('rejects a false content-addressed archive path before any Git write',async()=>{
@@ -275,11 +275,11 @@ it('rejects a false content-addressed archive path before any Git write',async()
 it('withholds rerun when Git was adopted but native ref visibility was lost, then resumes from the same archived bytes',async()=>{
   const f=await gitFixture();f.input.runId=100;
   f.native.overrides.set('GET /repos/example/product/git/ref/heads/steward/release-state',f.native.response({object:{sha:f.initial.head}}));
-  const first=await inspectReleaseEvidence(f.input,{io:f.native.io});expect(first).toMatchObject({status:'UNKNOWN',reason:'ARCHIVE_NOT_CONFIRMED'});
+  const first=await inspectReleaseEvidence(f.input,{io:f.native.io,now:()=>NOW});expect(first).toMatchObject({status:'UNKNOWN',reason:'ARCHIVE_NOT_CONFIRMED'});
   expect(f.native.calls.some(call=>call.startsWith('POST'))).toBe(false);
   const persisted=await readReleaseRecords({directory:f.remote,targetRef:'steward/release-state',repositoryId:1});expect(persisted.domainRecords).toHaveLength(2);
   f.input.directory=f.remote;f.native.overrides.delete('GET /repos/example/product/git/ref/heads/steward/release-state');f.native.setAccepted();
-  const recovered=await inspectReleaseEvidence(f.input,{io:f.native.io});expect(recovered.status).toBe('ACCEPTED');
+  const recovered=await inspectReleaseEvidence(f.input,{io:f.native.io,now:()=>NOW});expect(recovered.status).toBe('ACCEPTED');
   expect(f.native.calls.filter(call=>call.startsWith('POST'))).toHaveLength(1);
   expect((await readReleaseRecords({directory:f.remote,targetRef:'steward/release-state',repositoryId:1})).head).toBe(persisted.head);
 });
