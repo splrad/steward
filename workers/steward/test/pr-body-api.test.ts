@@ -1,3 +1,4 @@
+import { authorizeSingleRepository } from '../src/pr-body-api.js';
 import { generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
@@ -7,7 +8,7 @@ import worker, { type Env } from "../src/index.js";
 import { pullRequestBodyDigest, PullRequestBodyWriteIntentStore } from "../src/pr-body-write-intents.js";
 
 
-describe.each([undefined, 'true'])('shared runtime with retirement=%s', retirement => {
+describe('shared runtime', () => {
 class SqliteD1Statement {
   constructor(private readonly database: DatabaseSync, private readonly sql: string, private readonly values: readonly SQLInputValue[] = []) {}
   bind(...values: unknown[]): SqliteD1Statement { return new SqliteD1Statement(this.database, this.sql, values as SQLInputValue[]); }
@@ -60,7 +61,6 @@ afterEach(() => {
 
 const repository = (id = 1296724484, fullName = "splrad/steward") => ({ id, full_name: fullName, private: false, has_issues: true, archived: false, disabled: false, owner: { id: 302208797, login: "splrad" } });
 const env = (database: SqliteD1): Env => ({
-  LEGACY_RELEASE_RETIRED: retirement,
   ORGANIZATION_ID: "302208797", ORGANIZATION_LOGIN: "splrad", APP_ID: "4243096", INSTALLATION_ID: "145952003",
   STEWARDSHIP_REPOSITORY: "splrad/steward", POLICY_SHA: "a".repeat(40), STEWARD_APP_PRIVATE_KEY: privateKey,
   STEWARD_WEBHOOK_SECRET: "webhook-secret", ISSUE_SNAPSHOTS: database.binding(),
@@ -80,6 +80,19 @@ function installAuthorization(fetchIssue?: (url: string) => Response | undefined
 }
 
 describe("共享正文接口和恢复", () => {
+  it.each([
+    [42, "splrad/new-repository", false, true],
+    [42, "splrad/new-repository", true, false],
+    [1296724484, "splrad/steward", true, true],
+    [1296724484, "splrad/renamed", false, false],
+  ] as const)("按目录校验仓库 %s %s 的准入和身份", async (id, fullName, isPrivate, allowed) => {
+    installAuthorization(undefined, [{...repository(id, fullName), private: isPrivate}]);
+    const request = new Request("https://example.test/status", {headers: {authorization: "Bearer token"}});
+    const check = authorizeSingleRepository(request, env(new SqliteD1()), id);
+    if (allowed) await expect(check).resolves.toMatchObject({managed: true});
+    else await expect(check).rejects.toMatchObject({status: 403});
+  });
+
   it.each([
     ["多仓令牌", [repository(), repository(42, "splrad/other")], 145952003, "splrad-steward[bot]"],
     ["错误仓库", [repository(42, "splrad/other")], 145952003, "splrad-steward[bot]"],

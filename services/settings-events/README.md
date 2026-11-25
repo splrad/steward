@@ -8,7 +8,7 @@ JWT 使用 WebCrypto 原生 PKCS#8 导入和 RSASSA-PKCS1-v1_5/SHA-256 签名，
 
 `repository.created/edited/unarchived`、默认分支 create、`label.created/edited/deleted`、指定 installation 与 installation_repositories 事件触发同步。准确组织、installation 与来源经校验；自身 Bot 的标签和 repository.edited 事件忽略以阻止回环。配置 push 由私仓已有入口处理。六个合并字段的直接更改没有经过验证的逐字段事件保证。
 
-通过签名及来源校验后，转接服务仅发送 delivery、event、action 和原始正文 SHA-256。接收端据此运行完整设置同步。
+仓库和默认分支事件使用原始仓库 ID，安装创建和增加覆盖仓库使用原始目标列表。确定了仓库目标时，同一通知附带去重后的数字 `repository_ids` 供私有登记消费者读回。标签事件、安装移除和缺少目标的事件继续走设置同步。采用此版本前，私有 full-sync 先支持扩展通知格式。
 
 从仓库根运行 `npm ci --ignore-scripts --no-audit --no-fund`，再运行 `npm run test:settings-events`。部署检查为 `npm run deploy:check --workspace=@splrad/settings-events`。正式部署使用同一已审构建的 prebuilt 产物；初始 ENABLED=false，完成 secret 与 App webhook 配置后由授权维护者启用。Free 配额及 CPU 限制须在真实运行核实，不自动升级或增加订阅。
 

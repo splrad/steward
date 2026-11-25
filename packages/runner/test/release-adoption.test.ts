@@ -9,7 +9,7 @@ import {pathToFileURL} from 'node:url';
 import {registerOfflineFixtureRoot,permitOfflineScript} from './offline-fixtures.js';
 import {isolatedBuildEnvironment} from '../src/build-environment.js';
 import {createHash} from 'node:crypto';
-import {inspectNativeCycle} from '../src/native-release-evidence.js';
+import {inspectNativeCycle,nativeEvidenceTransport} from '../src/native-release-evidence.js';
 import {prepareBuildDispatch} from '../src/release-run.js';
 const {initializeReleaseAdoption,withReleaseAdoption,recoverReleaseCaches,releaseAdoptionPlan}=await import(pathToFileURL(resolve('scripts/release-adoption.mjs')).href);
 const {readReleaseRecords}=await import(pathToFileURL(resolve('scripts/release-record.mjs')).href);
@@ -179,10 +179,8 @@ it.each(['terminal','missing','in-progress'])('restores original cycle cache onl
   else {const repaired=await recoverReleaseCaches(f.request,snapshot,{io:f.io});expect(repaired.snapshot.cycles[0].value).toEqual(cycle);expect(repaired.snapshot.repository).toEqual(snapshot.repository);expect(await f.git('show',`${repaired.snapshot.head}:${path}`)).toBe(bytes.trim());}
 });
 
-it.each(['legacy','issue-events'])('real adoption reader requires PR read scope and completes with split credentials: %s',async mode=>{
+it.each(['legacy','issue-events'])('real adoption reader requires access to merged pull evidence: %s',async mode=>{
   const f=await fixture();
-  const {adoptionTransport}=await import(pathToFileURL(resolve('scripts/release-state-initialize.mjs')).href);
-  const {nativeEvidenceTransport}=await import(pathToFileURL(resolve('packages/runner/dist/index.js')).href);
   if(mode==='issue-events'){delete f.pull.merge_commit_sha;Object.assign(f.pull,{url:'https://api.github.com/repos/'+f.request.repository+'/pulls/7',state:'closed',merged_at:'2026-11-08T00:00:00Z'});f.pull.base.repo.full_name=f.request.repository;}
   const requests:{path:string;credential:string|null}[]=[];
   const fetcher:typeof fetch=async(input,init)=>{
@@ -196,18 +194,16 @@ it.each(['legacy','issue-events'])('real adoption reader requires PR read scope 
   await expect(initializeReleaseAdoption(f.request,{io:nativeEvidenceTransport('fixture-release-write',fetcher)})).rejects.toThrow();
   expect(await f.stateHead()).toBeNull();
   requests.length=0;
-  const io=adoptionTransport({repository:{full_name:f.request.repository},baseSha:f.A},{token:'fixture-release-write',readToken:'fixture-pr-read',fetcher});
+  const io=nativeEvidenceTransport('fixture-pr-read',fetcher);
   const result=await initializeReleaseAdoption(f.request,{io});
   expect(result.status).toBe('APPLIED');expect(await f.stateHead()).toBe(result.head);
   const pulls=requests.filter(r=>/\/(?:pulls(?:[/?]|$)|issues\/[0-9]+\/events)/.test(r.path));
   expect(pulls.some(r=>r.path.includes('pulls?state=closed'))).toBe(true);
   if(mode==='issue-events')expect(pulls.some(r=>r.path.includes('/issues/7/events'))).toBe(true);
   expect(pulls.every(r=>r.credential==='Bearer fixture-pr-read')).toBe(true);
-  expect(requests.filter(r=>!pulls.includes(r)).every(r=>r.credential==='Bearer fixture-release-write')).toBe(true);
 });
 it('passes the configured transport to the adoption writer-protection lookup',async()=>{
   const f=await fixture();
-  const {adoptionTransport}=await import(pathToFileURL(resolve('scripts/release-state-initialize.mjs')).href);
   let graphql=0;
   const fetcher:typeof fetch=async(input,init)=>{
     const u=new URL(String(input));
@@ -223,8 +219,7 @@ it('passes the configured transport to the adoption writer-protection lookup',as
     return Response.json(data,{status:response.status});
   };
   const token='offline-writer';
-  const plan={repository:{full_name:f.request.repository},baseSha:f.A};
-  const io=adoptionTransport(plan,{token,readToken:'offline-reader',fetcher});
+  const io=nativeEvidenceTransport(token,fetcher);
   await expect(initializeReleaseAdoption(f.request,{token,io,fetcher})).rejects.toThrow();
   expect(graphql).toBe(1);
   expect(await f.stateHead()).toBeNull();

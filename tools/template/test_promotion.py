@@ -1,10 +1,12 @@
+import os
 import re
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+import yaml
 from copier import run_copy, run_update
-from promotion import TITLE_CALLER, TITLE_SOURCE, template_tag_plan
+from promotion import TITLE_CALLER, TITLE_SOURCE, previous_template_tag, template_tag_plan
 
 
 class PromotionTests(unittest.TestCase):
@@ -43,6 +45,63 @@ class PromotionTests(unittest.TestCase):
         self.assertEqual(plan['tag'],'v1.2.4');self.assertEqual(plan['commit'],current)
         self.git('tag',plan['tag'],current)
         self.assertEqual(template_tag_plan(self.root,current)['status'],'UNCHANGED')
+
+    def test_release_recovers_its_original_range_after_another_promotion(self):
+        template=self.root/'templates/repository/README.md'
+        template.write_text('second\n')
+        target=self.commit()
+        self.git('tag','v1.2.4',target)
+        self.git('tag','controller-v24',target)
+        template.write_text('third\n')
+        self.git('tag','v1.2.5',self.commit())
+        self.assertEqual(previous_template_tag(self.root,target,'v1.2.4'),'v1.2.3')
+        for tag in ['v1.2.3','v1.2.5','controller-v24']:
+            with self.subTest(tag=tag),self.assertRaisesRegex(Exception,'TEMPLATE_RELEASE_RANGE'):
+                previous_template_tag(self.root,target,tag)
+        self.git('tag','v9.9.9',target)
+        with self.assertRaisesRegex(Exception,'TEMPLATE_RELEASE_RANGE'):
+            previous_template_tag(self.root,target,'v9.9.9')
+
+    def test_release_uses_the_permitted_tag_push_event(self):
+        path=Path(__file__).resolve().parents[2]/'.github/workflows/template-release.yml'
+        workflow=yaml.load(path.read_text(encoding='utf-8'),Loader=yaml.BaseLoader)
+        self.assertEqual(workflow['on'],{'push':{'tags':['v[0-9]*','controller-v[0-9]*']}})
+        gate=workflow['jobs']['range']['if']
+        for condition in ("github.repository_id == '1296724484'",'github.event.created','!github.event.deleted',
+                          'github.event.ref == github.ref','github.event.after == github.sha',
+                          'github.event.sender.id == 353238212',"github.event.sender.login == 'splrad-governance[bot]'"):
+            self.assertIn(condition,gate)
+        self.assertEqual(workflow['jobs']['publish']['needs'],'range')
+
+    def test_controller_release_range_uses_the_previous_number_and_requires_a_strict_ancestor(self):
+        path = Path(__file__).resolve().parents[2] / '.github/workflows/template-release.yml'
+        workflow = yaml.load(path.read_text(encoding='utf-8'), Loader=yaml.BaseLoader)
+        steps = workflow['jobs']['range']['steps']
+        script = next(step['run'] for step in steps if step.get('id') == 'range')
+        bash = Path(self.git('var', 'GIT_SHELL_PATH')).with_name('bash.exe') if os.name == 'nt' else 'bash'
+
+        (self.root / 'controller.txt').write_text('next\n')
+        current = self.commit()
+        self.git('tag', 'controller-v33', self.old)
+        self.git('tag', 'controller-v34', current)
+        output = self.root / 'step-output'
+        cases = [
+            ('controller-v34', current, 'previous=controller-v33\n'),
+            ('controller-v35', current, ''),   # Same commit as v34.
+            ('controller-v35', self.old, ''),  # v34 is not an ancestor.
+            ('controller-v37', current, ''),   # v36 is missing.
+            ('controller-v034', current, ''),
+            ('controller-v34-rc1', current, ''),
+        ]
+        for tag, target, expected in cases:
+            with self.subTest(tag=tag, target=target):
+                output.write_bytes(b'')
+                env = {**os.environ, 'TAG_PREFIX': 'controller-v', 'GITHUB_REF_NAME': tag,
+                       'GITHUB_SHA': target, 'GITHUB_OUTPUT': output.name}
+                result = subprocess.run([bash, '-c', script], cwd=self.root, env=env,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, bool(expected), result.stderr)
+                self.assertEqual(output.read_text(), expected)
 
     def test_title_supplier_changes_reach_existing_and_new_copier_consumers(self):
         source_tree=Path(__file__).resolve().parents[2]

@@ -1,0 +1,21 @@
+tag-prefix: v
+filter-by-commitish: true
+template: |+
+  ## 模板变更
+
+  $CHANGES
+
+change-template: '- $TITLE（[#$NUMBER]($URL)）'
+change-title-escapes: '\`*_~|[]()<>!&@#:./'
+replacers:
+  - target: change-title
+    search: '/[\r\n]+/g'
+    replace: ' '
+categories:
+  - type: pre-include
+    when:
+      paths:
+        - copier.yml
+        - templates/repository/**
+        - .github/workflows/pr-title-reusable.yml
+        - config/review/security-common.md

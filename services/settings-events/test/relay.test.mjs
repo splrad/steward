@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {generateKeyPair, exportPKCS8, jwtVerify} from 'jose';
 import worker, {handle, eligible, dispatch, POLICY} from '../src/index.mjs';
-import {createHash, generateKeyPairSync, createPrivateKey} from 'node:crypto';
+import {generateKeyPairSync, createPrivateKey} from 'node:crypto';
 import {toPKCS8} from '../tools/key-format.mjs';
 
 const env = {ENABLED: 'true', WEBHOOK_SECRET: 'unit-test-only-not-a-production-secret', GOVERNANCE_APP_PRIVATE_KEY: 'test-placeholder'};
@@ -59,7 +59,7 @@ test('empty-repository bootstrap default branch is accepted even from governance
   b.ref='unrelated'; assert.equal(eligible('create',b),false);
 });
 
-test('signed repository and installation events send only source event metadata', async () => {
+test('signed repository and installation events share only registration IDs', async () => {
   const repo = payload();
   repo.action = 'created';
   const install = {action:'added', installation:{id:POLICY.installation,app_id:Number(POLICY.app),
@@ -68,26 +68,22 @@ test('signed repository and installation events send only source event metadata'
   ]};
   const removed = {...install, action:'removed', repositories_removed:install.repositories_added};
   const cases = [
-    [repo,'repository'],
-    [{...repo,ref_type:'branch',ref:'main',repository:{...repo.repository,default_branch:'main'}},'create'],
-    [install,'installation_repositories'],
-    [removed,'installation_repositories'],
-    [{...install,repositories_added:[{id:'42'}]},'installation_repositories'],
-    [{...install,action:'created',repositories:install.repositories_added},'installation']
+    [repo,'repository',[123]],
+    [{...repo,ref_type:'branch',ref:'main',repository:{...repo.repository,default_branch:'main'}},'create',[123]],
+    [install,'installation_repositories',[42,123]],
+    [removed,'installation_repositories',undefined],
+    [{...install,repositories_added:[{id:'42'}]},'installation_repositories',undefined],
+    [{...install,action:'created',repositories:install.repositories_added},'installation',[42,123]]
   ];
-  for (const [body,event] of cases) {
+  for (const [body,event,ids] of cases) {
     let metadata;
     const response = await handle(await request(body,event),env,async (_, value) => {
       metadata = value;
       return {accepted:true,code:'dispatch_accepted'};
     });
     assert.equal(response.status,202);
-    assert.deepEqual(metadata, {
-      delivery,
-      event,
-      action: event === 'create' ? 'default_branch_created' : body.action,
-      body_sha256: createHash('sha256').update(JSON.stringify(body)).digest('hex')
-    });
+    assert.deepEqual(metadata.repository_ids,ids);
+    assert.ok(!JSON.stringify(metadata).includes('private-source'));
   }
 });
 

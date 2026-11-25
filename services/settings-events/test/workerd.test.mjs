@@ -13,7 +13,7 @@ test('deployed bundle dispatches in workerd and never follows API redirects', as
     const calls = [];
     const mf = new Miniflare(convertV4MiniflareOptions({
       host: '127.0.0.1', modules: true,
-      scriptPath: fileURLToPath(new URL('../.cloudflare/output/v0/workers/default/bundle/index.js', import.meta.url)),
+      scriptPath: fileURLToPath(new URL('../.cloudflare/output/v1/workers/default/bundle/index.js', import.meta.url)),
       compatibilityDate: '2026-11-06',
       bindings: {ENABLED: 'true', WEBHOOK_SECRET: secret, GOVERNANCE_APP_PRIVATE_KEY: key},
       outboundService: async request => {
@@ -27,7 +27,7 @@ test('deployed bundle dispatches in workerd and never follows API redirects', as
         if (url.pathname === '/installation/repositories') return Response.json({total_count: 1, repositories: [{id: 1447987054, full_name: 'splrad/steward-settings', private: true, default_branch: 'main'}]});
         if (url.pathname.endsWith('/dispatches')) {
           const payload = await request.json();
-          assert.deepEqual(Object.keys(payload.client_payload).sort(), ['action', 'body_sha256', 'delivery', 'event']);
+          assert.deepEqual(payload.client_payload.repository_ids, [123]);
           assert.equal(payload.client_payload.event, 'repository');
           return new Response(null, {status: 204});
         }

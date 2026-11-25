@@ -28,7 +28,7 @@ concurrency:
 jobs:
   acceptance:
     if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == 'refs/heads/main' && github.run_attempt == 1 && inputs.authorize && inputs.approved_sha == github.sha && github.workflow_sha == github.sha
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
       contents: read
@@ -41,12 +41,12 @@ jobs:
         with:
           ref: ${{ github.workflow_sha }}
           persist-credentials: false
-      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
         env:
           MISE_SAFE: '1'
           MISE_NODE_COMPILE: 'false'
         with:
-          version: 2026.10.18
+          version: 2026.11.14
           install_args: --locked
           cache: false
           env: false

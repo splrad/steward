@@ -10,7 +10,7 @@ permissions:
 jobs:
   plan:
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch)
-    runs-on: ubuntu-24.04
+    runs-on: &linux-runner ubuntu-26.04
     timeout-minutes: 10
     outputs:
       profile: ${{ steps.select.outputs.profile }}
@@ -32,6 +32,7 @@ jobs:
       - id: select
         shell: bash
         env:
+          LINUX_RUNNER: *linux-runner
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
@@ -40,8 +41,8 @@ jobs:
             profile=$(python policy/scripts/steward-ci-profile.py "$BASE" "$HEAD")
           fi
           case "$profile" in
-            full|governance|title|docs|policy) runners='["ubuntu-24.04"]' ;;
-            tool) runners='["ubuntu-24.04","windows-2025"]' ;;
+            full|governance|title|docs|policy) runners=$(jq -cn --arg linux "$LINUX_RUNNER" '[$linux]') ;;
+            tool) runners=$(jq -cn --arg linux "$LINUX_RUNNER" '[$linux,"windows-latest"]') ;;
             *) exit 1 ;;
           esac
           echo "profile=$profile" >> "$GITHUB_OUTPUT"
@@ -88,7 +89,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-24.04, windows-2025]
+        runner: [*linux-runner, windows-latest]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 50
     steps:
@@ -105,17 +106,62 @@ jobs:
           path: target
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
         env:
           MISE_SAFE: '1'
           MISE_NODE_COMPILE: 'false'
         with:
-          version: 2026.10.24
+          version: 2026.11.14
           working_directory: policy
-          install_args: --locked
+          install: false
           cache: false
           env: false
           persist_github_token: false
+      - name: Install the Python build selected by the trusted policy
+        working-directory: policy
+        shell: python
+        env:
+          MISE_SAFE: '1'
+          MISE_NODE_COMPILE: 'false'
+        run: |
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import tempfile
+          import tomllib
+
+          # SAFE mode resolves project URLs independently. Two PBS releases can
+          # contain different builds of the same CPython patch version.
+          record, = tomllib.loads(Path('mise.lock').read_text(encoding='utf-8'))['tools']['python']
+          version = record['version']
+          platform, target = {
+              'Linux': ('linux-x64', 'unknown-linux-gnu'),
+              'Windows': ('windows-x64', 'pc-windows-msvc'),
+          }[os.environ['RUNNER_OS']]
+          asset = record['platforms.' + platform]
+          supplier = 'https://github.com/astral-sh/python-build-standalone/releases/download/'
+          filename = r'/cpython-' + re.escape(version) + r'\+\1-x86_64-' + target + r'-install_only_stripped\.tar\.gz'
+          if not (record['backend'] == 'core:python' and re.fullmatch(r'\d+\.\d+\.\d+', version)
+                  and re.fullmatch(re.escape(supplier) + r'(\d{8})' + filename, asset['url'])
+                  and re.fullmatch(r'sha256:[0-9a-f]{64}', asset['checksum'])
+                  and asset['provenance'] == 'github-attestations'):
+              raise ValueError('Unsupported trusted CPython asset')
+          with tempfile.TemporaryDirectory(dir=os.environ['RUNNER_TEMP']) as temp:
+              root = Path(temp)
+              config = root / 'config.toml'
+              config.write_text('[tools]\npython = ' + json.dumps(version) + '\n', encoding='utf-8')
+              lock = ['[[tools.python]]', 'version = ' + json.dumps(version), 'backend = "core:python"',
+                      'specifiers = [' + json.dumps(version) + ']', '[tools.python."platforms.' + platform + '"]']
+              lock.extend(key + ' = ' + json.dumps(asset[key]) for key in ('url', 'checksum', 'provenance'))
+              (root / 'mise.lock').write_text('\n'.join(lock) + '\n', encoding='utf-8')
+              isolated = dict(os.environ, MISE_GLOBAL_CONFIG_FILE=str(config), MISE_CONFIG_DIR=temp,
+                              MISE_ENABLE_TOOLS='python', MISE_LOCKED_VERIFY_PROVENANCE='1',
+                              MISE_PYTHON_GITHUB_ATTESTATIONS='1')
+              subprocess.run(['mise', 'install', '--locked'], cwd=temp, env=isolated, check=True)
+          # All other tools and the subsequent tests use the original policy checkout.
+          subprocess.run(['mise', 'install', '--locked'], check=True)
       - name: Activate trusted policy tool paths
         working-directory: policy
         shell: bash
@@ -200,7 +246,7 @@ jobs:
   result:
     needs: [plan, candidate, test]
     if: always() && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch))
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 2
     steps:
       - name: Require successful execution of the selected suite

@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {selectWorkflow} from '../configuration-build.mjs';
 import {documentationOnly,requiresProductCI,selectableProductCI} from '../validation-input.mjs';
 import {parseReleasePauses,releasePausesPath} from '../release-pauses.mjs';
 import {mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
@@ -268,7 +267,7 @@ test('selects entries covering all PR bases and files and the actual default bra
 });
 
 test('retains the product signing job and untouched release units when changing one managed producer',async()=>{
-  const {renderBuild,adaptBuild}=await import('../configuration-build.mjs');
+  const {renderBuild,adaptBuild}=await import('./fixtures/legacy-build-workflow.mjs');
   const seed=await readFile('templates/release/steward-release-publish.yml','utf8');
   const target=(unit,label)=>({unit,target:'native',files:[{id:unit,path:unit+'.zip'}],recipe:{runner:label,output:'out',steps:[
     {name:'Run reviewed packaging entry',shell:'pwsh',run:'node product/.github/actions/configuration/'+unit+'/native/run.mjs'}]}});
