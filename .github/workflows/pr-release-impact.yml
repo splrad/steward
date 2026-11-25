@@ -17,7 +17,7 @@ jobs:
     env:
       MISE_ENABLE_TOOLS: node,npm
     if: github.actor_id == '301115370' && github.repository_id == '1296724484' && github.ref == 'refs/heads/main' && github.workflow_sha == github.sha
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
       contents: read
