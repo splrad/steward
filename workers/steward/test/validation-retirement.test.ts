@@ -27,7 +27,7 @@ const targets = [
 ] as const;
 const repositories = targets.map(([id, full_name, default_branch]) => ({ id, full_name, default_branch, owner: { id: 302208797 }, private: false }));
 const env = (): Env => ({
-  LEGACY_RELEASE_RETIRED: 'true', LEGACY_VALIDATION_RETIRED: 'true',
+  LEGACY_VALIDATION_RETIRED: 'true',
   ORGANIZATION_ID: '302208797', ORGANIZATION_LOGIN: 'splrad', APP_ID: '4243096', INSTALLATION_ID: '145952003',
   STEWARDSHIP_REPOSITORY: 'splrad/steward', POLICY_SHA: 'a'.repeat(40), WORKFLOW_EVALUATOR_SHA: 'b'.repeat(40),
   STEWARD_APP_PRIVATE_KEY: 'mocked', STEWARD_WEBHOOK_SECRET: 'test-secret',
