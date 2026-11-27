@@ -1,18 +1,19 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { releaseNotes } from './release-notes.mjs';
+import contentSchema from '../../schema/release-content.schema.json' with { type: 'json' };
 
 function fixture({ authenticated = true, models = [{id:'native-default'}], text = '{"items":[]}', finishReason = 'stop', failure = null,
   usageModel = 'fixture', emitUsage = true, responseModel = undefined, generationEvent = null, tokenUsage = { inputTokens: 10, outputTokens: 5 },
   metrics = { currentModel: 'fixture', totalNanoAiu: 1500000000, totalPremiumRequestCost: 2, totalUserRequests: 1 }, metricsFailure = false, failureAfterUsage = null } = {}) {
-  const events = [], handlers = new Map(); let clientOptions, sessionOptions;
+  const events = [], inputs = [], handlers = new Map(); let clientOptions, sessionOptions;
   const client = { start: async () => events.push('start'), stop: async () => events.push('stop'),
     getAuthStatus: async () => ({ isAuthenticated: authenticated }),
     rpc: { account: { getQuota: async () => { throw Error('PERSONAL_QUOTA_NOT_APPLICABLE'); } }, models: { list: async () => ({models}) } },
     createSession: async options => {
       events.push('session'); sessionOptions = options;
       return { on: (type, handler) => handlers.set(type, handler), sendAndWait: async input => {
-        events.push('send');
+        events.push('send'); inputs.push(input);
         if (generationEvent) handlers.get(generationEvent)?.({ data: { content: 'partial generation' } });
         if (failure) throw failure;
         if (emitUsage) handlers.get('assistant.usage')?.({ data: { model: usageModel, ...tokenUsage, finishReason } });
@@ -22,8 +23,69 @@ function fixture({ authenticated = true, models = [{id:'native-default'}], text 
       rpc: { usage: { getMetrics: async () => { if (metricsFailure) throw Object.assign(Error('raw secret'), { status: 403 }); return metrics; } } } };
     },
   };
-  return { create: options => { clientOptions = options; return client; }, events, options: () => ({ clientOptions, sessionOptions }) };
+  return { create: options => { clientOptions = options; return client; }, events, inputs, options: () => ({ clientOptions, sessionOptions }) };
 }
+
+const longModel = { id: 'gpt-6.2-sol', policy: { state: 'enabled' },
+  billing: { tokenPrices: { longContext: { maxPromptTokens: 1050000 } } } };
+const budgetRefusal = { data: { errorType: 'query',
+  message: "API Error: Request exceeds the model's prompt budget after reserving output (457623 tokens; limit 272000)." } };
+const maintainedInput = JSON.stringify({ sources: ['保留条件和操作'], outputSchema: contentSchema.$defs.paragraphs });
+
+test('a maintained candidate resends exactly the same input once after a confirmed pre-generation refusal', async () => {
+  for (const failure of [budgetRefusal, { data: { errorType: 'context_limit', statusCode: 400 } }]) {
+    const normal = fixture({ models: [longModel], failure });
+    const long = fixture({ models: [longModel], responseModel: longModel.id });
+    const attempts = [normal, long];
+    const input = maintainedInput;
+    const result = await releaseNotes('maintained', input, 'workflow-token', options => attempts.shift().create(options));
+    assert.equal(result.contextTier, 'long_context');
+    assert.equal(result.model, longModel.id);
+    assert.deepEqual(normal.inputs, [input]);
+    assert.deepEqual(long.inputs.map(message => message.prompt), [input]);
+    const original = JSON.parse(input).outputSchema;
+    const providerSchema = long.inputs[0].responseSchema;
+    assert.equal(original.properties.paragraphs.items.properties.sourceIds.uniqueItems, true);
+    delete original.properties.paragraphs.items.properties.sourceIds.uniqueItems;
+    assert.deepEqual(providerSchema, original);
+    assert.equal(normal.options().sessionOptions.model, undefined);
+    assert.equal(long.options().sessionOptions.model, longModel.id);
+    assert.equal(long.options().sessionOptions.inference.contextTier, 'long_context');
+    assert.notEqual(normal.options().sessionOptions.workingDirectory, long.options().sessionOptions.workingDirectory);
+    assert.deepEqual(long.options().clientOptions.github, normal.options().clientOptions.github);
+  }
+});
+
+test('a maintained candidate never resends unknown or partial work or sends past the available tier', async () => {
+  for (const setup of [
+    { failure: { data: { errorType: 'query', message: 'unrelated input is too long' } } },
+    { failure: { data: { errorType: 'query', message: 'Invalid request. Quoted content: ' + budgetRefusal.data.message } } },
+    { failure: budgetRefusal, generationEvent: 'assistant.message_start' },
+    { failureAfterUsage: budgetRefusal }, { failure: { ...budgetRefusal, status: 403 } },
+    { failure: budgetRefusal, models: [] }, { failure: budgetRefusal, models: [{ id: longModel.id }] },
+    { failure: budgetRefusal, models: [{ ...longModel, policy: { state: 'disabled' } }] },
+    { failure: budgetRefusal, models: [{ ...longModel, billing: { tokenPrices: { longContext: { maxPromptTokens: 300000 } } } }] },
+  ]) {
+    const f = fixture({ models: [longModel], ...setup }); let started = 0;
+    const run = releaseNotes('maintained', '{}', 'workflow-token', options => { started++; return f.create(options); });
+    if (setup.models?.length === 0) assert.equal((await run).status, 'WAIT_QUOTA');
+    else await assert.rejects(run, /CONTENT_CONTEXT_LIMIT|RESPONSE_UNKNOWN/);
+    assert.equal(started, 1);
+  }
+  const f = fixture({ models: [longModel], failure: budgetRefusal }); let attempts = 0;
+  await assert.rejects(releaseNotes('maintained', maintainedInput, 'workflow-token', options => { attempts++; return f.create(options); }), /CONTENT_CONTEXT_LIMIT/);
+  assert.equal(attempts, 2);
+  const first = fixture({ models: [longModel], failure: budgetRefusal });
+  const changed = fixture({ models: [{ ...longModel, billing: { tokenPrices: { longContext: { maxPromptTokens: 300000 } } } }] });
+  const drift = [first, changed];
+  await assert.rejects(releaseNotes('maintained', '{}', 'workflow-token', options => drift.shift().create(options)), /CONTENT_CONTEXT_LIMIT/);
+  assert.equal(first.inputs.length, 1); assert.equal(changed.inputs.length, 0);
+  for (const mode of ['generate', 'classify']) {
+    const f = fixture({ models: [longModel], failure: budgetRefusal });
+    await assert.rejects(releaseNotes(mode, '{}', 'workflow-token', f.create), /CONTENT_CONTEXT_LIMIT/);
+    assert.equal(f.inputs.length, 1);
+  }
+});
 test('read-only organization preflight creates no session and does not consult personal-seat quotas', async () => {
   for (const [setup, status] of [[{}, 'READY'], [{ authenticated: false }, 'WAIT_AUTH'], [{ models: [] }, 'WAIT_QUOTA']]) {
     const f = fixture(setup); assert.deepEqual(await releaseNotes('preflight', '', 'fixture-token', f.create), status === 'READY' ? { status, models: ['native-default'] } : { status });

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { lstat, readFile } from 'node:fs/promises';
 import { GitHub, Manifest } from 'release-please';
 import { PullRequestBody } from 'release-please/build/src/util/pull-request-body.js';
 import { PullRequestTitle } from 'release-please/build/src/util/pull-request-title.js';
@@ -479,10 +480,38 @@ function candidateSourceLink(product, base, head) {
     : { label: '查看本版源码', url: repository + '/tree/' + head };
 }
 
-export async function draftOfficialCandidate({ roundId, candidate, context, product, sourceSha, template, call, creationRange, pullNumber }) {
+export async function readProductMaintainer(repository, controllerRoot = new URL('../', import.meta.url)) {
+  requireCandidate(/^splrad\/[A-Za-z0-9_.-]+$/.test(repository), 'REPOSITORY');
+  const path = 'config/release/product-maintainers/' + repository + '.md';
+  const file = new URL(path, controllerRoot);
+  const entry = await lstat(file).catch(cause => {
+    if (cause.code === 'ENOENT') return null;
+    throw new Error('OFFICIAL_CANDIDATE_MAINTAINER_READ', { cause });
+  });
+  if (!entry) return null;
+  requireCandidate(entry.isFile(), 'MAINTAINER_FILE');
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(await readFile(file));
+  } catch (cause) {
+    throw new Error('OFFICIAL_CANDIDATE_MAINTAINER_READ', { cause });
+  }
+  requireCandidate(text.trim(), 'MAINTAINER_EMPTY');
+  return { path, text };
+}
+
+export async function draftOfficialCandidate({ roundId, candidate, context, product, sourceSha, template, call, creationRange, pullNumber, controllerSha }) {
   const maintenance = context.evidence.length === 1 && context.evidence[0].kind === 'maintenance-only';
-  const notes = maintenance ? { summary: context.evidence[0].details.summary }
-    : await generateOfficialCandidateNotes({ unit: context.unit, evidence: context.evidence, template, call });
+  let notes;
+  if (maintenance) {
+    notes = { summary: context.evidence[0].details.summary };
+  } else {
+    const maintainer = await readProductMaintainer(product.name);
+    if (maintainer) console.info(JSON.stringify({ event: 'candidate_maintainer', roundId, controllerSha,
+      path: maintainer.path, sha256: bodyDigest(maintainer.text) }));
+    notes = await generateOfficialCandidateNotes({ unit: context.unit, evidence: context.evidence, template, call,
+      maintainerRules: maintainer?.text });
+  }
   const body = renderOfficialHomepage({ upstreamBody: candidate.body, repository: product.name, tag: context.tag, template, notes, sourceLink: context.sourceLink,
     contributors: context.contributors, roundId,
     filesUrl: positive(pullNumber) ? 'https://github.com/' + product.name + '/pull/' + pullNumber + '/files' : null,

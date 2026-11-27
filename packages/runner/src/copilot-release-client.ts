@@ -7,11 +7,11 @@ import { isolatedBuildEnvironment } from './build-environment.js';
 /** SDK is a separate fixed entrypoint; App and repository credentials never enter its environment. */
 export function copilotReleaseClient(controllerDirectory: string, token: string, purpose: 'generate' | 'classify' = 'generate') {
   const script = resolve(controllerDirectory, 'tools/quality-language/release-notes.mjs');
-  const invoke = async (mode: 'preflight' | 'generate' | 'classify', input: string) => {
+  const invoke = async (mode: 'preflight' | 'generate' | 'maintained' | 'classify', input: string) => {
     if (!token.trim() || /[\r\n\0]/.test(token)) throw new Error('WAIT_AUTH');
     const directory = await mkdtemp(join(tmpdir(), 'steward-content-client-'));
     try {
-      const child = spawn(process.execPath, [script, mode], { cwd: directory, windowsHide: true, timeout: 210_000,
+      const child = spawn(process.execPath, [script, mode], { cwd: directory, windowsHide: true, timeout: mode === 'maintained' ? 420_000 : 210_000,
         env: { ...isolatedBuildEnvironment(process.env, directory), STEWARD_COPILOT_TOKEN: token }, stdio: ['pipe', 'pipe', 'pipe'] });
       child.stderr.resume(); child.stdin.on('error', () => {});
       const bytes: Buffer[] = []; let size = 0;
@@ -41,8 +41,12 @@ export function copilotReleaseClient(controllerDirectory: string, token: string,
       const result = await invoke('preflight', '');
       return result.status;
     },
-    async call(input: string): Promise<{ text: string; model: string; usage: object | null }> {
-      const result = await invoke(purpose, input);
+    async call(input: string, allowLongContext = false): Promise<{ text: string; model: string; usage: object | null }> {
+      const mode = purpose === 'generate' && allowLongContext ? 'maintained' : purpose;
+      const result = await invoke(mode, input);
+      if (mode === 'maintained' && result.contextTier === 'long_context') {
+        console.info(JSON.stringify({ event: 'candidate_long_context', contextTier: result.contextTier }));
+      }
       return { text: result.text, model: result.model, usage: result.usage };
     },
   };
