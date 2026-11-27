@@ -192,10 +192,14 @@ export async function officialCandidateDiff(directory: string, sourceSha: string
   } finally { await rm(home, { recursive: true, force: true }); }
 }
 
-const officialCandidateConstraints = [
+const officialCandidateConstraints = (withMaintainer: boolean) => [
   '按 organizationTemplate 的栏目及注释填写适用内容。只返回符合 outputSchema 的 JSON 对象，顶层仅含 paragraphs。版本标题、栏目排版、贡献者及版本记录由 Steward 生成；审阅提示与 PR 信息属于候选 PR 的外层。',
   '每段的 sourceIds 引用本次 sources 中实际支持该段陈述的 id。qualification 用 SOURCE_CONFIRMED 表示材料直接支持，确有必要向读者说明且尚待核实的内容用 UNVERIFIED。当前候选起草请求没有提供经核验的测试来源，不能使用 TEST_CONFIRMED。上版发行记录仅作背景，本版待构建的制品只能描述为预期。',
-  'section 使用 outputSchema 中的栏目键。summary 最多一条，textZh 写成单行概述。summary 与 highlights 可择一使用，也可都省略。其余栏目的 textZh 写成“**短标题**。具体说明”，标题和说明在同一行。requiredActions 的短标题写实际受影响的使用者。',
+  'section 使用 outputSchema 中的栏目键。summary 最多一条，textZh 写成单行概述。' +
+    (withMaintainer
+      ? '按仓库维护规则决定谁最先需要知道什么。规则要求先交代主变化时，必须写进 summary 或 highlights，使它显示在分类条目之前。成功、失败或可选操作有不同后果时，在同一条目分别留下材料支持的条件和下一步。'
+      : 'summary 与 highlights 可择一使用，也可都省略。') +
+    '其余栏目的 textZh 写成“**短标题**。具体说明”，标题和说明在同一行。requiredActions 的短标题写实际受影响的使用者。',
   '链接使用有依据的公开 HTTPS 地址。同仓源码及工作流引用使用本版标签或对应的固定提交。当前候选阶段尚未核定单件发行附件，省略这些附件的下载直链。',
   '每段 textZh 的 UTF-8 长度上限为 2,048 字节，完整 JSON 上限为 12,288 字节。',
 ].join('\n\n');
@@ -206,18 +210,19 @@ export async function generateOfficialCandidateNotes(options: {
   template: string;
   maintainerRules?: string;
   evidence: readonly { kind: string; details: unknown }[];
-  call: (input: string) => Promise<{ text: string }>;
+  call: (input: string, allowLongContext?: boolean) => Promise<{ text: string }>;
 }) {
   const sources = options.evidence.map(source => ({ id: hash(source), ...source }));
   const sourceIds = [...new Set(sources.map(source => source.id))];
+  const withMaintainer = Boolean(options.maintainerRules);
   const response = await options.call(JSON.stringify({
     prompt: options.maintainerRules ? RELEASE_WRITING_PROMPT + '\n\n' + options.maintainerRules : RELEASE_WRITING_PROMPT,
     organizationTemplate: options.template,
-    constraints: officialCandidateConstraints,
+    constraints: officialCandidateConstraints(withMaintainer),
     outputSchema: contentOutputSchema(true),
     units: [options.unit],
     sources,
-  }));
+  }), withMaintainer);
   const result = validateContentResult('DRAFT', response.text, sourceIds, [], undefined, true);
   if (!('paragraphs' in result)) throw new Error('CONTENT_OUTPUT_SCHEMA');
   return parseConditionalNotes(buildConditionalDraft(result.paragraphs));

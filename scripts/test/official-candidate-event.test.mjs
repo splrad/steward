@@ -755,8 +755,8 @@ test('the verified product selects central writing rules only for a new AI draft
     tag: 'v1.1.0', contributors: [], sourceLink: { label: '版本记录', url: 'https://github.com/splrad/fixture' },
     evidence: [{ kind: 'product-documentation', details: { text: '在当前图纸中查看处理结果。' } }] };
   const requests = [];
-  const call = async raw => {
-    requests.push(raw);
+  const call = async (raw, allowLongContext) => {
+    requests.push({ raw, allowLongContext });
     return { text: JSON.stringify({ paragraphs: [{ section: 'summary', sourceIds: [JSON.parse(raw).sources[0].id],
       qualification: 'SOURCE_CONFIRMED', textZh: '在当前图纸中查看处理结果。' }] }) };
   };
@@ -768,8 +768,12 @@ test('the verified product selects central writing rules only for a new AI draft
     { event: 'candidate_maintainer', roundId, controllerSha, path: rulePath, sha256: bodyDigest(rules) },
   ]);
   assert.equal(requests.length, 2);
-  const baseline = JSON.parse(requests[0]);
-  assert.equal(requests[1], JSON.stringify({ ...baseline, prompt: baseline.prompt + '\n\n' + rules }));
+  const [baseline, maintained] = requests.map(request => JSON.parse(request.raw));
+  assert.deepEqual(requests.map(request => request.allowLongContext), [false, true]);
+  assert.match(baseline.constraints, /也可都省略/);
+  assert.match(maintained.constraints, /必须写进 summary 或 highlights/);
+  assert.doesNotMatch(maintained.constraints, /也可都省略/);
+  assert.deepEqual(maintained, { ...baseline, prompt: baseline.prompt + '\n\n' + rules, constraints: maintained.constraints });
   assert.match(officialNotes(draft.body).body, /在当前图纸中查看处理结果。/);
   const maintenance = { kind: 'maintenance-only', details: { summary: '本版仅包含项目内部维护。' } };
   await draftOfficialCandidate({ ...options, product: layerscape, context: { ...context, evidence: [maintenance] },
