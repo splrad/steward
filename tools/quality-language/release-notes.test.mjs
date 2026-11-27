@@ -51,6 +51,7 @@ test('a maintained candidate resends exactly the same input once after a confirm
 test('a maintained candidate never resends unknown or partial work or sends past the available tier', async () => {
   for (const setup of [
     { failure: { data: { errorType: 'query', message: 'unrelated input is too long' } } },
+    { failure: { data: { errorType: 'query', message: 'Invalid request. Quoted content: ' + budgetRefusal.data.message } } },
     { failure: budgetRefusal, generationEvent: 'assistant.message_start' },
     { failureAfterUsage: budgetRefusal }, { failure: { ...budgetRefusal, status: 403 } },
     { failure: budgetRefusal, models: [] }, { failure: budgetRefusal, models: [{ id: longModel.id }] },
@@ -66,6 +67,11 @@ test('a maintained candidate never resends unknown or partial work or sends past
   const f = fixture({ models: [longModel], failure: budgetRefusal }); let attempts = 0;
   await assert.rejects(releaseNotes('maintained', '{}', 'workflow-token', options => { attempts++; return f.create(options); }), /CONTENT_CONTEXT_LIMIT/);
   assert.equal(attempts, 2);
+  const first = fixture({ models: [longModel], failure: budgetRefusal });
+  const changed = fixture({ models: [{ ...longModel, billing: { tokenPrices: { longContext: { maxPromptTokens: 300000 } } } }] });
+  const drift = [first, changed];
+  await assert.rejects(releaseNotes('maintained', '{}', 'workflow-token', options => drift.shift().create(options)), /CONTENT_CONTEXT_LIMIT/);
+  assert.equal(first.inputs.length, 1); assert.equal(changed.inputs.length, 0);
   for (const mode of ['generate', 'classify']) {
     const f = fixture({ models: [longModel], failure: budgetRefusal });
     await assert.rejects(releaseNotes(mode, '{}', 'workflow-token', f.create), /CONTENT_CONTEXT_LIMIT/);

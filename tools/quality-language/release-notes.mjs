@@ -7,7 +7,13 @@ import { isolatedCopilotClientOptions, isolatedCopilotSessionOptions } from './i
 import { copilotDiagnosticFields } from '../../scripts/copilot-diagnostic.mjs';
 
 const longContextModel = 'gpt-6.2-sol';
-class InputRejectedBeforeGeneration extends Error {}
+class InputRejectedBeforeGeneration extends Error {
+  /** @param {number} tokens */
+  constructor(tokens) {
+    super('CONTENT_CONTEXT_LIMIT');
+    this.tokens = tokens;
+  }
+}
 
 /** @param {unknown} type @param {number | undefined} status */
 function waitReason(type, status) {
@@ -26,15 +32,16 @@ function waitReason(type, status) {
 export async function releaseNotes(mode, input, token, createClient = options => new CopilotClient(options)) {
   if (!['preflight', 'generate', 'maintained', 'classify'].includes(mode)) throw new Error('CONTENT_MODE_INVALID');
   try {
-    return await releaseAttempt(mode, input, token, createClient, false);
+    return await releaseAttempt(mode, input, token, createClient);
   } catch (error) {
     if (!(error instanceof InputRejectedBeforeGeneration)) throw error;
-    return releaseAttempt(mode, input, token, createClient, true);
+    return releaseAttempt(mode, input, token, createClient, error.tokens);
   }
 }
 
-/** @param {ReleaseMode} mode @param {string} input @param {string} token @param {ClientFactory} createClient @param {boolean} longContext */
-async function releaseAttempt(mode, input, token, createClient, longContext) {
+/** @param {ReleaseMode} mode @param {string} input @param {string} token @param {ClientFactory} createClient @param {number} [rejectedTokens] */
+async function releaseAttempt(mode, input, token, createClient, rejectedTokens) {
+  const longContext = rejectedTokens !== undefined;
   const directory = await mkdtemp(join(tmpdir(), 'steward-content-sdk-'));
   /** @type {import('@microsoft/copilot-sdk').CopilotClient | undefined} */ let client;
   /** @type {import('@microsoft/copilot-sdk').CopilotSession | undefined} */ let session;
@@ -54,9 +61,9 @@ async function releaseAttempt(mode, input, token, createClient, longContext) {
     if (!models.models.length) return { status: 'WAIT_QUOTA' };
     if (mode === 'preflight') return { status: 'READY', models: models.models.map(m => m.id) };
     if (mode === 'maintained') {
-      const model = models.models.find(model => model.id === longContextModel && model.policy?.state !== 'disabled');
+      const model = models.models.find(model => model.id === longContextModel && (!model.policy || model.policy.state === 'enabled'));
       longContextLimit = model?.billing?.tokenPrices?.longContext?.maxPromptTokens ?? 0;
-      if (longContext && !longContextLimit) throw new Error('CONTENT_CONTEXT_LIMIT');
+      if (rejectedTokens !== undefined && (longContextLimit <= 0 || rejectedTokens > longContextLimit)) throw new Error('CONTENT_CONTEXT_LIMIT');
     }
     sdkStage = 'session';
     const sessionOptions = isolatedCopilotSessionOptions(directory, mode === 'classify' ?
@@ -110,15 +117,15 @@ async function releaseAttempt(mode, input, token, createClient, longContext) {
       status: native?.data?.statusCode ?? native?.status ?? native?.response?.status });
     // Some SDK versions classify the request-correlated prompt-budget refusal as a query error.
     const budget = native?.data?.errorType === 'query' && typeof native.data.message === 'string'
-      ? /(?:^|: )Request exceeds the model's prompt budget after reserving output \((\d{1,12}) tokens; limit (\d{1,12})\)\./.exec(native.data.message)
+      ? /^(?:[A-Za-z][A-Za-z ]{0,40}: )?Request exceeds the model's prompt budget after reserving output \((\d{1,12}) tokens; limit (\d{1,12})\)\./.exec(native.data.message)
       : null;
     const required = budget ? Number(budget[1]) : 0;
-    if (diagnostic.sdkErrorType === 'context_limit' || (budget && required > Number(budget[2]))) {
+    const inputStatus = diagnostic.status === undefined || [400, 413, 422].includes(diagnostic.status);
+    if (diagnostic.sdkErrorType === 'context_limit' || (inputStatus && budget && required > Number(budget[2]))) {
       const beforeGeneration = sdkStage === 'send' && !responseReceived && !generationObserved;
-      const inputStatus = diagnostic.status === undefined || [400, 413, 422].includes(diagnostic.status);
       const retry = mode === 'maintained' && !longContext && beforeGeneration && inputStatus &&
         longContextLimit > 0 && required <= longContextLimit;
-      const limitError = retry ? new InputRejectedBeforeGeneration('CONTENT_CONTEXT_LIMIT') : new Error('CONTENT_CONTEXT_LIMIT');
+      const limitError = retry ? new InputRejectedBeforeGeneration(required) : new Error('CONTENT_CONTEXT_LIMIT');
       throw Object.assign(limitError, diagnostic);
     }
     const wait = waitReason(native?.data?.errorType, diagnostic.status);
