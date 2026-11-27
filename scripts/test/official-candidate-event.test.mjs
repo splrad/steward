@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import { parseFragment } from 'parse5';
@@ -13,7 +14,7 @@ import { candidateBaseUnchanged, copilotReleaseClient, EvidenceReadError, isolat
 import { Manifest } from 'release-please';
 import { PullRequestBody } from 'release-please/build/src/util/pull-request-body.js';
 import { bodyDigest, computeOfficialCandidate, draftOfficialCandidate, officialCandidateEvidence, officialCandidateRoundId, officialMergeKey,
-  nativeDraftBody, officialNotes, officialRoundMarker, renderOfficialHomepage, validateOfficialMergeEvent, verifyOfficialMerge } from '../official-release-candidate.mjs';
+  nativeDraftBody, officialNotes, officialRoundMarker, readProductMaintainer, renderOfficialHomepage, validateOfficialMergeEvent, verifyOfficialMerge } from '../official-release-candidate.mjs';
 import { candidateDiagnostic, candidateEvent, officialCandidateRoute, prepareOfficialCandidate } from '../official-candidate-event.mjs';
 import { compatibleExistingCandidate, writeOfficialCandidate } from '../official-candidate-write.mjs';
 import { classifyPull, impactTarget } from '../pr-release-impact.mjs';
@@ -744,6 +745,53 @@ test('records each new source only after an exact round match and skips repeated
   saved.pull = { number: pr.number, head, bodyDigest: officialNotes(expectedBody).bodyDigest };
   assert.equal((await prepare()).result, 'candidate_unchanged');
   assert.equal(builds, 1);
+});
+
+test('the verified product selects central writing rules only for a new AI draft', async t => {
+  const rulePath = 'config/release/product-maintainers/splrad/LayerScape.md';
+  const rules = await readFile(new URL('../../' + rulePath, import.meta.url), 'utf8');
+  const log = t.mock.method(console, 'info', () => {});
+  const context = { unit: { id: 'root', path: '.', version: computed.version, tag: 'v1.1.0' },
+    tag: 'v1.1.0', contributors: [], sourceLink: { label: '版本记录', url: 'https://github.com/splrad/fixture' },
+    evidence: [{ kind: 'product-documentation', details: { text: '在当前图纸中查看处理结果。' } }] };
+  const requests = [];
+  const call = async raw => {
+    requests.push(raw);
+    return { text: JSON.stringify({ paragraphs: [{ section: 'summary', sourceIds: [JSON.parse(raw).sources[0].id],
+      qualification: 'SOURCE_CONFIRMED', textZh: '在当前图纸中查看处理结果。' }] }) };
+  };
+  const options = { roundId, candidate: computed, context, product, sourceSha, controllerSha, template, call };
+  const layerscape = { ...product, name: 'splrad/LayerScape' };
+  await draftOfficialCandidate(options);
+  const draft = await draftOfficialCandidate({ ...options, product: layerscape });
+  assert.deepEqual(log.mock.calls.map(c => JSON.parse(c.arguments[0])), [
+    { event: 'candidate_maintainer', roundId, controllerSha, path: rulePath, sha256: bodyDigest(rules) },
+  ]);
+  assert.equal(requests.length, 2);
+  const baseline = JSON.parse(requests[0]);
+  assert.equal(requests[1], JSON.stringify({ ...baseline, prompt: baseline.prompt + '\n\n' + rules }));
+  assert.match(officialNotes(draft.body).body, /在当前图纸中查看处理结果。/);
+  const maintenance = { kind: 'maintenance-only', details: { summary: '本版仅包含项目内部维护。' } };
+  await draftOfficialCandidate({ ...options, product: layerscape, context: { ...context, evidence: [maintenance] },
+    call: () => assert.fail('unexpected Copilot call') });
+  assert.equal(log.mock.callCount(), 1);
+});
+
+test('missing product rules are optional and malformed or unreadable rules stop the draft', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'candidate-maintainer-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const directory = join(root, 'config/release/product-maintainers/splrad');
+  const file = join(directory, 'fixture.md');
+  const read = () => readProductMaintainer('splrad/fixture', pathToFileURL(root + '/'));
+  assert.equal(await read(), null);
+  await mkdir(directory, { recursive: true });
+  await writeFile(file, '  \n');
+  await assert.rejects(read, /OFFICIAL_CANDIDATE_MAINTAINER_EMPTY/);
+  await writeFile(file, Buffer.from([0xff]));
+  await assert.rejects(read, /OFFICIAL_CANDIDATE_MAINTAINER_READ/);
+  await rm(file);
+  await mkdir(file);
+  await assert.rejects(read, /OFFICIAL_CANDIDATE_MAINTAINER_FILE/);
 });
 
 test('renders only evidence-bound Copilot sections and validates the official section', async () => {

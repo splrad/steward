@@ -307,7 +307,7 @@ export async function main(stage, env = process.env) {
     const client = copilotReleaseClient(controllerDirectory, env.STEWARD_COPILOT_TOKEN ?? '');
     return write('draft', await draftOfficialCandidate({
       roundId, candidate, context: plan.evidence, product, sourceSha: plan.evidenceSourceSha, template, call: client.call,
-      creationRange: plan.creationRange, pullNumber: plan.pullNumber,
+      creationRange: plan.creationRange, pullNumber: plan.pullNumber, controllerSha: identity.controllerSha,
     }));
   }
   if (stage === 'check') {

@@ -204,13 +204,14 @@ const officialCandidateConstraints = [
 export async function generateOfficialCandidateNotes(options: {
   unit: ContentInput['units'][number];
   template: string;
+  maintainerRules?: string;
   evidence: readonly { kind: string; details: unknown }[];
   call: (input: string) => Promise<{ text: string }>;
 }) {
   const sources = options.evidence.map(source => ({ id: hash(source), ...source }));
   const sourceIds = [...new Set(sources.map(source => source.id))];
   const response = await options.call(JSON.stringify({
-    prompt: RELEASE_WRITING_PROMPT,
+    prompt: options.maintainerRules ? RELEASE_WRITING_PROMPT + '\n\n' + options.maintainerRules : RELEASE_WRITING_PROMPT,
     organizationTemplate: options.template,
     constraints: officialCandidateConstraints,
     outputSchema: contentOutputSchema(true),
