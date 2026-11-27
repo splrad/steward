@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { releaseNotes } from './release-notes.mjs';
+import contentSchema from '../../schema/release-content.schema.json' with { type: 'json' };
 
 function fixture({ authenticated = true, models = [{id:'native-default'}], text = '{"items":[]}', finishReason = 'stop', failure = null,
   usageModel = 'fixture', emitUsage = true, responseModel = undefined, generationEvent = null, tokenUsage = { inputTokens: 10, outputTokens: 5 },
@@ -29,17 +30,24 @@ const longModel = { id: 'gpt-6.2-sol', policy: { state: 'enabled' },
   billing: { tokenPrices: { longContext: { maxPromptTokens: 1050000 } } } };
 const budgetRefusal = { data: { errorType: 'query',
   message: "API Error: Request exceeds the model's prompt budget after reserving output (457623 tokens; limit 272000)." } };
+const maintainedInput = JSON.stringify({ sources: ['保留条件和操作'], outputSchema: contentSchema.$defs.paragraphs });
 
 test('a maintained candidate resends exactly the same input once after a confirmed pre-generation refusal', async () => {
   for (const failure of [budgetRefusal, { data: { errorType: 'context_limit', statusCode: 400 } }]) {
     const normal = fixture({ models: [longModel], failure });
     const long = fixture({ models: [longModel], responseModel: longModel.id });
     const attempts = [normal, long];
-    const input = '{"sources":["保留条件和操作"]}';
+    const input = maintainedInput;
     const result = await releaseNotes('maintained', input, 'workflow-token', options => attempts.shift().create(options));
     assert.equal(result.contextTier, 'long_context');
     assert.equal(result.model, longModel.id);
-    assert.deepEqual(normal.inputs, [input]); assert.deepEqual(long.inputs, [input]);
+    assert.deepEqual(normal.inputs, [input]);
+    assert.deepEqual(long.inputs.map(message => message.prompt), [input]);
+    const original = JSON.parse(input).outputSchema;
+    const providerSchema = long.inputs[0].responseSchema;
+    assert.equal(original.properties.paragraphs.items.properties.sourceIds.uniqueItems, true);
+    delete original.properties.paragraphs.items.properties.sourceIds.uniqueItems;
+    assert.deepEqual(providerSchema, original);
     assert.equal(normal.options().sessionOptions.model, undefined);
     assert.equal(long.options().sessionOptions.model, longModel.id);
     assert.equal(long.options().sessionOptions.inference.contextTier, 'long_context');
@@ -65,7 +73,7 @@ test('a maintained candidate never resends unknown or partial work or sends past
     assert.equal(started, 1);
   }
   const f = fixture({ models: [longModel], failure: budgetRefusal }); let attempts = 0;
-  await assert.rejects(releaseNotes('maintained', '{}', 'workflow-token', options => { attempts++; return f.create(options); }), /CONTENT_CONTEXT_LIMIT/);
+  await assert.rejects(releaseNotes('maintained', maintainedInput, 'workflow-token', options => { attempts++; return f.create(options); }), /CONTENT_CONTEXT_LIMIT/);
   assert.equal(attempts, 2);
   const first = fixture({ models: [longModel], failure: budgetRefusal });
   const changed = fixture({ models: [{ ...longModel, billing: { tokenPrices: { longContext: { maxPromptTokens: 300000 } } } }] });

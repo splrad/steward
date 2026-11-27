@@ -91,7 +91,18 @@ async function releaseAttempt(mode, input, token, createClient, rejectedTokens) 
       if (event.data.finishReason === 'length') capacity = true;
     });
     sdkStage = 'send';
-    const response = await session.sendAndWait(input, 180_000);
+    let response;
+    if (longContext) {
+      const { outputSchema } = JSON.parse(input);
+      const sourceIds = outputSchema?.properties?.paragraphs?.items?.properties?.sourceIds;
+      if (!sourceIds || typeof sourceIds !== 'object') throw new Error('CONTENT_OUTPUT_SCHEMA');
+      // This provider rejects uniqueItems in strict output schemas. The controller
+      // validates the original schema (including unique source IDs) after the SDK returns.
+      delete sourceIds.uniqueItems;
+      response = await session.sendAndWait({ prompt: input, responseSchema: outputSchema }, 180_000);
+    } else {
+      response = await session.sendAndWait(input, 180_000);
+    }
     responseReceived = true;
     sdkStage = 'response';
     if (capacity) throw new Error('CONTENT_CAPACITY');

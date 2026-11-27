@@ -779,6 +779,11 @@ test('the verified product selects central writing rules only for a new AI draft
   await draftOfficialCandidate({ ...options, product: layerscape, context: { ...context, evidence: [maintenance] },
     call: () => assert.fail('unexpected Copilot call') });
   assert.equal(log.mock.callCount(), 1);
+  await assert.rejects(draftOfficialCandidate({ ...options, product: layerscape, call: async raw => {
+    const id = JSON.parse(raw).sources[0].id;
+    return { text: JSON.stringify({ paragraphs: [{ section: 'summary', sourceIds: [id, id],
+      qualification: 'SOURCE_CONFIRMED', textZh: '在当前图纸中查看处理结果。' }] }) };
+  } }), /CONTENT_OUTPUT_SCHEMA/);
 });
 
 test('missing product rules are optional and malformed or unreadable rules stop the draft', async t => {
